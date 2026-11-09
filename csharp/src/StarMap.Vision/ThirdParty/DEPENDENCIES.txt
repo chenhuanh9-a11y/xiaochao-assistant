@@ -8,6 +8,13 @@ OpenCV 4.13.0
 https://github.com/opencv/opencv/tree/4.13.0
 License: Apache-2.0; see OpenCV-LICENSE.txt.
 
+StructureContourApproximation.ApproximateClosed
+Closed integer-contour approximation adapted from OpenCV 4.12.0 approxPolyDP_.
+https://github.com/opencv/opencv/blob/4.12.0/modules/imgproc/src/approx.cpp
+The helper preserves original solver semantics; the native runtime remains 4.13.0.
+License: Apache-2.0 plus the source file's Intel notice;
+see OpenCV-LICENSE.txt and OpenCV-4.12-approx-LICENSE.txt.
+
 The Windows slim native package contains statically linked native components.
 Their complete build-specific notices must be collected before distributing
 a Setup that includes StarMap.Vision. This source experiment is not that Setup.

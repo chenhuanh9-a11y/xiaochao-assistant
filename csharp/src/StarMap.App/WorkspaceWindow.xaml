@@ -3,51 +3,70 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="星图 · 迁移测试版" Icon="Assets/xingtu-round.png"
         Width="1120" Height="760" MinWidth="800" MinHeight="560"
-        Background="#F3F6FC" Foreground="{StaticResource StarMap.Ink}"
+        Style="{StaticResource MaterialDesignWindow}"
+        Background="{StaticResource StarMap.Canvas}" Foreground="{StaticResource StarMap.Ink}"
         FontFamily="Microsoft YaHei UI" FontSize="13">
     <Window.Resources>
-        <Style x:Key="NavigationItem" TargetType="ListBoxItem">
-            <Setter Property="Padding" Value="14,12" />
+        <Style x:Key="NavigationItem" TargetType="ListBoxItem" BasedOn="{StaticResource MaterialDesignListBoxItem}">
+            <Setter Property="Padding" Value="8,10" />
             <Setter Property="Margin" Value="0,2" />
+            <Setter Property="MinHeight" Value="58" />
             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="ToolTipService.ShowOnDisabled" Value="True" />
         </Style>
         <Style x:Key="NavigationIcon" TargetType="Image">
-            <Setter Property="Width" Value="19" /><Setter Property="Height" Value="19" />
-            <Setter Property="Margin" Value="0,0,12,0" />
+            <Setter Property="Width" Value="23" /><Setter Property="Height" Value="23" />
+            <Setter Property="Margin" Value="0,0,0,5" />
         </Style>
+        <Style x:Key="NavigationLabel" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+        </Style>
+        <DataTemplate x:Key="ResourceRowTemplate">
+            <StackPanel Margin="0,3">
+                <TextBlock Text="{Binding DisplayLabel}" TextTrimming="CharacterEllipsis" ToolTip="{Binding TechnicalDetails}" />
+                <TextBlock Text="{Binding ContextLabel}" Foreground="{StaticResource StarMap.Muted}" FontSize="11" Margin="0,5,0,0"
+                           TextTrimming="CharacterEllipsis" ToolTip="{Binding TechnicalDetails}" />
+            </StackPanel>
+        </DataTemplate>
     </Window.Resources>
     <Grid>
-        <Grid.ColumnDefinitions><ColumnDefinition Width="192" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-        <Border Background="White" BorderBrush="#E3E9F3" BorderThickness="0,0,1,0">
-            <DockPanel Margin="12,20,12,14">
-                <StackPanel DockPanel.Dock="Top" Margin="10,0,0,26">
-                    <StackPanel Orientation="Horizontal">
-                        <Image Source="Assets/xingtu-round.png" Width="38" Height="38" Margin="0,0,10,0" />
-                        <TextBlock Text="星图" FontSize="23" FontWeight="SemiBold" VerticalAlignment="Center" />
-                    </StackPanel>
-                    <TextBlock Text="迁移测试版" Foreground="{StaticResource StarMap.Muted}" Margin="0,10,0,0" />
+        <Grid.ColumnDefinitions><ColumnDefinition Width="112" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+        <Border Background="{StaticResource StarMap.Surface}" BorderBrush="{StaticResource StarMap.Outline}" BorderThickness="0,0,1,0">
+            <DockPanel Margin="8,16,8,12">
+                <StackPanel DockPanel.Dock="Top" Margin="0,0,0,16">
+                    <Image Source="Assets/xingtu-round.png" Width="40" Height="40" />
+                    <TextBlock Text="星图" FontSize="16" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,7,0,0" />
                 </StackPanel>
-                <TextBlock DockPanel.Dock="Bottom" Text="正式版与玩家资料保持独立" Foreground="{StaticResource StarMap.Muted}" FontSize="11" TextWrapping="Wrap" Margin="10,14,8,0" />
-                <ListBox x:Name="Navigation" BorderThickness="0" Background="Transparent" ItemContainerStyle="{StaticResource NavigationItem}" SelectionChanged="Navigate">
-                    <ListBoxItem Tag="home" IsSelected="True"><StackPanel Orientation="Horizontal"><Image Source="Assets/home.png" Style="{StaticResource NavigationIcon}" /><TextBlock Text="主页面" /></StackPanel></ListBoxItem>
-                    <ListBoxItem Tag="gallery"><StackPanel Orientation="Horizontal"><Image Source="Assets/map.png" Style="{StaticResource NavigationIcon}" /><TextBlock Text="地图资源" /></StackPanel></ListBoxItem>
-                    <ListBoxItem Tag="packages"><StackPanel Orientation="Horizontal"><Image Source="Assets/note.png" Style="{StaticResource NavigationIcon}" /><TextBlock Text="图包管理" /></StackPanel></ListBoxItem>
-                    <ListBoxItem Tag="custom"><StackPanel Orientation="Horizontal"><Image Source="Assets/route.png" Style="{StaticResource NavigationIcon}" /><TextBlock Text="自定义路线" /></StackPanel></ListBoxItem>
-                    <ListBoxItem Tag="plaza"><StackPanel Orientation="Horizontal"><Image Source="Assets/route.png" Style="{StaticResource NavigationIcon}" /><TextBlock Text="路线广场" /></StackPanel></ListBoxItem>
-                    <ListBoxItem Tag="settings"><StackPanel Orientation="Horizontal"><Image Source="Assets/settings.png" Style="{StaticResource NavigationIcon}" /><TextBlock Text="设置" /></StackPanel></ListBoxItem>
-                    <ListBoxItem Tag="help"><StackPanel Orientation="Horizontal"><Image Source="Assets/help.png" Style="{StaticResource NavigationIcon}" /><TextBlock Text="帮助与公告" /></StackPanel></ListBoxItem>
+                <StackPanel DockPanel.Dock="Bottom" Margin="4,12,4,0">
+                    <TextBlock Text="迁移测试版" Foreground="{StaticResource StarMap.Muted}" FontSize="11" TextAlignment="Center" />
+                    <TextBlock Text="独立测试资料" Foreground="{StaticResource StarMap.Muted}" FontSize="10" TextAlignment="Center" Margin="0,4,0,0" />
+                </StackPanel>
+                <ListBox x:Name="Navigation" BorderThickness="0" Background="Transparent" ItemContainerStyle="{StaticResource NavigationItem}" SelectionChanged="Navigate"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto">
+                    <ListBoxItem Tag="home" IsSelected="True"><StackPanel><Image Source="Assets/home.png" Style="{StaticResource NavigationIcon}" /><TextBlock Text="主页面" Style="{StaticResource NavigationLabel}" /></StackPanel></ListBoxItem>
+                    <ListBoxItem Tag="gallery"><StackPanel><Image Source="Assets/map.png" Style="{StaticResource NavigationIcon}" /><TextBlock Text="地图资源" Style="{StaticResource NavigationLabel}" /></StackPanel></ListBoxItem>
+                    <ListBoxItem Tag="custom"><StackPanel><Image Source="Assets/route.png" Style="{StaticResource NavigationIcon}" /><TextBlock Text="自定义路线" Style="{StaticResource NavigationLabel}" /></StackPanel></ListBoxItem>
+                    <ListBoxItem Tag="plaza" IsEnabled="False" ToolTip="路线广场、账号与投稿尚未接通。详情见帮助与公告。"><StackPanel><Image Source="Assets/note.png" Style="{StaticResource NavigationIcon}" /><TextBlock Text="路线广场" Style="{StaticResource NavigationLabel}" /><TextBlock Text="尚未接通" FontSize="10" HorizontalAlignment="Center" Margin="0,3,0,0" /></StackPanel></ListBoxItem>
+                    <ListBoxItem Tag="settings"><StackPanel><Image Source="Assets/settings.png" Style="{StaticResource NavigationIcon}" /><TextBlock Text="设置" Style="{StaticResource NavigationLabel}" /></StackPanel></ListBoxItem>
+                    <ListBoxItem Tag="help"><StackPanel><Image Source="Assets/help.png" Style="{StaticResource NavigationIcon}" /><TextBlock Text="帮助与公告" Style="{StaticResource NavigationLabel}" /></StackPanel></ListBoxItem>
                 </ListBox>
             </DockPanel>
         </Border>
-        <Grid Grid.Column="1" Margin="32,28,32,18">
+        <Grid Grid.Column="1" Margin="28,24,28,16">
             <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
-            <StackPanel Margin="0,0,0,24">
-                <TextBlock x:Name="Heading" Text="主页面" FontSize="27" FontWeight="SemiBold" />
-                <TextBlock x:Name="PageDescription" Foreground="{StaticResource StarMap.Muted}" TextWrapping="Wrap" Margin="0,9,0,0" />
-            </StackPanel>
-            <ContentControl Grid.Row="1" x:Name="PageContent" />
-            <Border Grid.Row="2" BorderBrush="#DDE5F1" BorderThickness="0,1,0,0" Padding="0,12,0,0" Margin="0,18,0,0">
-                <TextBlock x:Name="Status" Text="未连接游戏窗口。" TextWrapping="Wrap" Foreground="{StaticResource StarMap.Muted}" />
+            <Grid Margin="0,0,0,20">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                <TextBlock x:Name="Heading" Text="主页面" FontSize="26" FontWeight="SemiBold" />
+                <Button x:Name="HomeConnectionSettings" Grid.Column="1" Content="游戏连接设置" VerticalAlignment="Center"
+                        Margin="16,0,0,0" Padding="16,8" Click="OpenHomeConnection"
+                        ToolTip="连接或更换游戏窗口，并设置游戏内快捷键。" />
+                <TextBlock x:Name="PageDescription" Grid.Row="1" Grid.ColumnSpan="2" Foreground="{StaticResource StarMap.Muted}" TextWrapping="Wrap" Margin="0,6,0,0" />
+            </Grid>
+            <ContentControl Grid.Row="1" x:Name="PageContent" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" />
+            <Border Grid.Row="2" BorderBrush="{StaticResource StarMap.Outline}" BorderThickness="0,1,0,0" Padding="0,10,0,0" Margin="0,14,0,0">
+                <TextBlock x:Name="Status" Text="未连接游戏窗口。" TextWrapping="Wrap" Foreground="{StaticResource StarMap.Muted}" AutomationProperties.LiveSetting="Polite" />
             </Border>
         </Grid>
     </Grid>

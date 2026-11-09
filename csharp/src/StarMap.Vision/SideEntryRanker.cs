@@ -10,7 +10,7 @@ namespace StarMap.Vision;
 public sealed record SideEntryResult(JsonArray Rows,JsonObject Diagnostics,JsonArray Turns);
 
 /// <summary>Stateless current-frame side structure proposals. It never grants identity, display or session state.</summary>
-public sealed class SideEntryRanker
+public sealed partial class SideEntryRanker
 {
     private readonly EntryPassportCatalog catalog;
     private readonly ResourceCatalog resources;

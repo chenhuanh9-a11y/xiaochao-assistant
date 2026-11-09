@@ -65,7 +65,80 @@ internal static class Program
             var navigation = (ListBox)shell.FindName("Navigation");
             var content = (ContentControl)shell.FindName("PageContent");
             var home = content.Content;
-            foreach (var item in navigation.Items.Cast<ListBoxItem>()) navigation.SelectedItem = item;
+            var navigationItems = navigation.Items.Cast<ListBoxItem>().ToArray();
+            Check(navigationItems.Select(item => item.Tag as string).SequenceEqual(new[] { "home", "gallery", "custom", "plaza", "settings", "help" })
+                && !navigationItems.Single(item => item.Tag as string == "plaza").IsEnabled,
+                "qt-page-responsibilities-retained-and-unconnected-plaza-cannot-open-empty-page");
+            Check(home is ScrollViewer { Content: StackPanel homePanel }
+                && homePanel.Children[0] is Border { Child: RuntimePage },
+                "home-starts-with-current-round-before-connection-and-resource-configuration");
+            var connectionShortcut = (Button)shell.FindName("HomeConnectionSettings");
+            var preparation = Field<Expander>(shell, "homePreparation");
+            Check(connectionShortcut.Visibility == Visibility.Visible && !((ScrollViewer)home).IsAncestorOf(connectionShortcut)
+                && ((StackPanel)preparation.Content).Children[0] == Field<ConnectionPage>(shell, "connectionPage"),
+                "home-connection-shortcut-stays-outside-scroll-and-owns-the-existing-connection-page");
+            var homeScroll = (ScrollViewer)home;
+            homeScroll.Measure(new Size(800, 420)); homeScroll.Arrange(new Rect(0, 0, 800, 420)); homeScroll.UpdateLayout();
+            var connection = Field<ConnectionPage>(shell, "connectionPage");
+            var viewport = VisualDescendants<System.Windows.Controls.ScrollContentPresenter>(homeScroll).First();
+            var connectionScrollEvidence = new List<object>();
+            Rect? ConnectionBounds()
+            {
+                try { return connection.TransformToAncestor(viewport).TransformBounds(new Rect(connection.RenderSize)); }
+                catch (InvalidOperationException) { return null; }
+            }
+            bool ConnectionInsideViewport() => ConnectionBounds() is { } bounds && connection.ActualHeight > 0
+                && Math.Abs(bounds.Height - connection.ActualHeight) < .5 && bounds.Top >= -.5
+                && bounds.Bottom <= viewport.ActualHeight + .5 && homeScroll.VerticalOffset > 0;
+            object ConnectionScrollEvidence(string phase)
+            {
+                var bounds = ConnectionBounds();
+                return new { phase, homeScroll.VerticalOffset, scrollViewportHeight = homeScroll.ViewportHeight, homeScroll.ExtentHeight, physicalViewportHeight = viewport.ActualHeight,
+                    preparation.IsExpanded, connection.ActualHeight, scaleY = (preparation.Template.FindName("ContentSiteScaleTransform", preparation) as ScaleTransform)?.ScaleY,
+                    target = bounds is { } value ? new { value.X, value.Y, value.Width, value.Height, value.Bottom } : null };
+            }
+            try
+            {
+                connectionScrollEvidence.Add(ConnectionScrollEvidence("before-click"));
+                Check(homeScroll.VerticalOffset == 0 && homeScroll.ScrollableHeight > 0 && viewport.ActualHeight > 0,
+                    "connection-navigation-regression-starts-in-the-real-scrollable-home-viewport");
+                connectionShortcut.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Check(preparation.IsExpanded && !Field<WindowsRuntimeCapturePort>(shell, "runtimeCapture").IsBound
+                    && !Field<WpfGlobalInputController>(shell, "inputController").ListeningRequested,
+                    "home-connection-shortcut-only-expands-settings-without-binding-or-starting-input");
+                var revealed = WaitForLayout(ConnectionInsideViewport); Await(revealed);
+                connectionScrollEvidence.Add(ConnectionScrollEvidence("after-expand-and-reveal"));
+                Check(revealed.Result, "home-connection-shortcut-scrolls-the-complete-connection-page-into-the-actual-viewport");
+                homeScroll.ScrollToTop(); homeScroll.UpdateLayout();
+                Dispatcher.CurrentDispatcher.Invoke(new Action(() => { }), DispatcherPriority.ContextIdle);
+                connectionScrollEvidence.Add(ConnectionScrollEvidence("already-expanded-reset-to-top"));
+                Check(homeScroll.VerticalOffset == 0, "connection-navigation-repeated-click-starts-after-a-real-scroll-reset");
+                connectionShortcut.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                var revealedAgain = WaitForLayout(ConnectionInsideViewport); Await(revealedAgain);
+                connectionScrollEvidence.Add(ConnectionScrollEvidence("already-expanded-revealed-again"));
+                Check(revealedAgain.Result, "home-connection-shortcut-reveals-the-same-page-again-when-already-expanded");
+            }
+            finally
+            {
+                connectionScrollEvidence.Add(ConnectionScrollEvidence("finally"));
+                File.WriteAllText(Path.Combine(output, "connection-navigation.json"), JsonSerializer.Serialize(new {
+                    scope = "Actual home ScrollViewer, Material Expander and header click handler measured without Show, native input or game binding",
+                    observations = connectionScrollEvidence
+                }, new JsonSerializerOptions { WriteIndented = true }));
+            }
+            preparation.IsExpanded = false;
+            var settingsPage = (Grid)Field<Dictionary<string, FrameworkElement>>(shell, "pages")["settings"];
+            var settingsScroll = settingsPage.Children.OfType<ScrollViewer>().Single();
+            Check(settingsPage.Children.OfType<Border>().Single(area => area.Child is StackPanel { Name: "SettingsActionBar" }) is { } settingsBar
+                && Grid.GetRow(settingsBar) == 1 && Grid.GetRow(settingsScroll) == 0
+                && !settingsScroll.IsAncestorOf(Field<Button>(shell, "saveSettingsButton"))
+                && !settingsScroll.IsAncestorOf(Field<Button>(shell, "importSettingsButton")),
+                "settings-existing-actions-and-feedback-have-a-fixed-row-outside-the-editor-scroll");
+            var runtimePanel = (StackPanel)Field<RuntimePage>(shell, "runtimePage").Content;
+            Check(runtimePanel.Children.OfType<Expander>().Single(item => item.Name == "RuntimeDiagnostics").IsExpanded == false
+                && runtimePanel.Children.OfType<Expander>().Single(item => item.Name == "RuntimeManualSelection").IsExpanded == false,
+                "runtime-diagnostics-and-manual-picker-are-disclosed-without-replacing-runtime-instance");
+            foreach (var item in navigationItems.Where(item => item.IsEnabled)) navigation.SelectedItem = item;
             navigation.SelectedIndex = 0;
             Check(ReferenceEquals(home, content.Content), "navigation-retains-home-instance");
             Check(!shell.IsVisible && !Directory.Exists(Path.Combine(output, "isolated-data")), "construction-does-not-show-or-create-player-file");
@@ -81,6 +154,51 @@ internal static class Program
                 var list = Field<ListBox>(shell, "resourceList");
                 list.SelectedItem = list.Items.Cast<object>().Single(row => row.GetType().GetProperty("Entry")!.GetValue(row)
                     is ResourceCatalogEntry { Mode: "nightmare", Season: "s0", MapId: "nightmare-03", Floor: "2" });
+                var selectedRow = list.SelectedItem!;
+                var selectedEntry = (ResourceCatalogEntry)selectedRow.GetType().GetProperty("Entry")!.GetValue(selectedRow)!;
+                string RowProperty(string name) => (string)selectedRow.GetType().GetProperty(name)!.GetValue(selectedRow)!;
+                var rowTemplate = (StackPanel)list.ItemTemplate.LoadContent();
+                rowTemplate.DataContext = selectedRow;
+                var detachedTexts = rowTemplate.Children.OfType<TextBlock>().ToArray();
+                foreach (var text in detachedTexts) { text.GetBindingExpression(TextBlock.TextProperty)?.UpdateTarget(); text.GetBindingExpression(FrameworkElement.ToolTipProperty)?.UpdateTarget(); }
+                object TextEvidence(TextBlock text) => new {
+                    text.Text, toolTip = text.ToolTip as string, trimming = text.TextTrimming.ToString(),
+                    textPath = text.GetBindingExpression(TextBlock.TextProperty)?.ParentBinding.Path?.Path,
+                    textStatus = text.GetBindingExpression(TextBlock.TextProperty)?.Status.ToString(),
+                    tooltipStatus = text.GetBindingExpression(FrameworkElement.ToolTipProperty)?.Status.ToString(),
+                    textDataItemIsSelectedRow = ReferenceEquals(text.GetBindingExpression(TextBlock.TextProperty)?.DataItem, selectedRow),
+                    tooltipDataItemIsSelectedRow = ReferenceEquals(text.GetBindingExpression(FrameworkElement.ToolTipProperty)?.DataItem, selectedRow)
+                };
+                var detachedBeforeDispatcher = detachedTexts.Select(TextEvidence).ToArray();
+                // Exercise the production ItemsControl -> item container -> DataTemplate path.
+                // UpdateTarget cannot attach an as-yet unattached binding to a tree context.
+                navigation.SelectedIndex = 1;
+                shell.Measure(new Size(1120, 760)); shell.Arrange(new Rect(0, 0, 1120, 760)); shell.UpdateLayout();
+                var galleryForBindings = (FrameworkElement)content.Content;
+                galleryForBindings.Measure(new Size(800, 600)); galleryForBindings.Arrange(new Rect(0, 0, 800, 600)); galleryForBindings.UpdateLayout();
+                list.ScrollIntoView(selectedRow); list.UpdateLayout();
+                Dispatcher.CurrentDispatcher.Invoke(new Action(() => { }), DispatcherPriority.ContextIdle);
+                list.UpdateLayout();
+                var rowContainer = list.ItemContainerGenerator.ContainerFromItem(selectedRow) as ListBoxItem;
+                TextBlock[] rowTexts = rowContainer is null ? [] : VisualDescendants<TextBlock>(rowContainer)
+                    .Where(text => text.GetBindingExpression(TextBlock.TextProperty)?.ParentBinding.Path?.Path is "DisplayLabel" or "ContextLabel").ToArray();
+                File.WriteAllText(Path.Combine(output, "gallery-row-bindings.json"), JsonSerializer.Serialize(new {
+                    expected = new { selectedEntry.DisplayName, contextLabel = "噩梦 · S0 · 2F", selectedEntry.MapId, selectedEntry.Profile },
+                    model = new { displayLabel = RowProperty("DisplayLabel"), contextLabel = RowProperty("ContextLabel"), technicalDetails = RowProperty("TechnicalDetails") },
+                    detachedBeforeDispatcher, detachedAfterDispatcher = detachedTexts.Select(TextEvidence).ToArray(),
+                    containerGenerated = rowContainer is not null,
+                    containerItemIsSelectedRow = rowContainer is not null && ReferenceEquals(list.ItemContainerGenerator.ItemFromContainer(rowContainer), selectedRow),
+                    realized = rowTexts.Select(TextEvidence).ToArray()
+                }, new JsonSerializerOptions { WriteIndented = true }));
+                Check(rowContainer is not null && ReferenceEquals(list.ItemContainerGenerator.ItemFromContainer(rowContainer), selectedRow)
+                    && rowTexts.Length == 2 && rowTexts[0].Text == selectedEntry.DisplayName && rowTexts[1].Text == "噩梦 · S0 · 2F"
+                    && RowProperty("TechnicalDetails").Contains(selectedEntry.MapId) && RowProperty("TechnicalDetails").Contains(selectedEntry.Profile)
+                    && selectedRow.ToString()!.Contains(selectedEntry.Profile)
+                    && rowTexts.All(text => text.TextTrimming == TextTrimming.CharacterEllipsis && (string)text.ToolTip == RowProperty("TechnicalDetails")
+                        && ReferenceEquals(text.GetBindingExpression(TextBlock.TextProperty)?.DataItem, selectedRow)
+                        && ReferenceEquals(text.GetBindingExpression(FrameworkElement.ToolTipProperty)?.DataItem, selectedRow))
+                    && ScrollViewer.GetHorizontalScrollBarVisibility(list) == ScrollBarVisibility.Disabled,
+                    "gallery-rows-use-trusted-name-and-readable-context-with-complete-ids-in-tooltip-and-search");
                 Await(InvokeTask(shell, "PreviewResource"));
                 var preview = Field<Image>(shell, "preview");
                 Check(preview.Source is BitmapSource, "selected-real-floor-produces-preview-bitmap");
@@ -147,12 +265,16 @@ internal static class Program
             var hotkey = Field<TextBox>(shell, "hotkey");
             var opacity = Field<Slider>(shell, "sheetOpacity");
             hotkey.Text = "Ctrl+G";
+            Check(Field<TextBlock>(shell, "settingsDirtyState").Text == "有未保存的更改",
+                "fixed-settings-status-derives-dirty-state-from-the-existing-edit-writer");
             saveGate.Wait();
             Task firstSave;
             try
             {
                 firstSave = InvokeTask(shell, "SaveSettings");
                 Check(!firstSave.IsCompleted, "save-is-paused-at-real-document-serialization-gate");
+                Check(!Field<Button>(shell, "saveSettingsButton").IsEnabled && !Field<Button>(shell, "importSettingsButton").IsEnabled
+                    && hotkey.IsEnabled, "settings-toolbar-disables-duplicate-actions-without-blocking-new-draft-edits-during-save");
                 int currentGeneration = Field<int>(shell, "resourceGeneration");
                 Await(InvokeTask(shell, "LoadResources", Path.Combine(output, "must-not-bind-during-save")));
                 Check(Field<int>(shell, "resourceGeneration") == currentGeneration,
@@ -172,6 +294,9 @@ internal static class Program
                 Check(second.RootElement.GetProperty("hotkey").GetString() == "Alt+G"
                     && second.RootElement.GetProperty("sheetOpacity").GetDouble() == .7, "second-save-persists-newer-controls-through-real-io");
             Check(Field<HashSet<string>>(shell, "editedSettings").Count == 0, "successful-second-save-clears-captured-edits");
+            Check(Field<TextBlock>(shell, "settingsDirtyState").Text == "没有未保存的更改"
+                && Field<Button>(shell, "saveSettingsButton").IsEnabled && Field<Button>(shell, "importSettingsButton").IsEnabled,
+                "fixed-settings-toolbar-reconciles-after-real-save-completion");
             string importSource = Path.Combine(output, "selected-settings.json");
             File.WriteAllText(importSource, "{\"hotkey\":\"Ctrl+H\",\"futureField\":[1,2]}");
             var importWindow = new WorkspaceWindow(Path.Combine(output, "import-data"), null);
@@ -198,6 +323,7 @@ internal static class Program
                     Await(InvokeTask(invalidWindow, "LoadSettings"));
                     Await(InvokeTask(invalidWindow, "ImportSelectedSettings", invalidSource));
                     Check(Field<TextBox[]>(invalidWindow, "actionHotkeys")[9].Text == "null"
+                        && Field<Expander>(invalidWindow, "advancedHotkeysDisclosure").IsExpanded
                         && !Field<WpfGlobalInputController>(invalidWindow, "inputController").ListeningRequested
                         && File.ReadAllBytes(invalidSource).SequenceEqual(File.ReadAllBytes(Path.Combine(output, "invalid-import-data", "ui-settings.json"))),
                         "invalid-raw-picker-tail-remains-visible-and-preserved-with-observer-off");
@@ -269,6 +395,33 @@ internal static class Program
         ?? throw new InvalidOperationException($"Missing field {name}."));
 
     static Task InvokeTask(object owner, string name, params object[] args) => (Task)owner.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(owner, args)!;
+
+    static IEnumerable<T> VisualDescendants<T>(DependencyObject parent) where T : DependencyObject
+    {
+        for (int index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, index);
+            if (child is T match) yield return match;
+            foreach (var descendant in VisualDescendants<T>(child)) yield return descendant;
+        }
+    }
+
+    static Task<bool> WaitForLayout(Func<bool> condition)
+    {
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        long deadline = Environment.TickCount64 + 3000;
+        var timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(16) };
+        timer.Tick += (_, _) =>
+        {
+            try
+            {
+                bool ready = condition();
+                if (ready || Environment.TickCount64 >= deadline) { timer.Stop(); completion.TrySetResult(ready); }
+            }
+            catch (Exception error) { timer.Stop(); completion.TrySetException(error); }
+        };
+        timer.Start(); return completion.Task;
+    }
 
     static void SavePng(BitmapSource image, string path)
     {

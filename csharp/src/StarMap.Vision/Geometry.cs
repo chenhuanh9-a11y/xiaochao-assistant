@@ -120,7 +120,7 @@ public static class Geometry
         var nodes = new List<Corner>();
         foreach (var contour in contours)
         {
-            var polygon = Cv2.ApproxPolyDP(contour, 2, true);
+            var polygon = StructureContourApproximation.ApproximateClosed(contour, 2);
             if (polygon.Length < 4 || Math.Abs(Cv2.ContourArea(polygon)) < 100) continue;
             int start = nodes.Count;
             for (int i = 0; i < polygon.Length; i++)

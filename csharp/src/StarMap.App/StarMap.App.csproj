@@ -17,7 +17,7 @@
     <InternalsVisibleTo Include="StarMap.Workspace.Tests" />
     <ProjectReference Include="..\StarMap.Core\StarMap.Core.csproj" />
     <ProjectReference Include="..\StarMap.Runtime\StarMap.Runtime.csproj" />
-    <PackageReference Include="WPF-UI" Version="4.3.0" />
+    <PackageReference Include="MaterialDesignThemes" Version="[5.4.0]" />
     <Content Include="ThirdParty\*" CopyToOutputDirectory="PreserveNewest" />
     <Resource Include="..\..\..\experiments\qt_quick\icons\*.png" Link="Assets\%(Filename)%(Extension)" />
   </ItemGroup>

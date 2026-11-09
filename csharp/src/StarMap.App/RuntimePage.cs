@@ -17,11 +17,13 @@ internal sealed class RuntimePage : UserControl
 {
     readonly ICapturePort capture;
     readonly Action<string> status;
-    readonly TextBlock summary = new() { Text = "选择结构资源并连接窗口后，可手动开始本局。", TextWrapping = TextWrapping.Wrap };
-    readonly TextBlock detail = new() { TextWrapping = TextWrapping.Wrap, Foreground = Brushes.SlateGray, Margin = new(0, 8, 0, 12) };
-    readonly TextBlock resourceCaption = new() { TextWrapping = TextWrapping.Wrap, Foreground = Brushes.SlateGray, Margin = new(0, 0, 0, 12) };
-    readonly ListBox candidates = new() { MinHeight = 65, MaxHeight = 170, Margin = new(0, 8, 0, 10) };
-    readonly ComboBox manualMap = new() { MinWidth = 270, MaxWidth = 620, HorizontalAlignment = HorizontalAlignment.Left };
+    readonly TextBlock summary = new() { Text = "选择结构资源并连接窗口后，可手动开始本局。", TextWrapping = TextWrapping.Wrap, Margin = new(0, 4, 0, 12) };
+    readonly TextBlock detail = new() { TextWrapping = TextWrapping.Wrap, Foreground = Brushes.SlateGray, Margin = new(0, 4, 0, 8) };
+    readonly TextBlock resourceCaption = new() { Text = "本局运行资源尚未绑定。", TextWrapping = TextWrapping.Wrap, Foreground = Brushes.SlateGray, Margin = new(0, 8, 0, 8) };
+    readonly TextBlock roundState = ValueText("等待开始"), mapIdentity = ValueText("尚未确认"), currentFloor = ValueText("尚未确认");
+    readonly TextBlock candidateCaption = new() { Text = "读取游戏地图后，候选会显示在这里。", TextWrapping = TextWrapping.Wrap, Foreground = Brushes.SlateGray, Margin = new(0, 4, 0, 8) };
+    readonly ListBox candidates = new() { MinHeight = 60, MaxHeight = 170, Margin = new(0, 4, 0, 8), Visibility = Visibility.Collapsed };
+    readonly ComboBox manualMap = new() { MinWidth = 240, MaxWidth = 620, HorizontalAlignment = HorizontalAlignment.Stretch };
     readonly ComboBox floor = new() { MinWidth = 130, HorizontalAlignment = HorizontalAlignment.Left, DisplayMemberPath = "Label", SelectedValuePath = "Id" };
     readonly Button start, end, acquire, cancel, previous, next, confirm, pick, applyFloor;
     readonly DispatcherTimer renderTimer;
@@ -43,15 +45,26 @@ internal sealed class RuntimePage : UserControl
     internal RuntimePage(ICapturePort capture, Action<string> status)
     {
         this.capture = capture; this.status = status;
-        var panel = new StackPanel();
-        panel.Children.Add(new TextBlock { Text = "本局", FontSize = 19, FontWeight = FontWeights.SemiBold, Margin = new(0, 0, 0, 12) });
-        panel.Children.Add(summary); panel.Children.Add(detail); panel.Children.Add(resourceCaption);
+        foreach (var text in new[] { detail, resourceCaption, candidateCaption })
+            text.SetResourceReference(TextBlock.ForegroundProperty, "StarMap.Muted");
+        var panel = new StackPanel { Name = "RuntimeOverview" };
+        panel.Children.Add(new TextBlock { Text = "本局", FontSize = 21, FontWeight = FontWeights.SemiBold });
+        panel.Children.Add(summary);
+        var overview = new Grid { Margin = new(0, 0, 0, 12) };
+        for (int column = 0; column < 3; column++) overview.ColumnDefinitions.Add(new());
+        AddState(overview, 0, "状态", roundState); AddState(overview, 1, "地图身份", mapIdentity); AddState(overview, 2, "当前楼层", currentFloor);
+        panel.Children.Add(overview);
         var actions = new WrapPanel();
         start = Add(actions, "开始本局", async (_, _) => { if (PrepareInput is not null) await PrepareInput(); Dispatch("start_round"); });
+        start.SetResourceReference(StyleProperty, "StarMap.PrimaryButton");
         end = Add(actions, "结束本局", (_, _) => Dispatch("end_round"));
         acquire = Add(actions, "3 秒后读取地图", async (_, _) => await CaptureAfterDelay());
         cancel = Add(actions, "取消识别", (_, _) => CancelWork()); panel.Children.Add(actions);
-        panel.Children.Add(candidates);
+        panel.Children.Add(detail);
+        panel.Children.Add(new Separator { Margin = new(0, 8, 0, 16) });
+        var candidateArea = new StackPanel { Name = "RuntimeCandidates" };
+        candidateArea.Children.Add(new TextBlock { Text = "地图候选", FontSize = 16, FontWeight = FontWeights.SemiBold });
+        candidateArea.Children.Add(candidateCaption); candidateArea.Children.Add(candidates);
         candidates.SelectionChanged += (_, _) =>
         {
             if (!rendering && candidates.SelectedItem is CandidateRow row)
@@ -60,20 +73,31 @@ internal sealed class RuntimePage : UserControl
         var choices = new WrapPanel();
         previous = Add(choices, "上一候选", (_, _) => Dispatch("previous_candidate"));
         next = Add(choices, "下一候选", (_, _) => Dispatch("next_candidate"));
-        confirm = Add(choices, "确认所选地图", (_, _) => Dispatch("confirm_route")); panel.Children.Add(choices);
-        panel.Children.Add(new TextBlock { Text = "手动选图", Margin = new(0, 10, 0, 6) });
-        panel.Children.Add(manualMap);
+        confirm = Add(choices, "确认所选地图", (_, _) => Dispatch("confirm_route")); candidateArea.Children.Add(choices);
+        panel.Children.Add(candidateArea);
+        var manual = new StackPanel { Margin = new(0, 8, 0, 8) };
+        manual.Children.Add(new Label { Content = "地图", Target = manualMap, Padding = new(0), Margin = new(0, 0, 0, 8) });
+        manual.Children.Add(manualMap);
         var manualActions = new WrapPanel { Margin = new(0, 8, 0, 0) };
         pick = Add(manualActions, "确认手动选图", (_, _) =>
         {
             if (manualMap.SelectedItem is string mapId) Dispatch("confirm_route", new { mapId });
         });
-        manualActions.Children.Add(floor);
-        applyFloor = Add(manualActions, "应用楼层", (_, _) =>
+        manual.Children.Add(manualActions);
+        panel.Children.Add(new Expander { Name = "RuntimeManualSelection", Header = "手动选择地图", Content = manual, HorizontalContentAlignment = HorizontalAlignment.Stretch, Margin = new(0, 4, 0, 12) });
+        var floorActions = new WrapPanel { Margin = new(0, 4, 0, 0) };
+        floorActions.Children.Add(new Label { Content = "楼层", Target = floor, Padding = new(0), VerticalAlignment = VerticalAlignment.Center, Margin = new(0, 0, 12, 8) });
+        floor.Margin = new(0, 0, 12, 8); floorActions.Children.Add(floor);
+        applyFloor = Add(floorActions, "应用楼层", (_, _) =>
         {
             if (floor.SelectedValue is string floorId) Dispatch("set_floor", new { floor = floorId });
-        }); panel.Children.Add(manualActions);
-        panel.Children.Add(new TextBlock { Text = "只读取你已打开的地图，不发送游戏按键。确认地图会立即保留选择；结构未对齐时显示等待对齐。悬浮路线显示仍在迁移。", TextWrapping = TextWrapping.Wrap, Foreground = Brushes.SlateGray, Margin = new(0, 12, 0, 0) });
+        });
+        panel.Children.Add(floorActions);
+        var diagnostics = new StackPanel();
+        diagnostics.Children.Add(resourceCaption);
+        var guidance = new TextBlock { Text = "只读取你已打开的地图，不发送游戏按键。确认地图会立即保留选择；结构未对齐时显示等待对齐。悬浮路线显示仍在迁移。", TextWrapping = TextWrapping.Wrap, Margin = new(0, 0, 0, 8) };
+        guidance.SetResourceReference(TextBlock.ForegroundProperty, "StarMap.Muted"); diagnostics.Children.Add(guidance);
+        panel.Children.Add(new Expander { Name = "RuntimeDiagnostics", Header = "运行资源与说明", Content = diagnostics, HorizontalContentAlignment = HorizontalAlignment.Stretch, Margin = new(0, 12, 0, 0) });
         Content = panel;
         // Read the runtime's bounded immutable view only. RefreshRuntime would
         // treat an in-flight producer's new frame/map as an external invalidation.
@@ -87,6 +111,7 @@ internal sealed class RuntimePage : UserControl
     }
 
     internal LiveRuntimeState? State => runtime?.ReadState();
+    internal RuntimeRenderPacket? ReadRender() => runtime?.TryReadRender(out var packet) == true ? packet : null;
     internal string? ResourceRoot => runtime?.ReadState().ResourcesBound == true ? resourceRoot : null;
     internal SessionView? SessionView => session?.Read();
     internal bool CanReplaceResources => !configuring && !loadingResources && pendingCapture is null
@@ -261,16 +286,23 @@ internal sealed class RuntimePage : UserControl
         pick.IsEnabled = active && !working && view?.Runtime.ManualMapPickAvailable == true;
         applyFloor.IsEnabled = active && !working && Supports("set_floor");
         if (state is null) return;
-        summary.Text = $"{state.Context.Season} · {ModeLabel(state.Context.Mode)} · " + (!available ? "运行资源尚未绑定。" : !active ? "本局尚未开始。" : state.IdentityLocked
-            ? $"已锁定 {state.Context.MapId} · {FloorLabel(state.Context.FloorId)} · " + (state.NativeGeometryVerified ? "结构已对齐" : "等待结构对齐")
-            : state.Candidates.Count > 0 ? $"当前 {FloorLabel(state.Context.FloorId)}，有 {state.Candidates.Count} 个候选，请确认地图。" : "本局已开始，等待读取游戏地图。");
-        detail.Text = state.Context.Season == "s1" ? "此赛季的完整识别流程仍在迁移，当前不能读取并对齐地图。"
-            : configuring || loadingResources ? "正在读取资源或应用设置，请稍候。"
+        summary.Text = $"{state.Context.Season} · {ModeLabel(state.Context.Mode)}";
+        roundState.Text = !available ? "资源未就绪" : configuring || loadingResources ? "正在准备" : !active ? "等待开始" : working ? "正在处理" : "本局进行中";
+        mapIdentity.Text = state.IdentityKind == "group" ? $"已确认相似组 · {state.IdentityMemberIds.Count} 张地图"
+            : state.IdentityLocked ? $"已锁定 {state.MapDisplayName ?? state.Context.MapId}" : state.Candidates.Count > 0 ? $"{state.Candidates.Count} 个候选待确认" : "尚未确认";
+        currentFloor.Text = state.Context.FloorId is null ? "尚未确认" : FloorLabel(state.Context.FloorId);
+        candidateCaption.Text = state.IdentityKind == "group" ? $"当前显示参考：{state.MapDisplayName ?? state.Context.MapId}。组内成员仍待区分，可手动选图。"
+            : state.IdentityLocked ? (state.NativeGeometryVerified ? "地图身份已锁定，结构已对齐。" : "地图身份已锁定，等待结构对齐。")
+            : state.Candidates.Count > 0 ? "选择候选后确认地图；也可以展开手动选图。" : "读取游戏地图后，候选会显示在这里。";
+        candidates.Visibility = state.Candidates.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        detail.Text = configuring || loadingResources ? "正在读取资源或应用设置，请稍候。"
             : working ? "正在识别，可随时取消。" : Reason(state.Reason);
         rendering = true;
         try
         {
-            var rows = state.Candidates.Select((row, i) => new CandidateRow(i, row.MapId, row.IdentityVerified)).ToArray();
+            var rows = state.Candidates.Select((row, i) => new CandidateRow(i,
+                row.IdentityKind == "group" ? $"相似地图组 · {row.MemberIds.Count} 张" : row.Name ?? row.MapId,
+                row.IdentityVerified)).ToArray();
             if (!candidates.Items.Cast<CandidateRow>().SequenceEqual(rows)) candidates.ItemsSource = rows;
             candidates.SelectedIndex = state.SelectedCandidateIndex;
             var contract = FloorContract.Find(state.Context.Season, state.Context.Mode);
@@ -319,8 +351,19 @@ internal sealed class RuntimePage : UserControl
         "map-open-preparation-deadline" => "未在准备时间内读到完整地图，请打开地图并重试。", _ => string.IsNullOrEmpty(reason) ? "" : "当前结果：" + reason };
     static Button Add(Panel panel, string title, RoutedEventHandler action)
     {
-        var button = new Button { Content = title, IsEnabled = false, Padding = new(13, 7, 13, 7), Margin = new(0, 0, 9, 8) };
+        var button = new Button { Content = title, IsEnabled = false, Padding = new(12, 8, 12, 8), Margin = new(0, 0, 8, 8) };
         button.Click += action; panel.Children.Add(button); return button;
+    }
+    static TextBlock ValueText(string value) => new() { Text = value, FontSize = 14, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Margin = new(0, 7, 0, 0) };
+    static void AddState(Grid grid, int column, string label, TextBlock value)
+    {
+        var group = new StackPanel();
+        var caption = new TextBlock { Text = label, FontSize = 11 };
+        caption.SetResourceReference(TextBlock.ForegroundProperty, "StarMap.Muted");
+        group.Children.Add(caption); group.Children.Add(value);
+        var surface = new Border { Child = group, Padding = new(12), CornerRadius = new(8), Margin = new(column == 0 ? 0 : 4, 0, column == 2 ? 0 : 4, 0) };
+        surface.SetResourceReference(Border.BackgroundProperty, "StarMap.Canvas");
+        Grid.SetColumn(surface, column); grid.Children.Add(surface);
     }
     sealed record CandidateRow(int Index, string MapId, bool Verified)
     { public override string ToString() => MapId + (Verified ? " · 已通过身份验证" : " · 待确认"); }

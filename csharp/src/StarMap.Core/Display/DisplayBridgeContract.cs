@@ -1,9 +1,14 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using StarMap.Core.Resources;
 
 namespace StarMap.Core.Display;
 
 public sealed record DisplayRasterInfo(int Width, int Height, int Channels, bool HasVisiblePixels, bool? FootprintMatches = null);
+public sealed record DisplayAtlasEntrance(string Label,double ImageX,double ImageY,int NativeLeft,int NativeTop);
+public sealed record DisplayBaseAtlasRecipe(DisplayAffine ImageToNative,int NativeWidth,int NativeHeight,bool ArtIncludesExits,
+    string? ExitIconPath,int ExitIconSize,IReadOnlyList<DisplayAtlasEntrance> Entrances);
 
 /// <summary>Decode real bytes, with an optional exact binary alpha-footprint comparison.</summary>
 public interface IDisplayRasterValidator
@@ -24,15 +29,17 @@ public sealed record NativeCornerValidation(bool Accepted, IReadOnlyList<string>
 
 public sealed record DisplayResourceSnapshot(string Path, long Length, string Sha256)
 {
+    public bool RequiresRegularSingleLink { get; init; }
     public bool IsCurrent()
     {
         try
         {
+            if (RequiresRegularSingleLink) DisplayFileAccess.RequireRegular(Path);
             var file = new FileInfo(Path);
             return file.Exists && file.Length == Length
                 && string.Equals(Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(Path))), Sha256, StringComparison.Ordinal);
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return false; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) { return false; }
     }
 }
 
@@ -43,6 +50,12 @@ public sealed record DisplayBridgeResult(bool Accepted, string Reason, string Bi
     DisplayAffine? DisplayToClient = null, DisplayAffine? CanonicalToClient = null,
     IReadOnlyList<DisplayResourceSnapshot>? Resources = null, int Width = 0, int Height = 0)
 {
+    public string? CanonicalPackId { get; init; }
+    public DisplayAffine? ReferenceToCanonical { get; init; }
+    [JsonIgnore] public SharedStructureData? Reference { get; init; }
+    public int ImageChannels { get; init; } = 4;
+    public bool AllowBgraFormatConversion { get; init; }
+    public DisplayBaseAtlasRecipe? BaseAtlas { get; init; }
     public bool AuthorizesMapIdentity => false;
     public bool AuthorizesStructurePose => false;
     public bool AuthorizesCrossFloorProjection => false;

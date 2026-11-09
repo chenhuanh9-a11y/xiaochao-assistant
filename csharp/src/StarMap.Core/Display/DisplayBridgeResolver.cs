@@ -8,17 +8,26 @@ namespace StarMap.Core.Display;
 /// Resolves one exact resource binding on every call. No cross-floor/cache fallback and no pose writer.
 /// referenceToClient always maps the selected NPZ's current-reference pixels, not canonical pixels.
 /// </summary>
-public sealed class DisplayBridgeResolver(IDisplayRasterValidator raster)
+public sealed partial class DisplayBridgeResolver(IDisplayRasterValidator raster)
 {
     public DisplayBridgeResult Resolve(ResourceCatalog catalog, ResourceCatalogEntry entry, string displayProfile,
-        DisplayAffine referenceToClient, string variant = "variant-01")
+        DisplayAffine referenceToClient, string variant = "variant-01") => ResolveCore(catalog,entry,displayProfile,referenceToClient,variant,false,false);
+
+    /// <summary>Display selection may explicitly use a typed legacy reference, without asserting a native bridge.</summary>
+    public DisplayBridgeResult ResolveDisplayReference(ResourceCatalog catalog,ResourceCatalogEntry entry,string displayProfile,
+        DisplayAffine referenceToClient,string variant="variant-01",bool neutral=false) => ResolveCore(catalog,entry,displayProfile,referenceToClient,variant,true,neutral);
+
+    private DisplayBridgeResult ResolveCore(ResourceCatalog catalog,ResourceCatalogEntry entry,string displayProfile,
+        DisplayAffine referenceToClient,string variant,bool allowLegacyReference,bool neutral)
     {
         try
         {
             if (!ReferenceEquals(entry.Owner,catalog)) return Reject("resource-catalog-owner-mismatch");
             if (!referenceToClient.IsInvertible) return Reject("reference-to-client-invalid");
-            if (variant != "variant-01") return Reject("display-variant-not-bound-to-selected-reference");
-            if (entry.StructureKind == "legacy-clean") return Reject("legacy-clean-native-bridge-unavailable");
+            if (variant != "variant-01" && !DisplayAuthorInventory.IsCoffin(entry,displayProfile)) return Reject("display-variant-not-bound-to-selected-reference");
+            if (entry.StructureKind == "legacy-clean") return allowLegacyReference
+                ? ResolveLegacyDisplay(catalog,entry,displayProfile,referenceToClient,variant,neutral)
+                : Reject("legacy-clean-native-bridge-unavailable");
             if (entry.StructureStatus != ResourceBindingStatus.Ready || entry.StructureNpzPath is null)
                 return Reject(entry.StructureIssue?.Code ?? "typed-reference-unavailable");
             var files = new ResourceReads(catalog.RootPath);
@@ -33,7 +42,7 @@ public sealed class DisplayBridgeResolver(IDisplayRasterValidator raster)
             var index = files.Json(context.Root,context.Index);
             var indexRows = Array(J.Get(index,"entries")).Where(row =>
                 J.String(row,"profile") == entry.Profile && J.String(row,"mapId") == entry.MapId
-                && J.String(row,"floor") == entry.Floor && (J.String(row,"variant") ?? "variant-01") == variant).ToArray();
+                && J.String(row,"floor") == entry.Floor && (J.String(row,"variant") ?? "variant-01") == "variant-01").ToArray();
             if (indexRows.Length != 1 || !J.Equal(indexRows[0],entry.StructureIndexMetadata)) return Reject("typed-reference-index-changed");
             string referenceRelative = J.String(indexRows[0],"resourcePath") ?? throw Gap("typed-reference-path-missing");
             string referencePath = files.Local(context.Root,referenceRelative);
@@ -79,7 +88,7 @@ public sealed class DisplayBridgeResolver(IDisplayRasterValidator raster)
             // The neutral pixels are the actual current-reference clean NPZ channel.
             // Their canonical bridge includes the reference calibration; treating them
             // as native pixels would apply inverse(referenceToNative) a second time.
-            if (displayProfile == "shared-structure" && entry.Season != "s1")
+            if (displayProfile == "shared-structure" && (entry.Season != "s1" || neutral))
                 return Finish(null,"neutral-structure",nativeToCanonical*referenceToNative,width,height);
 
             if (entry.Season == "s1" && displayProfile == "shared-structure")
@@ -117,13 +126,52 @@ public sealed class DisplayBridgeResolver(IDisplayRasterValidator raster)
                 var pixels = raster.Inspect(bytes);
                 if (!pixels.HasVisiblePixels || !J.Ints(J.Get(baseLayer,"imageSize")).SequenceEqual(new[] {pixels.Width,pixels.Height}))
                     return Reject("base-map-image-dimensions-invalid");
+                bool includesExits=J.True(J.Get(library,"art"),"includesExits");
+                string? icon=files.Local(libraryRoot,"exit-icon.png");
+                if(includesExits||!File.Exists(icon))icon=null;else files.BytesAbsolute(icon,32*1024*1024);
+                int iconSize=Math.Max(20,(int)Math.Round(Math.Max(pixels.Width,pixels.Height)*.025*Math.Sqrt(Math.Abs(imageToNative.Determinant))));
+                var entrances=new List<DisplayAtlasEntrance>();
+                foreach(var entrance in DisplayAuthorInventory.Rows(J.Get(baseLayer,"entrances")))
+                {
+                    double x=J.Number(entrance,"x"),y=J.Number(entrance,"y");var native=imageToNative.Apply(x,y);
+                    if(!double.IsFinite(native.X)||!double.IsFinite(native.Y))return Reject("base-map-entrance-coordinate-invalid");
+                    entrances.Add(new(J.String(entrance,"label")??"",x,y,checked((int)Math.Round(native.X-iconSize/2d)),checked((int)Math.Round(native.Y-iconSize/2d))));
+                }
                 // The Python provider first warps these source pixels to native and then exposes identity.
                 // Returning the raw image requires retaining the explicit image->native transform here.
-                return Finish(image,"base-map-source-image",nativeToCanonical*imageToNative,pixels.Width,pixels.Height);
+                return Finish(image,"base-map-source-image",nativeToCanonical*imageToNative,pixels.Width,pixels.Height)
+                    with {BaseAtlas=new(imageToNative,width,height,includesExits,icon,iconSize,System.Array.AsReadOnly(entrances.ToArray()))};
             }
 
+            var inventory=DisplayAuthorInventory.Load(catalog,entry,files,raster);
+            var registered=inventory.Binding(displayProfile,entry.MapId,entry.Floor);
+            if (registered is not null)
+            {
+                var selected=inventory.FindLayer(displayProfile,entry.MapId,entry.Floor,variant);
+                if(!inventory.Profiles.TryGetValue(displayProfile,out var registeredProfile)||!registeredProfile.Aligned)return Reject("author-profile-unavailable");
+                if (!registered.Usable) return Reject("author-registration-or-version-unavailable");
+                if (selected is null || !string.Equals(selected.Path,registered.Path,StringComparison.OrdinalIgnoreCase))
+                    return Reject("author-binding-path-mismatch");
+                var pixels=raster.Inspect(files.BytesAbsolute(registered.Path,128*1024*1024));
+                if (!registered.AllowConversion && pixels.Channels!=4)
+                    return Reject("author-display-canvas-or-image-unavailable");
+                return Finish(registered.Path,"author-floor-display",registered.Matrix,pixels.Width,pixels.Height,pixels.Channels,registered.AllowConversion);
+            }
+            if (inventory.OptionalProfiles.Contains(displayProfile)) return Reject("author-floor-image-not-declared");
             if (!adapter.TryProfileToCanonical(displayProfile,entry.MapId,entry.Floor,out var profileToCanonical,out var profileReason))
                 return Reject(profileReason);
+            if (DisplayAuthorInventory.IsCoffin(entry,displayProfile))
+            {
+                var coffin=inventory.FindLayer(displayProfile,entry.MapId,entry.Floor,variant);
+                if (coffin is null || !inventory.Profiles.TryGetValue(displayProfile,out var coffinProfile) || !coffinProfile.Aligned)
+                    return Reject("author-variant-unavailable");
+                var evidenceBinding=J.Get(J.Get(adapter.Floor(displayProfile,entry.MapId,entry.Floor),"evidence"),"binding");
+                if (J.String(evidenceBinding,"variant") is { } declaredVariant && declaredVariant!=variant)
+                    return Reject("author-variant-coordinate-binding-mismatch");
+                var pixels=raster.Inspect(files.BytesAbsolute(coffin.Path,128*1024*1024));
+                if (pixels.Channels!=4) return Reject("author-display-canvas-or-image-unavailable");
+                return Finish(coffin.Path,"author-floor-display",profileToCanonical,pixels.Width,pixels.Height);
+            }
             var authorCatalog = files.Json(context.Root,context.AuthorCatalog);
             if (J.Number(authorCatalog,"schemaVersion") != 1) return Reject("author-catalog-schema-unsupported");
             var profiles = Array(J.Get(authorCatalog,"profiles")).Where(p => J.String(p,"id") == displayProfile).ToArray();
@@ -139,7 +187,7 @@ public sealed class DisplayBridgeResolver(IDisplayRasterValidator raster)
             if (J.String(layer,"role") != "display-only") return Reject("author-layer-role-invalid");
             RequireVersions(layer,metadata,allowMissingBase:true);
             var basis = adapter.Floor(displayProfile,entry.MapId,entry.Floor);
-            RequireVersions(basis,metadata,allowMissingBase:true);
+            RequireAuthorBasisVersions(basis,metadata);
             string space = J.String(canvas,"coordinateSpace") ?? "";
             // Already-baked images either explicitly declare their display->native offset,
             // or prove the same native coordinate domain. Image dimensions alone never suffice.
@@ -163,20 +211,24 @@ public sealed class DisplayBridgeResolver(IDisplayRasterValidator raster)
             var imageBytes = files.BytesAbsolute(path,32*1024*1024);
             files.RequireDigest(path,J.String(layer,"sha256"));
             var imageInfo = raster.Inspect(imageBytes);
-            if (!imageInfo.HasVisiblePixels || imageInfo.Width != J.Number(layer,"width") || imageInfo.Height != J.Number(layer,"height"))
+            if (imageInfo.Channels!=4 || imageInfo.Width != J.Number(layer,"width") || imageInfo.Height != J.Number(layer,"height"))
                 return Reject("author-image-pixels-or-dimensions-invalid");
             return Finish(path,"author-floor-display",profileToCanonical,imageInfo.Width,imageInfo.Height);
 
-            DisplayBridgeResult Finish(string? imagePath,string kind,DisplayAffine displayToCanonical,int imageWidth,int imageHeight)
+            DisplayBridgeResult Finish(string? imagePath,string kind,DisplayAffine displayToCanonical,int imageWidth,int imageHeight,int? channels=null,bool allowConversion=false)
             {
                 var referenceToCanonical = nativeToCanonical*referenceToNative;
                 var displayToReference = referenceToCanonical.Inverse()*displayToCanonical;
                 var canonicalToClient = referenceToClient*referenceToCanonical.Inverse();
+                int sourceChannels=channels ?? (imagePath is null ? 4 : raster.Inspect(files.BytesAbsolute(imagePath,128*1024*1024)).Channels);
                 var snapshots = files.Snapshots.ToArray();
                 if (!snapshots.All(s => s.IsCurrent())) return Reject("display-resources-changed-during-resolution");
                 return new(true,"accepted",entry.StableKey,displayProfile,imagePath,kind,nativeToCanonical,
                     displayToCanonical,displayToReference,referenceToClient*displayToReference,canonicalToClient,
-                    System.Array.AsReadOnly(snapshots),imageWidth,imageHeight);
+                    System.Array.AsReadOnly(snapshots),imageWidth,imageHeight)
+                { CanonicalPackId = adapter.PackId, ReferenceToCanonical = referenceToCanonical, Reference = structure,
+                    ImageChannels = sourceChannels,
+                    AllowBgraFormatConversion = allowConversion || kind is "game-native" or "base-map-source-image" };
             }
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or InvalidDataException
@@ -263,6 +315,22 @@ public sealed class DisplayBridgeResolver(IDisplayRasterValidator raster)
         }
     }
 
+    private static void RequireAuthorBasisVersions(JsonElement? row,JsonElement metadata)
+    {
+        // The original author profile chart owns structureVersionKey. Its
+        // sourceVersion/baseSnapshot are optional: sourceVersion is required
+        // on the typed reference, coordinate map floor and author layer above.
+        // load_shared_version_context does not require this later duplication
+        // on a profile chart (the production Suju baked chart omits it).
+        foreach(string key in new[]{"structureVersionKey","sourceVersion","baseSnapshot"})
+        {
+            var actual=J.String(row,key);
+            if(key!="structureVersionKey"&&J.Get(row,key) is null)continue;
+            var expected=J.String(metadata,key);
+            if(string.IsNullOrEmpty(expected)||actual!=expected)throw Gap("display-resource-version-mismatch:"+key);
+        }
+    }
+
     private static void RequireNativeSourceBinding(ResourceReads files,Context context,ResourceCatalogEntry entry,
         JsonElement? declared,JsonElement metadata,JsonElement? canvas,string referenceRelative)
     {
@@ -296,8 +364,8 @@ public sealed class DisplayBridgeResolver(IDisplayRasterValidator raster)
             throw Gap("native-source-manifest-floor-binding-mismatch");
         RequireVersions(floor,metadata,false);
     }
-    private sealed record Context(string Root,string Coordinates,string Index,string StructureDisplay,string AuthorCatalog,JsonElement? Manifest);
-    private static Context ReadContext(ResourceReads files,ResourceCatalogEntry entry)
+    internal sealed record Context(string Root,string Coordinates,string Index,string StructureDisplay,string AuthorCatalog,JsonElement? Manifest);
+    internal static Context ReadContext(ResourceReads files,ResourceCatalogEntry entry)
     {
         if (entry.Season == "s0" && entry.Mode == "nightmare")
             return new(files.Root,"references/nightmare-canonical-coordinate-pack.json","references/nightmare-shared-structure-index.json",
@@ -314,7 +382,7 @@ public sealed class DisplayBridgeResolver(IDisplayRasterValidator raster)
     private static JsonElement[] Array(JsonElement? value) => value is { ValueKind: JsonValueKind.Array } a ? a.EnumerateArray().ToArray() : [];
     private static InvalidDataException Gap(string reason) => new(reason);
 
-    private sealed class ResourceReads(string root)
+    internal sealed class ResourceReads(string root)
     {
         public string Root { get; } = Path.GetFullPath(root);
         public List<DisplayResourceSnapshot> Snapshots { get; } = [];
@@ -338,7 +406,7 @@ public sealed class DisplayBridgeResolver(IDisplayRasterValidator raster)
             string digest = Convert.ToHexStringLower(SHA256.HashData(bytes));
             var snapshot = new DisplayResourceSnapshot(path,bytes.Length,digest);
             var previous = Snapshots.Find(s => string.Equals(s.Path,path,StringComparison.OrdinalIgnoreCase));
-            if (previous is not null && previous != snapshot) throw Gap("display-resource-changed-during-resolution");
+            if (previous is not null && (previous.Length!=snapshot.Length || previous.Sha256!=snapshot.Sha256)) throw Gap("display-resource-changed-during-resolution");
             if (previous is null) Snapshots.Add(snapshot);
             return bytes;
         }

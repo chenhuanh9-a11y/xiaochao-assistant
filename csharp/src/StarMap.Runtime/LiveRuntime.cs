@@ -4,6 +4,8 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using OpenCvSharp;
 using StarMap.Core.Identity;
+using StarMap.Core.Alignment;
+using StarMap.Core.Selection;
 using StarMap.Core.Resources;
 using StarMap.Core.Session;
 using StarMap.Vision;
@@ -15,12 +17,14 @@ namespace StarMap.Runtime;
 /// state under one lock; heavy capture/vision executes outside that lock and is
 /// admitted by a serial worker. Invalidation never waits for vision or capture.
 /// </summary>
-public sealed class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISessionRuntimeProgress
+public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISessionRuntimeProgress
 {
     private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
-    private static readonly string[] Gaps = ["side-entry-ranking-unavailable", "steady-tracking-fallback-unavailable",
-        "canonical-display-bridge-unavailable", "author-route-display-unavailable", "automatic-map-open-recovery-unavailable",
-        "locked-canvas-floor-reuse-unavailable", "similarity-group-competition-unavailable"];
+    private static readonly string[] Gaps = ["steady-tracking-fallback-unavailable",
+        "automatic-map-open-recovery-unavailable",
+        "locked-canvas-floor-reuse-unavailable", "similarity-group-competition-unavailable",
+        "established-condition-inventory-review-unavailable", "established-round-layer-group-fit-unavailable",
+        "registered-group-member-selection-unavailable"];
     private readonly object _sync = new();
     private readonly SemaphoreSlim _worker = new(1, 1);
     private readonly ICapturePort _capture;
@@ -40,7 +44,12 @@ public sealed class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISes
     private CapturedClientFrame? _frame;
     private NativeGeometryPose? _pose;
     private RuntimeCandidate[] _candidates = [];
+    private readonly Dictionary<string, JsonObject> _entryCandidates = new(StringComparer.Ordinal);
+    private object _roundFitOwner = new();
     private int _selected = -1;
+    private StructureEvidenceSession? _structureSession;
+    private NativeSimilarityState? _nativeIdentity;
+    private ObservationTicket? _structureTicket;
     private JsonElement _diagnostics = JsonSerializer.SerializeToElement(new { });
     private readonly Dictionary<string, NativeGeometryPose> _trustedFloors = new(StringComparer.Ordinal);
     private LiveRuntimeState _publishedState = null!;
@@ -222,8 +231,9 @@ public sealed class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISes
                 _resources = bound; _resourceRoot = root;
             }
             _selection = desired; _reason = "context-bound"; Publish();
-            return Receipt(request, true, _reason);
         }
+        if (!reload) RefreshDisplayPreference(epoch, token, desired.ProfileId);
+        return Receipt(request, true, "context-bound");
     }
 
     private RuntimeOperationResult StartRound(SessionRuntimeRequest request, long epoch, CancellationToken token)
@@ -237,6 +247,7 @@ public sealed class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISes
             {
                 AdvanceOwnedEpoch(); RevokeFrame("round-started"); ClearIdentity(); ClearFloor();
                 _roundActive = true; _roundId = Guid.NewGuid().ToString("N");
+                _structureSession = _resources.StructureCatalog is { } catalog ? new(catalog, _roundId) : null;
             }
             _reason = "round-started"; Publish(); return Receipt(request, true, _reason);
         }
@@ -265,7 +276,6 @@ public sealed class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISes
             if (!_roundActive) return Receipt(request, false, "start-round-before-capture");
             if (_resources is null) return Receipt(request, false, "resources-not-bound");
             if (!_capture.IsBound) return Receipt(request, false, "capture-not-bound");
-            if (_selection.Season != "s0") return Receipt(request, false, "capability-unavailable:s1-structure-identity-consumer");
             bound = _resources; RevokeFrame("map-open-preparing"); _workActive = true; Publish();
         }
         var started = _options.TimeProvider.GetTimestamp();
@@ -320,7 +330,7 @@ public sealed class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISes
             stageStarted = Stopwatch.GetTimestamp();
             floorRead = FloorObservation.Observe(frame, bound.Passports.Season, bound.Passports.Mode,
                 _options.FloorSettings is { } settings ? JsonNode.Parse(settings.GetRawText())?.AsObject() : null,
-                _options.S1FloorUse, frameCurrent: true);
+                bound.StructureCatalog is not null ? S1FloorUse.StructureCandidate : _options.S1FloorUse, frameCurrent: true);
             observationMs = Stopwatch.GetElapsedTime(stageStarted).TotalMilliseconds;
             // The source rechecks the deadline after observation, not merely
             // before starting capture. Late usable pixels are never prepared.
@@ -354,28 +364,13 @@ public sealed class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISes
         }
         if (floor is null) return Receipt(request, false, "current-floor-unavailable");
         using var current = ToBgr(captured);
-        if (map is null)
+        bool reviewGroup;
+        lock (_sync) reviewGroup = _identitySource == "group-default";
+        if (map is null || reviewGroup)
         {
-            // This is the actual unconstrained current-frame production ranker.
-            var rankStarted = Stopwatch.GetTimestamp();
-            var ranked = bound.Ranker.Rank(current, floor, _options.MainEntryBudget, cancellation: token);
-            var rankElapsedMs = Stopwatch.GetElapsedTime(rankStarted).TotalMilliseconds;
-            lock (_sync)
-            {
-                RequireCurrent(epoch, token, captured, bound);
-                _candidates = ranked.Rows.Select(row => new RuntimeCandidate(
-                    row!["mapId"]!.GetValue<string>(), row["profileId"]!.GetValue<string>(), row["score"]!.GetValue<double>(),
-                    row["identityVerified"]?.GetValue<bool>() == true, row["poseVerified"]?.GetValue<bool>() == true)).ToArray();
-                _selected = _candidates.Length > 0 ? 0 : -1;
-                _diagnostics = JsonSerializer.SerializeToElement(new { stage = "main-entry", floor = floorRead.FloorRead,
-                    main = ranked.Diagnostics, frontGate = ranked.FrontGate, corners = ranked.Corners, rows = ranked.Rows,
-                    preparation, rankElapsedMs, rankBudgetMs = _options.MainEntryBudget.TotalMilliseconds }, Json);
-                var verified = _candidates.Where(c => c.IdentityVerified).ToArray();
-                if (verified.Length == 1)
-                { LockIdentity(verified[0].MapId, "main-entry-current-frame"); map = _mapId; }
-                _reason = map is null ? "candidates-awaiting-confirmation" : "identity-locked-pose-pending";
-                Publish();
-            }
+            if (bound.StructureCatalog is not null)
+                return ScanStructure(request, epoch, token, captured, bound, floor, current, preparation);
+            map = RankS0(epoch, token, captured, bound, floor, current, preparation);
         }
         if (map is null) return Receipt(request, false, "candidates-awaiting-confirmation");
         return Fit(request, epoch, token, captured, bound, map, floor, current);
@@ -393,7 +388,7 @@ public sealed class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISes
             if (!bound.Passports.MapProfiles.ContainsKey(map)) return Receipt(request, false, "invalid-manual-map");
             LockIdentity(map, "manual");
             // Identity commits before any preparation/fit, and survives fit failure.
-            _pose = null; _reason = "identity-locked-pose-pending";
+            RevokeDisplay("identity-confirmed-pose-pending"); _pose = null; _reason = "identity-locked-pose-pending";
             captured = _mapOpen ? _frame : null; floor = _floor;
             _workActive = captured is not null && floor is not null && _capture.IsCurrent(captured.Stamp); Publish();
         }
@@ -409,42 +404,52 @@ public sealed class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISes
         var profile = bound.Passports.MapProfiles[map];
         var entry = bound.Catalog.Find(bound.Passports.Mode, bound.Passports.Season, profile, map, floor);
         if (entry is null) return FailCurrent(request, epoch, "target-floor-resource-unavailable");
-        if (!bound.Prepared.TryGetValue(entry.StableKey, out var prepared))
-        {
-            var loaded = bound.Catalog.LoadSharedStructure(entry);
-            if (loaded.Value is null) return FailCurrent(request, epoch, loaded.Error?.Code ?? "target-floor-structure-unavailable");
-            var prebuilt = Path.Combine(bound.Passports.ModeRoot, "references", "fast-structure",
-                Path.GetFileNameWithoutExtension(entry.StructureNpzPath) + "-fast.npz");
-            if (!File.Exists(prebuilt)) return FailCurrent(request, epoch, "fast-prepared-unavailable");
-            var fast = FastStructure.LoadPrepared(prebuilt, loaded.Value);
-            prepared = new(loaded.Value, fast); bound.Prepared[entry.StableKey] = prepared;
-        }
-        StructurePrior? prior = null;
+        JsonObject? entryCandidate; S0HostPosePrior? prior = null; object owner; string preferred;
         lock (_sync)
         {
             RequireCurrent(epoch, token, captured, bound);
-            // A prior can only originate from this exact map/floor/resource's
-            // previous verified fit. No rank row or another floor seeds scale.
+            owner = _roundFitOwner; preferred = _selection.ProfileId;
+            entryCandidate = _entryCandidates.GetValueOrDefault(map)?.DeepClone().AsObject();
+            // Only this exact round/map/floor/resource's prior is admitted. S1
+            // always estimates its target independently without a prior input.
             if (_trustedFloors.TryGetValue(floor, out var trusted) && trusted.MapId == map && trusted.ResourceId == bound.Id)
-                prior = new(prepared.Source, trusted.ToMatrix());
+                prior = new(owner, epoch, entry, trusted.ToMatrix());
         }
-        using var geometry = StructureGeometry.Open(prepared.Source);
-        using var observation = Geometry.Current(frame);
-        var fit = observation is null ? new FastFitResult(false, "fast-observation-unavailable", null)
-            : FastStructureFit.Evaluate(frame, observation, geometry, prepared.Fast, prior, cancelled: () => Obsolete(epoch, token, captured, bound));
+        JsonObject fit; SharedStructureData? source; JsonArray? stages = null, events = null;
+        if (bound.StructureCatalog is not null)
+        {
+            using var pipeline = new SharedStructureFitPipeline(bound.Catalog);
+            fit = pipeline.Fit(frame, entry, () => Obsolete(epoch, token, captured, bound));
+            source = StructureEvidence.VerifiedPose(fit) ? bound.Catalog.LoadSharedStructure(entry).Value : null;
+        }
+        else
+        {
+            using var host = new S0HostFit(bound.Catalog, bound.Passports);
+            var result = host.Fit(frame, entry, entryCandidate, new() { OwnerScope = owner, Epoch = epoch, PosePrior = prior },
+                () => Obsolete(epoch, token, captured, bound), token);
+            fit = result.Fit; source = result.Reference; stages = result.Stages; events = result.Events;
+        }
+        bool verified = StructureEvidence.VerifiedPose(fit);
+        var matrix = verified ? fit["matrixSourceToClient"]!.Deserialize<double[][]>()! : null;
+        var display = verified && source is not null ? PrepareDisplay(bound, entry, matrix!, source, preferred, token) : null;
         lock (_sync)
         {
             RequireCurrent(epoch, token, captured, bound);
-            _pose = fit.GeometryVerified && fit.Matrix is not null
-                ? new(map, floor, bound.Id, captured.Stamp.FrameId, fit.Matrix) : null;
+            _pose = verified ? new(map, floor, bound.Id, captured.Stamp.FrameId, matrix!) : null;
             if (_pose is not null) _trustedFloors[floor] = _pose;
-            _reason = fit.Reason;
+            if (_pose is not null && display is not null)
+                CommitDisplay(display, ReadResidualEvidence(fit["selectedRouteCurrentFrameResidual"]!), captured, map, floor);
+            else RevokeDisplay("target-floor-pose-unverified");
+            _reason = fit["reason"]?.GetValue<string>() ?? "structure-fit-unavailable";
             var main = _diagnostics.TryGetProperty("stage", out var stage) && stage.GetString() == "main-entry"
                 ? _diagnostics : JsonSerializer.SerializeToElement(new { });
-            _diagnostics = JsonSerializer.SerializeToElement(new { stage = "fast-fit", identitySource = _identitySource,
-                nativeReferenceKey = entry.StableKey, priorUsed = prior is not null, fit, main }, Json);
+            JsonElement? floorEvidence = _diagnostics.TryGetProperty("floor", out var currentFloor) ? currentFloor : null;
+            _diagnostics = JsonSerializer.SerializeToElement(new { stage = bound.StructureCatalog is null ? "s0-host-fit" : "shared-fit", identitySource = _identitySource,
+                floor = floorEvidence,
+                nativeReferenceKey = entry.StableKey, priorUsed = stages?.Any(row => row?["stage"]?.ToString() == "fast-prior") == true,
+                fit, stages, events, main }, Json);
             Publish();
-            return Receipt(request, fit.GeometryVerified, fit.Reason);
+            return Receipt(request, verified, _reason);
         }
     }
 
@@ -498,11 +503,12 @@ public sealed class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISes
 
     private void LockIdentity(string mapId, string source)
     {
-        if (_mapId != mapId) { _trustedFloors.Clear(); _resources?.Prepared.Clear(); }
+        if (_mapId != mapId) { _trustedFloors.Clear(); RevokeDisplay("identity-changed"); _alignment = null; }
+        if (source != "group-default") _nativeIdentity = null;
         _mapId = mapId; _identitySource = source;
     }
     private void ClearIdentity()
-    { _mapId = null; _identitySource = ""; _trustedFloors.Clear(); }
+    { _mapId = null; _identitySource = ""; _nativeIdentity = null; _trustedFloors.Clear(); _structureSession?.EndRound(); _structureSession = null; _structureTicket = null; _alignment = null; _roundFitOwner = new(); }
     private void ClearFloor()
     { _floor = _manualFloor = _observedFloor = null; _manualFloorStarted = null; }
     private void AdvanceOwnedEpoch() { _epoch++; _progressEpoch = _epoch; }
@@ -519,7 +525,10 @@ public sealed class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISes
         return _manualFloor ?? _observedFloor;
     }
     private void RevokeFrame(string reason)
-    { _frame = null; _pose = null; _mapOpen = false; _workActive = false; _candidates = []; _selected = -1; _reason = reason; _diagnostics = JsonSerializer.SerializeToElement(new { }); }
+    { _frame = null; _pose = null; _mapOpen = false; _workActive = false; _candidates = []; _selected = -1; _reason = reason;
+        RevokeDisplay(reason);
+        _entryCandidates.Clear();
+        _structureSession?.RevokeCurrent(); _structureTicket = null; _diagnostics = JsonSerializer.SerializeToElement(new { }); }
     private bool IsRoundActive() { lock (_sync) return _roundActive; }
     private bool IsMapOpen() { lock (_sync) return _mapOpen; }
 
@@ -547,7 +556,7 @@ public sealed class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISes
         lock (_sync)
         {
             if (_epoch == epoch)
-            { _pose = null; _workActive = false; _reason = reason; if (diagnostic is not null) _diagnostics = JsonSerializer.SerializeToElement(diagnostic, Json); Publish(); }
+            { _pose = null; RevokeDisplay(reason); _workActive = false; _reason = reason; if (diagnostic is not null) _diagnostics = JsonSerializer.SerializeToElement(diagnostic, Json); Publish(); }
             return Receipt(request, false, reason);
         }
     }
@@ -565,9 +574,12 @@ public sealed class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISes
     {
         _publishedState = new(Context(), _resources is not null, _roundActive, _mapOpen, _workActive,
             _mapId is not null, _identitySource, _pose is not null, _pose, Array.AsReadOnly(_candidates.ToArray()), _selected,
-            _reason, _diagnostics.Clone(), _selection.Season == "s0" ? Array.AsReadOnly(Gaps)
-                : Array.AsReadOnly(Gaps.Concat(["s1-floor-vertical-consumer-unavailable", "s1-structure-identity-consumer-unavailable"]).ToArray()))
-        { Closed = _closed, ManualFloor = _manualFloor, ObservedFloor = _observedFloor };
+            _reason, _diagnostics.Clone(), Array.AsReadOnly(Gaps))
+        { Closed = _closed, ManualFloor = _manualFloor, ObservedFloor = _observedFloor, Display = _display,
+            IdentityKind = _identitySource == "group-default" ? "group" : _mapId is null ? "unresolved" : "map",
+            MapDisplayName = _resources?.Passports.Maps.FirstOrDefault(map => map.MapId == _mapId)?.Name,
+            IdentityGroupId = _identitySource == "group-default" ? _nativeIdentity?.GroupId : null,
+            IdentityMemberIds = _identitySource == "group-default" ? _nativeIdentity!.MemberIds : Array.Empty<string>() };
         _publishedSnapshot = Snapshot(_publishedState);
         _publishedBindingState = _capture.IsBound;
     }
@@ -578,19 +590,20 @@ public sealed class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISes
         if (state.RoundActive && state.ResourcesBound)
         {
             commands.AddRange(["set_floor", "reselect_map"]);
-            if (state.Context.Season == "s0") commands.AddRange(["capture_now", "map"]);
+            commands.AddRange(["capture_now", "map"]);
             if (state.MapOpen) commands.Add("cycle_floor");
             if (state.Candidates.Count > 0 && !state.IdentityLocked) commands.AddRange(["select_candidate", "previous_candidate", "next_candidate", "confirm_route"]);
         }
         if (state.Closed) commands.Clear();
         return new(state.Context, engineConnected: !state.Closed, commands, state.RoundActive,
             roundWorkActive: state.WorkActive, liveEngineAvailable: !state.Closed && state.ResourcesBound && _capture.IsBound,
-            liveAuthorization: false, manualMapPickAvailable: state.RoundActive && state.ResourcesBound && !state.WorkActive,
+            liveAuthorization: RenderCurrent() && _render!.IsLive, manualMapPickAvailable: state.RoundActive && state.ResourcesBound && !state.WorkActive,
             message: state.Reason, state: JsonSerializer.SerializeToElement(state, Json));
     }
     private static LiveRuntimeState Withhold(LiveRuntimeState state) => state with
     { Context = state.Context with { FrameId = null }, MapOpen = false, NativeGeometryVerified = false, NativePose = null,
-        Candidates = Array.Empty<RuntimeCandidate>(), SelectedCandidateIndex = -1, Reason = "capture-context-obsolete" };
+        Candidates = Array.Empty<RuntimeCandidate>(), SelectedCandidateIndex = -1, Reason = "capture-context-obsolete",
+        Display = new(false, false, false, "capture-context-obsolete") };
     private static string? Text(JsonElement payload, string key) => payload.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
     private static bool Flag(JsonElement payload, string key) => payload.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.True;
     private static int Integer(JsonElement payload, string key, int fallback) => payload.TryGetProperty(key, out var value) && value.TryGetInt32(out var number) ? number : fallback;
@@ -610,21 +623,22 @@ public sealed class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISes
             Marshal.Copy(frame.Bgra.Slice(row * frame.Stride, frame.Width * 4).ToArray(), 0, bgra.Ptr(row), frame.Width * 4);
         var bgr = new Mat(); Cv2.CvtColor(bgra, bgr, ColorConversionCodes.BGRA2BGR); return bgr;
     }
-    private sealed record PreparedReference(SharedStructureData Source, FastPrepared Fast);
-    private sealed class BoundResources(ResourceCatalog catalog, EntryPassportCatalog passports, MainEntryRanker ranker)
+    private sealed class BoundResources(ResourceCatalog catalog, EntryPassportCatalog passports, S0IdentityRankPipeline? identity, StructureCatalog? structureCatalog)
     {
         public string Id { get; } = Guid.NewGuid().ToString("N");
         public ResourceCatalog Catalog { get; } = catalog;
         public EntryPassportCatalog Passports { get; } = passports;
-        public MainEntryRanker Ranker { get; } = ranker;
-        public Dictionary<string, PreparedReference> Prepared { get; } = new(StringComparer.Ordinal);
+        public S0IdentityRankPipeline? Identity { get; } = identity;
+        public StructureCatalog? StructureCatalog { get; } = structureCatalog;
         public static BoundResources Load(string root, SessionSelection selection)
         {
             var catalog = ResourceCatalog.Load(root);
             var passports = EntryPassportCatalog.Load(root, selection.Season, selection.Mode);
             if (!catalog.Entries.Any(e => e.Mode == selection.Mode && e.Season == selection.Season && e.StructureStatus == ResourceBindingStatus.Ready))
                 throw new InvalidDataException("context-structure-resources-unavailable");
-            return new(catalog, passports, new(passports, catalog));
+            FloorObservation.PrepareResources(selection.Season);
+            return new(catalog, passports, selection.Season == "s0" ? new(catalog, passports) : null,
+                selection.Season == "s1" ? StructureCatalog.FromResources(catalog, selection.Mode) : null);
         }
     }
 }

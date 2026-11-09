@@ -5,6 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
+    <Content Include="ThirdParty/*" CopyToOutputDirectory="PreserveNewest" />
     <ProjectReference Include="../StarMap.Core/StarMap.Core.csproj" />
     <ProjectReference Include="../StarMap.Vision/StarMap.Vision.csproj" />
   </ItemGroup>

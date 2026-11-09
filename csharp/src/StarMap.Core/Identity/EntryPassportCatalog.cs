@@ -4,6 +4,8 @@ using System.Text.Json;
 
 namespace StarMap.Core.Identity;
 
+public sealed record EntryMapDefinition(string MapId, string Name);
+
 /// <summary>The declarations consumed by entry recognition for one mode/season.</summary>
 public sealed class EntryPassportCatalog
 {
@@ -12,6 +14,7 @@ public sealed class EntryPassportCatalog
     public string ProfileId { get; }
     public string ResourceRoot { get; }
     public IReadOnlySet<(string MapId, string Floor)> PackFloors { get; }
+    public IReadOnlySet<(string MapId, string Floor)> UnavailablePackFloors { get; }
     public string ModeRoot { get; }
     public string EntryRoot { get; }
     public string? ExitIconPath { get; }
@@ -19,6 +22,7 @@ public sealed class EntryPassportCatalog
     public string? LegacyPassportSource { get; }
     public IReadOnlyList<string> Floors { get; }
     public IReadOnlyDictionary<string, string> MapProfiles { get; }
+    public IReadOnlyList<EntryMapDefinition> Maps { get; }
     public IReadOnlySet<(string MapId, string Floor)> RegisteredFloors { get; }
     public JsonElement SemanticGaps { get; }
     public IReadOnlyList<JsonElement> SideEntries { get; }
@@ -83,8 +87,13 @@ public sealed class EntryPassportCatalog
             profiles.Add(String(map,"id"), profile);
         }
         MapProfiles = profiles.ToFrozenDictionary(StringComparer.Ordinal);
+        Maps = Array.AsReadOnly(pack.GetProperty("maps").EnumerateArray()
+            .Select(map => new EntryMapDefinition(String(map,"id"), map.TryGetProperty("name", out var name) ? name.GetString() ?? String(map,"id") : String(map,"id"))).ToArray());
         PackFloors = pack.GetProperty("maps").EnumerateArray().SelectMany(map =>
             map.GetProperty("layers").EnumerateObject().Select(layer => (String(map, "id"), layer.Name))).ToFrozenSet();
+        UnavailablePackFloors = pack.GetProperty("maps").EnumerateArray().SelectMany(map =>
+            map.GetProperty("layers").EnumerateObject().Where(layer => layer.Value.ValueKind == JsonValueKind.Null)
+                .Select(layer => (String(map, "id"), layer.Name))).ToFrozenSet();
         var main = Read(Local(EntryRoot, "entries.json"), declaredFiles);
         Header(main, Mode, ProfileId);
         MainEntries = Array.AsReadOnly(Rows(main,"entries"));

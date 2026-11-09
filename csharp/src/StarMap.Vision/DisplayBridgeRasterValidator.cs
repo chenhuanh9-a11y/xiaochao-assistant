@@ -11,6 +11,7 @@ public sealed class OpenCvDisplayRasterValidator : IDisplayRasterValidator
     {
         try
         {
+            DisplayImageDecodeBudget.RequireWithinLimit(bytes.Span);
             using var image = Cv2.ImDecode(bytes.ToArray(),ImreadModes.Unchanged);
             if (image.Empty() || image.Depth() != MatType.CV_8U) throw new InvalidDataException("display-image-decode-invalid");
             int channels = image.Channels();
@@ -61,6 +62,8 @@ public sealed class OpenCvDisplayRasterValidator : IDisplayRasterValidator
         var sourceBytes = ReadImage(r.AuthorPath,32*1024*1024);
         var nativeBytes = ReadImage(r.NativeMaskPath,32*1024*1024);
         if (nativeBytes.LongLength != r.NativeBytes) return new(false,["native-corner-native-byte-count-mismatch"]);
+        DisplayImageDecodeBudget.RequireWithinLimit(sourceBytes);
+        DisplayImageDecodeBudget.RequireWithinLimit(nativeBytes);
         using var author = Cv2.ImDecode(sourceBytes,ImreadModes.Unchanged);
         using var native = Cv2.ImDecode(nativeBytes,ImreadModes.Unchanged);
         if (author.Empty() || author.Depth() != MatType.CV_8U || author.Channels() is not (3 or 4)
@@ -213,7 +216,7 @@ public sealed class OpenCvDisplayRasterValidator : IDisplayRasterValidator
         var nodes=new List<Node>();
         foreach(var contour in contours)
         {
-            var polygon=Cv2.ApproxPolyDP(contour,2,true);
+            var polygon=StructureContourApproximation.ApproximateClosed(contour,2);
             if(polygon.Length<4||Math.Abs(Cv2.ContourArea(polygon))<100)continue;
             for(int i=0;i<polygon.Length;i++)
             {

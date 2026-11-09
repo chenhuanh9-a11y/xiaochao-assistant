@@ -1,16 +1,33 @@
 <Application x:Class="StarMap.App.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
+             xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes">
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
-                <ui:ThemesDictionary Theme="Light" />
-                <ui:ControlsDictionary />
+                <materialDesign:BundledTheme BaseTheme="Light" PrimaryColor="Indigo" SecondaryColor="Blue" />
+                <ResourceDictionary Source="pack://application:,,,/MaterialDesignThemes.Wpf;component/Themes/MaterialDesign3.Defaults.xaml" />
             </ResourceDictionary.MergedDictionaries>
             <SolidColorBrush x:Key="StarMap.Ink" Color="#142B4B" />
             <SolidColorBrush x:Key="StarMap.Muted" Color="#526785" />
             <SolidColorBrush x:Key="StarMap.Accent" Color="#2F66EB" />
+            <SolidColorBrush x:Key="StarMap.Surface" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="StarMap.Canvas" Color="#F3F5FA" />
+            <SolidColorBrush x:Key="StarMap.Tint" Color="#EAF0FE" />
+            <SolidColorBrush x:Key="StarMap.Outline" Color="#DDE5F1" />
+            <FontFamily x:Key="MaterialDesignFont">Microsoft YaHei UI</FontFamily>
+            <Style TargetType="Button" BasedOn="{StaticResource MaterialDesignOutlinedButton}">
+                <Setter Property="MinHeight" Value="36" />
+                <Setter Property="FontFamily" Value="Microsoft YaHei UI" />
+            </Style>
+            <Style x:Key="StarMap.PrimaryButton" TargetType="Button" BasedOn="{StaticResource MaterialDesignRaisedButton}">
+                <Setter Property="MinHeight" Value="38" />
+                <Setter Property="FontFamily" Value="Microsoft YaHei UI" />
+            </Style>
+            <Style x:Key="StarMap.TextButton" TargetType="Button" BasedOn="{StaticResource MaterialDesignFlatButton}">
+                <Setter Property="MinHeight" Value="36" />
+                <Setter Property="FontFamily" Value="Microsoft YaHei UI" />
+            </Style>
         </ResourceDictionary>
     </Application.Resources>
 </Application>

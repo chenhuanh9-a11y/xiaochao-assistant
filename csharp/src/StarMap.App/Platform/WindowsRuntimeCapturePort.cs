@@ -25,6 +25,9 @@ public sealed class WindowsRuntimeCapturePort : ICapturePort, IDisposable
     Action? validatePixels;
     long frameSequence;
     bool disposed;
+    // The host hides its own overlay for the complete acquisition even when
+    // capture-exclusion affinity is unavailable. No native input is involved.
+    internal Func<CancellationToken, ValueTask<IAsyncDisposable>>? AcquireOverlayCaptureLease { get; set; }
 
     public WindowsRuntimeCapturePort(ClientCapturePolicy policy = ClientCapturePolicy.PreferWgc) => this.policy = policy;
     public bool IsBound { get { lock (sync) return !disposed && binding is not null; } }
@@ -66,13 +69,25 @@ public sealed class WindowsRuntimeCapturePort : ICapturePort, IDisposable
         lock (sync) return !disposed && binding is not null && currentStamp == stamp;
     }
 
+    internal bool IsForegroundCurrent(CaptureStamp stamp)
+    {
+        BoundWindow? selected;
+        lock (sync) selected = !disposed && currentStamp == stamp ? binding : null;
+        if (selected is null || !IsCurrent(stamp)) return false;
+        try { bindingOwner.ValidateBinding(selected, requireForeground: true); }
+        catch (Exception error) when (CaptureError(error)) { return false; }
+        lock (sync) return !disposed && ReferenceEquals(selected, binding) && currentStamp == stamp;
+    }
+
     public async ValueTask<ClientCaptureResult> CaptureAsync(CancellationToken cancellationToken)
     {
         try
         {
             var frame = await CapturePixels(cancellationToken, publishRuntimeFrame: true).ConfigureAwait(false);
             return new(new RuntimeFrame(frame.Pixels, frame.Geometry.Width, frame.Geometry.Height,
-                checked(frame.Geometry.Width * 4), frame.Stamp, frame.CapturedAt));
+                checked(frame.Geometry.Width * 4), frame.Stamp, frame.CapturedAt,
+                new(CaptureEvidenceKind.LiveClient, new(frame.Geometry.Left, frame.Geometry.Top,
+                    frame.Geometry.Width, frame.Geometry.Height, frame.Geometry.Dpi), frame.Backend)));
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception error) when (CaptureError(error))
@@ -99,6 +114,8 @@ public sealed class WindowsRuntimeCapturePort : ICapturePort, IDisposable
             throw new ClientCaptureException("capture-busy", "已有一次客户区采集执行中。");
         try
         {
+            await using var overlayLease = AcquireOverlayCaptureLease is { } acquire
+                ? await acquire(token).ConfigureAwait(false) : null;
             BoundWindow selected; string identity;
             lock (sync)
             {

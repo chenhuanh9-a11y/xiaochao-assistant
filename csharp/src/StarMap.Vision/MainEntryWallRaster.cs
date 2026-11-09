@@ -6,7 +6,7 @@ namespace StarMap.Vision;
 /// <summary>Directed distance of every measured current wall fragment to the unsimplified source raster.</summary>
 internal static class MainEntryWallRaster
 {
-    internal static JsonObject Check(IReadOnlyList<Wall> lines,StructureGeometry reference,double[][] matrix)
+    internal static JsonObject Check(IReadOnlyList<Wall> lines,StructureGeometry reference,double[][] matrix,Mat? cleanOverride=null)
     {
         if(lines.Count==0) return new JsonObject {["verified"]=false,["reason"]="no-observed-fragments"};
         var fragments=new List<(int Direction,Point[] Points)>();
@@ -21,14 +21,14 @@ internal static class MainEntryWallRaster
         int x0=all.Min(p=>p.X)-8,y0=all.Min(p=>p.Y)-8;
         var size=new Size(all.Max(p=>p.X)+9-x0,all.Max(p=>p.Y)+9-y0);
         double[][] shifted=[[matrix[0][0],0,matrix[0][2]-x0],[0,matrix[0][0],matrix[1][2]-y0],[0,0,1]];
-        using var mask=Geometry.Warp(reference.Clean,shifted,size);
+        using var mask=Geometry.Warp(cleanOverride??reference.Clean,shifted,size);
         using var unknown=reference.Unknown==null?null:Geometry.Warp(reference.Unknown,shifted,size);
         var missing=unknown==null?new byte[checked(size.Width*size.Height)]:Geometry.Bytes(unknown);
         var (x,y)=Gradients(mask);
         float[]? wx=null,wy=null;
         if(reference.KnownBoundary!=null)
         {
-            using var split=reference.Clean.Clone();
+            using var split=(cleanOverride??reference.Clean).Clone();
             split.SetTo(Scalar.Black,reference.KnownBoundary);
             using var projected=Geometry.Warp(split,shifted,size);
             (wx,wy)=Gradients(projected);

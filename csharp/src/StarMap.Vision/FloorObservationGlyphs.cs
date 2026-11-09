@@ -11,6 +11,7 @@ internal static class FloorObservationGlyphs
     private static readonly int[] Labels=[1,2,-1,-2,3,4,7,9,-3,-4,-7,-9];
     private sealed record Exemplar(int Label,float[] Values);
     private static readonly Lazy<Exemplar[]> Bank=new(Build);
+    internal static void Prepare() => _ = Bank.Value;
     internal sealed record Match(int Label,double Score,double Aspect);
 
     internal static Match? Classify(Mat patch,bool selected)
@@ -20,8 +21,13 @@ internal static class FloorObservationGlyphs
         // Percentile of the signed luminance, before clipping negatives.
         var signed=pixels.Select(v=>selected?mid-v:v-mid).ToArray();
         var ordered=signed.Order().ToArray();
-        int lo=(int)Math.Floor((pixels.Length-1)*.99),hi=(int)Math.Ceiling((pixels.Length-1)*.99);
-        float frac=(float)((pixels.Length-1)*.99-lo);
+        // NumPy 2.2 percentile on a float32 input divides 99 by float32(100)
+        // and computes its virtual index in float32 too. Preserve both rounding
+        // points; using a double rank and casting only the fractional part changes
+        // the ink scale for patch lengths whose rank rounds to a nearby float32.
+        float rank=(pixels.Length-1)*(99f/100f);
+        int lo=(int)MathF.Floor(rank),hi=(int)MathF.Ceiling(rank);
+        float frac=rank-lo;
         float strength=frac>=.5f ? ordered[hi]-(ordered[hi]-ordered[lo])*(1-frac) : ordered[lo]+(ordered[hi]-ordered[lo])*frac;
         if(strength<12)return null;
         var ink=signed.Select(v=>Math.Clamp(v/strength*255f,0f,255f)).ToArray();

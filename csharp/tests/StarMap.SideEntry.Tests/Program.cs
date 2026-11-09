@@ -18,7 +18,8 @@ internal static class Program
         string root=options["--resources"],oracle=options["--oracle"],output=options["--output"],directory=Path.GetDirectoryName(oracle)!;
         if(Directory.Exists(output) && Directory.EnumerateFileSystemEntries(output).Any()) throw new IOException("Evidence output must be new or empty.");
         Directory.CreateDirectory(output);
-        var resources=ResourceCatalog.Load(root); var rankers=new Dictionary<(string,string),SideEntryRanker>();
+        var resourceCatalogs=new Dictionary<string,ResourceCatalog>(StringComparer.OrdinalIgnoreCase) { [root]=ResourceCatalog.Load(root) };
+        var rankers=new Dictionary<(string,string,string),SideEntryRanker>(); var catalogs=new Dictionary<(string,string,string),EntryPassportCatalog>();
         var cases=new List<object>(); bool passed=true;
         foreach(var node in Read(oracle)!["cases"]!.AsArray())
         {
@@ -29,20 +30,52 @@ internal static class Program
             {
                 var bytes=FrameBytes(input,directory); using var frame=Cv2.ImDecode(bytes,ImreadModes.Color);
                 if(frame.Empty()) throw new InvalidDataException("Cannot decode full-client BGR frame.");
-                var key=(Str(input,"season"),Str(input,"mode"));
-                if(!rankers.TryGetValue(key,out var ranker)) rankers[key]=ranker=new(EntryPassportCatalog.Load(root,key.Item1,key.Item2),resources);
-                var actual=ranker.Rank(frame,Str(input,"floor"),TimeSpan.FromSeconds(input["seconds"]!.GetValue<int>()));
-                var result=new JsonObject { ["rows"]=actual.Rows,["diagnostics"]=actual.Diagnostics,["turns"]=actual.Turns };
+                string caseRoot=input["resourceRoot"] is { } declared?Path.GetFullPath(declared.ToString()):root;
+                if(caseRoot!=root && (origin!="synthetic" || input["resourceScope"]?.ToString()!="new-synthetic-typed-passport-world" ||
+                    Path.GetRelativePath(directory,caseRoot).StartsWith("..",StringComparison.Ordinal)))
+                    throw new InvalidDataException("Synthetic typed fixture roots must belong to this new oracle evidence directory.");
+                if(!resourceCatalogs.TryGetValue(caseRoot,out var resources)) resourceCatalogs[caseRoot]=resources=ResourceCatalog.Load(caseRoot);
+                var key=(caseRoot,Str(input,"season"),Str(input,"mode"));
+                if(!rankers.TryGetValue(key,out var ranker)) rankers[key]=ranker=new(catalogs[key]=EntryPassportCatalog.Load(caseRoot,key.Item2,key.Item3),resources);
+                var catalog=catalogs[key]; var budget=TimeSpan.FromSeconds(input["seconds"]!.GetValue<int>()); string floor=Str(input,"floor");
+                string operation=input["operation"]?.ToString()??"structure";
+                SideEntryResult? actual=null; JsonObject result;
+                switch(operation)
+                {
+                    case "entry":
+                        actual=ranker.RankEntry(frame,floor,budget);
+                        result=new() { ["rows"]=actual.Rows,["diagnostics"]=actual.Diagnostics,["turns"]=actual.Turns,
+                            ["consumer"]=EntryIdentityDecision.VerifiedCandidate(catalog,actual.Rows,actual.Diagnostics,floor),
+                            ["fallbackAllowed"]=EntryIdentityDecision.PassportFallbackAllowed(actual.Diagnostics) }; break;
+                    case "strategy":
+                        var strategy=ranker.RankStrategy(frame,floor,budget);
+                        result=new() { ["passport"]=Result(strategy.Passport),["mainRows"]=strategy.Main?.Rows.DeepClone()??new JsonArray(),
+                            ["mainDiagnostics"]=strategy.Diagnostics["mainDiagnostics"]?.DeepClone(),["side"]=strategy.Side==null?null:Result(strategy.Side),
+                            ["consumer"]=strategy.SideWinner,["diagnostics"]=strategy.Diagnostics,["frontGate"]=strategy.FrontGate }; break;
+                    case "verify-existing":
+                        result=ranker.VerifyExistingPose(frame,Str(input,"mapId"),floor,Matrix(input["matrix"]!),input["observation"]?.AsObject()); break;
+                    case "verify-candidate":
+                        var candidate=input["candidate"]!.DeepClone().AsObject();
+                        candidate["verification"]=ranker.VerifyCandidate(frame,candidate);
+                        result=new() { ["candidate"]=candidate,["consumer"]=EntryIdentityDecision.VerifiedCandidate(catalog,new JsonArray(candidate.DeepClone()),
+                            new JsonObject { ["selectionPolicy"]="first-verified-entry" },floor) }; break;
+                    default:
+                        actual=ranker.Rank(frame,floor,budget);
+                        result=new() { ["rows"]=actual.Rows,["diagnostics"]=actual.Diagnostics,["turns"]=actual.Turns }; break;
+                }
+                StripTiming(result);
                 Save(Path.Combine(dest,"actual.json"),result);
                 // Read the independent answer only after full inventory search
                 // has finished. Expected fields never enter candidate solving.
                 var differences=new List<object>();
                 Compare("",Read(Path.Combine(directory,Str(input,"expected"))),Read(Path.Combine(dest,"actual.json")),differences);
                 Save(Path.Combine(dest,"differences.json"),differences);
-                bool authority=actual.Rows.All(r=>r!["identityVerified"]?.GetValue<bool>()==false && r["poseVerified"]==null);
+                bool authority=actual==null || actual.Rows.All(r=>r!["identityVerified"]?.GetValue<bool>()==false && r["poseVerified"]==null);
+                if(operation=="verify-existing") authority=result["identityVerified"]?.GetValue<bool>()==false && result["scope"]?.ToString()=="existing-pose-current-frame-only";
+                if(operation=="verify-candidate") authority=result["candidate"]?["identityVerified"]?.GetValue<bool>()==false;
                 bool cancel=CheckCancellation(ranker,frame,Str(input,"floor"));
                 passed &= differences.Count==0 && authority && cancel;
-                cases.Add(new {name,origin,turns=actual.Turns.Count,candidates=actual.Rows.Count,differences=differences.Count,authorityBoundary=authority,cancellation=cancel});
+                cases.Add(new {name,origin,operation,turns=actual?.Turns.Count,candidates=actual?.Rows.Count,differences=differences.Count,authorityBoundary=authority,cancellation=cancel});
             }
             catch(Exception e)
             {
@@ -59,8 +92,21 @@ internal static class Program
     private static bool CheckCancellation(SideEntryRanker ranker,Mat frame,string floor)
     {
         using var source=new CancellationTokenSource(); source.Cancel();
-        try { ranker.Rank(frame,floor,cancellation:source.Token); return false; }
-        catch(OperationCanceledException) { return true; }
+        bool first=false; try { ranker.Rank(frame,floor,cancellation:source.Token); } catch(OperationCanceledException) { first=true; }
+        bool second=false; try { ranker.RankEntry(frame,floor,cancellation:source.Token); } catch(OperationCanceledException) { second=true; }
+        bool third=false; try { ranker.RankStrategy(frame,floor,cancellation:source.Token); } catch(OperationCanceledException) { third=true; }
+        return first && second && third;
+    }
+    private static JsonObject Result(SideEntryResult result)=>new() { ["rows"]=result.Rows.DeepClone(),["diagnostics"]=result.Diagnostics.DeepClone(),["turns"]=result.Turns.DeepClone() };
+    private static double[][] Matrix(JsonNode matrix)=>matrix.AsArray().Select(row=>row!.AsArray().Select(v=>double.Parse(v!.ToString(),CultureInfo.InvariantCulture)).ToArray()).ToArray();
+    private static void StripTiming(JsonNode? node)
+    {
+        if(node is JsonObject o)
+        {
+            foreach(var key in o.Select(p=>p.Key).Where(k=>k.EndsWith("Ms",StringComparison.Ordinal)||k=="elapsedMs"||k=="spansMs").ToArray()) o.Remove(key);
+            foreach(var value in o.Select(p=>p.Value)) StripTiming(value);
+        }
+        else if(node is JsonArray a) foreach(var value in a) StripTiming(value);
     }
     private static byte[] FrameBytes(JsonObject input,string directory)
     {

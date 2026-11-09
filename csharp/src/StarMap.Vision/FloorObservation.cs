@@ -19,6 +19,12 @@ public sealed record FloorObservationResult(JsonObject MapObservation,JsonObject
 /// <summary>Pure current-client BGR observation. No previous-frame state, pose, input or identity writes.</summary>
 public static class FloorObservation
 {
+    /// <summary>Build the existing immutable S0 font model during resource binding, before any map-open deadline.</summary>
+    public static void PrepareResources(string season)
+    {
+        if (season == "s0") FloorObservationGlyphs.Prepare();
+    }
+
     public static FloorObservationResult Observe(Mat frame,string season,string mode,JsonObject? settings=null,
         S1FloorUse s1Use=S1FloorUse.Unavailable,bool frameCurrent=true)
     {

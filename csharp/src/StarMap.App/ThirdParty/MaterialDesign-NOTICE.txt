@@ -1,0 +1,28 @@
+Material Design in XAML Toolkit 5.4.0
+https://github.com/MaterialDesignInXAML/MaterialDesignInXamlToolkit/tree/v5.4.0
+NuGet: https://www.nuget.org/packages/MaterialDesignThemes/5.4.0
+Repository commit in the NuGet package: 14223ece627401f4e987fdd4ba2b1ac5674977ff
+
+MaterialDesignThemes and MaterialDesignColors 5.4.0 are provided under the MIT
+license in MaterialDesign-LICENSE.txt. The application uses the bundled light
+theme and MaterialDesign3.Defaults.xaml, with the installed Microsoft YaHei UI
+font for Chinese text. No Microsoft font is redistributed by this application.
+
+Microsoft.Xaml.Behaviors.Wpf 1.1.142 is an indirect dependency, under the MIT
+license in Microsoft.Xaml.Behaviors-LICENSE.txt.
+https://github.com/microsoft/XamlBehaviorsWpf/tree/v1.1.142
+
+The toolkit package also contains unmodified font files:
+Roboto: Copyright 2011 Google Inc. All Rights Reserved.
+Noto Sans: Copyright 2012 Google Inc. All Rights Reserved.
+The inspected Roboto-Regular.ttf and NotoSans-Regular.ttf in the 5.4.0 NuGet
+package identify Apache License 2.0 in their embedded font metadata. Its full
+text is included in Fonts-Apache-2.0.txt. Roboto is a trademark of Google.
+Noto is a trademark of Google Inc. Font names are retained for attribution.
+The toolkit's tagged source additionally carries an OFL notice with the Noto
+resources; it is preserved in Noto-OFL.txt. These notices accompany the package
+even though the application selects an installed Chinese UI font.
+https://github.com/MaterialDesignInXAML/MaterialDesignInXamlToolkit/tree/v5.4.0/src/MaterialDesignThemes.Wpf/Resources
+
+This application does not modify the toolkit, colors, behaviors or font files.
+The notices and licenses in this directory must accompany redistributed builds.

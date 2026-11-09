@@ -58,19 +58,27 @@ await Run("explicit-bind-start-and-actual-current-floor-main-producer", async ()
     var floor = FloorObservation.Observe(original, "s0", "nightmare");
     Check(floor.AutomaticEligible && floor.FloorId is not null && state.Context.FloorId == floor.FloorId, "current floor comes from actual frame controls");
     var passports = EntryPassportCatalog.Load(resourceRoot, "s0", "nightmare");
-    var expected = new MainEntryRanker(passports, ResourceCatalog.Load(resourceRoot)).Rank(original, floor.FloorId!, TimeSpan.FromSeconds(1));
-    var expectedCandidates = expected.Rows.Select(row => new RuntimeCandidate(row!["mapId"]!.GetValue<string>(), row["profileId"]!.GetValue<string>(),
-        row["score"]!.GetValue<double>(), row["identityVerified"]!.GetValue<bool>(), row["poseVerified"]!.GetValue<bool>())).ToArray();
-    Check(state.Candidates.SequenceEqual(expectedCandidates), "runtime consumes unconstrained MainEntryRanker output without rewriting verdicts");
-    Check(state.IdentityLocked == (expectedCandidates.Count(c => c.IdentityVerified) == 1), "only actual producer can automatically lock identity");
+    var pipeline = new S0IdentityRankPipeline(ResourceCatalog.Load(resourceRoot), passports);
+    var context = pipeline.Context(state.Context.RoundId!, floor.FloorId!);
+    var expected = pipeline.Rank(original, floor.FloorId!, new LiveRuntimeOptions().MainEntryBudget, context: context);
+    var decision = S0IdentityDecision.Consume(expected, null, context, "independent-runtime-wiring-check");
+    var candidates = decision.CandidateSummaries;
+    Check(state.Candidates.Select(c => c.MapId).SequenceEqual(candidates.Select(row => row!["mapId"]!.GetValue<string>()))
+        && state.Candidates.Select(c => c.IdentityKind).SequenceEqual(candidates.Select(row => row!["identityKind"]!.GetValue<string>())),
+        "runtime consumes the complete current S0 candidate consumer, including registered groups");
+    Check(state.IdentityLocked == (decision.SelectedProvisionalMapId is not null)
+        && (state.IdentityKind == "group") == decision.IsRegisteredGroup,
+        "runtime distinguishes a registered group reference from unique identity");
     Check(!result.Snapshot.RoundWorkActive && !runtime.ReadSnapshot().LiveAuthorization, "final snapshot settled and no canonical/display authority claimed");
     File.WriteAllText(Path.Combine(output, "actual-main.json"), JsonSerializer.Serialize(new { state, direct = expected, requestResult = result }));
 });
 await Run("manual-confirmation-locks-before-fit-and-consumes-actual-native-fit", async () =>
 {
     var before = runtime.ReadState();
-    Check(before.MapOpen && before.Candidates.Count > 0 && !before.IdentityLocked, "fixture supplies actual unconfirmed candidates");
-    var chosen = before.Candidates[0];
+    Check(before.MapOpen && before.Candidates.Count > 0, "fixture supplies a current frame for an explicit human map choice");
+    string mapId = before.IdentityKind == "group" ? before.Context.MapId! : before.Candidates.First(c => c.MapId.Length > 0).MapId;
+    var passports = EntryPassportCatalog.Load(resourceRoot, "s0", "nightmare");
+    var chosen = new RuntimeCandidate(mapId, passports.MapProfiles[mapId], 0, false, false);
     var confirmation = await driver.Ask("confirm_route", new { mapId = chosen.MapId });
     var state = runtime.ReadState();
     Check(state.IdentityLocked && state.Context.MapId == chosen.MapId && state.IdentitySource == "manual", "manual identity survives pose refusal");
@@ -86,8 +94,14 @@ await Run("manual-confirmation-locks-before-fit-and-consumes-actual-native-fit",
     Check(state.NativeGeometryVerified == expected.GeometryVerified && confirmation.Receipt.Success == expected.GeometryVerified, "real fast fit verdict preserved");
     if (expected.Matrix is not null && expected.GeometryVerified)
         Check(JsonNode.DeepEquals(JsonSerializer.SerializeToNode(state.NativePose!.ToMatrix()), JsonSerializer.SerializeToNode(expected.Matrix)), "native matrix exactly matches independently executed fit");
-    Check(state.Diagnostics.GetProperty("stage").GetString() == "fast-fit" && !state.Diagnostics.GetProperty("priorUsed").GetBoolean(), "first fit executes neutral production path");
-    Check(state.Context.ProfileId == "display-preference-only" && state.CapabilityGaps.Contains("canonical-display-bridge-unavailable"), "display preference never becomes structure profile or canonical proof");
+    bool expectedPrior = before.NativeGeometryVerified && before.Context.MapId == chosen.MapId;
+    Check(state.Diagnostics.GetProperty("stage").GetString() == "s0-host-fit"
+        && state.Diagnostics.GetProperty("priorUsed").GetBoolean() == expectedPrior,
+        "human fit uses only the current map's previously verified target-floor prior when one actually exists");
+    Check(state.Context.ProfileId == "display-preference-only" && state.Diagnostics.GetProperty("nativeReferenceKey").GetString() == entry.StableKey,
+        "display preference never changes the actual fitted structure resource");
+    Check(!runtime.ReadSnapshot().LiveAuthorization && (!state.Display.Prepared || state.Display.CanonicalVerified),
+        "recorded material requires canonical verification and never grants live display");
     File.WriteAllText(Path.Combine(output, "actual-fit.json"), JsonSerializer.Serialize(new { state, direct = expected, confirmation }));
 });
 await Run("close-preserves-human-identity-and-floor-switch-never-borrows-prior", async () =>
@@ -99,7 +113,7 @@ await Run("close-preserves-human-identity-and-floor-switch-never-borrows-prior",
     var switched = await driver.Ask("capture_now");
     var state = runtime.ReadState();
     Check(state.Context.FloorId == "2" && state.Context.MapId == locked, "target floor remains independent");
-    if (state.Diagnostics.TryGetProperty("stage", out var stage) && stage.GetString() == "fast-fit")
+    if (state.Diagnostics.TryGetProperty("stage", out var stage) && stage.GetString() == "s0-host-fit")
         Check(!state.Diagnostics.GetProperty("priorUsed").GetBoolean(), "1F verified prior cannot seed 2F");
     else Check(!switched.Receipt.Success, "unavailable target floor explicitly refuses pose");
 });
@@ -291,7 +305,7 @@ await Run("real-session-refresh-preserves-own-" + stage + "-progress", () =>
     using var combo = new SessionCombo(new LiveRuntime(new FixtureCapture(bgra, pixels.Width, pixels.Height, recordedAt), resourceRoot));
     combo.DispatchAndDrain("set_context"); combo.DispatchAndDrain("start_round");
     if (stage == "fit") combo.DispatchAndDrain("capture_now");
-    var chosen = stage == "fit" ? combo.Runtime.ReadState().Candidates.First().MapId : null;
+    var chosen = stage == "fit" ? ManualTarget(combo.Runtime.ReadState()) : null;
     combo.Session.Dispatch(stage == "rank" ? "capture_now" : "confirm_route", chosen is null ? null : JsonSerializer.SerializeToElement(new { mapId = chosen }));
     combo.Until(() =>
     {
@@ -306,7 +320,8 @@ await Run("real-session-refresh-preserves-own-" + stage + "-progress", () =>
     var view = combo.Session.Read();
     Check(view.StaleResults == 0 && view.LastReceipt?.Action == (stage == "rank" ? "capture_now" : "confirm_route"),
         "original current receipt remains consumable through the real result gate");
-    if (stage == "fit") Check(combo.Runtime.ReadState().IdentityLocked && combo.Runtime.ReadState().NativeGeometryVerified, "actual fit completes after identity-progress refresh");
+    if (stage == "fit") Check(combo.Runtime.ReadState().IdentityLocked && combo.Runtime.ReadState().IdentitySource == "manual"
+        && combo.Runtime.ReadState().NativeGeometryVerified, "explicit map payload passes the real session even after automatic identity and completes fit after progress refresh");
     File.WriteAllText(Path.Combine(output, "session-own-" + stage + ".json"), JsonSerializer.Serialize(new { view, state = combo.Runtime.ReadState() }));
     return Task.CompletedTask;
 });
@@ -328,17 +343,22 @@ await Run("real-session-progress-attribution-does-not-survive-external-resource-
     return Task.CompletedTask;
 });
 
-await Run("default-s1-explicit-gap-does-not-capture-or-pretend-to-scan", async () =>
+await Run("default-s1-uses-real-vertical-observation-and-keeps-unverified-identity-unlocked", async () =>
 {
     var capture = new FixtureCapture(bgra, pixels.Width, pixels.Height, recordedAt);
     var actual = new LiveRuntime(capture, resourceRoot); var calls = new Driver(actual);
     Check((await calls.Ask("set_context", new { season = "s1", mode = "nightmare" })).Receipt.Success, "actual S1 resources bind independently");
-    Check((await calls.Ask("start_round")).Receipt.Success, "explicit lifecycle does not imply S1 scan readiness");
-    var refused = await calls.Ask("capture_now");
-    Check(!refused.Receipt.Success && refused.Receipt.Reason == "capability-unavailable:s1-structure-identity-consumer" && capture.Calls == 0
-        && !actual.ReadSnapshot().AvailableCommands.Contains("capture_now")
-        && actual.ReadState().CapabilityGaps.Contains("s1-floor-vertical-consumer-unavailable")
-        && actual.ReadState().CapabilityGaps.Contains("s1-structure-identity-consumer-unavailable"), "S1 missing consumers are explicit without changing the floor-use enum");
+    Check((await calls.Ask("start_round")).Receipt.Success, "S1 starts in its own resource scope");
+    await calls.Ask("capture_now");
+    var observed = FloorObservation.Observe(original, "s1", "nightmare", s1Use: S1FloorUse.StructureCandidate);
+    var state = actual.ReadState();
+    Check(capture.Calls > 0 && actual.ReadSnapshot().AvailableCommands.Contains("capture_now")
+        && !state.CapabilityGaps.Contains("s1-floor-vertical-consumer-unavailable")
+        && !state.CapabilityGaps.Contains("s1-structure-identity-consumer-unavailable"),
+        "S1 default runtime invokes the current-frame producer");
+    Check(!state.IdentityLocked && !actual.ReadSnapshot().LiveAuthorization
+        && (state.Context.FloorId is null || state.Context.FloorId == observed.FloorId),
+        "this recorded fixture cannot invent S1 identity or fill floor from S0 history");
 });
 
 await Run("real-session-same-request-context-advance-between-snapshot-and-owner-read", () =>
@@ -348,7 +368,7 @@ await Run("real-session-same-request-context-advance-between-snapshot-and-owner-
     var ingress = new InterleavedRuntime(actual);
     using var combo = new SessionCombo(actual, ingress);
     combo.DispatchAndDrain("set_context"); combo.DispatchAndDrain("start_round"); combo.DispatchAndDrain("capture_now");
-    var chosen = actual.ReadState().Candidates.First().MapId;
+    var chosen = ManualTarget(actual.ReadState());
     combo.Session.Dispatch("confirm_route", JsonSerializer.SerializeToElement(new { mapId = chosen })); combo.Drain();
     Check(actual.ReadState() is { MapOpen: true, IdentityLocked: true } && actual.ReadState().Context.FrameId is not null,
         "real current F1 and manual identity established before floor change");
@@ -392,7 +412,7 @@ await Run("real-session-atomic-progress-rejects-" + boundary + "-revocation-" + 
     var actual = new LiveRuntime(capture, resourceRoot); var ingress = new InterleavedRuntime(actual);
     using var combo = new SessionCombo(actual, ingress);
     combo.DispatchAndDrain("set_context"); combo.DispatchAndDrain("start_round"); combo.DispatchAndDrain("capture_now");
-    var chosen = actual.ReadState().Candidates.First().MapId;
+    var chosen = ManualTarget(actual.ReadState());
     combo.Session.Dispatch("confirm_route", JsonSerializer.SerializeToElement(new { mapId = chosen })); combo.Drain();
     var hold = capture.HoldNext();
     try
@@ -433,7 +453,7 @@ await Run("real-session-final-consumption-rejects-revoked-epoch-without-another-
     var actual = new LiveRuntime(capture, resourceRoot);
     using var combo = new SessionCombo(actual);
     combo.DispatchAndDrain("set_context"); combo.DispatchAndDrain("start_round"); combo.DispatchAndDrain("capture_now");
-    var chosen = actual.ReadState().Candidates.First().MapId;
+    var chosen = ManualTarget(actual.ReadState());
     combo.Session.Dispatch("confirm_route", JsonSerializer.SerializeToElement(new { mapId = chosen })); combo.Drain();
     var consumed = new List<SessionCompletion>(); combo.Session.ResultConsumed += consumed.Add;
     var hold = capture.HoldNext();
@@ -461,6 +481,9 @@ await Run("real-session-final-consumption-rejects-revoked-epoch-without-another-
 File.WriteAllText(Path.Combine(output, "summary.json"), JsonSerializer.Serialize(new { passed = failed == 0, sourceCaptureRecord = recordPath,
     recordedAt, pixels.Width, pixels.Height, evidence = "Recorded post-20261105 pixels; production C# vision/state, capture port fixture only. No current game/window/display acceptance.", reports }, new JsonSerializerOptions { WriteIndented = true }));
 return failed == 0 ? 0 : 1;
+
+static string ManualTarget(LiveRuntimeState state) => state.IdentityKind == "group" ? state.Context.MapId!
+    : state.Candidates.First(candidate => candidate.MapId.Length > 0).MapId;
 
 sealed class Driver(LiveRuntime runtime)
 {

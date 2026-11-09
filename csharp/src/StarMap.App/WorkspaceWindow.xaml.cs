@@ -38,6 +38,7 @@ public partial class WorkspaceWindow : Window
     ConnectionPage? connectionPage;
     RuntimePage? runtimePage;
     readonly WindowsRuntimeCapturePort runtimeCapture = new();
+    RuntimeOverlayHost? runtimeOverlay;
     bool closing, closeReady;
     bool settingsBusy;
     bool resourcesBusy;
@@ -50,14 +51,15 @@ public partial class WorkspaceWindow : Window
     {
         dataRoot = new ExperimentalDataRoot(experimentalDataPath);
         InitializeComponent();
+        InitializePageFocus();
         pages["home"] = BuildHome();
+        runtimeOverlay = new(Dispatcher, () => runtimePage?.ReadRender(), runtimeCapture,
+            message => Status.Text = message, () => settings?.SheetOpacity ?? .55);
         pages["gallery"] = BuildGallery();
         pages["settings"] = BuildSettings();
         pages["help"] = BuildHelp();
-        pages["packages"] = Pending("图包管理", "导入、在线图包、版本恢复尚未接入此测试版。当前可在地图资源页读取现有图包，不会修改原图包。");
         var customPage = new CustomGalleryPage(dataRoot);
         pages["custom"] = customPage;
-        pages["plaza"] = Pending("路线广场", "账号、路线广场和投稿尚未接入。此版本没有登录或上传功能。");
         InitializeInput();
         ready = true;
         ShowPage("home");
@@ -77,6 +79,7 @@ public partial class WorkspaceWindow : Window
             closed = true; resourceGeneration++; previewGeneration++;
             previewCancellation?.Cancel(); connectionPage?.Dispose();
             if (runtimePage is not null) await runtimePage.CloseAsync();
+            runtimeOverlay?.Dispose();
             runtimeCapture.Dispose(); closeReady = true;
             // A drained session can complete synchronously inside Closing.
             // Re-enter Close only after WPF has left its current close callback.
@@ -92,16 +95,20 @@ public partial class WorkspaceWindow : Window
     void ShowPage(string key)
     {
         if (!pages.TryGetValue(key, out var page)) return;
+        if (ReferenceEquals(PageContent.Content, page)) return;
+        RememberPageFocus();
+        HomeConnectionSettings.Visibility = key == "home" ? Visibility.Visible : Visibility.Collapsed;
         Heading.Text = key switch { "home" => "主页面", "gallery" => "地图资源", "packages" => "图包管理", "custom" => "自定义路线", "plaza" => "路线广场", "settings" => "设置", _ => "帮助与公告" };
         PageDescription.Text = key switch
         {
-            "home" => "连接窗口，检查资源与当前状态。只有你明确操作后才采集画面。",
+            "home" => "先连接游戏窗口，再开始本局；地图与楼层可在此确认。",
             "gallery" => "读取原图包，按模式、作者和楼层查看。预览不会参与地图识别。",
             "settings" => "设置只保存到本测试版的数据目录。可导入原版设置的副本。",
             "help" => "查看此版本的可用范围与仍待验证的功能。",
             _ => "完整迁移正在进行，页面存在不代表功能已接通。"
         };
         PageContent.Content = page;
+        RestorePageFocus(key);
     }
 
     FrameworkElement BuildHome()
@@ -111,42 +118,65 @@ public partial class WorkspaceWindow : Window
         connectionPage = new ConnectionPage(message => Status.Text = message, runtimeCapture);
         connectionPage.BindingChanged += runtimePage.BindingChanged;
         connectionPage.BindingChanged += RefreshInputScope;
-        panel.Children.Add(connectionPage);
-        panel.Children.Add(BuildInputPanel());
-        runtimePage.Margin = new Thickness(0, 28, 0, 0); panel.Children.Add(runtimePage);
-        panel.Children.Add(HeadingText("资源与设置", 18, new Thickness(0, 28, 0, 12)));
-        panel.Children.Add(resourceSummary);
-        var choose = Button("选择原结构资源目录", async (_, _) => await ChooseResources());
-        choose.Margin = new Thickness(0, 16, 0, 0);
-        panel.Children.Add(choose);
-        panel.Children.Add(new TextBlock { Text = "本局使用 C# 直接观察楼层、生成主门候选和对齐结构。侧门、跟踪与悬浮路线显示仍在迁移。", TextWrapping = TextWrapping.Wrap, Foreground = Brushes.SlateGray, Margin = new Thickness(0, 22, 0, 0) });
+        panel.Children.Add(Surface(runtimePage));
+
+        var preparation = new StackPanel { Margin = new(0, 12, 0, 4) };
+        preparation.Children.Add(connectionPage);
+        preparation.Children.Add(SectionHeading("游戏内快捷键", new(0, 20, 0, 0)));
+        preparation.Children.Add(BuildInputPanel());
+        homePreparation = Disclosure("游戏连接与快捷键", preparation, "HomePreparation");
+        homePreparation.Margin = new(0, 16, 0, 0);
+        homePreparation.Unloaded += (_, _) => CancelConnectionReveal();
+
+        var resources = new StackPanel();
+        resources.Children.Add(SectionHeading("当前资源", new(0, 0, 0, 8)));
+        resources.Children.Add(resourceSummary);
+        var links = new WrapPanel { Margin = new(0, 12, 0, 0) };
+        links.Children.Add(TextButton("地图资源", (_, _) => SelectPage("gallery")));
+        links.Children.Add(TextButton("快捷键与显示设置", (_, _) => SelectPage("settings")));
+        resources.Children.Add(links);
+        var resourceArea = Surface(resources); resourceArea.Margin = new(0, 16, 0, 0);
+        panel.Children.Add(resourceArea);
+        panel.Children.Add(homePreparation);
         resourceSummary.Text = "尚未选择图包。选择现有资源目录后可查看真实地图和楼层。";
-        return new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        homeScroll = PageScroll(panel); homeScroll.CanContentScroll = false;
+        return homeScroll;
     }
 
     FrameworkElement BuildGallery()
     {
         var root = new Grid();
+        resourceList.MinWidth = 0;
+        resourceList.ItemTemplate = (DataTemplate)FindResource("ResourceRowTemplate");
+        var itemStyle = new Style(typeof(ListBoxItem), (Style)FindResource("MaterialDesignListBoxItem"));
+        itemStyle.Setters.Add(new Setter(HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch));
+        itemStyle.Setters.Add(new Setter(ToolTipProperty, new Binding("TechnicalDetails")));
+        resourceList.ItemContainerStyle = itemStyle;
+        ScrollViewer.SetHorizontalScrollBarVisibility(resourceList, ScrollBarVisibility.Disabled);
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition());
         var pathRow = new DockPanel { Margin = new Thickness(0, 0, 0, 12) };
-        var choose = Button("选择目录", async (_, _) => await ChooseResources());
+        var choose = Button("选择现有资源目录", async (_, _) => await ChooseResources());
         DockPanel.SetDock(choose, Dock.Right); pathRow.Children.Add(choose); pathRow.Children.Add(resourcePath); root.Children.Add(pathRow);
         var search = new TextBox { ToolTip = "搜索地图、模式、作者或楼层", Margin = new Thickness(0, 0, 0, 12) };
+        MaterialDesignThemes.Wpf.HintAssist.SetHint(search, "搜索地图、模式、作者或楼层");
         search.TextChanged += (_, _) =>
         {
             var text = search.Text.Trim();
             resourceList.ItemsSource = resourceRows.Where(row => row.ToString().Contains(text, StringComparison.OrdinalIgnoreCase)).ToArray();
         };
         Grid.SetRow(search, 1); root.Children.Add(search);
-        var body = new Grid(); body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(270) }); body.ColumnDefinitions.Add(new ColumnDefinition());
+        var packageNotice = Disclosure("图包导入与在线下载 · 尚未接通", BodyText("导入、在线图包、版本恢复尚未接入此测试版。当前只能选择现有资源目录并查看；不会修改原图包。"), "GalleryPackageAvailability");
+        packageNotice.Margin = new(0, 0, 0, 12); Grid.SetRow(packageNotice, 2); root.Children.Add(packageNotice);
+        var body = new Grid(); body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(230) }); body.ColumnDefinitions.Add(new ColumnDefinition());
         resourceList.SelectionChanged += async (_, _) => await PreviewResource();
         resourceList.Margin = new Thickness(0, 0, 18, 0); body.Children.Add(resourceList);
         var detail = new Grid(); detail.RowDefinitions.Add(new RowDefinition()); detail.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        detail.Children.Add(new Border { Background = Brushes.White, Padding = new Thickness(14), Child = preview });
+        detail.Children.Add(Surface(preview));
         resourceDetails.Margin = new Thickness(0, 14, 0, 0); Grid.SetRow(resourceDetails, 1); detail.Children.Add(resourceDetails);
-        Grid.SetColumn(detail, 1); body.Children.Add(detail); Grid.SetRow(body, 2); root.Children.Add(body);
+        Grid.SetColumn(detail, 1); body.Children.Add(detail); Grid.SetRow(body, 3); root.Children.Add(body);
         return root;
     }
 
@@ -234,27 +264,51 @@ public partial class WorkspaceWindow : Window
 
     FrameworkElement BuildSettings()
     {
-        var panel = new StackPanel { MaxWidth = 600, HorizontalAlignment = HorizontalAlignment.Left };
+        var panel = new StackPanel();
         var modeStyle = new Style(typeof(ComboBoxItem));
         var legacy = new DataTrigger { Binding = new Binding("Selectable"), Value = false };
         legacy.Setters.Add(new Setter(IsEnabledProperty, false)); modeStyle.Triggers.Add(legacy); mode.ItemContainerStyle = modeStyle;
         mode.SelectionChanged += (_, _) => MarkEdited("gameMode"); season.SelectionChanged += (_, _) => MarkEdited("gameSeason");
         hotkey.TextChanged += (_, _) => MarkEdited("hotkey"); sheetOpacity.ValueChanged += (_, _) => MarkEdited("sheetOpacity"); referenceOpacity.ValueChanged += (_, _) => MarkEdited("referenceOpacity");
-        AddField(panel, "游戏模式", mode); AddField(panel, "赛季", season); AddField(panel, "地图键", hotkey);
+        var context = new StackPanel();
+        context.Children.Add(SectionHeading("模式与赛季", new(0, 0, 0, 4)));
+        var modeField = new StackPanel(); var seasonField = new StackPanel();
+        AddField(modeField, "游戏模式", mode); AddField(seasonField, "赛季", season);
+        context.Children.Add(ResponsiveColumns(modeField, seasonField));
+        panel.Children.Add(Surface(context));
+        var shortcuts = new StackPanel();
+        shortcuts.Children.Add(SectionHeading("快捷键", new(0, 0, 0, 4)));
+        AddField(shortcuts, "游戏地图键", hotkey);
         string[] actionLabels = ["显示或隐藏主面板", "上一候选", "下一候选", "确认地图", "切换楼层", "结束本局", "显示或隐藏贴合图", "开始本局", "开始或结束本局", "手动选图"];
         for (int i = 0; i < actionHotkeys.Length; i++)
-        {
             actionHotkeys[i].TextChanged += (_, _) => MarkEdited("actionHotkeys");
-            AddField(panel, actionLabels[i], actionHotkeys[i]);
-        }
-        panel.Children.Add(new TextBlock { Text = "快捷键留空可解绑。错误原值会显示在对应输入框，修改并保存后才生效。", TextWrapping = TextWrapping.Wrap, Foreground = Brushes.SlateGray, Margin = new Thickness(0, 10, 0, 0) });
+        foreach (int i in new[] { 0, 8, 6 }) AddField(shortcuts, actionLabels[i], actionHotkeys[i]);
+        var advanced = new StackPanel();
+        foreach (int i in new[] { 1, 2, 3, 4, 5, 7, 9 }) AddField(advanced, actionLabels[i], actionHotkeys[i]);
+        shortcuts.Children.Add(BodyText("快捷键留空可解绑。错误原值会显示在对应输入框，修改并保存后才生效。", new(0, 12, 0, 8)));
         clearPickerKey.Click += (_, _) => { actionHotkeys[9].Text = ""; MarkEdited("actionHotkeys"); };
-        panel.Children.Add(clearPickerKey);
-        AddField(panel, "贴合透明度", sheetOpacity); AddField(panel, "定点透明度", referenceOpacity);
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 20, 0, 16) };
-        actions.Children.Add(Button("保存并应用到测试版", async (_, _) => await SaveSettings()));
-        actions.Children.Add(Button("导入原版设置副本", async (_, _) => await ImportSettings())); panel.Children.Add(actions); panel.Children.Add(settingsState);
-        return new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        advanced.Children.Add(clearPickerKey);
+        advancedHotkeysDisclosure = Disclosure("高级快捷键", advanced, "AdvancedHotkeys");
+        shortcuts.Children.Add(advancedHotkeysDisclosure);
+        var display = new StackPanel();
+        display.Children.Add(SectionHeading("小抄显示", new(0, 0, 0, 4)));
+        AddField(display, "贴合透明度", sheetOpacity); AddField(display, "定点透明度", referenceOpacity);
+        display.Children.Add(BodyText("显示参数保留在测试版设置中。悬浮路线显示的实际能力以本版本已接通范围为准。", new(0, 16, 0, 0)));
+        var options = ResponsiveColumns(Surface(shortcuts), Surface(display)); options.Margin = new(0, 16, 0, 0); panel.Children.Add(options);
+        var actions = new WrapPanel { Margin = new(0, 12, 0, 0) };
+        saveSettingsButton = Button("保存并应用到测试版", async (_, _) => await SaveSettings()); saveSettingsButton.SetResourceReference(StyleProperty, "StarMap.PrimaryButton");
+        importSettingsButton = Button("导入原版设置副本", async (_, _) => await ImportSettings());
+        actions.Children.Add(saveSettingsButton); actions.Children.Add(importSettingsButton);
+        var footer = new StackPanel { Name = "SettingsActionBar" };
+        footer.Children.Add(settingsDirtyState);
+        footer.Children.Add(new ScrollViewer { Content = settingsState, MaxHeight = 66, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
+        footer.Children.Add(actions);
+        var actionArea = new Border { Child = footer, BorderThickness = new(0, 1, 0, 0), Padding = new(0, 12, 0, 0), Margin = new(0, 12, 0, 0) };
+        actionArea.SetResourceReference(Border.BorderBrushProperty, "StarMap.Outline");
+        var root = new Grid(); root.RowDefinitions.Add(new()); root.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        root.Children.Add(PageScroll(panel)); Grid.SetRow(actionArea, 1); root.Children.Add(actionArea);
+        UpdateSettingsToolbar();
+        return root;
     }
 
     async Task LoadSettings()
@@ -289,11 +343,14 @@ public partial class WorkspaceWindow : Window
         }
         finally { loadingSettings = false; }
         var issues = settings.GetValidationIssues();
+        if (issues.Keys.Any(key => key.Contains("actionHotkeys", StringComparison.Ordinal)) && advancedHotkeysDisclosure is not null)
+            advancedHotkeysDisclosure.IsExpanded = true;
         settingsState.Text = "当前为测试版设置。原版设置与未知字段会保留。"
             + (issues.Count == 0 ? "" : "\n待修复：" + string.Join("；", issues.Values));
+        UpdateSettingsToolbar();
     }
 
-    void MarkEdited(string key) { if (!loadingSettings && settings is not null) editedSettings.Add(key); }
+    void MarkEdited(string key) { if (!loadingSettings && settings is not null) { editedSettings.Add(key); UpdateSettingsToolbar(); } }
 
     JsonNode? ReadSettingControl(string key) => key switch
     {
@@ -307,7 +364,7 @@ public partial class WorkspaceWindow : Window
     {
         if (resourcesBusy) { settingsState.Text = "图包正在载入，本次更改尚未保存或应用，请完成后重试。"; return; }
         if (settings is null || settingsBusy) return;
-        settingsBusy = true;
+        settingsBusy = true; UpdateSettingsToolbar();
         try
         {
             if (editedSettings.Count == 0) { settingsState.Text = "设置没有更改，正在应用已保存设置。"; await ConfigureRuntime(); await ApplyInputSettings(); return; }
@@ -327,7 +384,7 @@ public partial class WorkspaceWindow : Window
             else settingsState.Text = "没有保存：" + saved.Error?.Message;
         }
         catch (Exception error) when (error is IOException or ArgumentException or InvalidOperationException or UnauthorizedAccessException) { settingsState.Text = "没有保存：" + error.Message; }
-        finally { settingsBusy = false; }
+        finally { settingsBusy = false; UpdateSettingsToolbar(); }
     }
 
     async Task ImportSettings()
@@ -366,6 +423,7 @@ public partial class WorkspaceWindow : Window
         foreach (var control in new Control[] { mode, season, hotkey, sheetOpacity, referenceOpacity }) control.IsEnabled = enabled;
         foreach (var editor in actionHotkeys) editor.IsEnabled = enabled;
         clearPickerKey.IsEnabled = enabled;
+        UpdateSettingsToolbar();
     }
 
     async Task ConfigureRuntime()
@@ -383,27 +441,30 @@ public partial class WorkspaceWindow : Window
     {
         var panel = new StackPanel();
         panel.Children.Add(HeadingText("当前测试版", 20, new Thickness(0, 0, 0, 16)));
-        panel.Children.Add(new TextBlock { Text = "这是完整迁移的进行中版本。资源、设置、当前楼层观察、主门候选和结构对齐使用 C#，不启动 Python。侧门、稳态跟踪、作者路线、账号与在线服务仍需接入和验收。\n\n窗口绑定、开始本局和采集只有你明确操作才执行。不会自动打开游戏地图或发送按键。\n\n原始资源不会被修改；缺失楼层或坐标信息会显示问题。安装、实机与回退的验证状态单独记录。", TextWrapping = TextWrapping.Wrap, MaxWidth = 650, HorizontalAlignment = HorizontalAlignment.Left, LineHeight = 25 });
+        panel.Children.Add(new TextBlock { Text = "这是完整迁移的进行中版本。资源、设置、当前楼层观察、S0 入口与登记相似组、S1 结构候选、当前帧贴合和显示素材使用 C#，不启动 Python。稳态跟踪、组内选图、完整作者路线交互、账号与在线服务仍在迁移。\n\n窗口绑定、开始本局和采集只有你明确操作才执行。不会自动打开游戏地图或发送按键。\n\n原始资源不会被修改；缺失楼层或坐标信息会显示问题。安装、实机与回退的验证状态单独记录。", TextWrapping = TextWrapping.Wrap, MaxWidth = 650, HorizontalAlignment = HorizontalAlignment.Left, LineHeight = 25 });
         return panel;
     }
 
-    static FrameworkElement Pending(string heading, string text)
-    {
-        var panel = new StackPanel(); panel.Children.Add(HeadingText(heading, 20, new Thickness(0, 0, 0, 16))); panel.Children.Add(new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, MaxWidth = 600, HorizontalAlignment = HorizontalAlignment.Left }); return panel;
-    }
     static TextBlock HeadingText(string text, double size, Thickness margin) => new() { Text = text, FontSize = size, FontWeight = FontWeights.SemiBold, Margin = margin };
     static Button Button(string text, RoutedEventHandler action)
     {
-        var button = new Button { Content = text, Padding = new Thickness(15, 8, 15, 8), Margin = new Thickness(0, 0, 10, 0), HorizontalAlignment = HorizontalAlignment.Left };
+        var button = new Button { Content = text, Padding = new Thickness(16, 8, 16, 8), Margin = new Thickness(0, 0, 8, 8), HorizontalAlignment = HorizontalAlignment.Left };
         button.Click += action; return button;
     }
     static void AddField(Panel panel, string label, FrameworkElement control)
     {
-        panel.Children.Add(new TextBlock { Text = label, Margin = new Thickness(0, 14, 0, 7) }); control.MinWidth = 300; panel.Children.Add(control);
+        var caption = new Label { Content = label, Target = control, Padding = new(0), Margin = new Thickness(0, 14, 0, 7) };
+        panel.Children.Add(caption); control.MinWidth = 0; control.HorizontalAlignment = HorizontalAlignment.Stretch; panel.Children.Add(control);
     }
     sealed record ResourceRow(ResourceCatalogEntry Entry)
     {
-        public override string ToString() => $"{Entry.DisplayName} ({Entry.MapId})\n{Entry.Mode} · {Entry.Season} · {Entry.Floor} · {Entry.Profile}";
+        public string DisplayLabel => Entry.DisplayName;
+        public string ContextLabel => $"{ResourceModeLabel(Entry.Mode)} · {Entry.Season.ToUpperInvariant()} · {ResourceFloorLabel(Entry.Floor)}";
+        public string TechnicalDetails => $"{Entry.DisplayName}\n地图 ID：{Entry.MapId}\n路线配置 ID：{Entry.Profile}\n{Entry.Mode} · {Entry.Season} · {Entry.Floor}";
+        public override string ToString() => $"{DisplayLabel}\n{ContextLabel}\n{TechnicalDetails}";
+        static string ResourceModeLabel(string value) => value switch { "nightmare" => "噩梦", "difficult" => "困难", "difficulty2" => "普通（历史）", _ => value };
+        static string ResourceFloorLabel(string value) => value == "B1" ? "地下 1 层"
+            : value.StartsWith('-') ? $"地下 {value[1..]} 层" : int.TryParse(value, out _) ? value + "F" : value;
     }
     sealed record ModeChoice(string Key, string Label, bool Selectable);
 }

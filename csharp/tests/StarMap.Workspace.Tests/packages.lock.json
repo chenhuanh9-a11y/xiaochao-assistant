@@ -2,6 +2,25 @@
   "version": 1,
   "dependencies": {
     "net10.0-windows10.0.19041": {
+      "MaterialDesignColors": {
+        "type": "Transitive",
+        "resolved": "5.4.0",
+        "contentHash": "L6PxatCc/LeqSmUVqCqFl7UcNgaI/AgEIHGAgFneAX6MjoHWeERBP7lHEpJagKjyOHn2MAavuz9wGKOc2p0yIQ=="
+      },
+      "MaterialDesignThemes": {
+        "type": "Transitive",
+        "resolved": "5.4.0",
+        "contentHash": "dOX3vBToKGe3tA/zMrtvz7BSnP+Omk0SL0IgAqLQgh3k92Qwm0GLPRip0xVTY0rwTYH3lTdPIhFh8x0J+KN27w==",
+        "dependencies": {
+          "MaterialDesignColors": "5.4.0",
+          "Microsoft.Xaml.Behaviors.Wpf": "1.1.142"
+        }
+      },
+      "Microsoft.Xaml.Behaviors.Wpf": {
+        "type": "Transitive",
+        "resolved": "1.1.142",
+        "contentHash": "c47wA/8GHiQ9w+O6+mdqrZhZrxHogx2/fSZyRKL9tz0k+ypoTiwOx6fID0X3jr5LnCazJbCk7KiAcL0zVnNgNA=="
+      },
       "OpenCvSharp4": {
         "type": "Transitive",
         "resolved": "4.13.0.20261107",
@@ -12,28 +31,15 @@
         "resolved": "4.13.0.20261107",
         "contentHash": "ormKP9mE5XDUfqZ2aDyLgxLr1M9thxYi0fhRKKYY8syvsDF4F7MefUPPqaaykOub/+ms1L9sbGIOsn3PnyIygg=="
       },
-      "WPF-UI": {
-        "type": "Transitive",
-        "resolved": "4.3.0",
-        "contentHash": "SIHhc8lIrhEQ/1cLFZN6Dtf8cqsLm4myBULj9obnacd9TyDs2vizhKYzRzTlcPEcnzb3L4EstvPN3M6kcXbJCA==",
-        "dependencies": {
-          "WPF-UI.Abstractions": "4.3.0"
-        }
-      },
-      "WPF-UI.Abstractions": {
-        "type": "Transitive",
-        "resolved": "4.3.0",
-        "contentHash": "7Kj9DmCCo4SOCd1jAiw4+EcMFP2nR8rLLvitAYzVtzbWToTsodkbie24+8x9C4LDLxkopWEUGX62szqqNy7oeg=="
-      },
       "starmap.core": {
         "type": "Project"
       },
       "StarMap.Migration": {
         "type": "Project",
         "dependencies": {
+          "MaterialDesignThemes": "[5.4.0, 5.4.0]",
           "StarMap.Core": "[1.0.0, )",
-          "StarMap.Runtime": "[1.0.0, )",
-          "WPF-UI": "[4.3.0, )"
+          "StarMap.Runtime": "[1.0.0, )"
         }
       },
       "starmap.runtime": {
