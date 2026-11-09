@@ -1,7 +1,16 @@
 <Application x:Class="StarMap.App.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             StartupUri="MainWindow.xaml">
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
     <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ui:ThemesDictionary Theme="Light" />
+                <ui:ControlsDictionary />
+            </ResourceDictionary.MergedDictionaries>
+            <SolidColorBrush x:Key="StarMap.Ink" Color="#142B4B" />
+            <SolidColorBrush x:Key="StarMap.Muted" Color="#526785" />
+            <SolidColorBrush x:Key="StarMap.Accent" Color="#2F66EB" />
+        </ResourceDictionary>
     </Application.Resources>
 </Application>

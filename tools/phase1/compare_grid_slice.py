@@ -30,7 +30,7 @@ if np.__version__ != "2.2.6":
 
 import fast_structure_alignment as fast  # noqa: E402
 
-DLL = ROOT / "csharp" / "src" / "StarMap.Cli" / "bin" / "Release" / "net8.0" / "StarMap.Cli.dll"
+DLL = ROOT / "csharp" / "src" / "StarMap.Cli" / "bin" / "Release" / "net10.0" / "StarMap.Cli.dll"
 FIXTURES = ("black-frame", "prior-local", "global-large")
 FINE_LIMIT = 300
 COARSE_LIMIT = 96

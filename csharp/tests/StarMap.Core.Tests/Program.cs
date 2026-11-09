@@ -150,6 +150,28 @@ else
     }
 }
 
+// Independent NumPy 2.2.6 _grid oracle on synthetic quarter-pixel coordinates.
+// A fractional scale must retain float32 division/median/arange promotion.
+const double fractionalScale = 1.4483333333333335;
+var fractionalPoints = Enumerable.Range(0, 96).Select(i => new SamplePoint(
+    4.5f + i % 12 * 3.25f, 2f + i / 12 * 3.5f)).ToArray();
+var fractionalDistance = new ushort[64 * 80];
+for (int y = 0; y < 64; y++)
+for (int x = 0; x < 80; x++) fractionalDistance[y * 80 + x] = (ushort)((17 * y + 31 * x) % 601);
+GridRow[] fractionalExpected =
+[
+    new(0.0381944440305233, fractionalScale, -52.62499696731568, -30.749998631477357),
+    new(0.0381944440305233, fractionalScale, -7.624998970031739, -55.74999751885733),
+    new(0.0381944440305233, fractionalScale, -32.62499785741171, -60.74999729633332),
+    new(0.0381944440305233, fractionalScale, -62.624996522267665, -60.74999729633332),
+    new(0.0347222238779068, fractionalScale, -17.624998524983727, 4.249999810854594),
+    new(0.0347222238779068, fractionalScale, -42.62499741236369, 4.249999810854594),
+    new(0.0347222238779068, fractionalScale, -7.624998970031739, -10.749999521573386),
+    new(0.0347222238779068, fractionalScale, -57.62499674479167, -15.74999929904938)
+];
+Check(NumpyCompat.Grid(fractionalPoints, fractionalDistance, 64, 80, fractionalScale, null, null, null)
+    .Rows.SequenceEqual(fractionalExpected), "fractional-scale-numpy-grid-exact");
+
 return failed == 0 ? 0 : 1;
 
 static string? FindFixture(string id)

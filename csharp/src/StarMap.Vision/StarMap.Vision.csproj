@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Content Include="ThirdParty\*" CopyToOutputDirectory="PreserveNewest" />
+    <ProjectReference Include="../StarMap.Core/StarMap.Core.csproj" />
+    <PackageReference Include="OpenCvSharp4" Version="4.13.0.20261107" />
+    <PackageReference Include="OpenCvSharp4.runtime.win.slim" Version="4.13.0.20261107" />
+  </ItemGroup>
+</Project>

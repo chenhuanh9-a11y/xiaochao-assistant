@@ -3,6 +3,37 @@ using StarMap.Core.Frames;
 using StarMap.Core.Recognition;
 using StarMap.Core.Reliability;
 using StarMap.Core.Session;
+using StarMap.Core.Resources;
+
+if (args is ["--structure", var structureRoot, var selectedMode, var selectedSeason, var selectedProfile, var selectedMap, var selectedFloor])
+{
+    var catalog = ResourceCatalog.Load(structureRoot);
+    var entry = catalog.Find(selectedMode, selectedSeason, selectedProfile, selectedMap, selectedFloor);
+    var loaded = entry is null ? null : catalog.LoadSharedStructure(entry);
+    Console.WriteLine(JsonSerializer.Serialize(new
+    {
+        success = loaded?.Success == true,
+        code = entry is null ? "resource-binding-missing" : loaded?.Error?.Code,
+        shape = loaded?.Value?.ValidationMask.Shape,
+        cleanAvailable = loaded?.Value?.CleanMask is not null,
+        nativeWallsAvailable = loaded?.Value?.NativeWalls is not null,
+        scope = "Exact resource binding and typed arrays; not recognition or pose acceptance"
+    }));
+    return loaded?.Success == true ? 0 : 1;
+}
+
+if (args is ["--catalog", var resourceRoot])
+{
+    var catalog = ResourceCatalog.Load(resourceRoot);
+    Console.WriteLine(JsonSerializer.Serialize(new
+    {
+        scope = "Read-only resource declarations; array loading, coordinate equivalence and recognition are separate checks",
+        entries = catalog.Entries.Count,
+        issues = catalog.Issues.GroupBy(issue => issue.Code).Select(group => new { code = group.Key, count = group.Count() }),
+        bindings = catalog.Entries.Select(entry => new { entry.StableKey, entry.Mode, entry.Season, entry.Profile, entry.MapId, entry.Floor, entry.StructureKind, status = entry.StructureStatus.ToString(), entry.SourceVersion, entry.StructureVersionKey, entry.BaseSnapshot })
+    }, new JsonSerializerOptions { WriteIndented = true }));
+    return 0;
+}
 
 // Phase-1 parity CLI. Stdout is a single JSON object. It never prints the
 // frame path, a window title, a username, or another program's identity.

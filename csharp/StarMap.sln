@@ -8,6 +8,18 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StarMap.Core.Tests", "tests
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StarMap.App", "src\StarMap.App\StarMap.App.csproj", "{C3A1F0E1-6C9F-4A11-9B01-000000000004}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StarMap.Vision", "src\StarMap.Vision\StarMap.Vision.csproj", "{C3A1F0E1-6C9F-4A11-9B01-000000000005}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StarMap.Migration.Tests", "tests\StarMap.Migration.Tests\StarMap.Migration.Tests.csproj", "{C3A1F0E1-6C9F-4A11-9B01-000000000006}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StarMap.Capture.Tests", "tests\StarMap.Capture.Tests\StarMap.Capture.Tests.csproj", "{C3A1F0E1-6C9F-4A11-9B01-000000000007}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StarMap.Workspace.Tests", "tests\StarMap.Workspace.Tests\StarMap.Workspace.Tests.csproj", "{C3A1F0E1-6C9F-4A11-9B01-000000000008}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StarMap.Vision.Tests", "tests\StarMap.Vision.Tests\StarMap.Vision.Tests.csproj", "{C3A1F0E1-6C9F-4A11-9B01-000000000009}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StarMap.Entry.Tests", "tests\StarMap.Entry.Tests\StarMap.Entry.Tests.csproj", "{C3A1F0E1-6C9F-4A11-9B01-00000000000A}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -30,5 +42,29 @@ Global
 		{C3A1F0E1-6C9F-4A11-9B01-000000000004}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{C3A1F0E1-6C9F-4A11-9B01-000000000004}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{C3A1F0E1-6C9F-4A11-9B01-000000000004}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-000000000005}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-000000000005}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-000000000005}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-000000000005}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-000000000006}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-000000000006}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-000000000006}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-000000000006}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-000000000007}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-000000000007}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-000000000007}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-000000000007}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-000000000008}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-000000000008}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-000000000008}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-000000000008}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-000000000009}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-000000000009}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-000000000009}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-000000000009}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-00000000000A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-00000000000A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-00000000000A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C3A1F0E1-6C9F-4A11-9B01-00000000000A}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

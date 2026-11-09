@@ -1,15 +1,21 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <RootNamespace>StarMap.App</RootNamespace>
+    <AssemblyName>StarMap.Migration</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- Windows-only shell. Do not build this project on Linux. -->
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="StarMap.Workspace.Tests" />
     <ProjectReference Include="..\StarMap.Core\StarMap.Core.csproj" />
+    <PackageReference Include="WPF-UI" Version="4.3.0" />
+    <Content Include="ThirdParty\*" CopyToOutputDirectory="PreserveNewest" />
+    <Resource Include="..\..\..\experiments\qt_quick\icons\*.png" Link="Assets\%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

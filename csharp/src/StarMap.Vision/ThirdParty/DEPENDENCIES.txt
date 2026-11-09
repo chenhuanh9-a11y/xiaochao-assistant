@@ -1,0 +1,13 @@
+OpenCvSharp4 and OpenCvSharp4.runtime.win.slim 4.13.0.20261107
+Copyright 2008-2026 shimat and contributors.
+Source commit b814c38cfc622d9277bb61f2abaf1b9654e65b38
+https://github.com/shimat/opencvsharp
+License: Apache-2.0; see OpenCvSharp-LICENSE.txt.
+
+OpenCV 4.13.0
+https://github.com/opencv/opencv/tree/4.13.0
+License: Apache-2.0; see OpenCV-LICENSE.txt.
+
+The Windows slim native package contains statically linked native components.
+Their complete build-specific notices must be collected before distributing
+a Setup that includes StarMap.Vision. This source experiment is not that Setup.

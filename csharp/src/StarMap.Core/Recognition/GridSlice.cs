@@ -68,7 +68,7 @@ public sealed record GridSliceResult(
 /// stored is <c>(start+step)-start</c>. <c>quantile</c> uses the linear method,
 /// including the <c>t &gt;= 0.5</c> lerp branch. <c>rint</c> is ties-to-even.
 /// </summary>
-static class NumpyCompat
+public static class NumpyCompat
 {
     public static SamplePoint[] SampleEdges(ReadOnlySpan<byte> edge, int height, int width, int limit)
     {
@@ -160,29 +160,41 @@ static class NumpyCompat
         }
         else
         {
-            var referenceX = new double[points.Count];
-            var referenceY = new double[points.Count];
-            for (int i = 0; i < points.Count; i++)
-            {
-                referenceX[i] = points[i].X / scale;
-                referenceY[i] = points[i].Y / scale;
-            }
-            double medianX = Median(referenceX);
-            double medianY = Median(referenceY);
-            double stride = Math.Max(3.0, 5.0 / scale);
-            var xs = Arange(-medianX, preparedWidth - medianX + stride, stride);
-            var ys = Arange(-medianY, preparedHeight - medianY + stride, stride);
-            if ((long)xs.Length * ys.Length > 350_000)
+            tx = GlobalTranslations(points, preparedWidth, scale, horizontal: true);
+            ty = GlobalTranslations(points, preparedHeight, scale, horizontal: false);
+            if ((long)tx.Length * ty.Length > 350_000)
                 return new GridSearch(Array.Empty<GridRow>(), false);
-            tx = new double[xs.Length];
-            ty = new double[ys.Length];
-            for (int i = 0; i < xs.Length; i++)
-                tx[i] = -scale * xs[i];
-            for (int i = 0; i < ys.Length; i++)
-                ty[i] = -scale * ys[i];
         }
 
         return ScoreAndSuppress(points, distance, preparedHeight, preparedWidth, scale, tx, ty, cancelled);
+    }
+
+    private static double[] GlobalTranslations(IReadOnlyList<SamplePoint> points, int dimension, double scale, bool horizontal)
+    {
+        // np.float32 points / Python scalar, then NumPy 2's linear quantile at .5.
+        // The half-way interpolation uses right - (right - left) * (1 - gamma).
+        var coordinates = new float[points.Count];
+        for (int i = 0; i < points.Count; i++)
+            coordinates[i] = (horizontal ? points[i].X : points[i].Y) / (float)scale;
+        Array.Sort(coordinates);
+        int mid = coordinates.Length / 2;
+        float median = coordinates[mid];
+        if (coordinates.Length % 2 == 0)
+            median -= (median - coordinates[mid-1]) * .5f;
+
+        // lo is a NumPy float32 scalar, hi is float64 (int64 shape minus quantile).
+        // arange stores doubles, but computes its second element from lo + Python step
+        // in float32. Its subsequent double step is the difference of the first two.
+        float start = -median;
+        double stride = Math.Max(3.0, 5.0 / scale);
+        double stop = (dimension - (double)median) + stride;
+        int length = checked((int)Math.Ceiling((stop - start) / stride));
+        double next = start + (float)stride;
+        double step = next - start;
+        var translations = new double[length];
+        for (int i = 0; i < length; i++)
+            translations[i] = -scale * (start + i * step);
+        return translations;
     }
 
     private static GridSearch ScoreAndSuppress(

@@ -1,8 +1,18 @@
-# 星图 C# 阶段一骨架
+# 星图 C# / WPF 客户端
+
+完整迁移正在独立分支实施，当前范围、真实入口、模块与验收状态见 [MIGRATION.md](MIGRATION.md)。WPF 测试版入口已转向原资源查看、实验设置和手动窗口绑定；未接入的识别与页面明确保持未完成。正式 Python/Qt 客户端继续保留。
+
+SDK 固定 .NET 10.0.403，UI 为 WPF-UI 4.3.0（MIT，许可随输出携带）。在 `src/StarMap.App` 实际目录执行 `dotnet build-server shutdown`，再执行裸 `dotnet build`。启动 `StarMap.Migration.exe`，可选 `--resource-root <现有资源目录>`、`--data-root <独立实验数据目录>`；不自动读取或写入原版玩家设置，不自动枚举/采集窗口或登记热键。默认数据目录为 `%LOCALAPPDATA%/StarMap.Migration`。
+
+`StarMap.Vision` 已包含原始帧观测、结构 prepare/grid/refine/propose 与入口图标/墙面观测。它尚未接入 WPF 的识别、身份和会话消费者。实际回归范围与未测项见迁移矩阵，不能把独立数学回放当成完整应用验收。
+
+以下保留最初阶段一切片的设计范围；当前目标框架已统一更新为 .NET 10，它不是完整迁移完成声明。
+
+## 最初阶段一
 
 这是独立于现版 Python/Qt 的阶段一开始。现版仍是发布版。本目录不替换安装包，也不合并到 `main`。
 
-已定：界面用 WPF；安装方式为自包含并捆绑 .NET 运行时；阶段一从这条纵向切片做起。WPF 工程只在 Windows 上构建。Linux 上构建并核对 `net8.0` 类库、命令行和严格对等。
+已定：界面用 WPF；安装方式为自包含并捆绑 .NET 运行时；阶段一从这条纵向切片做起。WPF 工程只在 Windows 上构建。Linux 上构建并核对 `net10.0` 类库、命令行和严格对等。
 
 仓库里没有可复用的 C# 网格实验源码（同轮报告只提交了摘要）。本切片按 `app/fast_structure_alignment.py` 的 `sample_edges` 与 `_grid` 逐字移植，不改阈值。`prepare`、`refine`、`propose` 的其余部分、身份、楼层和显示都不在本阶段。
 
@@ -16,7 +26,7 @@
 
 ## Linux 上构建与核对
 
-需要 .NET 8 SDK 与 NumPy 2.2.6（`requirements.txt`）。导入 `fast_structure_alignment` 时会加载 OpenCV，但本切片不调用它。
+需要 .NET 10 SDK 与 NumPy 2.2.6（`requirements.txt`）。导入 `fast_structure_alignment` 时会加载 OpenCV，但本切片不调用它。
 
 ```bash
 dotnet build csharp/StarMap.Linux.sln -c Release
@@ -33,7 +43,7 @@ python3 tools/phase1/measure_publish.py
 命令行只打印帧标识、哈希和序号，不打印帧路径。
 
 ```bash
-dotnet csharp/src/StarMap.Cli/bin/Release/net8.0/StarMap.Cli.dll --frame csharp/fixtures/prior-local
+dotnet csharp/src/StarMap.Cli/bin/Release/net10.0/StarMap.Cli.dll --frame csharp/fixtures/prior-local
 ```
 
 ## Windows 上尚未做的事
