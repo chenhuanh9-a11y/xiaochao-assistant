@@ -94,13 +94,28 @@ internal static class GroupChoiceWorkspaceRegression
             page.Dispatch("close_map"); await page.DrainAsync(); page.RefreshGroupControls();
             members.SelectedValue = "nightmare-12"; choose.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await page.DrainAsync();
             capture.Select("batch02-event-000018"); page.Dispatch("capture_now"); await page.DrainAsync(); page.RefreshGroupControls();
-            check(Field<StackPanel>(page, "groupArea").Visibility == Visibility.Visible && members.Items.Count == 0
-                && !choose.IsEnabled && Field<TextBlock>(page, "groupChoiceMessage").Text.Contains("已保留选择"),
-                "group-none-evidence-keeps-visible-intent-feedback-without-offering-an-unregistered-member-list");
+            await File.WriteAllTextAsync(Path.Combine(output, "group-failed-floor-workspace.json"), JsonSerializer.Serialize(new {
+                state = page.State, session = page.SessionView,
+                memberIds = members.Items.Cast<RuntimeGroupMember>().Select(row => row.MapId).ToArray(),
+                selected = members.SelectedValue as string, enabled = choose.IsEnabled,
+                message = Field<TextBlock>(page, "groupChoiceMessage").Text
+            }, new JsonSerializerOptions { WriteIndented = true }));
+            // Original public Runtime retains the registered 04/12/19 family
+            // when a target-floor fit fails; failure is not a new identity rank.
+            check(Field<StackPanel>(page, "groupArea").Visibility == Visibility.Visible
+                && members.Items.Cast<RuntimeGroupMember>().Select(row => row.MapId).Order(StringComparer.Ordinal)
+                    .SequenceEqual(new[] { "nightmare-04", "nightmare-12", "nightmare-19" })
+                && members.SelectedValue as string == "nightmare-12" && choose.IsEnabled
+                && page.State is { IdentityKind: "group", IdentitySource: "group-default" }
+                && page.State.Context is { MapId: "nightmare-04", FloorId: "2" }
+                && page.State.GroupChoice is { DesiredMapId: "nightmare-12", HeldMapId: null, Status: "awaiting-geometry" }
+                && page.ReadRender() is null && page.ReadPendingGroupMaterial() is null
+                && Field<TextBlock>(page, "groupChoiceMessage").Text.Contains("已保留选择"),
+                "group-failed-floor-keeps-the-registered-member-list-reference-and-unconfirmed-intent-without-current-material");
             capture.Select("batch01-event-000006"); page.Dispatch("capture_now"); await page.DrainAsync(); page.RefreshGroupControls();
             check(members.SelectedValue as string == "nightmare-12" && page.ReadPendingGroupMaterial() is { MapId: "nightmare-12" }
                 && page.State!.GroupChoice.HeldMapId is null,
-                "group-recovery-restores-the-desired-control-selection-and-still-waits-for-consumer-ACK");
+                "group-return-retains-the-desired-control-selection-and-still-waits-for-consumer-ACK");
             await File.WriteAllTextAsync(Path.Combine(output, "group-workspace.json"), JsonSerializer.Serialize(new {
                 state = page.State, session = page.SessionView, consumed,
                 scope = "Real WPF controls, Session receipt collection, original 2026-11-09 PNG and material-ready consumer. Recorded capture port only; no Show/native input/game acceptance."

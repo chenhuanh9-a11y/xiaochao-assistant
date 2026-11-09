@@ -37,7 +37,7 @@ public sealed partial class LiveRuntime
             if (_structureTicket != ticket || !session.Commit(report, ticket))
                 return FailCurrent(request, epoch, "structure-observation-obsolete");
             PublishStructure(report);
-            return Receipt(request, false, _reason);
+            return Receipt(request, _candidates.Length > 0, _reason);
         }
 
         void PublishStructure(System.Text.Json.Nodes.JsonObject result)
@@ -47,7 +47,8 @@ public sealed partial class LiveRuntime
             _candidates = result["supportedMapIds"]!.AsArray().Select(id => new RuntimeCandidate(
                 id!.GetValue<string>(), "shared-structure", 0, false, true)).ToArray();
             _selected = _candidates.Length > 0 ? 0 : -1;
-            _reason = _candidates.Length > 0 ? "candidates-awaiting-confirmation" : "structure-candidates-unresolved";
+            _identitySource = "s1-structure-candidates";
+            _reason = _candidates.Length > 0 ? "s1-structure-candidates-awaiting-confirmation" : "s1-structure-candidates-unresolved";
             _diagnostics = JsonSerializer.SerializeToElement(new { stage = "s1-structure", floor = preparation.GetProperty("floor"), report = result,
                 session = session.Snapshot(), preparation }, Json);
             Publish();

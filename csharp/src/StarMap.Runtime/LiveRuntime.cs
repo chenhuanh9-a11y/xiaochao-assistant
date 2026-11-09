@@ -23,8 +23,8 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
     private static readonly string[] Gaps = ["steady-tracking-fallback-unavailable",
         "automatic-map-open-recovery-unavailable",
-        "locked-canvas-floor-reuse-unavailable", "similarity-group-competition-unavailable",
-        "established-condition-inventory-review-unavailable", "pose-index-candidate-provider-unavailable"];
+        "locked-canvas-floor-reuse-unavailable", "native-identity-strong-conflict-producer-unavailable",
+        "pose-index-candidate-provider-unavailable"];
     private readonly object _sync = new();
     private readonly SemaphoreSlim _worker = new(1, 1);
     private readonly ICapturePort _capture;
@@ -394,14 +394,22 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         }
         if (floor is null) return Receipt(request, false, "current-floor-unavailable");
         using var current = ToBgr(captured);
-        bool reviewGroup;
-        // A confirmed manual member is durable across floors and side openings.
-        // Only the automatic group's provisional reference re-enters discovery.
-        lock (_sync) reviewGroup = _identitySource == "group-default";
-        if (map is null || reviewGroup)
+        // Original Runtime re-enters identity ranking only when no map is
+        // selected. A provisional group display member also owns this slot;
+        // reopening with less structure must not restart discovery implicitly.
+        if (map is null)
         {
             if (bound.StructureCatalog is not null)
                 return ScanStructure(request, epoch, token, captured, bound, floor, current, preparation);
+            if (bound.Passports.Mode == "difficult" && floor == "2")
+            {
+                lock (_sync)
+                {
+                    RequireCurrent(epoch, token, captured, bound);
+                    _reason = "difficult-f2-entry-recognition-disabled"; Publish();
+                    return Receipt(request, false, _reason);
+                }
+            }
             map = RankS0(epoch, token, captured, bound, floor, current, preparation);
         }
         if (map is null) return Receipt(request, false, "candidates-awaiting-confirmation");

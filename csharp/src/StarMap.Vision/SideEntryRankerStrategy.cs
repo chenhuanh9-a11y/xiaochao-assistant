@@ -14,7 +14,7 @@ public sealed partial class SideEntryRanker
         => RankStrategyCore(frame,floor,budget,cancellation,null);
 
     internal EntryStrategyResult RankStrategyCore(Mat frame,string floor,TimeSpan? budget,CancellationToken cancellation,
-        Func<IReadOnlyList<JsonObject>,IReadOnlyList<JsonObject>>? prioritize)
+        Func<IReadOnlyList<JsonObject>,IReadOnlyList<JsonObject>>? prioritize,IReadOnlySet<string>? establishedMembers=null)
     {
         cancellation.ThrowIfCancellationRequested(); var clock=Stopwatch.StartNew(); var limit=budget??TimeSpan.FromSeconds(1);
         TimeSpan Remaining()=>limit>clock.Elapsed?limit-clock.Elapsed:TimeSpan.Zero;
@@ -27,7 +27,14 @@ public sealed partial class SideEntryRanker
             return new(gap,null,null,null,new JsonObject { ["reason"]="side-entry-strategy-unavailable",["season"]=catalog.Season,["sideProducer"]="not-run" },new());
         }
         JsonObject gate; HashSet<string>? allowed;
-        using(var context=EntryObservation.Capture(pixels))
+        if(establishedMembers is not null)
+        {
+            // This scope was derived from bound native conditions by the S0
+            // caller. A second front-gate prefilter must not remove its rivals.
+            gate=new JsonObject { ["reason"]="established-group-only",["applied"]=false,["automaticGateDetection"]=false };
+            allowed=establishedMembers.ToHashSet(StringComparer.Ordinal);
+        }
+        else using(var context=EntryObservation.Capture(pixels))
         {
             List<Corner> corners=context==null?[]:MainEntryGate.Corners(pixels,context.Geometry);
             (gate,allowed)=MainEntryGate.Select(pixels,context,corners,catalog,floor,true);
@@ -44,9 +51,10 @@ public sealed partial class SideEntryRanker
         var mainDiagnostics=new JsonObject { ["reason"]=unresolved?passport.Diagnostics["reason"]!.ToString():"side-entry-path-selected",["complete"]=!unresolved };
         if(!selected && !unresolved)
         {
-            // Existing main rank owns its gate and inventory rules. The same
-            // immutable pixels produce the same registered gate restriction.
-            main=new MainEntryRanker(catalog,resources).Rank(pixels,floor,Remaining(),cancellation:cancellation);
+            // Main rank retains its original inventory and verification rules.
+            // Established scope bypasses only the ordinary front-gate filter.
+            main=new MainEntryRanker(catalog,resources).Rank(pixels,floor,Remaining(),cancellation:cancellation,
+                enableFrontGate:establishedMembers is null,candidateMapIds:establishedMembers);
             mainRows=main.Rows; mainDiagnostics=main.Diagnostics;
             foreach(var node in mainRows.Where(r=>IsTrue(r,"identityVerified")))
             {

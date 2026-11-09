@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using OpenCvSharp;
@@ -23,8 +25,11 @@ public sealed partial class LiveRuntime
             context = pipeline.Context(_roundId!, floor, HasRegisteredGroup ? null : _mapId);
         }
         var started = Stopwatch.GetTimestamp();
-        var rank = pipeline.Rank(frame, floor, _options.MainEntryBudget, previous?.Prior(), context, token);
-        var decision = S0IdentityDecision.Consume(rank, previous, context, captured.Stamp.FrameId,
+        var prior = previous?.Prior();
+        var rank = prior is null
+            ? pipeline.Rank(frame, floor, _options.MainEntryBudget, context: context, cancellation: token)
+            : pipeline.RankEstablished(frame, floor, prior, context, _options.MainEntryBudget, token);
+        var decision = S0IdentityDecision.Consume(rank, previous, context, IdentityObservationId(frame, token),
             existingConfirmation: context.MapId);
         var detail = decision.Summary();
         var automatic = decision.CandidateSummaries;
@@ -79,9 +84,27 @@ public sealed partial class LiveRuntime
                 ResetSteady(); _geometryGroup = null; _mapId = null; _identitySource = "";
                 RevokeDisplay("registered-group-current-evidence-withdrawn"); _alignment = null;
             }
+            if (_mapId is null) _identitySource = decision.IsRegisteredGroup ? "group-default" : "native-similarity";
             _reason = _mapId is null ? "candidates-awaiting-confirmation" : "identity-locked-pose-pending";
             Publish();
             return _mapId;
         }
+    }
+
+    // Original stage_similarity_rank identifies observation content with the
+    // BGR pixel digest. Capture IDs remain distinct freshness tokens, so they
+    // cannot deduplicate repeated pixels in the condition evidence ledger.
+    private static string IdentityObservationId(Mat frame, CancellationToken cancellation)
+    {
+        using var digest = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var row = new byte[checked(frame.Width * 3)];
+        int height = frame.Height;
+        for (int y = 0; y < height; y++)
+        {
+            if ((y & 63) == 0) cancellation.ThrowIfCancellationRequested();
+            Marshal.Copy(frame.Ptr(y), row, 0, row.Length);
+            digest.AppendData(row);
+        }
+        return Convert.ToHexStringLower(digest.GetHashAndReset());
     }
 }

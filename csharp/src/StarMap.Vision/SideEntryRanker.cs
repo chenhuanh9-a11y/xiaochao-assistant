@@ -185,7 +185,6 @@ public sealed partial class SideEntryRanker
                 .Select(p=>new {mapId=p.MapId,floor=p.Floor}));
             meta["semanticGaps"]=JsonNode.Parse(catalog.SemanticGaps.GetRawText());
             meta["passportError"]=catalog.NativePassportError;
-            meta["sideDoorResourceError"]=index.DoorError; meta["sideLocalIndexError"]=index.SearchError;
             return new(new JsonArray(rows.Select(r=>(JsonNode)r).ToArray()),meta,turns);
         }
     }

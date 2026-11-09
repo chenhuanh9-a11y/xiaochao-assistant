@@ -3,7 +3,35 @@ using System.Text.Json.Nodes;
 using StarMap.Core.Session;
 using StarMap.Runtime;
 
-if (args.Length is < 3 or > 6) throw new ArgumentException("RESOURCE_ROOT ORIGINAL_ALL405_REPLAY NEW_OUTPUT [ORIGINAL_GROUP_LIFETIMES] [COORDINATE_POLICY_ORACLE] [ORIGINAL_ESTABLISHED_PROBES]");
+if (args.Length == 5 && args[0] is "--identity-prior-only" or "--unselected-floor-only")
+{
+    string priorOnlyOutput = Path.GetFullPath(args[4]);
+    if (Directory.Exists(priorOnlyOutput)) throw new IOException("Preserve previous evidence; use a new output.");
+    Directory.CreateDirectory(priorOnlyOutput);
+    var priorOnlyChecks = new List<object>(); var priorOnlyFailures = new List<string>();
+    try
+    {
+        Action<bool, string> priorOnlyCheck = (passed, name) => {
+            priorOnlyChecks.Add(new { name, passed });
+            if (!passed) { priorOnlyFailures.Add(name); throw new InvalidOperationException(name); }
+        };
+        if (args[0] == "--identity-prior-only")
+            await IdentityEntryRuntimeRegression.RunPrior(args[1], args[2], args[3], priorOnlyOutput, priorOnlyCheck);
+        else await IdentityEntryRuntimeRegression.RunUnselectedFloor(args[1], args[2], args[3], priorOnlyOutput, priorOnlyCheck);
+    }
+    catch (Exception error)
+    {
+        if (priorOnlyFailures.Count == 0) priorOnlyFailures.Add(error.Message);
+        File.WriteAllText(Path.Combine(priorOnlyOutput, "error.txt"), error.ToString());
+    }
+    File.WriteAllText(Path.Combine(priorOnlyOutput, "summary.json"), JsonSerializer.Serialize(new {
+        passed = priorOnlyFailures.Count == 0, checkCount = priorOnlyChecks.Count,
+        failures = priorOnlyFailures, checks = priorOnlyChecks }, new JsonSerializerOptions { WriteIndented = true }));
+    Console.WriteLine($"Targeted Runtime: {priorOnlyChecks.Count-priorOnlyFailures.Count}/{priorOnlyChecks.Count}; {priorOnlyOutput}");
+    return priorOnlyFailures.Count == 0 ? 0 : 1;
+}
+
+if (args.Length is < 3 or > 8) throw new ArgumentException("RESOURCE_ROOT ORIGINAL_ALL405_REPLAY NEW_OUTPUT [ORIGINAL_GROUP_LIFETIMES] [COORDINATE_POLICY_ORACLE] [ORIGINAL_ESTABLISHED_PROBES] [ORIGINAL_RUNTIME_IDENTITY_ENTRY] [ORIGINAL_RUNTIME_IDENTITY_PRIOR]");
 string root = Path.GetFullPath(args[0]), oracle = Path.GetFullPath(args[1]), output = Path.GetFullPath(args[2]);
 if (Directory.Exists(output)) throw new IOException("Preserve previous evidence; choose a new output.");
 Directory.CreateDirectory(output);
@@ -16,7 +44,9 @@ var sequence = new SessionSequencer();
 
 if (args.Length >= 4) await Run("actual-geometry-group-lifetimes", () => GeometryGroupRuntimeRegression.Run(root, oracle, args[3], output, Check));
 if (args.Length >= 5) await Run("coordinate-policy", () => { CoordinatePolicyRegression.Run(args[4], output, Check); return Task.CompletedTask; });
-if (args.Length == 6) await Run("actual-default-established-rejections", () => GeometryGroupRuntimeRegression.RunEstablished(root, oracle, args[5], output, Check));
+if (args.Length >= 6) await Run("actual-default-established-rejections", () => GeometryGroupRuntimeRegression.RunEstablished(root, oracle, args[5], output, Check));
+if (args.Length >= 7) await Run("actual-runtime-identity-entry", () => IdentityEntryRuntimeRegression.Run(root, oracle, args[6], output, Check));
+if (args.Length == 8) await Run("actual-runtime-identity-prior", () => IdentityEntryRuntimeRegression.RunPrior(root, oracle, args[7], output, Check));
 
 await Run("S1-single-supported-map-still-needs-human-identity", async () =>
 {
@@ -335,7 +365,7 @@ await Run("registered-group-choice-retains-predecessor-until-material-ready", as
     Save("registered-group-member-transactions", runtime.ReadState());
 });
 
-await Run("unconfirmed-desired-member-survives-current-none-evidence", async () =>
+await Run("unconfirmed-desired-member-survives-failed-target-floor", async () =>
 {
     await Ask("end_round");
     await Ask("set_context", new { season = "s0", mode = "nightmare", profileId = "shared-structure" });
@@ -343,12 +373,13 @@ await Run("unconfirmed-desired-member-survives-current-none-evidence", async () 
     await Ask("close_map"); await Ask("select_group_member", GroupPayload("nightmare-12"));
     port.Select("batch02-event-000018"); await Ask("capture_now");
     Check(runtime.ReadState().GroupChoice is { DesiredMapId: "nightmare-12", HeldMapId: null, Status: "awaiting-geometry" }
+        && runtime.ReadState().Context.MapId == "nightmare-04" && runtime.ReadState().IdentityKind == "group"
         && runtime.ReadPendingGroupMaterial() is null && !runtime.TryReadRender(out _),
-        "a current none observation withdraws provisional authority but retains the unconfirmed desired member");
+        "a failed target-floor fit keeps the original group reference and unconfirmed intent while withdrawing current material");
     port.Select("batch01-event-000006"); await Ask("capture_now");
     var recovered = runtime.ReadPendingGroupMaterial();
     Check(recovered is { MapId: "nightmare-12" } && runtime.ReadState().GroupChoice.HeldMapId is null,
-        "the newly verified same registered member set retries the retained choice without inventing a hold");
+        "returning to the group reference retries the retained choice without inventing a hold");
     Check(runtime.AcceptGroupMaterialReady(recovered!) && runtime.ReadState().GroupChoice.HeldMapId == "nightmare-12",
         "recovered desired member still requires its own material-ready ACK");
     await Ask("end_round");

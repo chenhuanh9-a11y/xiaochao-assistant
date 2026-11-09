@@ -28,7 +28,7 @@ public sealed class MainEntryRanker
 
     /// <summary>Independent current-frame main entrance search. Known map selectors constrain pose lookup.</summary>
     public MainEntryResult Rank(Mat frame, string floor, TimeSpan? budget = null, string? knownMapId = null,
-        CancellationToken cancellation = default, bool enableFrontGate = true)
+        CancellationToken cancellation = default, bool enableFrontGate = true, IReadOnlySet<string>? candidateMapIds = null)
     {
         cancellation.ThrowIfCancellationRequested();
         using var pixels = frame.Clone();
@@ -65,7 +65,8 @@ public sealed class MainEntryRanker
         foreach (var item in sources)
         {
             cancellation.ThrowIfCancellationRequested();
-            if (item.Floor != floor || knownMapId != null && item.MapId != knownMapId || allowed != null && !allowed.Contains(item.MapId)) continue;
+            if (item.Floor != floor || knownMapId != null && item.MapId != knownMapId || allowed != null && !allowed.Contains(item.MapId) ||
+                candidateMapIds != null && !candidateMapIds.Contains(item.MapId)) continue;
             if (clock.Elapsed > limit) { complete=false; break; }
             evaluated.Add(item.MapId);
             var poses = item.Hypotheses(query,Math.Min(pixels.Rows,pixels.Cols),cancellation);

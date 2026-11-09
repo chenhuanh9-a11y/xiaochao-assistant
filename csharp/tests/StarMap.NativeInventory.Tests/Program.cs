@@ -17,6 +17,11 @@ internal static class Program
     {
         try
         {
+            if (args.Length == 6 && args.Contains("--established-oracle", StringComparer.Ordinal))
+            {
+                var named = args.Chunk(2).ToDictionary(pair => pair[0], pair => pair[1], StringComparer.Ordinal);
+                return EstablishedIdentityChecks.Run(named["--resources"], named["--established-oracle"], named["--output"]);
+            }
             return Run(Options.Parse(args));
         }
         catch (Exception error)

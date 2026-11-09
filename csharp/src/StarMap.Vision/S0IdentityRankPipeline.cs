@@ -52,6 +52,75 @@ public sealed class S0IdentityRankPipeline
     public NativeIdentityContext Context(string roundId,string floor,string? confirmedMapId=null)=>new(Entries.Season,Entries.Mode,roundId,floor,NativeResourceKey,confirmedMapId);
     public S0IdentityRankResult Rank(Mat frame,string floor,TimeSpan? budget=null,NativeConditionPrior? prior=null,
         NativeIdentityContext? context=null,CancellationToken cancellation=default)
+        => RankCore(frame,floor,budget,prior,context,cancellation);
+
+    /// <summary>
+    /// Re-run the original identity gates inside the complete cohort derived
+    /// from a bound S0/F1 condition prior. Context owns the current request's
+    /// floor/round/resource; the prior supplies no geometry or caller map list.
+    /// Invalid scope or exhausted budget returns empty rows, never a global scan.
+    /// </summary>
+    public S0IdentityRankResult RankEstablished(Mat frame,string floor,NativeConditionPrior? prior,NativeIdentityContext? context,
+        TimeSpan budget,CancellationToken cancellation=default)
+    {
+        cancellation.ThrowIfCancellationRequested();
+        var clock=Stopwatch.StartNew();
+        S0IdentityRankResult Empty(string reason)=>EmptyEstablishedResult(floor,context,reason,clock.Elapsed);
+        if(budget<=TimeSpan.Zero) return Empty("established-condition-budget-incomplete");
+        if(Conditions.Error is not null) return Empty(Conditions.Error);
+        if(context is null || prior is null || context.Season!=Entries.Season || context.Floor!=floor || string.IsNullOrEmpty(context.RoundId) ||
+            !prior.Matches(context with { Floor="1" },Entries.Mode,"1",NativeResourceKey))
+            return Empty("established-condition-context-mismatch");
+        var domains=prior.Domains;
+        HashSet<string>? members=null;
+        foreach(var domain in domains)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            if(!Conditions.HasDomain(domain.Key) || domain.Value is not JsonArray { Count:>0 })
+                return Empty("established-condition-domain-unavailable");
+            var declared=Conditions.ConditionsFor(domain.Key).ToHashSet(StringComparer.Ordinal);
+            foreach(string id in Strings(domain.Value))
+            {
+                cancellation.ThrowIfCancellationRequested();
+                if(!Conditions.HasCondition(id) || !declared.Contains(id)) return Empty("established-condition-domain-mismatch");
+                var condition=Conditions.Condition(id);
+                if(!Flag(condition,"completeForeignMapCompetition")) return Empty("established-condition-foreign-competition-incomplete");
+                var cohort=Strings(condition["poseIds"]).Select(pid=>Text(Conditions.Reference(Text(Conditions.Pose(pid),"target")),"mapId"))
+                    .ToHashSet(StringComparer.Ordinal);
+                if(members is null) members=cohort; else members.IntersectWith(cohort);
+            }
+        }
+        if(members is null || members.Count<2 || !members.IsSubsetOf(Entries.Maps.Select(map=>map.MapId)))
+            return Empty("established-condition-cohort-unavailable");
+        // Preserve the original real-catalog binding validation before any
+        // scoped numerical work. Resource failures remain failures, not priors.
+        Conditions.ValidateDomains(domains.Select(domain=>domain.Key));
+        cancellation.ThrowIfCancellationRequested();
+        var remaining=budget-clock.Elapsed;
+        if(remaining<=TimeSpan.Zero) return Empty("established-condition-budget-incomplete");
+        return RankCore(frame,floor,remaining,prior,context,cancellation,members);
+    }
+
+    private S0IdentityRankResult EmptyEstablishedResult(string floor,NativeIdentityContext? context,string reason,TimeSpan elapsed)
+    {
+        var passport=new SideEntryResult(new(),new JsonObject { ["reason"]=reason,["complete"]=false,["entryObserved"]=false,["exitObserved"]=null },new());
+        var main=new JsonObject { ["reason"]=reason,["complete"]=false,["evaluatedMapIds"]=new JsonArray() };
+        var sourceEvidence=new JsonObject { ["candidates"]=new JsonArray(),["candidateCount"]=0,["reason"]="established-group-only",
+            ["registeredIdentityCandidates"]=new JsonArray(),["evaluatedAlongsideRegisteredIdentity"]=false,["crossDomainScoresComparable"]=false,
+            ["identityHardGatePassed"]=false,["poseSubmissionAllowed"]=false,["authorRouteDisplayAllowed"]=false };
+        var path=new JsonObject { ["reason"]=reason,["passportSelected"]=false,["fallbackAllowed"]=false,["passportUnresolved"]=false,
+            ["sideProducer"]="not-run",["sideWinnerMapId"]=null,["elapsedMs"]=elapsed.TotalMilliseconds };
+        var evidence=new JsonObject { ["candidates"]=new JsonArray(),["entryKind"]="unknown",["reason"]=reason,
+            ["tilemapEntry"]=main.DeepClone(),["tilemapCandidates"]=new JsonArray(),["tilemapSide"]=null,["tilemapSideCandidates"]=new JsonArray(),
+            ["entryPassport"]=passport.Diagnostics.DeepClone(),["entryPassportCandidates"]=new JsonArray(),["sourceStructureCandidates"]=sourceEvidence,["recognitionPath"]=path.DeepClone() };
+        path["mainDiagnostics"]=main;
+        var strategy=new EntryStrategyResult(passport,null,null,null,path,
+            new JsonObject { ["reason"]="established-group-only",["applied"]=false,["automaticGateDetection"]=false },new());
+        return new(this,floor,new(),evidence,strategy,context);
+    }
+
+    private S0IdentityRankResult RankCore(Mat frame,string floor,TimeSpan? budget,NativeConditionPrior? prior,
+        NativeIdentityContext? context,CancellationToken cancellation,IReadOnlySet<string>? establishedMembers=null)
     {
         var clock=Stopwatch.StartNew(); var limit=budget??TimeSpan.FromSeconds(1);
         TimeSpan Remaining()=>limit>clock.Elapsed?limit-clock.Elapsed:TimeSpan.Zero;
@@ -69,12 +138,13 @@ public sealed class S0IdentityRankPipeline
             }
             catch(Exception error) when(error is IOException or ArgumentException or KeyNotFoundException or InvalidOperationException) { return rows; }
         }
-        var strategy=ranker.RankStrategyCore(frame,floor,Remaining(),cancellation,usablePrior?Priority:null);
+        var strategy=ranker.RankStrategyCore(frame,floor,Remaining(),cancellation,usablePrior?Priority:null,establishedMembers);
         var main=strategy.Main?.Rows ?? new JsonArray(); var side=strategy.Side?.Rows ?? new JsonArray(); var mainDiagnostic=strategy.Diagnostics["mainDiagnostics"]!.AsObject();
         var registered=new JsonArray();
         foreach(var row in main.Where(row=>Flag(row,"identityVerified"))) registered.Add(new JsonObject { ["mapId"]=row!["mapId"]!.DeepClone(),["score"]=row["score"]!.DeepClone(),["identityEvidence"]=row["identityEvidence"]?.DeepClone(),["identityVerified"]=true });
         if(strategy.SideWinner is { } winner) registered.Add(new JsonObject { ["mapId"]=winner["mapId"]!.DeepClone(),["score"]=winner["score"]!.DeepClone(),["identityEvidence"]=winner["identityEvidence"]?.DeepClone(),["identityVerified"]=true });
-        var sourceEvidence=source.Observe(Remaining()); sourceEvidence["registeredIdentityCandidates"]=registered;
+        var sourceEvidence=establishedMembers is null?source.Observe(Remaining()):new JsonObject { ["candidates"]=new JsonArray(),["candidateCount"]=0,["reason"]="established-group-only" };
+        sourceEvidence["registeredIdentityCandidates"]=registered;
         sourceEvidence["evaluatedAlongsideRegisteredIdentity"]=registered.Count>0; sourceEvidence["crossDomainScoresComparable"]=false;
         sourceEvidence["identityHardGatePassed"]=false; sourceEvidence["poseSubmissionAllowed"]=false; sourceEvidence["authorRouteDisplayAllowed"]=false;
         bool hasIdentity=main.Any(row=>Flag(row,"identityVerified")) || strategy.SideWinner is not null;
@@ -87,7 +157,7 @@ public sealed class S0IdentityRankPipeline
             ["passportUnresolved"]=strategy.Diagnostics["passportUnresolved"]?.DeepClone(),["sideProducer"]=strategy.Diagnostics["sideProducer"]?.DeepClone(),["sideWinnerMapId"]=strategy.SideWinner?["mapId"]?.DeepClone(),
             ["sourceStructureCandidateCount"]=Array(sourceEvidence["candidates"]).Count,["sourceStructureIdentityAuthorized"]=false,["sourceStructureIdentityVerified"]=sourceEvidence["automaticCandidate"] is not null,
             ["sourceStructureConsumer"]="separate-structure-reference-branch",["frameSize"]=new JsonArray(frame.Cols,frame.Rows) };
-        HashSet<string>? allowed=Flag(strategy.FrontGate,"applied")?Strings(strategy.FrontGate["selectedMapIds"]).ToHashSet(StringComparer.Ordinal):null;
+        IReadOnlySet<string>? allowed=establishedMembers ?? (Flag(strategy.FrontGate,"applied")?Strings(strategy.FrontGate["selectedMapIds"]).ToHashSet(StringComparer.Ordinal):null);
         var list=Entries.Maps.Where(map=>allowed is null || allowed.Contains(map.MapId)).Select(map=>new JsonObject { ["mapId"]=map.MapId,["name"]=map.Name,["score"]=0d,
             ["strongSuggestion"]=false,["identityHardGatePassed"]=false,["inliers"]=0,["reason"]="difficult-entry-advisory-manual-confirmation-required",["mode"]=Entries.Mode,["entryKind"]=evidence["entryKind"]!.DeepClone(),["direction"]=null }).ToList();
         var byId=list.ToDictionary(row=>Text(row,"mapId"),StringComparer.Ordinal);
@@ -115,9 +185,12 @@ public sealed class S0IdentityRankPipeline
         }
         list=list.OrderByDescending(row=>Number(row["score"])).ToList();
         var diagnostic=S0RankDiagnostics.Build(evidence);
-        var gate=strategy.FrontGate.DeepClone().AsObject(); gate["actualFloor"]=floor; gate["rankElapsedMs"]=clock.Elapsed.TotalMilliseconds;
-        gate["evaluatedMainMapIds"]=mainDiagnostic["evaluatedMapIds"]?.DeepClone() ?? new JsonArray(); gate["acceptedMapIds"]=Strings(list.Where(row=>Flag(row,"identityHardGatePassed")).Select(row=>Text(row,"mapId")));
-        gate["mainComplete"]=mainDiagnostic["complete"]?.DeepClone(); gate["sideComplete"]=strategy.Side?.Diagnostics["complete"]?.DeepClone(); diagnostic["frontGateObservation"]=gate;
+        if(establishedMembers is null)
+        {
+            var gate=strategy.FrontGate.DeepClone().AsObject(); gate["actualFloor"]=floor; gate["rankElapsedMs"]=clock.Elapsed.TotalMilliseconds;
+            gate["evaluatedMainMapIds"]=mainDiagnostic["evaluatedMapIds"]?.DeepClone() ?? new JsonArray(); gate["acceptedMapIds"]=Strings(list.Where(row=>Flag(row,"identityHardGatePassed")).Select(row=>Text(row,"mapId")));
+            gate["mainComplete"]=mainDiagnostic["complete"]?.DeepClone(); gate["sideComplete"]=strategy.Side?.Diagnostics["complete"]?.DeepClone(); diagnostic["frontGateObservation"]=gate;
+        }
         var resultRows=new JsonArray(list.Select(row=>(JsonNode)row).ToArray());
         if(resultRows.Count>0)
         {
