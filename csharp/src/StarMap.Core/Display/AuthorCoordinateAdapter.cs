@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using StarMap.Core.Alignment;
 
 namespace StarMap.Core.Display;
 
@@ -30,6 +32,48 @@ public sealed class AuthorCoordinateAdapter
 
     public JsonElement? Floor(string profile, string map, string floor) =>
         J.Get(J.Get(J.Get(J.Get(J.Get(raw,"profiles"),profile),"maps"),map),"floors") is { } floors ? J.Get(floors,floor) : null;
+
+    /// <summary>Original reviewed search proposal only; it grants no current-frame or display authority.</summary>
+    public JsonObject? CrossFloorSearchSeed(string map,string fromFloor,string toFloor,Matrix3 source,string? authorizationProfile=null)
+    {
+        string profile=string.IsNullOrEmpty(authorizationProfile)?ReferenceProfile:authorizationProfile;
+        var container=Schema==CanonicalSchema?J.Get(J.Get(raw,"canonicalCrossFloorSearchCandidates"),map)
+            :J.Get(J.Get(J.Get(raw,"profiles"),profile),"crossFloorSearchCandidates") is {} legacy?J.Get(legacy,map):null;
+        var pairs=J.Get(container,"pairs");
+        JsonElement? row=pairs is {ValueKind:JsonValueKind.Array} values
+            ?values.EnumerateArray().FirstOrDefault(item=>J.Get(item,"fromFloor")?.ToString()==fromFloor&&J.Get(item,"toFloor")?.ToString()==toFloor):null;
+        if(row is not {ValueKind:JsonValueKind.Object})return null;
+        string? review=J.String(row,"reviewStatus");var evidence=J.Get(row,"evidence");
+        if(!J.True(row,"currentFrameSearchSeedAllowed")||!J.False(row,"directProjectionAllowed")
+            ||!J.False(row,"zeroExplorationDisplayAllowed")||!J.False(row,"liveGameVerified")
+            ||review is not ("player-visual-pass-current-frame-required" or "player-visual-marginal-pass-current-frame-required")
+            ||!Truthy(J.Get(evidence,"directProjectionWithheldReason")))return null;
+        var trial=J.Get(J.Get(raw,"policy"),"playerReviewedCrossFloorProjectionTrial");
+        bool allowed=J.True(trial,"enabled")&&Contains(J.Get(trial,"profileIds"),profile)&&Contains(J.Get(trial,"reviewStatuses"),review)
+            &&J.True(trial,"requiresConfirmedRoundMap")&&J.True(trial,"requiresStableTargetFloor")
+            &&J.True(trial,"requiresVerifiedSourceFloorTransform")&&J.True(trial,"projectionOnlyUntilTargetStructureVerified");
+        if(J.Get(row,"targetToSourceMatrix") is not {} targetRaw||Matrix3.TryRead(targetRaw) is not {} target
+            ||Math.Abs(source[0,0]*source[1,1]-source[0,1]*source[1,0])<=1e-9
+            ||Matrix3.Multiply(source,target) is not {} predicted)return null;
+        return new JsonObject {
+            ["mapId"]=map,["fromFloor"]=fromFloor,["toFloor"]=toFloor,
+            ["matrixSourceToClient"]=JsonSerializer.SerializeToNode(predicted.ToArray()),
+            ["sourceMatrixToClient"]=JsonSerializer.SerializeToNode(source.ToArray()),["targetToSourceMatrix"]=JsonSerializer.SerializeToNode(target.ToArray()),
+            ["confidence"]=.85,["runtimeVerified"]=allowed,["sourceFloorTransformVerified"]=true,["currentFrameDisplayValidated"]=false,
+            ["directProjectionAllowed"]=allowed,["zeroExplorationDisplayAllowed"]=allowed,["profileMappingVerified"]=allowed,
+            ["playerReviewedProjectionTrial"]=allowed,["requiresStableTargetFloor"]=true,["projectionOnlyUntilTargetStructureVerified"]=true,
+            ["boundedCrossFloorOnly"]=!allowed,["profileCurrentFrameSearchSeed"]=true,["mappingProfileId"]=PackId,
+            ["matrixCoordinatePackId"]=PackId,["matrixCoordinateProfileId"]=PackId,["reviewStatus"]=review,
+            ["candidateId"]=J.Get(row,"candidateId") is {} candidate?JsonNode.Parse(candidate.GetRawText()):null,
+            ["transferSource"]=allowed?"offline-player-reviewed-coordinate-binding-trial":"offline-profile-reviewed-current-frame-search-seed",
+            ["evidence"]=evidence is {} saved?JsonNode.Parse(saved.GetRawText()):new JsonObject() };
+        static bool Contains(JsonElement? value,string? wanted)=>value is {ValueKind:JsonValueKind.Array} list
+            &&list.EnumerateArray().Any(item=>item.ValueKind==JsonValueKind.String&&item.GetString()==wanted);
+        static bool Truthy(JsonElement? value)=>value is {} item&&item.ValueKind switch {
+            JsonValueKind.Null or JsonValueKind.Undefined or JsonValueKind.False=>false,
+            JsonValueKind.String=>!string.IsNullOrEmpty(item.GetString()),JsonValueKind.Array=>item.GetArrayLength()>0,
+            JsonValueKind.Object=>item.EnumerateObject().Any(),JsonValueKind.Number=>item.GetDouble()!=0,_=>true };
+    }
 
     public bool TryProfileToCanonical(string profile, string map, string floor, out DisplayAffine matrix, out string reason)
     {

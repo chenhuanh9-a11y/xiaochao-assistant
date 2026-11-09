@@ -87,11 +87,8 @@ public sealed partial class LiveRuntime
             if (_workActive || !PendingGroupCurrent(pending) || !ReferenceEquals(packet, pending!.Commit.Render)) return false;
             _alignment?.Close(reason: "group-member-material-ready");
             ResetSteady();
-            _trustedFloors.Clear();
             _mapId = pending.Plan.MapId; _identitySource = "group-manual"; _heldGroupMember = _mapId;
-            _pose = pending.Pose; _trustedFloors[_pose.FloorId] = _pose;
-            _alignment = pending.Commit.Alignment; _canonical = pending.Commit.Grant;
-            _render = pending.Commit.Render; _display = pending.Commit.Display;
+            _pose = pending.Pose; ApplyCanonicalCommit(pending.Commit);
             _pendingGroupMaterial = null;
             _groupChoiceStatus = "confirmed"; _groupChoiceReason = "本局保持手动选择";
             _reason = "group-member-confirmed"; Publish();

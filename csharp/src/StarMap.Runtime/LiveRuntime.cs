@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using OpenCvSharp;
 using StarMap.Core.Identity;
 using StarMap.Core.Alignment;
+using StarMap.Core.Display;
 using StarMap.Core.Selection;
 using StarMap.Core.Resources;
 using StarMap.Core.Session;
@@ -23,7 +24,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     private static readonly string[] Gaps = ["steady-tracking-fallback-unavailable",
         "automatic-map-open-recovery-unavailable",
         "locked-canvas-floor-reuse-unavailable", "similarity-group-competition-unavailable",
-        "established-condition-inventory-review-unavailable", "established-round-layer-group-fit-unavailable"];
+        "established-condition-inventory-review-unavailable", "pose-index-candidate-provider-unavailable"];
     private readonly object _sync = new();
     private readonly SemaphoreSlim _worker = new(1, 1);
     private readonly ICapturePort _capture;
@@ -51,7 +52,6 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     private NativeSimilarityState? _nativeIdentity;
     private ObservationTicket? _structureTicket;
     private JsonElement _diagnostics = JsonSerializer.SerializeToElement(new { });
-    private readonly Dictionary<string, NativeGeometryPose> _trustedFloors = new(StringComparer.Ordinal);
     private LiveRuntimeState _publishedState = null!;
     private RuntimeSnapshot _publishedSnapshot = null!;
     private bool _publishedBindingState;
@@ -101,7 +101,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     }
 
     public void InvalidateCapture(string reason = "capture-invalidated")
-    { lock (_sync) { if (_closed) return; if (reason == "window-binding-changed") ResetSteady(); _epoch++; RevokeFrame(reason); Publish(); } }
+    { lock (_sync) { if (_closed) return; if (reason == "window-binding-changed") { ResetSteady(); _geometryGroup = null; } _epoch++; RevokeFrame(reason); Publish(); } }
 
     public void InvalidateResources(string reason = "resources-invalidated")
     {
@@ -441,16 +441,12 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         var profile = bound.Passports.MapProfiles[map];
         var entry = bound.Catalog.Find(bound.Passports.Mode, bound.Passports.Season, profile, map, floor);
         if (entry is null) return null;
-        JsonObject? entryCandidate; S0HostPosePrior? prior = null; object owner; string preferred;
+        JsonObject? entryCandidate; object owner; string preferred;
         lock (_sync)
         {
             RequireCurrent(epoch, token, captured, bound);
             owner = _roundFitOwner; preferred = _selection.ProfileId;
             entryCandidate = _entryCandidates.GetValueOrDefault(map)?.DeepClone().AsObject();
-            // Only this exact round/map/floor/resource's prior is admitted. S1
-            // always estimates its target independently without a prior input.
-            if (_trustedFloors.TryGetValue(floor, out var trusted) && trusted.MapId == map && trusted.ResourceId == bound.Id)
-                prior = new(owner, epoch, entry, trusted.ToMatrix());
         }
         JsonObject fit; SharedStructureData? source; JsonArray? stages = null, events = null;
         PreparedSteadyFit? steady = null;
@@ -466,14 +462,18 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         }
         else
         {
+            var group = GroupForFit(epoch, owner, captured, bound, entry);
+            S0HostFit? targetHost = null;
             var services = new S0HostFitServices(Steady: context =>
             {
                 steady = TrySteady(epoch, token, captured, bound, entry, context.Reference, frame, preferred,
                     context.CanonicalPackId, out steadyDiagnostic);
                 return steady?.Fit;
-            });
-            using var host = new S0HostFit(bound.Catalog, bound.Passports, services, bound.LoadReference);
-            var result = host.Fit(frame, entry, entryCandidate, new() { OwnerScope = owner, Epoch = epoch, PosePrior = prior,
+            }, EstablishedGroup: context => context.Options.Group?.Geometry is null
+                ? new JsonObject { ["success"] = false, ["reason"] = "structure-no-reliable-scale" }
+                : targetHost!.EvaluateEstablishedGroup(context).Fit);
+            using var host = targetHost = new S0HostFit(bound.Catalog, bound.Passports, services, bound.LoadReference);
+            var result = host.Fit(frame, entry, entryCandidate, new() { OwnerScope = owner, Epoch = epoch, Group = group,
                 SteadyRequested = SteadyEnabled },
                 () => Obsolete(epoch, token, captured, bound), token);
             fit = result.Fit; source = result.Reference; stages = result.Stages; events = result.Events;
@@ -494,19 +494,23 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         lock (_sync)
         {
             RequireCurrent(epoch, token, captured, bound);
-            _pose = verified ? new(map, floor, bound.Id, captured.Stamp.FrameId, matrix!) : null;
-            if (_pose is not null) _trustedFloors[floor] = _pose;
-            if (_pose is not null && display is not null)
-                CommitDisplay(display, ReadResidualEvidence(fit["selectedRouteCurrentFrameResidual"]!), captured, map, floor);
-            else RevokeDisplay("target-floor-pose-unverified");
-            _reason = fit["reason"]?.GetValue<string>() ?? "structure-fit-unavailable";
+            var proposedPose = verified ? new NativeGeometryPose(map, floor, bound.Id, captured.Stamp.FrameId, matrix!) : null;
+            string? commitFailure = null;
+            if (proposedPose is not null && display is not null)
+            {
+                var commit = PrepareCanonicalCommit(display, ReadResidualEvidence(fit["selectedRouteCurrentFrameResidual"]!), captured, map, floor, _alignment);
+                if (commit.Grant is not null) { _pose = proposedPose; ApplyCanonicalCommit(commit); }
+                else { commitFailure = commit.Display.Reason; _pose = null; RevokeDisplay(commitFailure); verified = false; }
+            }
+            else { _pose = null; RevokeDisplay("target-floor-pose-unverified"); }
+            _reason = commitFailure ?? fit["reason"]?.GetValue<string>() ?? (verified ? "current-frame-structure-verified" : "structure-fit-unavailable");
             var main = _diagnostics.TryGetProperty("stage", out var stage) && stage.GetString() == "main-entry"
                 ? _diagnostics : JsonSerializer.SerializeToElement(new { });
             JsonElement? floorEvidence = _diagnostics.TryGetProperty("floor", out var currentFloor) ? currentFloor : null;
             _diagnostics = JsonSerializer.SerializeToElement(new { stage = bound.StructureCatalog is null ? "s0-host-fit" : "shared-fit", identitySource = _identitySource,
                 floor = floorEvidence,
                 nativeReferenceKey = entry.StableKey, priorUsed = stages?.Any(row => row?["stage"]?.ToString() == "fast-prior") == true,
-                fit, stages, events, main, steadyAttempt = steadyDiagnostic }, Json);
+                fit, stages, events, main, steadyAttempt = steadyDiagnostic, geometryGroup = _geometryGroup?.Model.Snapshot() }, Json);
             Publish();
             return Receipt(request, verified, _reason);
         }
@@ -562,12 +566,12 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
 
     private void LockIdentity(string mapId, string source)
     {
-        if (_mapId != mapId) { ResetSteady(); _trustedFloors.Clear(); RevokeDisplay("identity-changed"); _alignment = null; }
+        if (_mapId != mapId) { ResetSteady(); _geometryGroup = null; RevokeDisplay("identity-changed"); _alignment = null; }
         if (source is not ("group-default" or "group-manual")) { ClearGroupChoice(); _nativeIdentity = null; }
         _mapId = mapId; _identitySource = source;
     }
     private void ClearIdentity()
-    { ResetSteady(); ClearGroupChoice(); _mapId = null; _identitySource = ""; _nativeIdentity = null; _trustedFloors.Clear(); _structureSession?.EndRound(); _structureSession = null; _structureTicket = null; _alignment = null; _roundFitOwner = new(); }
+    { ResetSteady(); _geometryGroup = null; ClearGroupChoice(); _mapId = null; _identitySource = ""; _nativeIdentity = null; _structureSession?.EndRound(); _structureSession = null; _structureTicket = null; _alignment = null; _roundFitOwner = new(); }
     private void ClearFloor()
     { _floor = _manualFloor = _observedFloor = null; _manualFloorStarted = null; }
     private void AdvanceOwnedEpoch() { _epoch++; _progressEpoch = _epoch; }
@@ -687,11 +691,26 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     {
         private readonly object referenceSync = new();
         private readonly LinkedList<(string Key, SharedStructureData Reference)> references = new();
+        private readonly Lazy<AuthorCoordinateAdapter> coordinates = new(() => ReadCoordinates(passports));
+        public AuthorCoordinateAdapter Coordinates => coordinates.Value;
         public string Id { get; } = Guid.NewGuid().ToString("N");
         public ResourceCatalog Catalog { get; } = catalog;
         public EntryPassportCatalog Passports { get; } = passports;
         public S0IdentityRankPipeline? Identity { get; } = identity;
         public StructureCatalog? StructureCatalog { get; } = structureCatalog;
+        private static AuthorCoordinateAdapter ReadCoordinates(EntryPassportCatalog passports)
+        {
+            string relative = "references/nightmare-canonical-coordinate-pack.json";
+            if (passports.Mode != "nightmare")
+            {
+                using var manifest = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(passports.ModeRoot, "difficult-native-manifest.json")));
+                relative = manifest.RootElement.GetProperty("runtimeInterfaces").GetProperty("coordinatePack").GetString()!;
+            }
+            string root = Path.GetFullPath(passports.ModeRoot), path = Path.GetFullPath(Path.Combine(root, relative));
+            if (Path.IsPathRooted(relative) || !path.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("canonical-coordinate-resource-outside-context");
+            using var document = JsonDocument.Parse(File.ReadAllBytes(path)); return new(document.RootElement);
+        }
         public ResourceLoadResult<SharedStructureData> LoadReference(ResourceCatalogEntry entry)
         {
             // Like the original SharedReferenceProvider: declarations belong to

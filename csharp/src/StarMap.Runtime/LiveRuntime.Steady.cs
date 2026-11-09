@@ -14,11 +14,12 @@ public sealed partial class LiveRuntime
 {
     private sealed record SteadyFloorKey(string Map, string Floor, string Resource, string Window,
         CaptureEvidenceKind Evidence, int Width, int Height, int Left, int Top, uint Dpi);
-    private sealed record CommittedSteadyFloor(object Owner, SharedStructureData Reference, double Scale,
+    private sealed record CommittedSteadyFloor(RoundLayerGroup Owner, SharedStructureData Reference, double Scale,
         SteadyCoverageState? Coverage);
     private sealed record PreparedSteadyFit(JsonObject Fit, PreparedRuntimeDisplay Display);
     private readonly Dictionary<SteadyFloorKey, CommittedSteadyFloor> _steadyFloors = new();
     private string? _rememberedMaterial;
+    private RoundLayerGroup? _steadyOwner;
 
     // Original Qt S1 supplies an explicit full-frame observation domain. The
     // Host deliberately skips 0059 there, even when the setting is enabled.
@@ -34,12 +35,13 @@ public sealed partial class LiveRuntime
     }
 
     private void ResetSteady()
-    { _steadyFloors.Clear(); _rememberedMaterial = null; }
+    { _steadyFloors.Clear(); _rememberedMaterial = null; _steadyOwner = null; }
 
     /// <summary>Unacknowledged current material only; it never proposes identity or a new transform.</summary>
     public RuntimeRenderPacket? ReadMaterialToRemember()
     {
-        lock (_sync) return SteadyEnabled && RenderCurrent() && _frame?.Context is not null
+        lock (_sync) return SteadyEnabled && RenderCurrent() && _render!.RemembersGeometry && _frame?.Context is not null
+            && _canonical?.Group is { } group && ReferenceEquals(group, _geometryGroup)
             && _render!.MaterialToken != _rememberedMaterial ? _render : null;
     }
 
@@ -51,12 +53,15 @@ public sealed partial class LiveRuntime
         try
         {
             CapturedClientFrame frame; CanonicalGrant canonical; BoundResources bound; SteadyFloorKey key;
-            object owner; long epoch; SteadyCoverageState? previous;
+            RoundLayerGroup owner; long epoch; SteadyCoverageState? previous;
             lock (_sync)
             {
-                if (!SteadyEnabled || !RenderCurrent() || _render!.MaterialToken != renderToken
+                if (!SteadyEnabled || !RenderCurrent() || !_render!.RemembersGeometry || _render.MaterialToken != renderToken
                     || Context() != lifetime || _rememberedMaterial == renderToken) return;
-                frame = _frame!; canonical = _canonical!; bound = _resources!; owner = _roundFitOwner; epoch = _epoch;
+                frame = _frame!; canonical = _canonical!; bound = _resources!; epoch = _epoch;
+                if (canonical.Group is not { } group || !ReferenceEquals(group, _geometryGroup)
+                    || !group.Model.CanonicalGeometryVerifiedFloors.Contains(_floor!)) return;
+                owner = group.Model;
                 var scoped = SteadyKey(frame, _mapId!, _floor!, bound.Id);
                 var matrix = canonical.NativeToClient;
                 if (scoped is null || !matrix.IsFinite || Math.Abs(matrix.M01) > 1e-8 || Math.Abs(matrix.M10) > 1e-8
@@ -77,9 +82,11 @@ public sealed partial class LiveRuntime
             lock (_sync)
             {
                 if (_closed || cancellationToken.IsCancellationRequested || epoch != _epoch
-                    || !ReferenceEquals(bound, _resources) || !ReferenceEquals(owner, _roundFitOwner)
+                    || !ReferenceEquals(bound, _resources) || !ReferenceEquals(owner, _geometryGroup?.Model)
                     || !ReferenceEquals(canonical, _canonical) || Context() != lifetime || !RenderCurrent()
                     || _render!.MaterialToken != renderToken) return;
+                if (!ReferenceEquals(_steadyOwner, owner)) _steadyFloors.Clear();
+                _steadyOwner = owner;
                 _steadyFloors[key] = new(owner, canonical.NativeReference, canonical.NativeToClient.M00, coverage);
                 _rememberedMaterial = renderToken;
             }
@@ -99,7 +106,10 @@ public sealed partial class LiveRuntime
             row = key is not null ? _steadyFloors.GetValueOrDefault(key) : null;
             if (!SteadyEnabled)
             { diagnostic = new() { ["attempted"] = false, ["reason"] = "steady-disabled" }; return null; }
-            if (row is null || !ReferenceEquals(row.Owner, _roundFitOwner) || !ReferenceEquals(row.Reference, reference))
+            if (row is null || !GeometryGroupCurrent(_geometryGroup, captured, bound, entry.MapId)
+                || !ReferenceEquals(row.Owner, _geometryGroup!.Model)
+                || !_geometryGroup.Model.CanonicalGeometryVerifiedFloors.Contains(entry.Floor)
+                || !ReferenceEquals(row.Reference, reference))
             { diagnostic = new() { ["attempted"] = false, ["reason"] = "trusted-target-floor-scale-unavailable" }; return null; }
         }
         var started = Stopwatch.GetTimestamp();

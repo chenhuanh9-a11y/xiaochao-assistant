@@ -3,7 +3,7 @@ using System.Text.Json.Nodes;
 using StarMap.Core.Session;
 using StarMap.Runtime;
 
-if (args.Length != 3) throw new ArgumentException("RESOURCE_ROOT ORIGINAL_ALL405_REPLAY NEW_OUTPUT");
+if (args.Length is < 3 or > 6) throw new ArgumentException("RESOURCE_ROOT ORIGINAL_ALL405_REPLAY NEW_OUTPUT [ORIGINAL_GROUP_LIFETIMES] [COORDINATE_POLICY_ORACLE] [ORIGINAL_ESTABLISHED_PROBES]");
 string root = Path.GetFullPath(args[0]), oracle = Path.GetFullPath(args[1]), output = Path.GetFullPath(args[2]);
 if (Directory.Exists(output)) throw new IOException("Preserve previous evidence; choose a new output.");
 Directory.CreateDirectory(output);
@@ -13,6 +13,10 @@ var checks = new List<object>(); var failures = new List<string>();
 var port = new RecordedCapture(index);
 var runtime = new LiveRuntime(port, root);
 var sequence = new SessionSequencer();
+
+if (args.Length >= 4) await Run("actual-geometry-group-lifetimes", () => GeometryGroupRuntimeRegression.Run(root, oracle, args[3], output, Check));
+if (args.Length >= 5) await Run("coordinate-policy", () => { CoordinatePolicyRegression.Run(args[4], output, Check); return Task.CompletedTask; });
+if (args.Length == 6) await Run("actual-default-established-rejections", () => GeometryGroupRuntimeRegression.RunEstablished(root, oracle, args[5], output, Check));
 
 await Run("S1-single-supported-map-still-needs-human-identity", async () =>
 {

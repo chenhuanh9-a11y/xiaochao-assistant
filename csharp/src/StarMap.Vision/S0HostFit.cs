@@ -13,7 +13,7 @@ public sealed record S0HostPosePrior(object OwnerScope, long Epoch, ResourceCata
 /// <summary>Caller-owned confirmed group state. A relation is not a verified target-floor pose.</summary>
 public sealed record S0HostGroupState(object OwnerScope, long Epoch, string Mode, string Season, string MapId,
     string RouteProfileId, IReadOnlySet<string> VerifiedFloors, IReadOnlySet<string> RelationFloors,
-    S0HostPosePrior? CommittedTargetPose = null);
+    S0HostPosePrior? CommittedTargetPose = null, EstablishedGroupContext? Geometry = null);
 
 public sealed record S0HostFitOptions
 {
@@ -92,10 +92,9 @@ public sealed partial class S0HostFit : IDisposable
         Prepared? reference = null;
         S0HostFitResult Done(JsonObject fit) => new(fit, reference?.Geometry.Source, reference?.CanonicalPackId, trace, events);
         if (Obsolete()) return Done(Failure("structure-work-obsolete"));
-        if (target.Season != catalog.Season || target.Mode != catalog.Mode ||
-            !catalog.MapProfiles.TryGetValue(target.MapId, out string? identityProfile) || target.Profile != identityProfile ||
-            !ReferenceEquals(target, resources.Find(target.Mode, target.Season, target.Profile, target.MapId, target.Floor)))
+        if (!TargetCurrent(target))
             return Done(Failure("s0-host-target-resource-context-mismatch"));
+        string identityProfile = catalog.MapProfiles[target.MapId];
         reference = Prepare(target, out string unavailable);
         if (reference is null) return Done(Failure(unavailable));
         var candidate = entryCandidate?.DeepClone().AsObject();
@@ -116,7 +115,7 @@ public sealed partial class S0HostFit : IDisposable
                 if (Obsolete()) return Done(Failure("structure-work-obsolete"));
                 if (steady is not null) return Done(steady.DeepClone().AsObject());
             }
-            if (group?.VerifiedFloors.Count > 0 && services.EstablishedGroup is null)
+            if (group?.VerifiedFloors.Count > 0 && services.EstablishedGroup is null && group.Geometry is null)
             {
                 Mark("established-group", "implementation-unavailable");
                 return Done(Failure("s0-established-group-fit-unavailable"));
@@ -152,7 +151,8 @@ public sealed partial class S0HostFit : IDisposable
             {
                 if (group is null || group.VerifiedFloors.Count == 0 || !unconditional && !group.RelationFloors.Contains(target.Floor)) return null;
                 Mark(stage);
-                var recovery = services.EstablishedGroup is null ? Failure("s0-established-group-fit-unavailable") : services.EstablishedGroup(stageContext);
+                var recovery = services.EstablishedGroup is { } supplied ? supplied(stageContext)
+                    : EvaluateEstablishedGroup(stageContext).Fit;
                 if (Obsolete()) return Failure("structure-work-obsolete");
                 if (recovery is null) return Failure("s0-established-group-fit-unavailable");
                 // The verified same-floor branch is terminal even on a miss.

@@ -15,8 +15,8 @@ public sealed record RuntimeDisplayState(bool Prepared, bool CanonicalVerified, 
 public sealed class RuntimeRenderPacket
 {
     internal RuntimeRenderPacket(PreparedDisplayLayer material, CapturedClientFrame frame, DisplayAuthorization authorization,
-        long generation, long epoch)
-    { Material = material; Stamp = frame.Stamp; Client = frame.Context; Authorization = authorization; Generation = generation; Epoch = epoch; }
+        long generation, long epoch, bool remembersGeometry = true)
+    { Material = material; Stamp = frame.Stamp; Client = frame.Context; Authorization = authorization; Generation = generation; Epoch = epoch; RemembersGeometry = remembersGeometry; }
     public PreparedDisplayLayer Material { get; }
     public string MaterialToken { get; } = Guid.NewGuid().ToString("N");
     public CaptureStamp Stamp { get; }
@@ -24,6 +24,7 @@ public sealed class RuntimeRenderPacket
     public ClientFrameContext? Client { get; }
     public long Generation { get; }
     internal long Epoch { get; }
+    internal bool RemembersGeometry { get; }
     internal DisplayAuthorization Authorization { get; }
     public bool IsLive => Client?.EvidenceKind == CaptureEvidenceKind.LiveClient;
 }
@@ -57,7 +58,7 @@ public sealed partial class LiveRuntime
 
     private sealed record CanonicalGrant(CaptureStamp Stamp, long Epoch, DisplayAuthorization Authorization,
         string PackId, DisplayAffine Matrix, SharedStructureData Reference,
-        SharedStructureData NativeReference, DisplayAffine NativeToClient, SteadyCoverageState? ProposedCoverage);
+        SharedStructureData NativeReference, DisplayAffine NativeToClient, SteadyCoverageState? ProposedCoverage, GeometryGroup? Group);
 
     private sealed record PreparedRuntimeDisplay(DisplaySelectionResult Selection, DisplayMaterialResult Material,
         DisplayBridgeResult? CanonicalBasis, SharedStructureData NativeReference, DisplayAffine NativeToClient,
@@ -126,7 +127,8 @@ public sealed partial class LiveRuntime
             }
             else
             {
-                _render = new(layer, frame, previous.Authorization, _frameGeneration, _epoch);
+                _geometryGroup?.Model.RebaseDisplayProfile(prepared.Selection.EffectiveProfileId, pose.FloorId, GroupPixels(layer));
+                _render = new(layer, frame, previous.Authorization, _frameGeneration, _epoch, remembersGeometry: false);
                 _display = new(true, true, _render.IsLive, "display-prepared", preferred,
                     prepared.Selection.EffectiveProfileId, prepared.Selection.DisplayKind);
             }
@@ -135,7 +137,7 @@ public sealed partial class LiveRuntime
     }
 
     private sealed record CanonicalDisplayCommit(AlignmentCoreV2? Alignment, CanonicalGrant? Grant,
-        RuntimeRenderPacket? Render, RuntimeDisplayState Display);
+        RuntimeRenderPacket? Render, RuntimeDisplayState Display, GeometryGroup? Group = null);
 
     private CanonicalDisplayCommit PrepareCanonicalCommit(PreparedRuntimeDisplay prepared,
         IReadOnlyDictionary<string, object?> residual, CapturedClientFrame frame, string map, string floor,
@@ -152,7 +154,13 @@ public sealed partial class LiveRuntime
                 new(false, false, false, layer is null ? prepared.Material.Reason : "canonical-fit-basis-mismatch",
                     selection.PreferredProfileId, selection.EffectiveProfileId, selection.DisplayKind));
         }
+        var stagedGroup = _selection.Season == "s0" && frame.Context is not null
+            ? StageGeometryGroup(prepared, residual, frame, map, floor, canonical) : null;
+        if (_selection.Season == "s0" && frame.Context is not null && stagedGroup is null)
+            return new(alignment, null, null, new(false, false, false, "round-group-pose-commit-rejected"));
         alignment ??= new(floors: _resources!.Passports.Floors);
+        var priorGroup = GeometryGroupCurrent(_geometryGroup, frame, _resources!, map) ? _geometryGroup : null;
+        SeedGroupCore(alignment, priorGroup);
         alignment.BeginObservation(new(_roundId!), map, floor, _frameGeneration, [frame.Stamp.FrameId, _resources!.Id]);
         var candidate = new AlignmentCandidate(map, floor, new(canonical.ToArray()), "initial-structure-v2", _frameGeneration,
             currentFrameVerified: true, residualVerified: true, globalResidualVerified: true,
@@ -165,18 +173,18 @@ public sealed partial class LiveRuntime
             return new(alignment, null, null, new(false, false, false, verdict.Reason));
         }
         var grant = new CanonicalGrant(frame.Stamp, _epoch, authorization, bridge.CanonicalPackId, canonical, bridge.Reference!,
-            prepared.NativeReference, prepared.NativeToClient, prepared.ProposedCoverage);
+            prepared.NativeReference, prepared.NativeToClient, prepared.ProposedCoverage, stagedGroup);
+        SeedGroupCore(alignment, stagedGroup);
         var render = layer is null ? null : new RuntimeRenderPacket(layer, frame, authorization, _frameGeneration, _epoch);
         return new(alignment, grant, render, new(layer is not null, true, render?.IsLive == true,
             layer is not null ? "display-prepared" : prepared.Material.Reason, selection.PreferredProfileId,
-            selection.EffectiveProfileId, selection.DisplayKind));
+            selection.EffectiveProfileId, selection.DisplayKind), stagedGroup);
     }
 
-    private void CommitDisplay(PreparedRuntimeDisplay prepared, IReadOnlyDictionary<string, object?> residual,
-        CapturedClientFrame frame, string map, string floor)
+    private void ApplyCanonicalCommit(CanonicalDisplayCommit commit)
     {
-        var commit = PrepareCanonicalCommit(prepared, residual, frame, map, floor, _alignment);
         _alignment = commit.Alignment; _canonical = commit.Grant; _render = commit.Render; _display = commit.Display;
+        _geometryGroup = commit.Group;
     }
 
     private void RevokeDisplay(string reason)

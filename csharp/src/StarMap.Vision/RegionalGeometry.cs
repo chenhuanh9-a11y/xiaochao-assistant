@@ -58,7 +58,7 @@ public static class RegionalGeometry
     }
 
     public static JsonObject GraphPoints(Mat frame, StructureGeometry reference, double[][] target,
-        Observation context, bool allowScaleRecovery)
+        Observation context, bool allowScaleRecovery, bool useUnknownMask = true)
     {
         context.RequireFrame(frame);
         using var projected = Geometry.Warp(reference.Clean, target, frame.Size());
@@ -126,7 +126,7 @@ public static class RegionalGeometry
         result["structureModel"] = success ? model : null;
         var matrix = success ? Numerics.Matrix(result[model]!["matrixSourceToClient"]!.AsArray()) : target;
         using var fitted = success ? Geometry.Warp(reference.Clean, matrix, frame.Size()) : null;
-        using var mask = reference.Unknown is null ? null : Geometry.Warp(reference.Unknown, matrix, frame.Size());
+        using var mask = !useUnknownMask || reference.Unknown is null ? null : Geometry.Warp(reference.Unknown, matrix, frame.Size());
         foreach (var item in Evaluate(frame, context, fitted ?? projected, mask)) graph[item.Key] = item.Value?.DeepClone();
         return result;
     }

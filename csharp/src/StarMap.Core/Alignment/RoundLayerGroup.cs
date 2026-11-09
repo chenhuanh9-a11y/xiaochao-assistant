@@ -36,7 +36,7 @@ public sealed class RoundLayerGroup
         verified.UnionWith(verifiedFloors??[]);verified.Add(anchorFloor);renderVerified.UnionWith(renderProfileVerifiedFloors??[]);
         canonicalVerified.UnionWith(canonicalGeometryVerifiedFloors??[]);sourceVerified.UnionWith(sourceStructureVerifiedFloors??[]);provisional.UnionWith(provisionalFloors??[]);
     }
-    public string MapId{get;} public string RouteProfileId{get;} public string AnchorFloor{get;} public IReadOnlyList<string> Floors{get;}
+    public string MapId{get;} public string RouteProfileId{get;private set;} public string AnchorFloor{get;} public IReadOnlyList<string> Floors{get;}
     public Matrix3 RootPose{get{lock(sync)return root;}} public long Generation{get;private set;} public AlignmentCycleId? CycleId{get;private set;}
     public string Source{get;private set;} public string PoseOrigin{get;} private int[]? clientSize;
     public int[]? PoseClientSize{get=>clientSize is null?null:(int[])clientSize.Clone();private set=>clientSize=value is null?null:(int[])value.Clone();}
@@ -54,6 +54,37 @@ public sealed class RoundLayerGroup
     public IReadOnlyList<string> CanonicalGeometryVerifiedFloors{get{lock(sync)return Array.AsReadOnly(canonicalVerified.Order(StringComparer.Ordinal).ToArray());}}
     public IReadOnlyList<string> SourceStructureVerifiedFloors{get{lock(sync)return Array.AsReadOnly(sourceVerified.Order(StringComparer.Ordinal).ToArray());}}
     public IReadOnlyList<string> ProvisionalFloors{get{lock(sync)return Array.AsReadOnly(provisional.Order(StringComparer.Ordinal).ToArray());}}
+    /// <summary>Detached candidate; committed group instances are never mutated by a worker.</summary>
+    public RoundLayerGroup Copy(string? routeProfileId=null)
+    {
+        lock(sync)return new(MapId,routeProfileId??RouteProfileId,AnchorFloor,root,
+            new Dictionary<string,Matrix3>(relations,StringComparer.Ordinal),
+            relationMetadata.ToDictionary(p=>p.Key,p=>(IReadOnlyDictionary<string,object?>)p.Value,StringComparer.Ordinal),
+            Generation,CycleId,Source,PoseOrigin,PoseClientSize,displaySignature,TrackingFloor,tracking,
+            trackingByFloor.ToDictionary(p=>p.Key,p=>(IReadOnlyDictionary<string,object?>)p.Value,StringComparer.Ordinal),
+            DisplayedFloor,overlay,verified,renderVerified,canonicalVerified,sourceVerified,provisional,Floors);
+    }
+    /// <summary>Records checked geometry without claiming pixels were displayed.</summary>
+    public void MarkGeometryVerified(string floor,bool canonicalGeometryVerified,bool sourceStructureVerified)
+    {
+        lock(sync)
+        {
+            if(!Floors.Contains(floor))throw new ArgumentException("unsupported floor",nameof(floor));
+            verified.Add(floor);provisional.Remove(floor);renderVerified.Remove(floor);
+            if(canonicalGeometryVerified)canonicalVerified.Add(floor);else canonicalVerified.Remove(floor);
+            if(sourceStructureVerified)sourceVerified.Add(floor);else sourceVerified.Remove(floor);
+        }
+    }
+    /// <summary>Display-owned replacement. Root, geometry proofs and group identity stay unchanged.</summary>
+    public void RebaseDisplayProfile(string profile,string floor,Array pixels)
+    {
+        lock(sync)
+        {
+            if(!Floors.Contains(floor))throw new ArgumentException("unsupported floor",nameof(floor));
+            RouteProfileId=profile;DisplayedFloor=floor;overlay=(Array)AlignmentData.Copy(pixels)!;
+            renderVerified.Clear();
+        }
+    }
     public bool SetRelation(string floor,Matrix3 relation,IReadOnlyDictionary<string,object?>? metadata=null)
     {lock(sync){if(!Floors.Contains(floor)||relation is null)return false;var owned=metadata is null?null:AlignmentData.CopyMap(metadata);
         relations[floor]=relation;if(owned is not null)relationMetadata[floor]=owned;return true;}}

@@ -120,14 +120,15 @@ public static class PartialWalls
     private static JsonArray Matrix(double[][] matrix) => new(matrix.Select(row => (JsonNode)Values(row)).ToArray());
     private static void Merge(JsonObject destination, JsonObject source) { foreach (var value in source) destination[value.Key] = value.Value?.DeepClone(); }
 
-    public static JsonObject Fit(Mat frame, StructureGeometry reference, double[][] target, Observation context, bool allowScaleRecovery = true)
+    public static JsonObject Fit(Mat frame, StructureGeometry reference, double[][] target, Observation context,
+        bool allowScaleRecovery = true, IReadOnlyList<Wall>? matchingSourceLines = null)
     {
         context.RequireFrame(frame);
         bool fitOnly = reference.KnownBoundary is not null;
         var qlines = Geometry.Lines(frame, context);
         using var projected = Geometry.Warp(reference.Clean, target, frame.Size());
         var native = reference.KnownBoundary is null ? null :
-            reference.NativeWalls ?? ExplicitWallSegments(reference.Clean, reference.KnownBoundary);
+            matchingSourceLines ?? reference.NativeWalls ?? ExplicitWallSegments(reference.Clean, reference.KnownBoundary);
         var slines = native is null ? Geometry.VisibleWalls(projected) :
             native.Select(line => line with {
                 Normal = line.Normal * target[line.Axis][line.Axis] + target[line.Axis][2],
