@@ -1,0 +1,316 @@
+{
+  "sourceCommit": "e78d4eebbd374e7cee260ff644fbdb7f4f5e1ee2",
+  "configuration": "local protocol2 experiment; .NET8 Debug framework-dependent; Python3.13.3; Windows11",
+  "resourceFiles": 855,
+  "numericalTolerance": 0,
+  "selectedMapOrPoseInjected": false,
+  "syntheticAccuracyFrames": 0,
+  "correctness": {
+    "samples": 71,
+    "accepted": 33,
+    "rejected": 38,
+    "finalSemanticsExact": 71,
+    "rgbaExact": 71,
+    "intermediateExact": 70,
+    "strictFullChainPassed": false,
+    "remainingDifference": "Original 1-second rank budget truncation; independently reproduced baseline-vs-baseline; kept as strict failure.",
+    "hashSeed": 0,
+    "realGridInvocations": 2,
+    "gridRowsAndInputsExact": true,
+    "gridFinallyAccepted": 0,
+    "strata": [
+      {
+        "mode": "difficult",
+        "floor": "1",
+        "samples": 12,
+        "accepted": 3,
+        "rejected": 9,
+        "strictIntermediate": 11
+      },
+      {
+        "mode": "difficult",
+        "floor": "2",
+        "samples": 7,
+        "accepted": 2,
+        "rejected": 5,
+        "strictIntermediate": 7
+      },
+      {
+        "mode": "nightmare",
+        "floor": "1",
+        "samples": 26,
+        "accepted": 14,
+        "rejected": 12,
+        "strictIntermediate": 26
+      },
+      {
+        "mode": "nightmare",
+        "floor": "2",
+        "samples": 14,
+        "accepted": 7,
+        "rejected": 7,
+        "strictIntermediate": 14
+      },
+      {
+        "mode": "nightmare",
+        "floor": "B1",
+        "samples": 12,
+        "accepted": 7,
+        "rejected": 5,
+        "strictIntermediate": 12
+      }
+    ],
+    "metadataIsGroundTruth": false,
+    "actualRecognizedMaps": 8,
+    "corpusScope": "Bounded historical diagnostic/failure corpus, not random live-game sampling or an accuracy denominator."
+  },
+  "recovery": {
+    "checks": [
+      {
+        "name": "dynamic-cancel-after-real-score-point",
+        "passed": true
+      },
+      {
+        "name": "wrong-session-does-not-cancel-and-original-rows-exact",
+        "passed": true
+      },
+      {
+        "name": "service-deadline",
+        "passed": true
+      },
+      {
+        "name": "service-recovery-after-timeout",
+        "passed": true
+      },
+      {
+        "name": "bounded-active-search",
+        "passed": true
+      },
+      {
+        "name": "pipeline-mid-grid-cancel-no-overlay",
+        "passed": true
+      },
+      {
+        "name": "owned-grid-crash-no-overlay",
+        "passed": true
+      },
+      {
+        "name": "pipeline-restarts-crashed-grid",
+        "passed": true
+      },
+      {
+        "name": "pipeline-deadline-no-overlay",
+        "passed": true
+      },
+      {
+        "name": "supersede-no-old-success",
+        "passed": true
+      },
+      {
+        "name": "recovered-current-result-strict-semantics-and-rgba",
+        "passed": true
+      },
+      {
+        "name": "pipeline-obsolete-cancels-do-not-affect-current",
+        "passed": true
+      }
+    ],
+    "oldCancelFaultReproduced": true,
+    "eofBeforeFailedWithoutDraining": true,
+    "eofAfterExitMs": 52.808699998422526,
+    "eofExitCode": 0,
+    "ownedGridStillAlive": false,
+    "wpf": [
+      {
+        "name": "hybrid-wpf-cancel-20261109-03",
+        "passed": true,
+        "accepted": [
+          true,
+          false,
+          true
+        ],
+        "cancelledOrRejectedWholeImageDiffPixels": 0,
+        "staleDiscarded": 0,
+        "algorithmAcceptedDuringLocalCancel": false
+      },
+      {
+        "name": "hybrid-wpf-late-20261109-03",
+        "passed": true,
+        "accepted": [
+          true,
+          false,
+          true
+        ],
+        "cancelledOrRejectedWholeImageDiffPixels": 0,
+        "staleDiscarded": 4,
+        "algorithmAcceptedDuringLocalCancel": true
+      },
+      {
+        "name": "hybrid-wpf-floor-20261109-02",
+        "passed": true,
+        "accepted": [
+          true,
+          false,
+          true
+        ],
+        "cancelledOrRejectedWholeImageDiffPixels": 0,
+        "staleDiscarded": 0,
+        "algorithmAcceptedDuringLocalCancel": false
+      },
+      {
+        "name": "hybrid-wpf-deadline-20261109-01",
+        "passed": true,
+        "accepted": [
+          true,
+          false,
+          true
+        ],
+        "cancelledOrRejectedWholeImageDiffPixels": 0,
+        "staleDiscarded": 4,
+        "algorithmAcceptedDuringLocalCancel": true
+      }
+    ],
+    "preparedReloads": 12,
+    "maxRetainedPrepared": 4
+  },
+  "resources": [
+    {
+      "phase": "pre-review-prototype",
+      "configuration": "Debug; framework dependent; Windows desktop recorded-frame replay",
+      "samples": 1200,
+      "durationSeconds": 731.4361860752106,
+      "accepted": 1080,
+      "rejected": 120,
+      "missingDisplay": 0,
+      "unexpectedResult": 0,
+      "clearFailures": 0,
+      "queryFailures": 0,
+      "metrics": {
+        "totalWorkingSet": {
+          "first": 553418752,
+          "last": 501673984,
+          "median": 511184896.0,
+          "p95": 527479603.2,
+          "max": 564879360,
+          "firstWindowMedian": 511752192.0,
+          "lastWindowMedian": 513933312.0,
+          "windowMedianDelta": 2181120.0
+        },
+        "totalPrivateBytes": {
+          "first": 1181360128,
+          "last": 1125285888,
+          "median": 1134938112.0,
+          "p95": 1151943884.8,
+          "max": 1192124416,
+          "firstWindowMedian": 1137270784.0,
+          "lastWindowMedian": 1137512448.0,
+          "windowMedianDelta": 241664.0
+        },
+        "totalHandles": {
+          "first": 1396,
+          "last": 1375,
+          "median": 1379.0,
+          "p95": 1391.0,
+          "max": 1398,
+          "firstWindowMedian": 1390.0,
+          "lastWindowMedian": 1375.0,
+          "windowMedianDelta": -15.0
+        }
+      },
+      "totalCpuSeconds": 136.046875,
+      "averageCpuPercentOfOneCore": 18.599965053685608,
+      "logicalProcessors": 20,
+      "resourceStatistics": {
+        "excludedWarmupSamples": 30,
+        "metricsSamples": 1170,
+        "windowSamples": 100,
+        "percentileMethod": "numpy.percentile linear interpolation",
+        "maxMeaning": "sampled post-warmup maximum, not continuous process high-water mark",
+        "cpuScope": "all sample intervals; cumulative CPU delta divided by first-to-last wall time; percent of one logical core"
+      },
+      "limitations": [
+        "Finite recorded-frame replay, not hours/days or real game; no resource acceptance threshold was pre-agreed.",
+        "Working sets sum shared pages more than once; PrivateBytes is process commit, not physical memory.",
+        "Self-owned fixture excluded; all descendants of WPF included; no cross-run performance comparison.",
+        "Resource measurements describe this exact prototype phase, not a clean install or product acceptance."
+      ]
+    },
+    {
+      "phase": "final-protocol2",
+      "configuration": "Debug; framework dependent; Windows desktop recorded-frame replay",
+      "samples": 300,
+      "durationSeconds": 182.1882939338684,
+      "accepted": 270,
+      "rejected": 30,
+      "missingDisplay": 0,
+      "unexpectedResult": 0,
+      "clearFailures": 0,
+      "queryFailures": 0,
+      "metrics": {
+        "totalWorkingSet": {
+          "first": 555696128,
+          "last": 499097600,
+          "median": 512362496.0,
+          "p95": 536509235.1999999,
+          "max": 564060160,
+          "firstWindowMedian": 513689600.0,
+          "lastWindowMedian": 512647168.0,
+          "windowMedianDelta": -1042432.0
+        },
+        "totalPrivateBytes": {
+          "first": 1182162944,
+          "last": 1122390016,
+          "median": 1135847424.0,
+          "p95": 1161580748.8,
+          "max": 1189793792,
+          "firstWindowMedian": 1137080320.0,
+          "lastWindowMedian": 1136089088.0,
+          "windowMedianDelta": -991232.0
+        },
+        "totalHandles": {
+          "first": 1402,
+          "last": 1388,
+          "median": 1389.0,
+          "p95": 1399.0,
+          "max": 1403,
+          "firstWindowMedian": 1398.0,
+          "lastWindowMedian": 1387.0,
+          "windowMedianDelta": -11.0
+        }
+      },
+      "totalCpuSeconds": 33.40625,
+      "averageCpuPercentOfOneCore": 18.336112204950975,
+      "logicalProcessors": 20,
+      "resourceStatistics": {
+        "excludedWarmupSamples": 30,
+        "metricsSamples": 270,
+        "windowSamples": 90,
+        "percentileMethod": "numpy.percentile linear interpolation",
+        "maxMeaning": "sampled post-warmup maximum, not continuous process high-water mark",
+        "cpuScope": "all sample intervals; cumulative CPU delta divided by first-to-last wall time; percent of one logical core"
+      },
+      "limitations": [
+        "Finite recorded-frame replay, not hours/days or real game; no resource acceptance threshold was pre-agreed.",
+        "Working sets sum shared pages more than once; PrivateBytes is process commit, not physical memory.",
+        "Self-owned fixture excluded; all descendants of WPF included; no cross-run performance comparison.",
+        "Resource measurements describe this exact prototype phase, not a clean install or product acceptance."
+      ]
+    }
+  ],
+  "unverified": [
+    "True grid-finally-accepted real positive; none found in bounded 71-frame inventory.",
+    "Independent public reproduction; raw frames/resources and experimental sources were not uploaded.",
+    "Release performance of the new protocol; Debug replay resource samples are not performance acceptance.",
+    "Real game key-to-author-route display and physical refresh latency.",
+    "Hours/days resource stability and product resource acceptance thresholds.",
+    "Clean Windows install, interrupted upgrade, user-data preservation and rollback."
+  ],
+  "environment": {
+    "wsl": "Ubuntu installed, WSL2, Stopped; not started",
+    "windowsSandbox": "Disabled",
+    "hyperV": "Disabled",
+    "preparedRecoverableWindowsVmFound": false,
+    "featuresChanged": false
+  },
+  "scope": "Recorded-frame structure overlay only. No formal client replacement, game operation, merge, release or deployment."
+}
