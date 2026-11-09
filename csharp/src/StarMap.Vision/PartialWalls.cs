@@ -199,9 +199,11 @@ public static class PartialWalls
             ["reason"] = "partial-wall-fixed-linear", ["matrix"] = Matrix(target), ["diagnostics"] = diagnostics };
     }
 
-    public static List<Wall> ExplicitWallSegments(Mat clean, Mat known)
+    public static List<Wall> ExplicitWallSegments(Mat clean, Mat known) => ExplicitWallSegments(clean, known, known);
+
+    public static List<Wall> ExplicitWallSegments(Mat clean, Mat known, Mat observed)
     {
-        var lines = Geometry.VisibleWalls(clean, known);
+        var lines = Geometry.VisibleWalls(clean, observed);
         using var divided = clean.Clone();
         divided.SetTo(Scalar.All(0), known);
         using var gx = new Mat();
@@ -209,7 +211,7 @@ public static class PartialWalls
         FrameResidual.Gradients(divided, gx, gy);
         var x = Geometry.Floats(gx);
         var y = Geometry.Floats(gy);
-        var positive = Geometry.Bytes(known);
+        var positive = Geometry.Bytes(observed);
         for (int direction = 0; direction < 4; direction++)
         {
             int axis = direction < 2 ? 0 : 1;

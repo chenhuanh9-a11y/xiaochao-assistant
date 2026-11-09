@@ -1,10 +1,10 @@
 # 星图 C# / WPF 客户端
 
-完整迁移正在独立分支实施，当前范围、真实入口、模块与验收状态见 [MIGRATION.md](MIGRATION.md)。WPF 测试版入口已转向原资源查看、实验设置和手动窗口绑定；未接入的识别与页面明确保持未完成。正式 Python/Qt 客户端继续保留。
+完整迁移正在独立分支实施，当前范围、真实入口、模块与验收状态见 [MIGRATION.md](MIGRATION.md)。WPF 测试版已接原资源查看、实验设置、手动窗口绑定及真实会话中的楼层/MainEntry/结构 Fit；尚缺的侧门、稳态跟踪、显示桥与页面继续标记未完成。正式 Python/Qt 客户端保留。
 
 SDK 固定 .NET 10.0.403，UI 为 WPF-UI 4.3.0（MIT，许可随输出携带）。在 `src/StarMap.App` 实际目录执行 `dotnet build-server shutdown`，再执行裸 `dotnet build`。启动 `StarMap.Migration.exe`，可选 `--resource-root <现有资源目录>`、`--data-root <独立实验数据目录>`；不自动读取或写入原版玩家设置，不自动枚举/采集窗口或登记热键。默认数据目录为 `%LOCALAPPDATA%/StarMap.Migration`。
 
-`StarMap.Vision` 已包含原始帧观测、结构 prepare/grid/refine/propose 与入口图标/墙面观测。它尚未接入 WPF 的识别、身份和会话消费者。实际回归范围与未测项见迁移矩阵，不能把独立数学回放当成完整应用验收。
+`StarMap.Runtime` 直接消费 `StarMap.Vision` 的当前帧楼层观察、MainEntry 和目标层预制结构 Fit，WPF 通过 `SessionService` 发起明确操作。人工确认立即保留地图身份；native 几何成功也不会授予尚未完成的 canonical/display 权限。真实回放仅使用 2026-11-05 之后原始客户区；S1/困难等合成覆盖不代表实机验收。全局输入模块默认不启动，尚未接入本局操作消费。
 
 以下保留最初阶段一切片的设计范围；当前目标框架已统一更新为 .NET 10，它不是完整迁移完成声明。
 

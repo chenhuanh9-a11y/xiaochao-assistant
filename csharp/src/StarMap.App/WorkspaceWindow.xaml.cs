@@ -9,6 +9,7 @@ using System.Windows.Threading;
 using Microsoft.Win32;
 using StarMap.Core.Resources;
 using StarMap.Core.Settings;
+using StarMap.App.Platform;
 
 namespace StarMap.App;
 
@@ -33,7 +34,11 @@ public partial class WorkspaceWindow : Window
     int resourceGeneration, previewGeneration;
     bool ready, closed;
     ConnectionPage? connectionPage;
+    RuntimePage? runtimePage;
+    readonly WindowsRuntimeCapturePort runtimeCapture = new();
+    bool closing, closeReady;
     bool settingsBusy;
+    bool resourcesBusy;
     bool loadingSettings;
     readonly HashSet<string> editedSettings = [];
     readonly SemaphoreSlim previewGate = new(1, 1);
@@ -59,7 +64,19 @@ public partial class WorkspaceWindow : Window
             await customPage.LoadAsync();
             if (!string.IsNullOrWhiteSpace(initialResourcePath)) await LoadResources(initialResourcePath);
         };
-        Closed += (_, _) => { closed = true; resourceGeneration++; previewGeneration++; previewCancellation?.Cancel(); connectionPage?.Dispose(); };
+        Closing += async (_, e) =>
+        {
+            if (closeReady) return;
+            e.Cancel = true;
+            if (closing) return;
+            closing = true; closed = true; resourceGeneration++; previewGeneration++;
+            previewCancellation?.Cancel(); connectionPage?.Dispose();
+            if (runtimePage is not null) await runtimePage.CloseAsync();
+            runtimeCapture.Dispose(); closeReady = true;
+            // A drained session can complete synchronously inside Closing.
+            // Re-enter Close only after WPF has left its current close callback.
+            _ = Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(Close));
+        };
     }
 
     void Navigate(object sender, SelectionChangedEventArgs e)
@@ -85,14 +102,17 @@ public partial class WorkspaceWindow : Window
     FrameworkElement BuildHome()
     {
         var panel = new StackPanel();
-        connectionPage = new ConnectionPage(message => Status.Text = message);
+        runtimePage = new RuntimePage(runtimeCapture, message => Status.Text = message);
+        connectionPage = new ConnectionPage(message => Status.Text = message, runtimeCapture);
+        connectionPage.BindingChanged += runtimePage.BindingChanged;
         panel.Children.Add(connectionPage);
+        runtimePage.Margin = new Thickness(0, 28, 0, 0); panel.Children.Add(runtimePage);
         panel.Children.Add(HeadingText("资源与设置", 18, new Thickness(0, 28, 0, 12)));
         panel.Children.Add(resourceSummary);
         var choose = Button("选择原结构资源目录", async (_, _) => await ChooseResources());
         choose.Margin = new Thickness(0, 16, 0, 0);
         panel.Children.Add(choose);
-        panel.Children.Add(new TextBlock { Text = "当前已接入资源查看、实验设置和窗口绑定。完整识别、悬浮显示与其他页面仍在迁移。", TextWrapping = TextWrapping.Wrap, Foreground = Brushes.SlateGray, Margin = new Thickness(0, 22, 0, 0) });
+        panel.Children.Add(new TextBlock { Text = "本局使用 C# 直接观察楼层、生成主门候选和对齐结构。侧门、跟踪与悬浮路线显示仍在迁移。", TextWrapping = TextWrapping.Wrap, Foreground = Brushes.SlateGray, Margin = new Thickness(0, 22, 0, 0) });
         resourceSummary.Text = "尚未选择图包。选择现有资源目录后可查看真实地图和楼层。";
         return new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     }
@@ -131,22 +151,34 @@ public partial class WorkspaceWindow : Window
 
     async Task LoadResources(string path)
     {
+        if (settingsBusy || resourcesBusy) { Status.Text = "设置正在保存或图包正在载入，请等待完成后再选择目录。"; return; }
+        if (runtimePage is not null && !runtimePage.BeginResourceLoad())
+        { Status.Text = "请先结束本局并等待识别停止，再更换资源目录。"; return; }
+        resourcesBusy = true; SetSettingsEditing(false);
         int generation = ++resourceGeneration; Status.Text = "正在读取图包索引…";
         try
         {
+            await Dispatcher.Yield(DispatcherPriority.Background);
             var loaded = await Task.Run(() => ResourceCatalog.Load(path));
+            if (closed || generation != resourceGeneration) return;
+            runtimePage?.EndResourceLoad();
+            bool runtimeBound = runtimePage is not null && await runtimePage.Configure(loaded.RootPath, settings ?? SettingsDocument.CreateNew(), reloadResources: true);
             if (closed || generation != resourceGeneration) return;
             catalog = loaded; resourceRows = loaded.Entries.Select(entry => new ResourceRow(entry)).ToList();
             resourcePath.Text = loaded.RootPath; resourceList.ItemsSource = resourceRows;
-            resourceSummary.Text = $"已读取 {loaded.Entries.Count} 项图层；资源问题 {loaded.Issues.Count} 项。未修改图包。";
+            resourceSummary.Text = $"图库已读取 {loaded.Entries.Count} 项图层；资源问题 {loaded.Issues.Count} 项。未修改图包。"
+                + (runtimeBound ? " 本局运行资源已切换到该目录。" : " 运行资源未切换；本局仍使用页面标明的运行目录。");
             Status.Text = resourceSummary.Text;
             if (resourceRows.Count != 0) resourceList.SelectedIndex = 0;
+            if (runtimeBound && runtimePage?.State is { } applied) runtimePage.SetMaps(loaded.Entries.Where(entry =>
+                entry.Mode == applied.Context.Mode && entry.Season == applied.Context.Season).Select(entry => entry.MapId));
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or ArgumentException)
         {
             if (closed || generation != resourceGeneration) return;
             Status.Text = "图包未载入：" + error.Message;
         }
+        finally { resourcesBusy = false; runtimePage?.EndResourceLoad(); SetSettingsEditing(!settingsBusy); }
     }
 
     async Task PreviewResource()
@@ -204,7 +236,7 @@ public partial class WorkspaceWindow : Window
         AddField(panel, "游戏模式", mode); AddField(panel, "赛季", season); AddField(panel, "地图键", hotkey);
         AddField(panel, "贴合透明度", sheetOpacity); AddField(panel, "定点透明度", referenceOpacity);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 20, 0, 16) };
-        actions.Children.Add(Button("保存到测试版", async (_, _) => await SaveSettings()));
+        actions.Children.Add(Button("保存并应用到测试版", async (_, _) => await SaveSettings()));
         actions.Children.Add(Button("导入原版设置副本", async (_, _) => await ImportSettings())); panel.Children.Add(actions); panel.Children.Add(settingsState);
         return new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     }
@@ -242,11 +274,12 @@ public partial class WorkspaceWindow : Window
 
     async Task SaveSettings()
     {
+        if (resourcesBusy) { settingsState.Text = "图包正在载入，本次更改尚未保存或应用，请完成后重试。"; return; }
         if (settings is null || settingsBusy) return;
-        if (editedSettings.Count == 0) { settingsState.Text = "设置没有更改。"; return; }
         settingsBusy = true;
         try
         {
+            if (editedSettings.Count == 0) { settingsState.Text = "设置没有更改，正在应用已保存设置。"; await ConfigureRuntime(); return; }
             var changes = new Dictionary<string, JsonNode?>();
             foreach (var key in editedSettings)
                 changes[key] = ReadSettingControl(key);
@@ -257,6 +290,7 @@ public partial class WorkspaceWindow : Window
                 foreach (var (key, value) in changes)
                     if (JsonNode.DeepEquals(value, ReadSettingControl(key))) editedSettings.Remove(key);
                 settingsState.Text = editedSettings.Count == 0 ? "已保存到测试版数据目录；没有修改原版设置。" : "本次更改已保存，仍有新更改尚未保存。";
+                await ConfigureRuntime();
             }
             else settingsState.Text = "没有保存：" + saved.Error?.Message;
         }
@@ -266,6 +300,7 @@ public partial class WorkspaceWindow : Window
 
     async Task ImportSettings()
     {
+        if (resourcesBusy) { settingsState.Text = "图包正在载入，请完成后再导入设置。"; return; }
         if (settingsBusy) return;
         var dialog = new OpenFileDialog { Title = "选择原版 ui-settings.json", Filter = "设置文件 (*.json)|*.json" };
         if (dialog.ShowDialog(this) != true) return;
@@ -274,6 +309,7 @@ public partial class WorkspaceWindow : Window
 
     async Task ImportSelectedSettings(string path)
     {
+        if (resourcesBusy) { settingsState.Text = "图包正在载入，尚未导入设置，请完成后重试。"; return; }
         if (settingsBusy) return;
         settingsBusy = true;
         SetSettingsEditing(false);
@@ -286,9 +322,10 @@ public partial class WorkspaceWindow : Window
             if (closed) return;
             if (!result.Succeeded || result.Document is null) { settingsState.Text = "没有导入：" + result.Error?.Message; return; }
             settings = result.Document; DisplaySettings(); settingsState.Text = "已复制并回读原版设置。原文件保留。";
+            await ConfigureRuntime();
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException) { settingsState.Text = "没有导入：" + error.Message; }
-        finally { settingsBusy = false; SetSettingsEditing(true); }
+        finally { settingsBusy = false; SetSettingsEditing(!resourcesBusy); }
     }
 
     void SetSettingsEditing(bool enabled)
@@ -296,11 +333,22 @@ public partial class WorkspaceWindow : Window
         foreach (var control in new Control[] { mode, season, hotkey, sheetOpacity, referenceOpacity }) control.IsEnabled = enabled;
     }
 
+    async Task ConfigureRuntime()
+    {
+        if (closed || catalog is null || runtimePage is null) return;
+        var current = settings ?? SettingsDocument.CreateNew();
+        if (await runtimePage.Configure(catalog.RootPath, current))
+        {
+            var applied = runtimePage.State!.Context;
+            runtimePage.SetMaps(catalog.Entries.Where(entry => entry.Mode == applied.Mode && entry.Season == applied.Season).Select(entry => entry.MapId));
+        }
+    }
+
     static FrameworkElement BuildHelp()
     {
         var panel = new StackPanel();
         panel.Children.Add(HeadingText("当前测试版", 20, new Thickness(0, 0, 0, 16)));
-        panel.Children.Add(new TextBlock { Text = "这是完整迁移的进行中版本。资源与设置使用 C# 直接读取，不启动 Python。识别算法、楼层观察、作者路线、账号与在线服务仍需逐项接入和验收。\n\n窗口绑定与单次采集只有你明确操作才执行。不会自动开始游戏、注入按键或改变正式版。\n\n原始资源不会被修改；缺失楼层或坐标信息会显示问题。安装、实机与回退的验证状态单独记录。", TextWrapping = TextWrapping.Wrap, MaxWidth = 650, HorizontalAlignment = HorizontalAlignment.Left, LineHeight = 25 });
+        panel.Children.Add(new TextBlock { Text = "这是完整迁移的进行中版本。资源、设置、当前楼层观察、主门候选和结构对齐使用 C#，不启动 Python。侧门、稳态跟踪、作者路线、账号与在线服务仍需接入和验收。\n\n窗口绑定、开始本局和采集只有你明确操作才执行。不会自动打开游戏地图或发送按键。\n\n原始资源不会被修改；缺失楼层或坐标信息会显示问题。安装、实机与回退的验证状态单独记录。", TextWrapping = TextWrapping.Wrap, MaxWidth = 650, HorizontalAlignment = HorizontalAlignment.Left, LineHeight = 25 });
         return panel;
     }
 

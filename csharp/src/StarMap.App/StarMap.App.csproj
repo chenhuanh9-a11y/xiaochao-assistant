@@ -1,7 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <WindowsSdkPackageVersion>10.0.19041.57</WindowsSdkPackageVersion>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
     <UseWPF>true</UseWPF>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -14,6 +16,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="StarMap.Workspace.Tests" />
     <ProjectReference Include="..\StarMap.Core\StarMap.Core.csproj" />
+    <ProjectReference Include="..\StarMap.Runtime\StarMap.Runtime.csproj" />
     <PackageReference Include="WPF-UI" Version="4.3.0" />
     <Content Include="ThirdParty\*" CopyToOutputDirectory="PreserveNewest" />
     <Resource Include="..\..\..\experiments\qt_quick\icons\*.png" Link="Assets\%(Filename)%(Extension)" />

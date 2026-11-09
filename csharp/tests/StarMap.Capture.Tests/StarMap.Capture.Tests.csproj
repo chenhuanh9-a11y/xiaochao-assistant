@@ -4,5 +4,8 @@
     <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>..\..\src\StarMap.App\app.manifest</ApplicationManifest>
   </PropertyGroup>
-  <ItemGroup><Compile Include="..\..\src\StarMap.App\Platform\*.cs" Link="Production\%(Filename)%(Extension)" /></ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\..\src\StarMap.App\Platform\Win32CaptureNative.cs" Link="Production\Win32CaptureNative.cs" />
+    <Compile Include="..\..\src\StarMap.App\Platform\WindowsClientCapture.cs" Link="Production\WindowsClientCapture.cs" />
+  </ItemGroup>
 </Project>

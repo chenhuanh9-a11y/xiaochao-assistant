@@ -1,0 +1,2011 @@
+{
+  "source": "Actual Python _transition_event / _key_event / mouse packet functions; no hook, OS key state or UI",
+  "cases": [
+    {
+      "name": "fresh-repeat-release",
+      "bindings": {
+        "map": "G"
+      },
+      "steps": [
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              71
+            ],
+            "tap": false
+          },
+          "actions": [
+            "map"
+          ],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              71
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": false,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              71
+            ],
+            "tap": false
+          },
+          "actions": [
+            "map"
+          ],
+          "pickerKey": null
+        }
+      ],
+      "initialHeld": []
+    },
+    {
+      "name": "held-before-subscribe",
+      "bindings": {
+        "map": "G"
+      },
+      "steps": [
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              71
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": false,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              71
+            ],
+            "tap": false
+          },
+          "actions": [
+            "map"
+          ],
+          "pickerKey": null
+        }
+      ],
+      "initial": [
+        71
+      ],
+      "initialHeld": [
+        71
+      ]
+    },
+    {
+      "name": "left-right-modifier-seeding",
+      "bindings": {
+        "map": "G"
+      },
+      "steps": [
+        {
+          "kind": "key",
+          "vk": 162,
+          "down": false,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 162,
+            "physical": 162,
+            "held": [
+              163
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              71,
+              163
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": false,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              163
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 17,
+          "down": false,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 1,
+          "expectedEvent": {
+            "vk": 17,
+            "physical": 163,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              71
+            ],
+            "tap": false
+          },
+          "actions": [
+            "map"
+          ],
+          "pickerKey": null
+        }
+      ],
+      "initial": [
+        17,
+        162,
+        163
+      ],
+      "initialHeld": [
+        162,
+        163
+      ]
+    },
+    {
+      "name": "generic-physical-ctrl-chord",
+      "bindings": {
+        "map": "Ctrl+G"
+      },
+      "steps": [
+        {
+          "kind": "key",
+          "vk": 17,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 17,
+            "physical": 162,
+            "held": [
+              162
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              71,
+              162
+            ],
+            "tap": false
+          },
+          "actions": [
+            "map"
+          ],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": false,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              162
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 162,
+          "down": false,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 162,
+            "physical": 162,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              71
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        }
+      ],
+      "initialHeld": []
+    },
+    {
+      "name": "windows-and-extra-modifier-rejected",
+      "bindings": {
+        "map": "Ctrl+G"
+      },
+      "steps": [
+        {
+          "kind": "key",
+          "vk": 17,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 17,
+            "physical": 162,
+            "held": [
+              162
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 16,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 16,
+            "physical": 160,
+            "held": [
+              160,
+              162
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              71,
+              160,
+              162
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": false,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              160,
+              162
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 16,
+          "down": false,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 16,
+            "physical": 160,
+            "held": [
+              162
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 91,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 91,
+            "physical": 91,
+            "held": [
+              91,
+              162
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              71,
+              91,
+              162
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        }
+      ],
+      "initialHeld": []
+    },
+    {
+      "name": "game-scope-and-current-focus",
+      "bindings": {
+        "map": "G"
+      },
+      "steps": [
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": true,
+          "created": 99.0,
+          "foreground": 77,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              71
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": false,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "scope": {
+            "currentForeground": 77
+          },
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              71
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": false,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "scope": {
+            "currentForeground": 42
+          },
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              71
+            ],
+            "tap": false
+          },
+          "actions": [
+            "map"
+          ],
+          "pickerKey": null
+        }
+      ],
+      "initialHeld": []
+    },
+    {
+      "name": "management-while-game-unavailable",
+      "bindings": {
+        "toggle-sheet-visibility": "MOUSE5"
+      },
+      "steps": [
+        {
+          "kind": "key",
+          "vk": 6,
+          "down": true,
+          "created": 99.0,
+          "foreground": 77,
+          "scan": 0,
+          "flags": 0,
+          "scope": {
+            "gameValid": false,
+            "currentForeground": 77
+          },
+          "expectedEvent": {
+            "vk": 6,
+            "physical": 6,
+            "held": [
+              6
+            ],
+            "tap": false
+          },
+          "actions": [
+            "toggle-sheet-visibility"
+          ],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 6,
+          "down": false,
+          "created": 99.0,
+          "foreground": 77,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 6,
+            "physical": 6,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 6,
+          "down": true,
+          "created": 99.0,
+          "foreground": 77,
+          "scan": 0,
+          "flags": 0,
+          "scope": {
+            "assistant": true
+          },
+          "expectedEvent": {
+            "vk": 6,
+            "physical": 6,
+            "held": [
+              6
+            ],
+            "tap": false
+          },
+          "actions": [
+            "toggle-sheet-visibility"
+          ],
+          "pickerKey": null
+        }
+      ],
+      "initialHeld": []
+    },
+    {
+      "name": "panel-local-owner",
+      "bindings": {
+        "toggle-panel": "F9"
+      },
+      "steps": [
+        {
+          "kind": "key",
+          "vk": 120,
+          "down": true,
+          "created": 99.0,
+          "foreground": 77,
+          "scan": 0,
+          "flags": 0,
+          "scope": {
+            "assistant": true,
+            "currentForeground": 77
+          },
+          "expectedEvent": {
+            "vk": 120,
+            "physical": 120,
+            "held": [
+              120
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 120,
+          "down": false,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 120,
+            "physical": 120,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 120,
+          "down": true,
+          "created": 99.0,
+          "foreground": 77,
+          "scan": 0,
+          "flags": 0,
+          "scope": {
+            "assistant": false
+          },
+          "expectedEvent": {
+            "vk": 120,
+            "physical": 120,
+            "held": [
+              120
+            ],
+            "tap": false
+          },
+          "actions": [
+            "toggle-panel"
+          ],
+          "pickerKey": null
+        }
+      ],
+      "initialHeld": []
+    },
+    {
+      "name": "panel-mouse-native-owner",
+      "bindings": {
+        "toggle-panel": "MOUSE4"
+      },
+      "steps": [
+        {
+          "kind": "key",
+          "vk": 5,
+          "down": true,
+          "created": 99.0,
+          "foreground": 77,
+          "scan": 0,
+          "flags": 0,
+          "scope": {
+            "assistant": true,
+            "currentForeground": 77
+          },
+          "expectedEvent": {
+            "vk": 5,
+            "physical": 5,
+            "held": [
+              5
+            ],
+            "tap": false
+          },
+          "actions": [
+            "toggle-panel"
+          ],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 5,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 5,
+            "physical": 5,
+            "held": [
+              5
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 5,
+          "down": false,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 5,
+            "physical": 5,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        }
+      ],
+      "initialHeld": []
+    },
+    {
+      "name": "panel-oem-native-owner",
+      "bindings": {
+        "toggle-panel": "OEM_1"
+      },
+      "steps": [
+        {
+          "kind": "key",
+          "vk": 186,
+          "down": true,
+          "created": 99.0,
+          "foreground": 77,
+          "scan": 0,
+          "flags": 0,
+          "scope": {
+            "assistant": true,
+            "currentForeground": 77
+          },
+          "expectedEvent": {
+            "vk": 186,
+            "physical": 186,
+            "held": [
+              186
+            ],
+            "tap": false
+          },
+          "actions": [
+            "toggle-panel"
+          ],
+          "pickerKey": null
+        }
+      ],
+      "initialHeld": []
+    },
+    {
+      "name": "stale-release-does-not-stick",
+      "bindings": {
+        "map": "G"
+      },
+      "steps": [
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": true,
+          "created": 97.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              71
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": false,
+          "created": 97.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": true,
+          "created": 98.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              71
+            ],
+            "tap": false
+          },
+          "actions": [
+            "map"
+          ],
+          "pickerKey": null
+        }
+      ],
+      "initialHeld": []
+    },
+    {
+      "name": "future-nan-infinity",
+      "bindings": {
+        "toggle-panel": "MOUSE4"
+      },
+      "steps": [
+        {
+          "kind": "key",
+          "vk": 5,
+          "down": true,
+          "created": 100.01,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 5,
+            "physical": 5,
+            "held": [
+              5
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 5,
+          "down": false,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 5,
+            "physical": 5,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 5,
+          "down": true,
+          "created": "nan",
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 5,
+            "physical": 5,
+            "held": [
+              5
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 5,
+          "down": false,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 5,
+            "physical": 5,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 5,
+          "down": true,
+          "created": "inf",
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 5,
+            "physical": 5,
+            "held": [
+              5
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 5,
+          "down": false,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 5,
+            "physical": 5,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 5,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 5,
+            "physical": 5,
+            "held": [
+              5
+            ],
+            "tap": false
+          },
+          "actions": [
+            "toggle-panel"
+          ],
+          "pickerKey": null
+        }
+      ],
+      "initialHeld": []
+    },
+    {
+      "name": "text-editing-cleans-levels",
+      "bindings": {
+        "map": "G"
+      },
+      "steps": [
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "scope": {
+            "text": true
+          },
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              71
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": false,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "scope": {
+            "text": false,
+            "editing": true
+          },
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              71
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": false,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "scope": {
+            "editing": false
+          },
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              71
+            ],
+            "tap": false
+          },
+          "actions": [
+            "map"
+          ],
+          "pickerKey": null
+        }
+      ],
+      "initialHeld": []
+    },
+    {
+      "name": "resume-boundary",
+      "bindings": {
+        "map": "G"
+      },
+      "steps": [
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "scope": {
+            "after": 99.5
+          },
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              71
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": false,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 71,
+          "down": true,
+          "created": 99.5,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 71,
+            "physical": 71,
+            "held": [
+              71
+            ],
+            "tap": false
+          },
+          "actions": [
+            "map"
+          ],
+          "pickerKey": null
+        }
+      ],
+      "initialHeld": []
+    },
+    {
+      "name": "bare-shift-clean-inclusive-tap",
+      "bindings": {
+        "map": "SHIFT"
+      },
+      "steps": [
+        {
+          "kind": "key",
+          "vk": 16,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 54,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 16,
+            "physical": 161,
+            "held": [
+              161
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 161,
+          "down": false,
+          "created": 99.5,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 161,
+            "physical": 161,
+            "held": [],
+            "tap": true
+          },
+          "actions": [
+            "map"
+          ],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 160,
+          "down": true,
+          "created": 99.6,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 160,
+            "physical": 160,
+            "held": [
+              160
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 16,
+          "down": false,
+          "created": 100.11,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 16,
+            "physical": 160,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        }
+      ],
+      "initialHeld": []
+    },
+    {
+      "name": "bare-ctrl-unsubscribed-key-blocks",
+      "bindings": {
+        "map": "CTRL"
+      },
+      "steps": [
+        {
+          "kind": "key",
+          "vk": 17,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 17,
+            "physical": 162,
+            "held": [
+              162
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 65,
+          "down": true,
+          "created": 99.1,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": null,
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 65,
+          "down": false,
+          "created": 99.2,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": null,
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 162,
+          "down": false,
+          "created": 99.3,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 162,
+            "physical": 162,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        }
+      ],
+      "initialHeld": []
+    },
+    {
+      "name": "bare-alt-wheel-and-click-blocks",
+      "bindings": {
+        "map": "ALT"
+      },
+      "steps": [
+        {
+          "kind": "key",
+          "vk": 18,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 18,
+            "physical": 164,
+            "held": [
+              164
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "mouseActivity",
+          "flags": 1024
+        },
+        {
+          "kind": "key",
+          "vk": 164,
+          "down": false,
+          "created": 99.1,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 164,
+            "physical": 164,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 18,
+          "down": true,
+          "created": 99.2,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 18,
+            "physical": 164,
+            "held": [
+              164
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "mouseActivity",
+          "flags": 1
+        },
+        {
+          "kind": "mouseActivity",
+          "flags": 2
+        },
+        {
+          "kind": "key",
+          "vk": 18,
+          "down": false,
+          "created": 99.3,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 18,
+            "physical": 164,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        }
+      ],
+      "initialHeld": []
+    },
+    {
+      "name": "bare-modifier-needs-mouse",
+      "bindings": {
+        "map": "CTRL"
+      },
+      "steps": [
+        {
+          "kind": "key",
+          "vk": 17,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 17,
+            "physical": 162,
+            "held": [
+              162
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 17,
+          "down": false,
+          "created": 99.2,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 17,
+            "physical": 162,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        }
+      ],
+      "mouseAvailable": false,
+      "initialHeld": []
+    },
+    {
+      "name": "bare-modifier-focus-change",
+      "bindings": {
+        "map": "CTRL"
+      },
+      "steps": [
+        {
+          "kind": "key",
+          "vk": 17,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 17,
+            "physical": 162,
+            "held": [
+              162
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 17,
+          "down": false,
+          "created": 99.2,
+          "foreground": 77,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 17,
+            "physical": 162,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        }
+      ],
+      "initialHeld": []
+    },
+    {
+      "name": "bare-modifier-edit-transition",
+      "bindings": {
+        "map": "CTRL"
+      },
+      "steps": [
+        {
+          "kind": "key",
+          "vk": 17,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 17,
+            "physical": 162,
+            "held": [
+              162
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 17,
+          "down": false,
+          "created": 99.2,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "scope": {
+            "editing": true
+          },
+          "expectedEvent": {
+            "vk": 17,
+            "physical": 162,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 17,
+          "down": true,
+          "created": 99.4,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "scope": {
+            "editing": false
+          },
+          "expectedEvent": {
+            "vk": 17,
+            "physical": 162,
+            "held": [
+              162
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 17,
+          "down": false,
+          "created": 99.5,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 17,
+            "physical": 162,
+            "held": [],
+            "tap": true
+          },
+          "actions": [
+            "map"
+          ],
+          "pickerKey": null
+        }
+      ],
+      "initialHeld": []
+    },
+    {
+      "name": "picker-priority-and-escape",
+      "bindings": {
+        "candidate-prev": "F1"
+      },
+      "steps": [
+        {
+          "kind": "key",
+          "vk": 112,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 112,
+            "physical": 112,
+            "held": [
+              112
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": "F1"
+        },
+        {
+          "kind": "key",
+          "vk": 112,
+          "down": false,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 112,
+            "physical": 112,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 27,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 27,
+            "physical": 27,
+            "held": [
+              27
+            ],
+            "tap": false
+          },
+          "actions": [
+            "escape"
+          ],
+          "pickerKey": "Escape"
+        },
+        {
+          "kind": "key",
+          "vk": 27,
+          "down": false,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 27,
+            "physical": 27,
+            "held": [],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 17,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 17,
+            "physical": 162,
+            "held": [
+              162
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 112,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 112,
+            "physical": 112,
+            "held": [
+              112,
+              162
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        }
+      ],
+      "picker": [
+        "F1",
+        "Escape"
+      ],
+      "initialHeld": []
+    },
+    {
+      "name": "picker-other-app-rejected",
+      "bindings": {
+        "candidate-next": "F2"
+      },
+      "steps": [
+        {
+          "kind": "key",
+          "vk": 113,
+          "down": true,
+          "created": 99.0,
+          "foreground": 77,
+          "scan": 0,
+          "flags": 0,
+          "scope": {
+            "currentForeground": 77
+          },
+          "expectedEvent": {
+            "vk": 113,
+            "physical": 113,
+            "held": [
+              113
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        }
+      ],
+      "picker": [
+        "F2"
+      ],
+      "initialHeld": []
+    },
+    {
+      "name": "bare-modifier-resume-rejects-old-press",
+      "bindings": {
+        "map": "CTRL"
+      },
+      "steps": [
+        {
+          "kind": "key",
+          "vk": 17,
+          "down": true,
+          "created": 99.0,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "expectedEvent": {
+            "vk": 17,
+            "physical": 162,
+            "held": [
+              162
+            ],
+            "tap": false
+          },
+          "actions": [],
+          "pickerKey": null
+        },
+        {
+          "kind": "key",
+          "vk": 17,
+          "down": false,
+          "created": 99.2,
+          "foreground": 42,
+          "scan": 0,
+          "flags": 0,
+          "scope": {
+            "after": 99.1
+          },
+          "expectedEvent": {
+            "vk": 17,
+            "physical": 162,
+            "held": [],
+            "tap": true
+          },
+          "actions": [],
+          "pickerKey": null
+        }
+      ],
+      "initialHeld": []
+    }
+  ],
+  "mouse": [
+    {
+      "buttonFlags": 0,
+      "flags": 0,
+      "x": 3,
+      "y": 4,
+      "transitions": [],
+      "phases": [
+        "move"
+      ]
+    },
+    {
+      "buttonFlags": 1,
+      "flags": 0,
+      "x": 10,
+      "y": 20,
+      "transitions": [],
+      "phases": [
+        "down"
+      ]
+    },
+    {
+      "buttonFlags": 3,
+      "flags": 0,
+      "x": 0,
+      "y": 0,
+      "transitions": [],
+      "phases": [
+        "down",
+        "up"
+      ]
+    },
+    {
+      "buttonFlags": 1020,
+      "flags": 0,
+      "x": 0,
+      "y": 0,
+      "transitions": [
+        [
+          2,
+          true
+        ],
+        [
+          2,
+          false
+        ],
+        [
+          4,
+          true
+        ],
+        [
+          4,
+          false
+        ],
+        [
+          5,
+          true
+        ],
+        [
+          5,
+          false
+        ],
+        [
+          6,
+          true
+        ],
+        [
+          6,
+          false
+        ]
+      ],
+      "phases": []
+    },
+    {
+      "buttonFlags": 1024,
+      "flags": 0,
+      "x": 0,
+      "y": 0,
+      "transitions": [],
+      "phases": []
+    },
+    {
+      "buttonFlags": 0,
+      "flags": 1,
+      "x": 0,
+      "y": 0,
+      "transitions": [],
+      "phases": [
+        "move"
+      ]
+    },
+    {
+      "buttonFlags": 2,
+      "flags": 0,
+      "x": 1,
+      "y": 1,
+      "transitions": [],
+      "phases": [
+        "move",
+        "up"
+      ]
+    }
+  ]
+}

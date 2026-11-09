@@ -9,7 +9,8 @@ namespace StarMap.App;
 /// <summary>Manual binding and one-shot preview. It neither starts a round nor installs input observers.</summary>
 internal sealed class ConnectionPage : UserControl, IDisposable
 {
-    readonly WindowsClientCapture capture = new();
+    readonly WindowsRuntimeCapturePort capture;
+    readonly bool ownsCapture;
     readonly ComboBox windows = new() { MinWidth = 310, MaxWidth = 720, HorizontalAlignment = HorizontalAlignment.Left };
     readonly TextBlock connection = new() { Text = "尚未连接窗口。", TextWrapping = TextWrapping.Wrap };
     readonly Image preview = new() { Stretch = Stretch.Uniform, MaxHeight = 230 };
@@ -21,10 +22,13 @@ internal sealed class ConnectionPage : UserControl, IDisposable
     BoundWindow? binding;
     int generation;
     bool disposed;
+    internal event Action? BindingChanged;
 
-    internal ConnectionPage(Action<string> status)
+    internal ConnectionPage(Action<string> status, WindowsRuntimeCapturePort? capturePort = null)
     {
         this.status = status;
+        ownsCapture = capturePort is null;
+        capture = capturePort ?? new();
         var panel = new StackPanel();
         panel.Children.Add(new TextBlock { Text = "游戏窗口", FontSize = 19, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 14) });
         panel.Children.Add(connection);
@@ -65,6 +69,7 @@ internal sealed class ConnectionPage : UserControl, IDisposable
         try
         {
             binding = capture.Bind(selected);
+            BindingChanged?.Invoke();
             captureButton.IsEnabled = true;
             connection.Text = $"已连接：{binding.Identity.Title} · {binding.GeometryAtBinding.Width}×{binding.GeometryAtBinding.Height}";
             status("窗口已绑定；尚未采集、注册热键或开始本局。");
@@ -81,11 +86,10 @@ internal sealed class ConnectionPage : UserControl, IDisposable
         try
         {
             for (int count = 3; count > 0; count--) { status($"请手动切回所选窗口，{count} 秒后采集。可随时取消。"); await Task.Delay(1000, cancellation.Token); }
-            var frame = await capture.CaptureAsync(target, cancellation.Token);
+            var frame = await capture.CapturePreviewAsync(cancellation.Token);
             if (disposed || cancellation.IsCancellationRequested || request != generation || !ReferenceEquals(binding, target)) return;
-            capture.ValidateForCommit(frame);
             preview.Source = frame.Image;
-            status($"已读取 {frame.Metadata.After.Width}×{frame.Metadata.After.Height} 客户区画面。这是单次 GDI 预览，尚未识别。" );
+            status($"已读取 {frame.Geometry.Width}×{frame.Geometry.Height} 客户区画面。当前是单次预览，尚未执行识别。" );
         }
         catch (OperationCanceledException) { if (!disposed) status("已取消采集，旧预览已清除。"); }
         catch (Exception error) when (error is ClientCaptureException or Win32Exception or InvalidOperationException or ArgumentException)
@@ -102,6 +106,7 @@ internal sealed class ConnectionPage : UserControl, IDisposable
     {
         pending?.Cancel(); capture.Unbind(); binding = null; ClearPreview(); captureButton.IsEnabled = false;
         connection.Text = "尚未连接窗口。";
+        BindingChanged?.Invoke();
     }
     static Button MakeButton(string text, RoutedEventHandler handler)
     {
@@ -111,6 +116,8 @@ internal sealed class ConnectionPage : UserControl, IDisposable
     public void Dispose()
     {
         if (disposed) return;
-        disposed = true; lifetime.Cancel(); pending?.Cancel(); capture.Unbind(); capture.Dispose(); lifetime.Dispose();
+        disposed = true; lifetime.Cancel(); pending?.Cancel();
+        if (ownsCapture) { capture.Unbind(); capture.Dispose(); }
+        lifetime.Dispose();
     }
 }

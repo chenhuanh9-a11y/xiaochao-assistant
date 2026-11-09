@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../StarMap.Core/StarMap.Core.csproj" />
+    <ProjectReference Include="../StarMap.Vision/StarMap.Vision.csproj" />
+  </ItemGroup>
+</Project>

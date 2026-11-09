@@ -16,6 +16,7 @@ internal static class Program
         string output = option >= 0 && option + 1 < args.Length ? Path.GetFullPath(args[option + 1]) : throw new ArgumentException("--output is required");
         if (Directory.Exists(output) || File.Exists(output)) throw new IOException("Preserve prior capture evidence; use a new output.");
         Directory.CreateDirectory(output);
+        if (args.Contains("--capture-window")) { Environment.ExitCode = LiveCapture.Run(args, output); return; }
         var app = new Application();
         var scene = new Grid();
         scene.RowDefinitions.Add(new()); scene.RowDefinitions.Add(new()); scene.ColumnDefinitions.Add(new()); scene.ColumnDefinitions.Add(new());

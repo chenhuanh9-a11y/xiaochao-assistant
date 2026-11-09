@@ -14,12 +14,13 @@ internal static class Program
 
     private static int Main(string[] args)
     {
-        if (args.Length != 6)
+        if (args.Length is not (6 or 8))
         {
-            Console.Error.WriteLine("Use --fixture-index <index.json> --resources <pack root> --output <new directory>.");
+            Console.Error.WriteLine("Use --fixture-index <index.json> --resources <pack root> --output <new directory> [--fit-oracle <original Python directory>].");
             return 2;
         }
-        var options = Enumerable.Range(0, 3).ToDictionary(i => args[2*i], i => Path.GetFullPath(args[2*i+1]));
+        var options = Enumerable.Range(0, args.Length / 2).ToDictionary(i => args[2*i], i => Path.GetFullPath(args[2*i+1]));
+        options.TryGetValue("--fit-oracle", out var fitOracle);
         string index = options["--fixture-index"], resources = options["--resources"], output = options["--output"];
         if (Directory.Exists(output)) throw new IOException("Replay output directory already exists.");
         Directory.CreateDirectory(output);
@@ -51,7 +52,7 @@ internal static class Program
                 var data = loaded.Value ?? throw new InvalidDataException(loaded.Error?.ToString());
                 var prepared = FastStructure.LoadPrepared(archive, data);
                 using var geometry = StructureGeometry.Open(data);
-                var result = Replay(source,dest,input,prepared,geometry);
+                var result = Replay(source,dest,input,prepared,geometry,fitOracle);
                 if (!archiveCasesRun)
                 {
                     var generated = PreparedComparison.Run(output, data, prepared);
@@ -63,7 +64,7 @@ internal static class Program
                     archiveCasesRun = true;
                 }
                 passed &= result.Passed;
-                cases.Add(new { name, result.Passed, result.Differences, entry.StableKey, result.Reason });
+                cases.Add(new { name, result.Passed, result.Differences, entry.StableKey, result.Reason, result.NumericFitComparedToOracle });
             }
             catch (Exception error)
             {
@@ -79,8 +80,8 @@ internal static class Program
         return passed ? 0 : 1;
     }
 
-    private static (bool Passed,int Differences,string Reason) Replay(string source,string dest,JsonNode input,
-        FastPrepared prepared,StructureGeometry geometry)
+    private static (bool Passed,int Differences,string Reason,bool NumericFitComparedToOracle) Replay(string source,string dest,JsonNode input,
+        FastPrepared prepared,StructureGeometry geometry,string? fitOracle)
     {
         string frameFile = input["sourcePath"]!.GetValue<string>();
         if (!Path.IsPathRooted(frameFile)) frameFile = Path.Combine(source,frameFile);
@@ -118,7 +119,7 @@ internal static class Program
         Save(Path.Combine(dest,"actual.json"),new { kind, cancelled, localOnly, context.Bounds, context.Component,
             frameWidth = frame.Cols, frameHeight = frame.Rows, nativeWidth = prepared.Width, nativeHeight = prepared.Height,
             preparedPitch = prepared.Pitch, chainCount = prepared.Chains.Length, observedChains = chains,
-            standalone, proposal = result, fit, roundedPrior, numericFitComparedToOracle = false });
+            standalone, proposal = result, fit, roundedPrior, fitOracleRequested = fitOracle is not null });
         if (!Cv2.ImWrite(Path.Combine(dest,"observed.png"),edges)) throw new IOException("Writing observed mask failed.");
         if (replaceEdges && !Cv2.ImWrite(Path.Combine(dest,"raw-observed.png"),realEdges)) throw new IOException("Writing raw mask failed.");
 
@@ -162,8 +163,30 @@ internal static class Program
             Check("rounded-neutral.diagnostics",originalDiagnostics,roundedDiagnostics);
         }
 
-        Save(Path.Combine(dest,"differences.json"),new { pixelEvidence, differences });
-        return (differences.Count == 0,differences.Count,reason);
+        bool fitCompared = false;
+        if (fitOracle is not null)
+        {
+            // Both solvers have finished before any fit oracle is opened.
+            var expectedFit = Read(Path.Combine(fitOracle,Path.GetFileName(source),"expected-fit.json"));
+            if (expectedFit["skipped"] is null)
+            {
+                fitCompared = true;
+                Check("fit.success",expectedFit["success"],fit?.GeometryVerified);
+                Check("fit.matrix",expectedFit["matrix"],fit?.Matrix);
+                Check("fit.reason",expectedFit["reason"],fit?.GeometryVerified == true ? "experimental-fast-structure" : fit?.Reason);
+                var expectedPoint = expectedFit["Point"]?.DeepClone();
+                var actualPoint = fit?.Point?.DeepClone();
+                expectedPoint?.AsObject().Remove("preprocessAndFitMs");
+                actualPoint?.AsObject().Remove("preprocessAndFitMs");
+                Check("fit.Point",expectedPoint,actualPoint);
+                Check("fit.Regions",expectedFit["Regions"],fit?.Regions);
+                Check("fit.Wall",expectedFit["Wall"],fit?.Wall);
+                Check("fit.Residual",expectedFit["Residual"],fit?.Residual);
+            }
+            else if (!replaceEdges) throw new InvalidDataException("Only the explicitly replaced-edge fixture may skip full fit comparison.");
+        }
+        Save(Path.Combine(dest,"differences.json"),new { pixelEvidence, numericFitComparedToOracle = fitCompared, differences });
+        return (differences.Count == 0,differences.Count,reason,fitCompared);
 
         IEnumerable<FastPose> TracePoses(string key) => result.Trace.TryGetValue(key,out var v) ? (IEnumerable<FastPose>)v! : [];
         static object[] Seed(FastPose p) => [p.Scale, p.Translation];

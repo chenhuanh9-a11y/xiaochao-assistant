@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "OpenCvSharp4": {
+        "type": "Transitive",
+        "resolved": "4.13.0.20261107",
+        "contentHash": "QzWQnOQg7pLYEFqiZuzX0K/UwA1K9OhXmY1X9P4pm6iRFp93UJxLHhU87Q60mGHFM+T4QyBfQr177mUlE2XIIQ=="
+      },
+      "OpenCvSharp4.runtime.win.slim": {
+        "type": "Transitive",
+        "resolved": "4.13.0.20261107",
+        "contentHash": "ormKP9mE5XDUfqZ2aDyLgxLr1M9thxYi0fhRKKYY8syvsDF4F7MefUPPqaaykOub/+ms1L9sbGIOsn3PnyIygg=="
+      },
+      "starmap.core": {
+        "type": "Project"
+      },
+      "starmap.runtime": {
+        "type": "Project",
+        "dependencies": {
+          "StarMap.Core": "[1.0.0, )",
+          "StarMap.Vision": "[1.0.0, )"
+        }
+      },
+      "starmap.vision": {
+        "type": "Project",
+        "dependencies": {
+          "OpenCvSharp4": "[4.13.0.20261107, )",
+          "OpenCvSharp4.runtime.win.slim": "[4.13.0.20261107, )",
+          "StarMap.Core": "[1.0.0, )"
+        }
+      }
+    }
+  }
+}

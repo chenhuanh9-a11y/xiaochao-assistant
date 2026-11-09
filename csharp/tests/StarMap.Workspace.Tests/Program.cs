@@ -68,6 +68,9 @@ internal static class Program
             Check(ReferenceEquals(home, content.Content), "navigation-retains-home-instance");
             Check(!shell.IsVisible && !Directory.Exists(Path.Combine(output, "isolated-data")), "construction-does-not-show-or-create-player-file");
             int resourcesOption = Array.IndexOf(args, "--resources");
+            int captureOption = Array.IndexOf(args, "--capture-record");
+            if (resourcesOption >= 0 && captureOption >= 0)
+                Await(RuntimeWorkspaceRegression.Run(Path.GetFullPath(args[captureOption + 1]), Path.GetFullPath(args[resourcesOption + 1]), output, Check));
             if (resourcesOption >= 0)
             {
                 Await(InvokeTask(shell, "LoadResources", Path.GetFullPath(args[resourcesOption + 1])));
@@ -98,6 +101,9 @@ internal static class Program
                 try
                 {
                     Await(InvokeTask(failureWindow, "LoadResources", fixture));
+                    Check(Field<RuntimePage>(failureWindow, "runtimePage").ResourceRoot is null
+                        && Field<TextBlock>(failureWindow, "resourceSummary").Text.Contains("运行资源未切换"),
+                        "partial-gallery-remains-inspectable-without-claiming-runtime-resource-binding");
                     Await(InvokeTask(failureWindow, "PreviewResource"));
                     Check(Field<Image>(failureWindow, "preview").Source is null
                         && Field<TextBlock>(failureWindow, "resourceDetails").Text.Contains("无法预览"), "missing-typed-structure-is-an-explicit-preview-failure");
@@ -120,6 +126,18 @@ internal static class Program
                 finally { failureWindow.Close(); }
             }
             Await(InvokeTask(shell, "LoadSettings"));
+            if (resourcesOption >= 0)
+            {
+                var loading = InvokeTask(shell, "LoadResources", Path.GetFullPath(args[resourcesOption + 1]));
+                Check(!loading.IsCompleted && !Field<TextBox>(shell, "hotkey").IsEnabled,
+                    "resource-load-publishes-exclusive-loading-state-before-io");
+                Await(InvokeTask(shell, "SaveSettings"));
+                Check(Field<TextBlock>(shell, "settingsState").Text.Contains("尚未保存或应用")
+                    && !File.Exists(Path.Combine(output, "isolated-data", "ui-settings.json")),
+                    "settings-save-during-resource-load-reports-unapplied-and-preserves-unsaved-file");
+                Await(loading);
+                Check(Field<TextBox>(shell, "hotkey").IsEnabled, "resource-load-restores-settings-editors-after-binding");
+            }
             var settings = Field<SettingsDocument>(shell, "settings");
             var saveGate = Field<SemaphoreSlim>(settings, "_saveGate");
             var hotkey = Field<TextBox>(shell, "hotkey");
@@ -131,6 +149,10 @@ internal static class Program
             {
                 firstSave = InvokeTask(shell, "SaveSettings");
                 Check(!firstSave.IsCompleted, "save-is-paused-at-real-document-serialization-gate");
+                int currentGeneration = Field<int>(shell, "resourceGeneration");
+                Await(InvokeTask(shell, "LoadResources", Path.Combine(output, "must-not-bind-during-save")));
+                Check(Field<int>(shell, "resourceGeneration") == currentGeneration,
+                    "resource-change-during-real-pending-save-does-not-start-another-configuration");
                 hotkey.Text = "Alt+G";
                 opacity.Value = .7;
             }

@@ -37,20 +37,23 @@ public sealed class ResultGate
 
     public void ExpireThenCancel(RequestTicket ticket)
     {
-        ExpiredObserved?.Invoke(ticket);
+        PruneSuperseded();
         _expired.Add(ticket.Sequence);
-        CancelObserved?.Invoke(ticket);
+        ExpiredObserved?.Invoke(ticket);
         _cancelled.Add(ticket.Sequence);
+        CancelObserved?.Invoke(ticket);
     }
 
     public void Cancel(RequestTicket ticket)
     {
-        CancelObserved?.Invoke(ticket);
+        PruneSuperseded();
         _cancelled.Add(ticket.Sequence);
+        CancelObserved?.Invoke(ticket);
     }
 
     public ResultDisposition Submit(RequestTicket ticket, long resultSequence, DateTimeOffset now)
     {
+        PruneSuperseded();
         var snapshot = _session.Read();
         if (snapshot.Closed)
             return ResultDisposition.SessionClosed;
@@ -66,7 +69,7 @@ public sealed class ResultGate
             return ResultDisposition.StaleSequence;
         if (ticket.Sequence > snapshot.LastIssuedSequence)
             return ResultDisposition.FutureSequence;
-        if (ticket.DeadlineUtc is DateTimeOffset deadline && now > deadline)
+        if (ticket.DeadlineUtc is DateTimeOffset deadline && now >= deadline)
             return ResultDisposition.Expired;
         if (_expired.Contains(ticket.Sequence))
             return ResultDisposition.Expired;
@@ -75,5 +78,15 @@ public sealed class ResultGate
         if (!_accepted.Add(ticket.Sequence))
             return ResultDisposition.Duplicate;
         return ResultDisposition.Accepted;
+    }
+
+    private void PruneSuperseded()
+    {
+        // Old sequences already fail the sequencer checks; retaining every
+        // terminal request would grow for the entire application lifetime.
+        var through = _session.Read().SupersededThrough;
+        _cancelled.RemoveWhere(sequence => sequence <= through);
+        _expired.RemoveWhere(sequence => sequence <= through);
+        _accepted.RemoveWhere(sequence => sequence <= through);
     }
 }
