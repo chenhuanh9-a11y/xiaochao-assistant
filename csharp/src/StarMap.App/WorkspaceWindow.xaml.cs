@@ -39,6 +39,8 @@ public partial class WorkspaceWindow : Window
     RuntimePage? runtimePage;
     readonly WindowsRuntimeCapturePort runtimeCapture = new();
     RuntimeOverlayHost? runtimeOverlay;
+    Task? visibilitySave;
+    bool visibilityReady;
     bool closing, closeReady;
     bool settingsBusy;
     bool resourcesBusy;
@@ -54,7 +56,8 @@ public partial class WorkspaceWindow : Window
         InitializePageFocus();
         pages["home"] = BuildHome();
         runtimeOverlay = new(Dispatcher, () => runtimePage?.ReadRender(), runtimeCapture,
-            message => Status.Text = message, () => settings?.SheetOpacity ?? .55);
+            message => Status.Text = message, () => settings?.SheetOpacity ?? .55,
+            () => runtimePage?.AlignedVisible ?? settings?.SheetVisibilityEnabled ?? true);
         pages["gallery"] = BuildGallery();
         pages["settings"] = BuildSettings();
         pages["help"] = BuildHelp();
@@ -75,7 +78,14 @@ public partial class WorkspaceWindow : Window
             e.Cancel = true;
             if (closing) return;
             closing = true;
-            if (!await CloseInput()) { closing = false; UpdateInputControls(); return; }
+            if (runtimePage is not null) runtimePage.ToggleVisibilityRequested = null;
+            if (!await CloseInput())
+            {
+                closing = false; UpdateInputControls();
+                if (visibilityReady && runtimePage is not null) runtimePage.ToggleVisibilityRequested = ToggleAlignedVisibility;
+                return;
+            }
+            if (visibilitySave is { } savingVisibility) await savingVisibility;
             closed = true; resourceGeneration++; previewGeneration++;
             previewCancellation?.Cancel(); connectionPage?.Dispose();
             if (runtimePage is not null) await runtimePage.CloseAsync();
@@ -313,8 +323,12 @@ public partial class WorkspaceWindow : Window
 
     async Task LoadSettings()
     {
+        visibilityReady = false;
+        if (runtimePage is not null) runtimePage.ToggleVisibilityRequested = null;
         var loaded = await SettingsDocument.LoadAsync(dataRoot);
         if (closed) return;
+        visibilityReady = true;
+        if (runtimePage is not null) runtimePage.ToggleVisibilityRequested = ToggleAlignedVisibility;
         if (!loaded.Succeeded || loaded.Document is null) { settingsState.Text = "设置未载入：" + loaded.Error?.Message; return; }
         settings = loaded.Document; DisplaySettings(); await ApplyInputSettings();
     }
@@ -322,6 +336,8 @@ public partial class WorkspaceWindow : Window
     void DisplaySettings()
     {
         if (settings is null) return;
+        visibilityReady = true;
+        if (runtimePage is not null) runtimePage.ToggleVisibilityRequested = ToggleAlignedVisibility;
         loadingSettings = true;
         try
         {
@@ -348,6 +364,8 @@ public partial class WorkspaceWindow : Window
         settingsState.Text = "当前为测试版设置。原版设置与未知字段会保留。"
             + (issues.Count == 0 ? "" : "\n待修复：" + string.Join("；", issues.Values));
         UpdateSettingsToolbar();
+        runtimePage?.SetAlignedVisibility(settings.SheetVisibilityEnabled);
+        runtimeOverlay?.RefreshVisibility();
     }
 
     void MarkEdited(string key) { if (!loadingSettings && settings is not null) { editedSettings.Add(key); UpdateSettingsToolbar(); } }
@@ -357,6 +375,7 @@ public partial class WorkspaceWindow : Window
         "gameMode" => JsonValue.Create(mode.SelectedValue?.ToString()), "gameSeason" => JsonValue.Create(season.SelectedItem?.ToString()),
         "hotkey" => JsonValue.Create(hotkey.Text), "sheetOpacity" => JsonValue.Create(sheetOpacity.Value), "referenceOpacity" => JsonValue.Create(referenceOpacity.Value),
         "actionHotkeys" => new JsonArray(actionHotkeys.Select(editor => (JsonNode?)JsonValue.Create(editor.Text)).ToArray()),
+        "sheetVisibilityEnabled" => JsonValue.Create(settings?.SheetVisibilityEnabled ?? true),
         _ => throw new InvalidOperationException("Unknown edited setting.")
     };
 

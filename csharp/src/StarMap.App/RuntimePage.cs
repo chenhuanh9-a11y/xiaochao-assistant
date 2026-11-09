@@ -25,7 +25,7 @@ internal sealed class RuntimePage : UserControl
     readonly ListBox candidates = new() { MinHeight = 60, MaxHeight = 170, Margin = new(0, 4, 0, 8), Visibility = Visibility.Collapsed };
     readonly ComboBox manualMap = new() { MinWidth = 240, MaxWidth = 620, HorizontalAlignment = HorizontalAlignment.Stretch };
     readonly ComboBox floor = new() { MinWidth = 130, HorizontalAlignment = HorizontalAlignment.Left, DisplayMemberPath = "Label", SelectedValuePath = "Id" };
-    readonly Button start, end, acquire, cancel, previous, next, confirm, pick, applyFloor;
+    readonly Button start, end, acquire, cancel, previous, next, confirm, pick, applyFloor, toggleVisibility;
     readonly DispatcherTimer renderTimer;
     SessionService? session;
     LiveRuntime? runtime;
@@ -37,10 +37,17 @@ internal sealed class RuntimePage : UserControl
     SessionService? proposedSession;
     LiveRuntime? proposedRuntime;
     bool closed, rendering, configuring, loadingResources;
+    bool alignedVisible = true;
     string? resourceLease;
     readonly OrderedMapInput mapInput = new();
     (long Ticket, long Input)? mapRead;
     internal Func<Task>? PrepareInput { get; set; }
+    Func<Task>? toggleVisibilityRequested;
+    internal Func<Task>? ToggleVisibilityRequested
+    {
+        get => toggleVisibilityRequested;
+        set { toggleVisibilityRequested = value; UpdateVisibilityControl(); }
+    }
 
     internal RuntimePage(ICapturePort capture, Action<string> status)
     {
@@ -59,7 +66,10 @@ internal sealed class RuntimePage : UserControl
         start.SetResourceReference(StyleProperty, "StarMap.PrimaryButton");
         end = Add(actions, "结束本局", (_, _) => Dispatch("end_round"));
         acquire = Add(actions, "3 秒后读取地图", async (_, _) => await CaptureAfterDelay());
-        cancel = Add(actions, "取消识别", (_, _) => CancelWork()); panel.Children.Add(actions);
+        cancel = Add(actions, "取消识别", (_, _) => CancelWork());
+        toggleVisibility = Add(actions, "隐藏路线", async (_, _) => { if (ToggleVisibilityRequested is { } toggle) await toggle(); });
+        toggleVisibility.Name = "RuntimeToggleVisibility";
+        panel.Children.Add(actions);
         panel.Children.Add(detail);
         panel.Children.Add(new Separator { Margin = new(0, 8, 0, 16) });
         var candidateArea = new StackPanel { Name = "RuntimeCandidates" };
@@ -95,7 +105,7 @@ internal sealed class RuntimePage : UserControl
         panel.Children.Add(floorActions);
         var diagnostics = new StackPanel();
         diagnostics.Children.Add(resourceCaption);
-        var guidance = new TextBlock { Text = "只读取你已打开的地图，不发送游戏按键。确认地图会立即保留选择；结构未对齐时显示等待对齐。悬浮路线显示仍在迁移。", TextWrapping = TextWrapping.Wrap, Margin = new(0, 0, 0, 8) };
+        var guidance = new TextBlock { Text = "只读取你已打开的地图，不发送游戏按键。确认地图会立即保留选择；结构未对齐时显示等待对齐。隐藏路线时，识别仍会继续。", TextWrapping = TextWrapping.Wrap, Margin = new(0, 0, 0, 8) };
         guidance.SetResourceReference(TextBlock.ForegroundProperty, "StarMap.Muted"); diagnostics.Children.Add(guidance);
         panel.Children.Add(new Expander { Name = "RuntimeDiagnostics", Header = "运行资源与说明", Content = diagnostics, HorizontalContentAlignment = HorizontalAlignment.Stretch, Margin = new(0, 12, 0, 0) });
         Content = panel;
@@ -111,6 +121,20 @@ internal sealed class RuntimePage : UserControl
     }
 
     internal LiveRuntimeState? State => runtime?.ReadState();
+    internal bool AlignedVisible => runtime?.ReadState().AlignedVisible ?? alignedVisible;
+    internal void SetAlignedVisibility(bool visible)
+    {
+        if (closed) return;
+        alignedVisible = visible;
+        runtime?.SetAlignedVisibility(visible); proposedRuntime?.SetAlignedVisibility(visible);
+        UpdateVisibilityControl();
+        Render();
+    }
+    void UpdateVisibilityControl()
+    {
+        toggleVisibility.IsEnabled = !closed && ToggleVisibilityRequested is not null;
+        toggleVisibility.Content = AlignedVisible ? "隐藏路线" : "显示路线";
+    }
     internal RuntimeRenderPacket? ReadRender() => runtime?.TryReadRender(out var packet) == true ? packet : null;
     internal string? ResourceRoot => runtime?.ReadState().ResourcesBound == true ? resourceRoot : null;
     internal SessionView? SessionView => session?.Read();
@@ -132,6 +156,7 @@ internal sealed class RuntimePage : UserControl
     internal async Task<bool> Configure(string root, SettingsDocument settings, bool reloadResources = false)
     {
         if (closed) return false;
+        SetAlignedVisibility(settings.SheetVisibilityEnabled);
         if (configuring) { status("另一项运行设置正在应用，本次设置尚未应用，请稍后重试。"); return false; }
         var desired = new SessionSelection(settings.GameSeason, settings.GameMode, settings.RouteProfileId);
         var controls = JsonSerializer.SerializeToElement(new JsonObject { ["floorControlMode"] = settings.FloorControlMode,
@@ -148,7 +173,7 @@ internal sealed class RuntimePage : UserControl
             {
                 // Bind the proposed resource/settings context before replacing
                 // the idle current runtime. A failed bind leaves it available.
-                var nextRuntime = new LiveRuntime(capture, root, new() { FloorSettings = controls });
+                var nextRuntime = new LiveRuntime(capture, root, new() { FloorSettings = controls, SheetVisibilityEnabled = alignedVisible });
                 var nextSession = new SessionService(new SynchronizationContextSessionDispatcher(new DispatcherSynchronizationContext(Dispatcher)), nextRuntime);
                 proposedRuntime = nextRuntime; proposedSession = nextSession;
                 bool proposedAccepted = nextSession.Reconfigure(settings.GameMode, settings.RouteProfileId, settings.GameSeason);
@@ -162,6 +187,7 @@ internal sealed class RuntimePage : UserControl
                 }
                 await CloseRuntime();
                 if (closed) { nextSession.Shutdown(); nextRuntime.Shutdown(); return false; }
+                nextRuntime.SetAlignedVisibility(alignedVisible);
                 runtime = nextRuntime; session = nextSession;
                 resourceRoot = root; floorSettings = controls; session.Changed += Render;
                 session.ResultConsumed += ReconcileMapInput;
@@ -276,6 +302,7 @@ internal sealed class RuntimePage : UserControl
         bool working = view?.WorkerActive == true || pendingCapture is not null || configuring || loadingResources;
         bool available = state?.ResourcesBound == true;
         bool Supports(string action) => view?.Runtime.AvailableCommands.Contains(action) == true;
+        UpdateVisibilityControl();
         start.IsEnabled = available && !active && !working && Supports("start_round");
         end.IsEnabled = active && !configuring && !loadingResources && Supports("end_round");
         acquire.IsEnabled = active && capture.IsBound && !working && Supports("capture_now");

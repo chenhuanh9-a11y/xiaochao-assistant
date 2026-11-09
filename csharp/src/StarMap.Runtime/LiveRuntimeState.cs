@@ -14,6 +14,7 @@ public sealed record LiveRuntimeOptions
     public TimeSpan MainEntryBudget { get; init; } = TimeSpan.FromSeconds(1.85);
     public S1FloorUse S1FloorUse { get; init; } = S1FloorUse.Unavailable;
     public JsonElement? FloorSettings { get; init; }
+    public bool SheetVisibilityEnabled { get; init; } = true;
     public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
 }
 
@@ -50,6 +51,7 @@ public sealed record LiveRuntimeState(RuntimeContext Context, bool ResourcesBoun
     public bool Closed { get; init; }
     public string? ManualFloor { get; init; }
     public string? ObservedFloor { get; init; }
+    public bool AlignedVisible { get; init; } = true;
     public string IdentityKind { get; init; } = "unresolved";
     public string? MapDisplayName { get; init; }
     public string? IdentityGroupId { get; init; }

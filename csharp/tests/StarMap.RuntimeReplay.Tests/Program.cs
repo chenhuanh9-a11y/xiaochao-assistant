@@ -67,6 +67,49 @@ await Run("human-C1-choice-commits-canonical-material-on-real-path", async () =>
     Save("s1-confirmed-fit", new { state, bridge = packet.Material.Bridge });
 });
 
+await Run("hidden-render-payload-is-retained-and-hidden-refresh-still-solves", async () =>
+{
+    var before = runtime.ReadState(); runtime.TryReadRender(out var original); int calls = port.Calls;
+    Check((await Ask("toggle_sheet_visibility")).Receipt.Success && !runtime.ReadState().AlignedVisible,
+        "explicit runtime visibility action changes only the presentation preference");
+    Check(runtime.TryReadRender(out var hidden) && ReferenceEquals(hidden, original) && port.Calls == calls
+        && runtime.ReadState().Context == before.Context && ReferenceEquals(runtime.ReadState().NativePose, before.NativePose),
+        "hiding keeps the exact current canonical packet and native pose without capture or refit");
+    port.Select("batch02-event-000319"); var result = await Ask("capture_now");
+    Check(result.Receipt.Success && !runtime.ReadState().AlignedVisible && port.Calls == calls + 1
+        && runtime.ReadState().NativeGeometryVerified && runtime.TryReadRender(out var refreshed),
+        "hidden refresh executes the real current-frame fit and keeps the new material hidden");
+    runtime.TryReadRender(out refreshed);
+    MatrixEqual(runtime.ReadState().NativePose!.ToMatrix(), Original("batch02-event-000319")["poses"]!["107012"]!["matrixSourceToClient"]!,
+        "hidden refresh consumes the independently verified native matrix");
+    runtime.SetAlignedVisibility(true);
+    Check(runtime.ReadState().AlignedVisible && runtime.TryReadRender(out var shown) && ReferenceEquals(shown, refreshed)
+        && port.Calls == calls + 1, "showing reuses the hidden result rather than capturing or solving again");
+    Save("visibility-retained-material", runtime.ReadState());
+});
+
+await Run("immediate-visibility-control-does-not-supersede-inflight-capture", async () =>
+{
+    var hold = port.HoldNext();
+    var captureTask = Ask("capture_now");
+    try
+    {
+        await hold.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var before = runtime.ReadState();
+        Check(before.WorkActive && !captureTask.IsCompleted, "actual capture is held after the production request starts");
+        runtime.SetAlignedVisibility(false);
+        Check(!runtime.ReadState().AlignedVisible && runtime.ReadState().WorkActive && !captureTask.IsCompleted
+            && runtime.ReadState().Context == before.Context, "F11 control leaves the admitted request context and work intact");
+        hold.Release.TrySetResult(); var result = await captureTask;
+        Check(result.Receipt.Success && runtime.ReadState().NativeGeometryVerified && runtime.TryReadRender(out var packet)
+            && !runtime.ReadState().AlignedVisible, "the original capture request still commits real canonical material while hidden");
+        runtime.TryReadRender(out packet); runtime.SetAlignedVisibility(true);
+        Check(runtime.TryReadRender(out var restored) && ReferenceEquals(packet, restored),
+            "restore after inflight completion does not replace its material");
+    }
+    finally { hold.Release.TrySetResult(); await captureTask; }
+});
+
 await Run("author-preference-replaces-material-without-capture-or-refit", async () =>
 {
     var before = runtime.ReadState(); runtime.TryReadRender(out var old);
@@ -228,7 +271,12 @@ await Run(id + "-automatic-S0-identity-reaches-canonical-material", async () =>
     Save(id + "-automatic-runtime", state);
 });
 
+runtime.SetAlignedVisibility(false); await Ask("close_map"); await Ask("end_round");
+Check(!runtime.ReadState().AlignedVisible, "closing and ending a round retain the independent visibility preference");
+await Ask("start_round");
+Check(!runtime.ReadState().AlignedVisible, "starting the next round does not reset visibility");
 runtime.Shutdown();
+Check(!runtime.SetAlignedVisibility(true) && !runtime.ReadState().AlignedVisible, "shutdown rejects late presentation writes");
 Check(!runtime.TryReadRender(out _) && runtime.ReadSnapshot().AvailableCommands.Count == 0, "shutdown revokes all display and operations");
 Save("summary", new { passed = failures.Count == 0, checkCount = checks.Count, failures, checks,
     scope = "Production LiveRuntime and original current-client PNG/resource replay. Capture port only is replaced; no native capture, live grant, overlay, GUI or game acceptance." });
@@ -265,14 +313,22 @@ async Task Run(string name, Func<Task> body)
 sealed class RecordedCapture(Dictionary<string, JsonObject> index) : ICapturePort
 {
     JsonObject? selected; CaptureStamp? current; long generation = 1, sequence;
+    Hold? nextHold;
+    public sealed record Hold(TaskCompletionSource Started, TaskCompletionSource Release);
+    public Hold HoldNext() => nextHold = new(new(TaskCreationOptions.RunContinuationsAsynchronously), new(TaskCreationOptions.RunContinuationsAsynchronously));
     public int Calls { get; private set; }
     public bool IsBound => true;
     public void Select(string id) { selected = index[id]; Advance(); }
     public void Advance() { generation++; current = null; }
     public bool IsCurrent(CaptureStamp stamp) => current == stamp && stamp.Generation == generation;
-    public ValueTask<ClientCaptureResult> CaptureAsync(CancellationToken cancellation)
+    public async ValueTask<ClientCaptureResult> CaptureAsync(CancellationToken cancellation)
     {
         cancellation.ThrowIfCancellationRequested(); Calls++;
+        if (nextHold is { } hold)
+        {
+            nextHold = null; hold.Started.TrySetResult();
+            await hold.Release.Task.WaitAsync(cancellation);
+        }
         var sample = selected ?? throw new InvalidOperationException("No recorded input selected.");
         var captured = DateTimeOffset.Parse(sample["capturedAt"]!.GetValue<string>());
         if (captured < new DateTimeOffset(2026, 11, 5, 0, 0, 0, TimeSpan.Zero)) throw new InvalidDataException("Old UI capture rejected.");
@@ -285,8 +341,8 @@ sealed class RecordedCapture(Dictionary<string, JsonObject> index) : ICapturePor
         if (geometry["Width"]!.GetValue<int>() != width || geometry["Height"]!.GetValue<int>() != height)
             throw new InvalidDataException("Recorded physical client disagrees with actual PNG.");
         current = new("recorded-only", generation, "recorded-frame-" + ++sequence);
-        return ValueTask.FromResult(new ClientCaptureResult(new(pixels, width, height, stride, current, captured,
+        return new ClientCaptureResult(new(pixels, width, height, stride, current, captured,
             new(CaptureEvidenceKind.RecordedClient, new(geometry["Left"]!.GetValue<int>(), geometry["Top"]!.GetValue<int>(),
-                width, height, geometry["Dpi"]!.GetValue<uint>()), "preserved-client-png"))));
+                width, height, geometry["Dpi"]!.GetValue<uint>()), "preserved-client-png")));
     }
 }

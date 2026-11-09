@@ -37,6 +37,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     private string _identitySource = "", _reason = "context-not-bound";
     private bool _roundActive, _mapOpen, _workActive;
     private bool _closed;
+    private bool _alignedVisible;
     private long _epoch, _operation;
     private long _progressEpoch;
     private SessionRequestContext? _progressRequest;
@@ -61,6 +62,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         _capture = capture ?? throw new ArgumentNullException(nameof(capture));
         _resourceRoot = Path.GetFullPath(resourceRoot);
         _options = options is null ? new() : options with { FloorSettings = options.FloorSettings?.Clone() };
+        _alignedVisible = _options.SheetVisibilityEnabled;
         if (_options.PreparationTimeout <= TimeSpan.Zero || _options.PreparationInterval <= TimeSpan.Zero
             || _options.MainEntryBudget <= TimeSpan.Zero) throw new ArgumentException("runtime-budget-invalid");
         lock (_sync) Publish();
@@ -113,6 +115,17 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     }
 
     public void CancelMapOpenRecovery(string reason) => InvalidateCapture(reason);
+
+    /// <summary>Presentation preference only; never supersedes an admitted capture/fit or its material.</summary>
+    public bool SetAlignedVisibility(bool visible)
+    {
+        lock (_sync)
+        {
+            if (_closed) return false;
+            if (_alignedVisible != visible) { _alignedVisible = visible; Publish(); }
+            return true;
+        }
+    }
 
     /// <summary>Final revocation only; the caller separately owns capture-port shutdown.</summary>
     public void Shutdown()
@@ -182,6 +195,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             return request.Action switch
             {
                 "set_context" => SetContext(request, epoch, cancellationToken),
+                "toggle_sheet_visibility" => ToggleSheetVisibility(request),
                 "start_round" => StartRound(request, epoch, cancellationToken),
                 "toggle_round" => IsRoundActive() ? EndRound(request) : StartRound(request, epoch, cancellationToken),
                 "end_round" or "stop_round" or "reset_round" or "cancel" => EndRound(request),
@@ -265,6 +279,15 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     private RuntimeOperationResult CloseMap(SessionRuntimeRequest request)
     {
         lock (_sync) { AdvanceOwnedEpoch(); RevokeFrame("map-closed"); Publish(); return Receipt(request, true, _reason); }
+    }
+
+    private RuntimeOperationResult ToggleSheetVisibility(SessionRuntimeRequest request)
+    {
+        lock (_sync)
+        {
+            _alignedVisible = !_alignedVisible; Publish();
+            return Receipt(request, true, "visibility-toggled");
+        }
     }
 
     private async ValueTask<RuntimeOperationResult> CaptureAndSolve(SessionRuntimeRequest request, long epoch, CancellationToken token)
@@ -575,7 +598,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         _publishedState = new(Context(), _resources is not null, _roundActive, _mapOpen, _workActive,
             _mapId is not null, _identitySource, _pose is not null, _pose, Array.AsReadOnly(_candidates.ToArray()), _selected,
             _reason, _diagnostics.Clone(), Array.AsReadOnly(Gaps))
-        { Closed = _closed, ManualFloor = _manualFloor, ObservedFloor = _observedFloor, Display = _display,
+        { Closed = _closed, ManualFloor = _manualFloor, ObservedFloor = _observedFloor, Display = _display, AlignedVisible = _alignedVisible,
             IdentityKind = _identitySource == "group-default" ? "group" : _mapId is null ? "unresolved" : "map",
             MapDisplayName = _resources?.Passports.Maps.FirstOrDefault(map => map.MapId == _mapId)?.Name,
             IdentityGroupId = _identitySource == "group-default" ? _nativeIdentity?.GroupId : null,
@@ -585,7 +608,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     }
     private RuntimeSnapshot Snapshot(LiveRuntimeState state)
     {
-        var commands = new List<string> { "set_context", "end_round", "stop_round", "reset_round", "cancel", "close_map" };
+        var commands = new List<string> { "set_context", "end_round", "stop_round", "reset_round", "cancel", "close_map", "toggle_sheet_visibility" };
         if (state.ResourcesBound) commands.AddRange(["start_round", "toggle_round"]);
         if (state.RoundActive && state.ResourcesBound)
         {

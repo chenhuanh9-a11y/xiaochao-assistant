@@ -144,6 +144,7 @@ internal static class Program
             Check(!shell.IsVisible && !Directory.Exists(Path.Combine(output, "isolated-data")), "construction-does-not-show-or-create-player-file");
             Check(!Field<WpfGlobalInputController>(shell, "inputController").ListeningRequested,
                 "real-window-construction-does-not-start-global-observer");
+            Await(VisibilityWorkspaceRegression.Run(output, Check));
             int resourcesOption = Array.IndexOf(args, "--resources");
             int captureOption = Array.IndexOf(args, "--capture-record");
             if (resourcesOption >= 0 && captureOption >= 0)

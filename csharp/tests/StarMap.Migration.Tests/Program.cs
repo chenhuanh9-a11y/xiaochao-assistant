@@ -143,6 +143,8 @@ var invalidGalleryRoot = new ExperimentalDataRoot(Path.Combine(evidence, "invali
 var badGallery = await CustomGalleriesDocument.ImportAsync(invalidGalleryRoot, invalidGallerySource);
 Check(!badGallery.Succeeded && !File.Exists(invalidGalleryRoot.CustomGalleriesPath), "invalid-route-point-refused-before-copy-adoption");
 
+await SettingsFieldSaveRegression.Run(evidence, Check);
+
 var catalog = ResourceCatalog.Load(Required("--resources"));
 Check(catalog.Entries.Count > 0, "actual-resource-index-entries");
 var candidates = catalog.Entries.Where(entry => entry.StructureNpzPath is not null)

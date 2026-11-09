@@ -12,8 +12,8 @@
 |---|---|---|
 | 启动/主窗口与持久页面 | tools/qt_client_entry.py → qt_quick/client.py / Client.qml | 实际 WPF 构造/持久页面回归通过；真实界面验收待完成，未接入页面有明确状态 |
 | 资源图库、图包、按层结构 | client_providers.py / shared_structure_reference.py / client_resources.py | 只读 catalog/NPZ 已实施；15 个跨模式/楼层代表与 NumPy 回读一致，15 个类型/坐标/wall 反例及 20 个非 object JSON 反例通过；轮廓回退、解码预算、坏图/缺结构/文件占用恢复有实际入口回归；图包安装/版本锁与完整 provider 待接入 |
-| 设置与自定义路线 | client_settings.py / client_custom_gallery.py / client_paths.py | 实验副本/批量设置/原件保护兼容回归 73 项通过，包含损坏尾项显式解绑；实际 WPF 保存期间编辑及导入编辑禁用/恢复通过；图库编辑与运行消费待完成 |
-| 捕获、窗口绑定与输入 | client_capture.py / client_native_keys.py / client_input.py | 11/09 生产 GDI 完整客户区实采 1334×750；WGC 三轮软件呈现自有窗口及取消/关闭 12 项通过，默认硬件呈现同窗口仍白/黑帧失败，未证明游戏 WGC；pass-through 模块 408 项和 WPF 主机 46 项离线检查通过，早期原生启动/停止通过；WPF 已接显式监听、设置切代及本局操作，构造不监听。当前组合尚未完成真实按键/游戏验收 |
+| 设置与自定义路线 | client_settings.py / client_custom_gallery.py / client_paths.py | 实验副本、批量/单字段保存与原件保护已接；坏尾项显式解绑、未选中坏原值保留、其他草稿隔离、忙写/冲突有真实文件回归；实际 WPF 保存期间编辑及导入编辑禁用/恢复通过；图库编辑与运行消费待完成 |
+| 捕获、窗口绑定与输入 | client_capture.py / client_native_keys.py / client_input.py | 11/09 生产 GDI 完整客户区实采 1334×750；WGC 三轮软件呈现自有窗口及取消/关闭 12 项通过，默认硬件呈现同窗口仍白/黑帧失败，未证明游戏 WGC；pass-through 模块 408 项和 WPF 主机 46 项离线检查通过，早期原生启动/停止通过；WPF 已接显式监听、设置切代、本局操作和默认 F11/主页显隐，构造不监听。当前组合尚未完成真实按键/游戏验收 |
 | 楼层/开图准备 | client_live_runtime.py / map_open_preparation.py / floor_contract.py | 37 项真实/合成边界及全部 S0 251 张原始客户区的观察结果与原 Python 严格一致；S1 当前真实输入由全 154 张组件回放及连续 Runtime 样本覆盖。准备沿原 1.05s/50ms/最多 21 probe；30 项 Runtime 生命周期覆盖截止、首探及人工楼层意图，不是实机准备延迟验收 |
 | 身份与入口竞争 | map_identity_engine.py / difficult_entry_identity.py / difficult_side_entry_identity.py / front_door_recognition.py | S0 完整 passport/main/side/source-advisory/native/登记组/最终行消费者已接，全部 251 张当前原图严格零差异；S1 全目录结构扫描已接，正支持候选始终不充当唯一身份。Runtime 已验证噩梦正侧门及困难正侧门的实际消费者。后续 established 条件竞争、组内成员事务及配置 source store 时的 SIFT producer 仍缺 |
 | prepare/grid/refine/propose/验证 | fast_structure_alignment.py / single_map_structure.py / nightmare_candidate.py | 共用数值内核与 S0 Host 冷流程/拒绝顺序、S1 目标楼层 Fit 已接；S0 当前 285 次候选 Fit 与原程序零差异，另有禁用 fast 的 6 次真实原 Host 对照。canonical 残差/实际资源基准已进入 Core 授权和素材消费；steady 与已有 RoundLayerGroup 恢复 producer 尚缺 |
@@ -43,6 +43,7 @@
 
 ## 当前证据与限制
 
+- 本轮显隐迁移：`settings-fields-after-unselected-actions-03` 为 Migration.Tests 114/114，`workspace-visibility-after-03` 为 96/96，`runtime-visibility-recorded-02` 为 91/91。实际按钮与默认 F11 的生产策略/WPF 调度/Workspace 消费者共用即时入口，仅 OS 输入源和作用域使用离线夹具；不会取消实际 Session 的进行中采集。录制原图的隐藏刷新继续执行当前帧 Fit/canonical/material，显示恢复复用现有 packet，新局不重置显隐；关闭拒绝迟到写入，正常 WPF 关闭等待已接受的偏好写入。字段保存只覆盖所选值，保存忙时不排队，其他草稿保留。`settings-fields-before-unselected-actions-02` 和 `visibility-startup-before-01` 分别保留了未选中坏快捷键阻断保存、初次载入前切换丢失的修前失败。没有调用 Show、安装或操作游戏；原生悬浮窗即时显隐、真实 F11 和实机像素仍未知。
 - 顶层 LiveRuntime 原图整链 runtime-recorded-integration-08-final 为 79/79：S1 315～319 连续观察、C1 人工确认、323 独立目标楼层、困难未确认候选、作者偏好不重捕获/重贴合、不可用材质切回、关闭和资源直接撤回；S0 实际完整 rank/native/登记组消费者、人工 A1，以及噩梦侧门/困难正侧门的自动身份→Host→canonical→material 消费。登记组的显示参考与唯一地图分开。仅替换捕获端口，Recorded 始终没有 LiveAuthorization；尚不代表真实捕获、原生浮层或游戏验收。05 保留了把连续观察误按独立扫描顺序比较的测试失败；06 以原 Python 会话调度器独立计算完整顺序，未放宽顺序或支持名单断言。08 包含最终楼层诊断保留与完整 3×3 矩阵断言。
 - S0 当前完整 all251-csharp-s0identity-02 已逐张执行全部 251 张：197 张进入识别、54 张保留未决、285 次候选 Fit，执行异常/逐字段差异/本次冷流程覆盖缺口均为零。未决及无支持结果按原程序保留，不是 251 张识别成功。01 的两处 float32 分数差异定位为 NumPy 2.2.6 的 float32 分位虚拟索引语义，修后两个真实 patch 的中间像素/向量/720 分数逐位一致，原 37 案回归也零差异；没有放宽阈值或断言。首轮 host-only 的 66 差异/197 caller 缺口及索引维度失败证据均保留。pooled point collection 读取器局部支持实际 316416 行，保留通用图像维度及字节限制。
 - 困难资源声明竞争者目标层为 null 的真实 147 正负例，原 Python producer/consumer 与 C# 完整入口一致：正向 D15 唯一，D16/1 声明未备齐后撤回所有 hard identity，保留 D15 几何候选，四个矩阵最大差为零；跨语言容差为 1e-9。夹具使用独立副本；原资源字节/时间及 link count 回读记录单独保留于本地证据。

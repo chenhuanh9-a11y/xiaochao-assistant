@@ -12,6 +12,7 @@ internal sealed class RuntimeOverlayHost : IDisposable
     readonly WindowsRuntimeCapturePort capture;
     readonly Action<string> report;
     readonly Func<double> opacity;
+    readonly Func<bool> visible;
     readonly WpfAlignedOverlaySurface surface;
     readonly DispatcherTimer timer;
     RuntimeRenderPacket? requested, applied;
@@ -23,17 +24,18 @@ internal sealed class RuntimeOverlayHost : IDisposable
     int captureLeases;
 
     internal RuntimeOverlayHost(Dispatcher dispatcher, Func<RuntimeRenderPacket?> read,
-        WindowsRuntimeCapturePort capture, Action<string> report, Func<double>? opacity = null)
+        WindowsRuntimeCapturePort capture, Action<string> report, Func<double>? opacity = null, Func<bool>? visible = null)
     {
         this.dispatcher = dispatcher; this.read = read; this.capture = capture; this.report = report;
         this.opacity = opacity ?? (() => .55);
+        this.visible = visible ?? (() => true);
         surface = new(dispatcher);
         capture.AcquireOverlayCaptureLease = SuspendForCapture;
         timer = new(TimeSpan.FromMilliseconds(50), DispatcherPriority.Background, (_, _) => Pulse(), dispatcher);
         timer.Start();
     }
 
-    bool Current(RuntimeRenderPacket packet) => !disposed && captureLeases == 0 && packet.IsLive
+    bool Current(RuntimeRenderPacket packet) => !disposed && visible() && captureLeases == 0 && packet.IsLive
         && ReferenceEquals(read(), packet) && capture.IsForegroundCurrent(packet.Stamp);
 
     void Pulse()
@@ -54,6 +56,10 @@ internal sealed class RuntimeOverlayHost : IDisposable
         ticket = sibling ? surface.Stage(packet) : surface.Reserve(packet);
         preparing = PrepareAndShow(packet, ticket, desiredOpacity);
     }
+
+    // The visibility owner calls this synchronously on F11/UI changes; do not
+    // leave an already visible HWND until the next timer tick.
+    internal void RefreshVisibility() { dispatcher.VerifyAccess(); Pulse(); }
 
     async Task PrepareAndShow(RuntimeRenderPacket packet, WpfAlignedOverlayTicket ownTicket, double desiredOpacity)
     {

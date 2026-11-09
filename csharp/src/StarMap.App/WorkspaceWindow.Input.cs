@@ -158,7 +158,7 @@ public partial class WorkspaceWindow
         foreach (var action in delivery.Dispatch.Actions)
         {
             if (action == "toggle-panel") { TogglePanel(); continue; }
-            if (action == "toggle-sheet-visibility") { Status.Text = "悬浮路线显示仍在迁移，当前尚未启用。"; continue; }
+            if (action == "toggle-sheet-visibility") { _ = ToggleAlignedVisibility(); continue; }
             if (action == "manual-map-picker") { Status.Text = "手动选图快捷面板仍在迁移，请在主页面确认地图。"; continue; }
             bool starts = action == "start-round" || action == "toggle-round" && runtimePage?.State?.RoundActive != true;
             if (starts && (settingsBusy || resourcesBusy)) { Status.Text = "请等待设置完成，再开始本局。"; continue; }

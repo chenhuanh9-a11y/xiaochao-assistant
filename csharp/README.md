@@ -4,7 +4,9 @@
 
 SDK 固定 .NET 10.0.403，UI 源码采用 Material Design in XAML Toolkit 5.4.0；布局依据原 Qt 的实际页面与操作职责，构建及界面验证状态见迁移记录。组件、依赖与字体许可随输出携带。在 `src/StarMap.App` 实际目录执行 `dotnet build-server shutdown`，再执行裸 `dotnet build`。启动 `StarMap.Migration.exe`，可选 `--resource-root <现有资源目录>`、`--data-root <独立实验数据目录>`；不自动读取或写入原版玩家设置，不自动枚举/采集窗口或登记热键。默认数据目录为 `%LOCALAPPDATA%/StarMap.Migration`。
 
-`StarMap.Runtime` 直接消费 `StarMap.Vision` 的当前帧楼层观察、S0 入口策略/Host Fit 和 S1 结构候选/目标层 Fit，WPF 通过 `SessionService` 发起明确操作。人工确认先锁定地图身份；实际 canonical 残差、资源基准与 Core 授权通过后才准备显示 material。真实原图回放始终标为 Recorded，不授予 LiveAuthorization。新的 Runtime/overlay 主机接线正在验证，不能把组件对照当实机验收。真实回放仅使用 2026-11-05 之后原始客户区。全局输入默认不启动；连接窗口后可显式启用，或点击“开始本局”尝试启用。准备本局本身不要求游戏存在，也不授予捕获权限。已接地图键、Escape、候选、楼层与本局动作；F11 显隐、手动选图浮层和鼠标业务仍待接入。
+`StarMap.Runtime` 直接消费 `StarMap.Vision` 的当前帧楼层观察、S0 入口策略/Host Fit 和 S1 结构候选/目标层 Fit，WPF 通过 `SessionService` 发起明确操作。人工确认先锁定地图身份；实际 canonical 残差、资源基准与 Core 授权通过后才准备显示 material。真实原图回放始终标为 Recorded，不授予 LiveAuthorization。新的 Runtime/overlay 主机接线正在验证，不能把组件对照当实机验收。真实回放仅使用 2026-11-05 之后原始客户区。全局输入默认不启动；连接窗口后可显式启用，或点击“开始本局”尝试启用。准备本局本身不要求游戏存在，也不授予捕获权限。已接地图键、Escape、候选、楼层、本局动作和默认 F11 显隐；手动选图浮层和鼠标业务仍待接入。
+
+主页显隐按钮和配置中的显隐快捷键共用即时入口，隐藏时保留当前材料并继续识别。只保存 `sheetVisibilityEnabled`，不会连带保存其他设置草稿；已有保存忙时不排队，较新的显隐选择保持未保存，可稍后显式保存。初次设置载入前不能切换，正常关闭会等待已接受的显隐写入。真实文件、未显示的 WPF 控件及替换 OS 输入源的默认 F11 调度已离线验证，真实全局按键与游戏浮层仍待验收。
 
 用户明确授权后，可在 `tests/StarMap.Capture.Tests` 实际目录裸构建并用 `--watch-map --capture-window <当前枚举选中的句柄> --output <新目录> --label-file <标签JSON>` 启动独立只读采样。标签格式为 `{"season":"s0","mode":"nightmare","generation":1}`；支持 s0/s1 和 nightmare/difficult，切换组合必须递增 generation。采样器只响应目标前台的真实 G；每事件保留成功、关图、取消或失败结果，图片是完整原客户区，自动观察不等于身份/位姿验收。
 

@@ -84,6 +84,11 @@ internal static class RuntimeWorkspaceRegression
             {
                 page.HandleShortcut("map");
                 await captureEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                var captureContext = page.State!.Context;
+                page.SetAlignedVisibility(false);
+                check(page.State is { AlignedVisible: false, WorkActive: true } && page.State.Context == captureContext
+                    && page.SessionView!.WorkerActive,
+                    "runtime-page-visibility-control-does-not-supersede-the-real-pending-session-capture");
                 page.HandleShortcut("map");
                 check(page.State is { MapOpen: false, NativeGeometryVerified: false } && page.SessionView!.WorkerActive,
                     "runtime-page-second-physical-map-edge-revokes-pending-open-before-capture-exits");

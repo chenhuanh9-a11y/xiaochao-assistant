@@ -342,6 +342,107 @@ public sealed class SettingsDocument
         }
     }
 
+    /// <summary>
+    /// Saves only changed, explicitly selected fields over the last saved raw
+    /// document. A busy document or an unchanged selection returns false with
+    /// no error; accepted values are captured before the first file I/O await.
+    /// </summary>
+    public async Task<DocumentSaveResult> SaveFieldsAsync(
+        ExperimentalDataRoot root,
+        IEnumerable<string> keys,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(root);
+        ArgumentNullException.ThrowIfNull(keys);
+        var selected = keys.Distinct(StringComparer.Ordinal).ToArray();
+        if (selected.Length == 0 || selected.Any(key => key is null || !Defaults.ContainsKey(key)))
+            return DocumentSaveResult.Failure(new ArgumentException("Select supported settings fields.", nameof(keys)));
+        if (!await _saveGate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+            return new DocumentSaveResult(false, null);
+        try
+        {
+            byte[] payload;
+            byte[]? expected;
+            JsonNode? freshActions;
+            lock (_sync)
+            {
+                if (_boundRoot is not null && !PathEquals(_boundRoot, root.Path))
+                    throw new IOException("This settings document belongs to a different experimental data root.");
+                expected = _expectedBytes?.ToArray();
+                var baseline = expected is null ? new JsonObject() : JsonDocumentFile.ParseObject(expected);
+                var persisted = new SettingsDocument(baseline, expected is not null, null, expected);
+                var issues = persisted.GetValidationIssues();
+                var snapshot = (JsonObject)baseline.DeepClone();
+                var changed = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var key in selected)
+                {
+                    // Unchanged malformed raw values stay untouched. Set is the
+                    // writer that validates an explicit repair in this model.
+                    if (!_values.TryGetPropertyValue(key, out var value)
+                        || baseline.TryGetPropertyValue(key, out var raw) && JsonNode.DeepEquals(value, raw))
+                        continue;
+                    var before = persisted.ReadFieldValue(key);
+                    bool repair = issues.ContainsKey(key) || ((key is "hotkey" or "actionHotkeys")
+                        && issues.ContainsKey("hotkey/actionHotkeys"));
+                    if (JsonNode.DeepEquals(value, before) && !repair)
+                        continue;
+                    ValidateKnownValue(key, value);
+                    snapshot[key] = value?.DeepClone();
+                    changed.Add(key);
+                }
+                if (changed.Count == 0)
+                    return new DocumentSaveResult(false, null);
+
+                if (changed.Contains("gameMode") || changed.Contains("gameSeason"))
+                {
+                    if (snapshot.TryGetPropertyValue("gameMode", out var mode)) ValidateKnownValue("gameMode", mode);
+                    if (snapshot.TryGetPropertyValue("gameSeason", out var season)) ValidateKnownValue("gameSeason", season);
+                    if (!IsModeAllowedForSeason(ReadStoredMode(snapshot), ReadStoredSeason(snapshot)))
+                        throw Invalid("gameMode", "difficulty2 is a retained identity only for season s1");
+                }
+                if (changed.Contains("hotkey") || changed.Contains("actionHotkeys"))
+                {
+                    var actions = persisted.ReadActions(snapshot, out var issue);
+                    if (issue is not null && changed.Contains("actionHotkeys")) throw Invalid("actionHotkeys", issue);
+                    ValidateHotkeys(ReadMapKey(snapshot), actions, snapshot["actionHotkeys"],
+                        protectStoredTail: !changed.Contains("actionHotkeys"));
+                }
+                if (expected is null && !snapshot.ContainsKey("actionHotkeys"))
+                    snapshot["actionHotkeys"] = Defaults["actionHotkeys"]!.DeepClone();
+                freshActions = expected is null ? snapshot["actionHotkeys"]?.DeepClone() : null;
+                payload = JsonDocumentFile.Serialize(snapshot);
+            }
+
+            var saved = await JsonDocumentFile.WriteAtomicallyAsync(
+                root, root.UiSettingsPath, payload, expected, cancellationToken).ConfigureAwait(false);
+            lock (_sync)
+            {
+                _boundRoot = root.Path;
+                _expectedBytes = saved;
+                if (freshActions is not null && !_values.ContainsKey("actionHotkeys"))
+                    _values["actionHotkeys"] = freshActions;
+                _hasLoadedFile = true;
+            }
+            return DocumentSaveResult.Success();
+        }
+        catch (Exception error) when (IsDataError(error))
+        {
+            return DocumentSaveResult.Failure(error);
+        }
+        finally
+        {
+            _saveGate.Release();
+        }
+    }
+
+    private JsonNode? ReadFieldValue(string key) => key switch
+    {
+        "hotkey" => JsonValue.Create(Hotkey),
+        "actionHotkeys" => new JsonArray(ActionHotkeys.Select(name => (JsonNode?)JsonValue.Create(name)).ToArray()),
+        "referenceOpacity" => JsonValue.Create(ReferenceOpacity),
+        _ => _values.TryGetPropertyValue(key, out var value) ? value?.DeepClone() : Defaults[key]?.DeepClone()
+    };
+
     private string ReadString(string key, string fallback, Func<string, bool> valid)
     {
         lock (_sync)
