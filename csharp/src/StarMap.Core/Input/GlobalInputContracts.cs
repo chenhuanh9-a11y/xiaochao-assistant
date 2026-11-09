@@ -26,7 +26,12 @@ public sealed class GlobalInputBindings
     public IReadOnlyList<int> PrimaryVirtualKeys { get; }
 
     public static GlobalInputBindings FromSettings(SettingsDocument settings)
-        => FromSettings(settings.Hotkey, settings.ActionHotkeys);
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        var issues = settings.GetValidationIssues().Where(issue => issue.Key is "hotkey" or "actionHotkeys" or "hotkey/actionHotkeys").ToArray();
+        if (issues.Length != 0) throw new ArgumentException(string.Join("；", issues.Select(issue => issue.Value)), nameof(settings));
+        return FromSettings(settings.Hotkey, settings.ActionHotkeys);
+    }
 
     public static GlobalInputBindings FromSettings(string mapKey, IReadOnlyList<string> actions)
     {

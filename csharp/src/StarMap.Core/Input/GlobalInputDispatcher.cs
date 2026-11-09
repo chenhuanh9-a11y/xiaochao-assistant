@@ -71,7 +71,7 @@ public sealed class GlobalInputDispatcher
             var allowed = management ? scope.ManagementEnabled : scope.GameEnabled && game
                 && (scope.GameEventsAfterSeconds == 0 || input.CreatedAtSeconds >= scope.GameEventsAfterSeconds);
             // Preserve the existing app-local keyboard owner; native-only VKs have one global owner.
-            if (chord.Action == "toggle-panel" && assistant && !IsNativeOnly(vk)) allowed = false;
+            if (chord.Action == "toggle-panel" && assistant && HasApplicationLocalPanelOwner(vk)) allowed = false;
             if (GlobalInputState.IsBareModifier(vk))
             {
                 if (input.IsDown)
@@ -88,6 +88,8 @@ public sealed class GlobalInputDispatcher
         }
         return new(Array.AsReadOnly(actions.ToArray()), picker);
     }
+
+    public static bool HasApplicationLocalPanelOwner(int virtualKey) => !IsNativeOnly(virtualKey);
 
     static bool IsNativeOnly(int vk) => vk is 2 or 4 or 5 or 6 or 0x10 or 0x11 or 0x12
         or >= 0x30 and <= 0x39 or >= 0x41 and <= 0x5a or >= 0x60 and <= 0x6f

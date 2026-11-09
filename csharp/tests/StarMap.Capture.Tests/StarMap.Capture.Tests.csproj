@@ -7,5 +7,10 @@
   <ItemGroup>
     <Compile Include="..\..\src\StarMap.App\Platform\Win32CaptureNative.cs" Link="Production\Win32CaptureNative.cs" />
     <Compile Include="..\..\src\StarMap.App\Platform\WindowsClientCapture.cs" Link="Production\WindowsClientCapture.cs" />
+    <Compile Include="..\..\src\StarMap.App\Platform\WindowsGlobalInput.cs" Link="Production\WindowsGlobalInput.cs" />
+    <Compile Include="..\..\src\StarMap.App\Platform\WindowsGlobalInputNative.cs" Link="Production\WindowsGlobalInputNative.cs" />
+    <Compile Include="..\..\src\StarMap.App\Platform\WindowsGlobalInputDelivery.cs" Link="Production\WindowsGlobalInputDelivery.cs" />
+    <ProjectReference Include="..\..\src\StarMap.Core\StarMap.Core.csproj" />
+    <ProjectReference Include="..\..\src\StarMap.Vision\StarMap.Vision.csproj" />
   </ItemGroup>
 </Project>

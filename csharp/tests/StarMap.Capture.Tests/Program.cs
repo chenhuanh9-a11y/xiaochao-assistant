@@ -12,6 +12,9 @@ internal static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        if (args.Contains("--watch-map-storage-boundary")) { Environment.ExitCode = MapOpenCollector.CheckStorageBoundaries(args); return; }
+        if (args.Contains("--watch-map-boundary")) { Environment.ExitCode = MapOpenCollector.CheckBoundaries(); return; }
+        if (args.Contains("--watch-map")) { Environment.ExitCode = MapOpenCollector.Run(args); return; }
         int option = Array.IndexOf(args, "--output");
         string output = option >= 0 && option + 1 < args.Length ? Path.GetFullPath(args[option + 1]) : throw new ArgumentException("--output is required");
         if (Directory.Exists(output) || File.Exists(output)) throw new IOException("Preserve prior capture evidence; use a new output.");

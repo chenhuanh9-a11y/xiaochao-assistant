@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Threading;
 using StarMap.Core.Floors;
+using StarMap.Core.Input;
 using StarMap.Core.Session;
 using StarMap.Core.Settings;
 using StarMap.Runtime;
@@ -35,6 +36,9 @@ internal sealed class RuntimePage : UserControl
     LiveRuntime? proposedRuntime;
     bool closed, rendering, configuring, loadingResources;
     string? resourceLease;
+    readonly OrderedMapInput mapInput = new();
+    (long Ticket, long Input)? mapRead;
+    internal Func<Task>? PrepareInput { get; set; }
 
     internal RuntimePage(ICapturePort capture, Action<string> status)
     {
@@ -43,8 +47,8 @@ internal sealed class RuntimePage : UserControl
         panel.Children.Add(new TextBlock { Text = "本局", FontSize = 19, FontWeight = FontWeights.SemiBold, Margin = new(0, 0, 0, 12) });
         panel.Children.Add(summary); panel.Children.Add(detail); panel.Children.Add(resourceCaption);
         var actions = new WrapPanel();
-        start = Add(actions, "开始本局", (_, _) => Dispatch("start_round"));
-        end = Add(actions, "结束本局", (_, _) => { CancelDelay(); Dispatch("end_round"); });
+        start = Add(actions, "开始本局", async (_, _) => { if (PrepareInput is not null) await PrepareInput(); Dispatch("start_round"); });
+        end = Add(actions, "结束本局", (_, _) => Dispatch("end_round"));
         acquire = Add(actions, "3 秒后读取地图", async (_, _) => await CaptureAfterDelay());
         cancel = Add(actions, "取消识别", (_, _) => CancelWork()); panel.Children.Add(actions);
         panel.Children.Add(candidates);
@@ -135,6 +139,8 @@ internal sealed class RuntimePage : UserControl
                 if (closed) { nextSession.Shutdown(); nextRuntime.Shutdown(); return false; }
                 runtime = nextRuntime; session = nextSession;
                 resourceRoot = root; floorSettings = controls; session.Changed += Render;
+                session.ResultConsumed += ReconcileMapInput;
+                mapInput.Reset(); mapRead = null;
             }
             else
             {
@@ -158,36 +164,72 @@ internal sealed class RuntimePage : UserControl
     internal SessionDispatchResult? Dispatch(string action, object? payload = null)
     {
         if (closed || configuring || loadingResources || session is null) return null;
+        if (action == "toggle_round") action = runtime?.ReadState().RoundActive == true ? "end_round" : "start_round";
+        if (action is "end_round" or "stop_round" or "reset_round") CancelDelay();
         var result = session.Dispatch(action, payload is null ? null : JsonSerializer.SerializeToElement(payload));
+        if (result.Disposition is SessionDispatchDisposition.Enqueued or SessionDispatchDisposition.Coalesced)
+        {
+            if (action == "capture_now") mapRead = (session.Read().Sequence.LastIssuedSequence, mapInput.Sequence);
+            if (action is "end_round" or "stop_round" or "reset_round") { mapInput.Reset(); mapRead = null; }
+        }
         if (result.Disposition is SessionDispatchDisposition.Unavailable or SessionDispatchDisposition.ResourceLocked)
             status("未执行：" + session.Read().Message);
         Render(); return result;
     }
 
     internal void BindingChanged()
+        => SuspendInput("window-binding-changed");
+
+    internal void SuspendInput(string reason)
     {
         if (closed) return;
-        CancelDelay(); session?.CancelPending("window-binding-changed");
-        runtime?.InvalidateCapture("window-binding-changed"); session?.RefreshRuntime(); Render();
+        mapInput.Reset(); mapRead = null;
+        CancelDelay(); session?.CancelPending(reason);
+        runtime?.InvalidateCapture(reason); session?.RefreshRuntime(); Render();
     }
 
-    internal void HandleShortcut(string action)
+    internal void HandleShortcut(string action, double? createdAtSeconds = null)
     {
-        var command = action switch { "map" => "map", "start-round" => "start_round", "toggle-round" => "toggle_round",
+        if (action is "map" or "escape")
+        {
+            var edge = action == "map" ? mapInput.Press(createdAtSeconds: createdAtSeconds) : mapInput.Close(createdAtSeconds: createdAtSeconds);
+            // A pass-through edge already changed the game's physical phase.
+            // Outside/preparing/ending a round it cannot start or cancel round work.
+            if (configuring || loadingResources || runtime?.ReadState().RoundActive != true || session is null
+                || session.Read().PendingAction is "start_round" or "end_round" or "stop_round" or "reset_round" or "toggle_round") return;
+            CancelDelay(); session.CancelPending("new-map-input"); runtime.InvalidateCapture("new-map-input"); session.RefreshRuntime();
+            var payload = new { inputSequence = edge.Sequence, openIntent = edge.OpenIntent, inputCreatedAt = edge.CreatedAtSeconds, inputSource = edge.Source };
+            Dispatch(edge.OpenIntent ? "capture_now" : "close_map", payload);
+            return;
+        }
+        var command = action switch { "start-round" => "start_round", "toggle-round" => "toggle_round",
             "end-round" => "end_round", "candidate-prev" => "previous_candidate", "candidate-next" => "next_candidate",
-            "confirm-round" => "confirm_route", "cycle-floor" => "cycle_floor", "escape" => "close_map", _ => null };
+            "confirm-round" => "confirm_route", "cycle-floor" => "cycle_floor", _ => null };
         if (command is not null) Dispatch(command);
+    }
+
+    void ReconcileMapInput(SessionCompletion completion)
+    {
+        if (closed || mapRead is not { } read || completion.Ticket.Sequence != read.Ticket || completion.Disposition != "Accepted") return;
+        var observed = runtime?.ReadState();
+        // A timeout/black transition does not prove that the game map closed.
+        // Only current positive visual evidence reconciles this exact input edge.
+        if (observed is { MapOpen: true, Context.FrameId: not null }) mapInput.Reconcile(true, read.Input);
     }
 
     async Task CaptureAfterDelay()
     {
         if (pendingCapture is not null || session is null || closed) return;
+        var scheduledSession = session;
+        var scheduledRound = runtime?.ReadState().Context.RoundId;
         using var cancellation = new CancellationTokenSource(); pendingCapture = cancellation; Render();
         try
         {
             for (int count = 3; count > 0; count--)
             { status($"请手动切回已连接的游戏窗口，{count} 秒后读取地图。"); await Task.Delay(1000, cancellation.Token); }
-            cancellation.Token.ThrowIfCancellationRequested(); Dispatch("capture_now");
+            cancellation.Token.ThrowIfCancellationRequested();
+            if (ReferenceEquals(session, scheduledSession) && runtime?.ReadState() is { RoundActive: true } current
+                && current.Context.RoundId == scheduledRound) Dispatch("capture_now");
         }
         catch (OperationCanceledException) { if (!closed) status("已取消本次读取。"); }
         finally { if (ReferenceEquals(pendingCapture, cancellation)) pendingCapture = null; Render(); }
@@ -209,7 +251,7 @@ internal sealed class RuntimePage : UserControl
         bool working = view?.WorkerActive == true || pendingCapture is not null || configuring || loadingResources;
         bool available = state?.ResourcesBound == true;
         bool Supports(string action) => view?.Runtime.AvailableCommands.Contains(action) == true;
-        start.IsEnabled = available && capture.IsBound && !active && !working && Supports("start_round");
+        start.IsEnabled = available && !active && !working && Supports("start_round");
         end.IsEnabled = active && !configuring && !loadingResources && Supports("end_round");
         acquire.IsEnabled = active && capture.IsBound && !working && Supports("capture_now");
         cancel.IsEnabled = !configuring && !loadingResources && working;
@@ -257,7 +299,8 @@ internal sealed class RuntimePage : UserControl
         if (session is null) return;
         var previousSession = session; var previousRuntime = runtime!;
         session = null; runtime = null;
-        previousSession.Changed -= Render; previousSession.Shutdown(); previousRuntime.Shutdown(); await previousSession.DrainAsync();
+        previousSession.Changed -= Render; previousSession.ResultConsumed -= ReconcileMapInput;
+        previousSession.Shutdown(); previousRuntime.Shutdown(); await previousSession.DrainAsync();
     }
     internal async Task CloseAsync()
     {

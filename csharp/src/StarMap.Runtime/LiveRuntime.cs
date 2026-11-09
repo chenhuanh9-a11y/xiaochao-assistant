@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using OpenCvSharp;
@@ -231,7 +232,6 @@ public sealed class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISes
         {
             RequireCurrent(epoch, token);
             if (_resources is null) return Receipt(request, false, "resources-not-bound");
-            if (!_capture.IsBound) return Receipt(request, false, "capture-not-bound");
             if (_selection is { Season: "s1", Mode: "difficulty2" }) return Receipt(request, false, "retired-mode");
             if (!_roundActive)
             {
@@ -264,6 +264,7 @@ public sealed class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISes
             RequireCurrent(epoch, token);
             if (!_roundActive) return Receipt(request, false, "start-round-before-capture");
             if (_resources is null) return Receipt(request, false, "resources-not-bound");
+            if (!_capture.IsBound) return Receipt(request, false, "capture-not-bound");
             if (_selection.Season != "s0") return Receipt(request, false, "capability-unavailable:s1-structure-identity-consumer");
             bound = _resources; RevokeFrame("map-open-preparing"); _workActive = true; Publish();
         }
@@ -277,6 +278,15 @@ public sealed class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISes
         CapturedClientFrame? captured = null;
         FloorObservationResult? floorRead = null;
         string? preparedFloor = null;
+        int probes = 0;
+        double captureMs = 0, decodeMs = 0, observationMs = 0;
+        string? capturedFrameId = null;
+        object Preparation(string phase) => new {
+            stage = "map-open-preparation", phase, probes, firstProbeImmediate = locked,
+            elapsedMs = _options.TimeProvider.GetElapsedTime(started).TotalMilliseconds,
+            budgetMs = limit.TotalMilliseconds, captureMs, decodeMs, observationMs,
+            capturedFrameId, map = floorRead?.MapObservation, floor = floorRead?.FloorRead
+        };
         for (int attempt = 0; attempt < maxProbes; attempt++)
         {
             CheckCurrent(epoch, token);
@@ -293,21 +303,29 @@ public sealed class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISes
             }
             if (elapsed >= limit) break;
             var probeStarted = elapsed;
+            probes++;
+            var stageStarted = Stopwatch.GetTimestamp();
             var acquisition = await _capture.CaptureAsync(token).ConfigureAwait(false);
+            captureMs = Stopwatch.GetElapsedTime(stageStarted).TotalMilliseconds;
+            capturedFrameId = acquisition.Frame?.Stamp.FrameId;
             CheckCurrent(epoch, token);
             if (_options.TimeProvider.GetElapsedTime(started) >= limit)
-                return FailCurrent(request, epoch, "map-open-preparation-deadline");
-            if (acquisition.Frame is null) return FailCurrent(request, epoch, acquisition.Reason.Length > 0 ? acquisition.Reason : "capture-unavailable");
+                return FailCurrent(request, epoch, "map-open-preparation-deadline", Preparation("capture-finished-after-deadline"));
+            if (acquisition.Frame is null) return FailCurrent(request, epoch, acquisition.Reason.Length > 0 ? acquisition.Reason : "capture-unavailable", Preparation("capture-unavailable"));
             captured = acquisition.Frame;
-            if (!_capture.IsCurrent(captured.Stamp)) return FailCurrent(request, epoch, "capture-context-obsolete");
+            if (!_capture.IsCurrent(captured.Stamp)) return FailCurrent(request, epoch, "capture-context-obsolete", Preparation("capture-obsolete"));
+            stageStarted = Stopwatch.GetTimestamp();
             using var frame = ToBgr(captured);
+            decodeMs = Stopwatch.GetElapsedTime(stageStarted).TotalMilliseconds;
+            stageStarted = Stopwatch.GetTimestamp();
             floorRead = FloorObservation.Observe(frame, bound.Passports.Season, bound.Passports.Mode,
                 _options.FloorSettings is { } settings ? JsonNode.Parse(settings.GetRawText())?.AsObject() : null,
                 _options.S1FloorUse, frameCurrent: true);
+            observationMs = Stopwatch.GetElapsedTime(stageStarted).TotalMilliseconds;
             // The source rechecks the deadline after observation, not merely
             // before starting capture. Late usable pixels are never prepared.
             if (_options.TimeProvider.GetElapsedTime(started) >= limit)
-                return FailCurrent(request, epoch, "map-open-preparation-deadline");
+                return FailCurrent(request, epoch, "map-open-preparation-deadline", Preparation("observation-finished-after-deadline"));
             lock (_sync)
             {
                 RequireCurrent(epoch, token, captured, bound);
@@ -322,14 +340,15 @@ public sealed class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISes
                 if (lastProbe > nextProbe) nextProbe = lastProbe;
             }
         }
-        if (captured is null || floorRead?.MapOpen != true) return FailCurrent(request, epoch, "map-open-preparation-deadline");
+        if (captured is null || floorRead?.MapOpen != true) return FailCurrent(request, epoch, "map-open-preparation-deadline", Preparation("probe-loop-ended-without-map"));
+        var preparation = JsonSerializer.SerializeToElement(Preparation("prepared"), Json);
         string? floor, map;
         lock (_sync)
         {
             RequireCurrent(epoch, token, captured, bound);
             floor = preparedFloor;
             _frame = captured; _mapOpen = true; _floor = floor; _pose = null;
-            _diagnostics = JsonSerializer.SerializeToElement(new { stage = "floor-observation", map = floorRead.MapObservation, floor = floorRead.FloorRead }, Json);
+            _diagnostics = JsonSerializer.SerializeToElement(new { stage = "floor-observation", map = floorRead.MapObservation, floor = floorRead.FloorRead, preparation }, Json);
             _reason = floor is null ? "current-floor-unavailable" : "current-floor-observed";
             map = _mapId; Publish();
         }
@@ -338,7 +357,9 @@ public sealed class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISes
         if (map is null)
         {
             // This is the actual unconstrained current-frame production ranker.
+            var rankStarted = Stopwatch.GetTimestamp();
             var ranked = bound.Ranker.Rank(current, floor, _options.MainEntryBudget, cancellation: token);
+            var rankElapsedMs = Stopwatch.GetElapsedTime(rankStarted).TotalMilliseconds;
             lock (_sync)
             {
                 RequireCurrent(epoch, token, captured, bound);
@@ -347,7 +368,8 @@ public sealed class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISes
                     row["identityVerified"]?.GetValue<bool>() == true, row["poseVerified"]?.GetValue<bool>() == true)).ToArray();
                 _selected = _candidates.Length > 0 ? 0 : -1;
                 _diagnostics = JsonSerializer.SerializeToElement(new { stage = "main-entry", floor = floorRead.FloorRead,
-                    main = ranked.Diagnostics, frontGate = ranked.FrontGate, corners = ranked.Corners, rows = ranked.Rows }, Json);
+                    main = ranked.Diagnostics, frontGate = ranked.FrontGate, corners = ranked.Corners, rows = ranked.Rows,
+                    preparation, rankElapsedMs, rankBudgetMs = _options.MainEntryBudget.TotalMilliseconds }, Json);
                 var verified = _candidates.Where(c => c.IdentityVerified).ToArray();
                 if (verified.Length == 1)
                 { LockIdentity(verified[0].MapId, "main-entry-current-frame"); map = _mapId; }
@@ -552,7 +574,7 @@ public sealed class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISes
     private RuntimeSnapshot Snapshot(LiveRuntimeState state)
     {
         var commands = new List<string> { "set_context", "end_round", "stop_round", "reset_round", "cancel", "close_map" };
-        if (state.ResourcesBound && _capture.IsBound) commands.AddRange(["start_round", "toggle_round"]);
+        if (state.ResourcesBound) commands.AddRange(["start_round", "toggle_round"]);
         if (state.RoundActive && state.ResourcesBound)
         {
             commands.AddRange(["set_floor", "reselect_map"]);

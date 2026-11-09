@@ -8,6 +8,8 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using StarMap.App;
+using StarMap.App.Platform;
+using StarMap.Core.Input;
 using StarMap.Core.Resources;
 using StarMap.Core.Settings;
 
@@ -67,6 +69,8 @@ internal static class Program
             navigation.SelectedIndex = 0;
             Check(ReferenceEquals(home, content.Content), "navigation-retains-home-instance");
             Check(!shell.IsVisible && !Directory.Exists(Path.Combine(output, "isolated-data")), "construction-does-not-show-or-create-player-file");
+            Check(!Field<WpfGlobalInputController>(shell, "inputController").ListeningRequested,
+                "real-window-construction-does-not-start-global-observer");
             int resourcesOption = Array.IndexOf(args, "--resources");
             int captureOption = Array.IndexOf(args, "--capture-record");
             if (resourcesOption >= 0 && captureOption >= 0)
@@ -176,13 +180,80 @@ internal static class Program
                 Await(InvokeTask(importWindow, "LoadSettings"));
                 var importing = InvokeTask(importWindow, "ImportSelectedSettings", importSource);
                 string[] editorFields = ["mode", "season", "hotkey", "sheetOpacity", "referenceOpacity"];
-                Check(!importing.IsCompleted && editorFields.All(key => !Field<Control>(importWindow, key).IsEnabled), "import-pending-disables-all-settings-editors");
+                Check(!importing.IsCompleted && editorFields.All(key => !Field<Control>(importWindow, key).IsEnabled)
+                    && Field<TextBox[]>(importWindow, "actionHotkeys").All(editor => !editor.IsEnabled)
+                    && !Field<Button>(importWindow, "clearPickerKey").IsEnabled,
+                    "import-pending-disables-all-settings-editors");
                 Await(importing);
                 Check(editorFields.All(key => Field<Control>(importWindow, key).IsEnabled)
                     && Field<TextBox>(importWindow, "hotkey").Text == "Ctrl+H", "import-restores-editors-with-verified-copy");
                 Check(File.ReadAllBytes(importSource).SequenceEqual(File.ReadAllBytes(Path.Combine(output, "import-data", "ui-settings.json"))), "ui-import-preserves-original-and-unknown-bytes");
+                var badActions = new JsonArray(Enumerable.Range(0, 10).Select(_ => (JsonNode?)JsonValue.Create("")).ToArray());
+                badActions[9] = null;
+                string invalidSource = Path.Combine(output, "invalid-picker-source.json");
+                File.WriteAllText(invalidSource, new JsonObject { ["hotkey"] = "G", ["actionHotkeys"] = badActions }.ToJsonString());
+                var invalidWindow = new WorkspaceWindow(Path.Combine(output, "invalid-import-data"), null);
+                try
+                {
+                    Await(InvokeTask(invalidWindow, "LoadSettings"));
+                    Await(InvokeTask(invalidWindow, "ImportSelectedSettings", invalidSource));
+                    Check(Field<TextBox[]>(invalidWindow, "actionHotkeys")[9].Text == "null"
+                        && !Field<WpfGlobalInputController>(invalidWindow, "inputController").ListeningRequested
+                        && File.ReadAllBytes(invalidSource).SequenceEqual(File.ReadAllBytes(Path.Combine(output, "invalid-import-data", "ui-settings.json"))),
+                        "invalid-raw-picker-tail-remains-visible-and-preserved-with-observer-off");
+                    Field<Button>(invalidWindow, "clearPickerKey").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Await(InvokeTask(invalidWindow, "SaveSettings"));
+                    using var repaired = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(output, "invalid-import-data", "ui-settings.json")));
+                    Check(repaired.RootElement.GetProperty("actionHotkeys")[9].GetString() == ""
+                        && !Field<WpfGlobalInputController>(invalidWindow, "inputController").ListeningRequested,
+                        "explicit-clear-picker-control-repairs-raw-tail-without-starting-observer");
+                }
+                finally { invalidWindow.Close(); }
+                var invalidMapWindow = new WorkspaceWindow(Path.Combine(output, "invalid-map-key-data"), null);
+                try
+                {
+                    string invalidMapSource = Path.Combine(output, "invalid-map-key-source.json");
+                    File.WriteAllText(invalidMapSource, "{\"hotkey\":null}");
+                    Await(InvokeTask(invalidMapWindow, "LoadSettings"));
+                    Await(InvokeTask(invalidMapWindow, "ImportSelectedSettings", invalidMapSource));
+                    Check(Field<TextBox>(invalidMapWindow, "hotkey").Text == "null"
+                        && !Field<WpfGlobalInputController>(invalidMapWindow, "inputController").ListeningRequested,
+                        "invalid-raw-map-key-is-visible-with-observer-off");
+                    Field<TextBox>(invalidMapWindow, "hotkey").Text = "H";
+                    Await(InvokeTask(invalidMapWindow, "SaveSettings"));
+                    using var repaired = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(output, "invalid-map-key-data", "ui-settings.json")));
+                    Check(repaired.RootElement.GetProperty("hotkey").GetString() == "H"
+                        && !Field<WpfGlobalInputController>(invalidMapWindow, "inputController").ListeningRequested,
+                        "explicit-map-key-repair-applies-without-starting-observer");
+                }
+                finally { invalidMapWindow.Close(); }
             }
             finally { importWindow.Close(); }
+            var errorWindow = new WorkspaceWindow(Path.Combine(output, "input-configure-error-data"), null);
+            try
+            {
+                Await(InvokeTask(errorWindow, "LoadSettings"));
+                Await(Field<WpfGlobalInputController>(errorWindow, "inputController").DisposeAsync().AsTask());
+                var bindings = GlobalInputBindings.FromSettings(Field<SettingsDocument>(errorWindow, "settings"));
+                var source = new FixtureInputSource(bindings);
+                var host = new WpfGlobalInputController(Dispatcher.CurrentDispatcher, bindings, () => new(new()), _ => { }, source);
+                errorWindow.GetType().GetField("inputController", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(errorWindow, host);
+                Await(host.StartAsync());
+                Check(host.IsReady, "input-configure-failure-fixture-uses-real-host-ready-order-with-only-os-source-replaced");
+                source.ConfigurationFailure = new System.ComponentModel.Win32Exception(5, "fixture PostThreadMessageW failure");
+                Field<TextBox>(errorWindow, "hotkey").Text = "H";
+                Await(InvokeTask(errorWindow, "SaveSettings"));
+                Check(!host.ListeningRequested && source.Drained.IsCompletedSuccessfully
+                    && Field<TextBlock>(errorWindow, "inputState").Text.Contains("配置未应用")
+                    && JsonNode.Parse(File.ReadAllBytes(Path.Combine(output, "input-configure-error-data", "ui-settings.json")))!["hotkey"]!.GetValue<string>() == "H",
+                    "native-configure-win32-failure-preserves-saved-settings-stops-observer-and-reports-error");
+                source.ConfigurationFailure = null;
+                Field<TextBox>(errorWindow, "hotkey").Text = "J";
+                Await(InvokeTask(errorWindow, "SaveSettings"));
+                Check(!host.ListeningRequested && host.ActiveBindings.Items.Single(item => item.Action == "map").VirtualKey == 'J',
+                    "input-configure-recovers-on-next-explicit-save-without-restarting-observer");
+            }
+            finally { errorWindow.Close(); }
         }
         catch (Exception error) { exit = 1; checks.Add(new { name = "window-construction", passed = false, error = error.ToString() }); Console.Error.WriteLine(error); }
         finally

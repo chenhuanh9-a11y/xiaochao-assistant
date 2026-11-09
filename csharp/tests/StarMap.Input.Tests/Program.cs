@@ -106,6 +106,16 @@ foreach (var (map, action, description) in new[] {
 var badCount = false;
 try { GlobalInputBindings.FromSettings("G", []); } catch (ArgumentException) { badCount = true; }
 Check(badCount, "action-count-validated");
+var brokenTail = new JsonArray(unbound.Select(value => (JsonNode?)JsonValue.Create(value)).ToArray());
+brokenTail[9] = null;
+var brokenDocument = new SettingsDocument(new JsonObject { ["hotkey"] = "G", ["actionHotkeys"] = brokenTail });
+bool invalidTailRejected = false;
+try { GlobalInputBindings.FromSettings(brokenDocument); } catch (ArgumentException) { invalidTailRejected = true; }
+Check(invalidTailRejected && brokenDocument.Values["actionHotkeys"]![9] is null,
+    "invalid-raw-picker-tail-cannot-silently-enable-projected-defaults");
+brokenDocument.Set("actionHotkeys", new JsonArray(unbound.Select(value => (JsonNode?)JsonValue.Create(value)).ToArray()));
+Check(GlobalInputBindings.FromSettings(brokenDocument).Items.Single(item => item.Action == "manual-map-picker").VirtualKey == 0,
+    "explicit-empty-picker-repair-enables-validated-document");
 var samePrimary = (string[])unbound.Clone(); samePrimary[0] = "Ctrl+G";
 Check(GlobalInputBindings.FromSettings("G", samePrimary).Items.Count == 12, "distinct-modifier-chords-share-primary");
 

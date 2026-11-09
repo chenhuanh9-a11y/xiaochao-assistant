@@ -5,6 +5,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using StarMap.App;
 using StarMap.Core.Settings;
+using StarMap.Core.Input;
 using StarMap.Runtime;
 
 internal static class RuntimeWorkspaceRegression
@@ -26,6 +27,17 @@ internal static class RuntimeWorkspaceRegression
         var page = new RuntimePage(capture, messages.Add);
         try
         {
+            var ordered = new OrderedMapInput(() => 42);
+            var edges = new[] { ordered.Press(), ordered.Press(), ordered.Press() };
+            check(edges.Select(edge => edge.OpenIntent).SequenceEqual(new[] { true, false, true })
+                && edges.Select(edge => edge.Sequence).SequenceEqual(new long[] { 1, 2, 3 }),
+                "ordered-map-input-matches-original-open-close-open-edges");
+            ordered.Reset(true);
+            check(!ordered.Reconcile(false, 2) && ordered.Close().Sequence == 4,
+                "ordered-map-input-reset-keeps-sequence-and-rejects-late-visual-state");
+            ordered.Reset();
+            check(ordered.Press() is { Sequence: 5, OpenIntent: true, CreatedAtSeconds: 42 },
+                "ordered-map-input-reopens-with-new-sequence-after-reset");
             check(capture.Calls == 0 && page.State is null && !page.IsVisible, "runtime-page-construction-is-inert-and-hidden");
             check(await page.Configure(resourceRoot, SettingsDocument.CreateNew()), "runtime-page-binds-actual-context-through-session");
             check(capture.Calls == 0 && page.State is { RoundActive: false }, "runtime-page-resource-binding-does-not-capture-or-start");
@@ -37,8 +49,12 @@ internal static class RuntimeWorkspaceRegression
                 && page.State!.Context.ResourceId == originalResource, "runtime-page-failed-resource-replacement-preserves-current-runtime");
             check(await page.Configure(resourceRoot, SettingsDocument.CreateNew(), reloadResources: true)
                 && page.State!.Context.ResourceId != originalResource, "runtime-page-explicit-same-path-reload-rebinds-actual-resources");
+            capture.Bound = false;
+            check(page.SessionView!.Runtime.AvailableCommands.Contains("start_round"), "runtime-page-preparation-remains-available-without-game-window");
             page.Dispatch("start_round"); await page.DrainAsync();
-            check(page.State is { RoundActive: true } && capture.Calls == 0, "runtime-page-start-is-explicit-and-does-not-capture");
+            check(page.State is { RoundActive: true, MapOpen: false, NativeGeometryVerified: false } && capture.Calls == 0,
+                "runtime-page-start-prepares-without-game-or-capture-authority");
+            capture.Bound = true;
             var activeContext = page.State!.Context;
             check(!await page.Configure(resourceRoot, new SettingsDocument(new JsonObject { ["gameMode"] = "difficult" }))
                 && page.State!.Context == activeContext && messages.Last().Contains("尚未应用到本局"),
@@ -59,6 +75,50 @@ internal static class RuntimeWorkspaceRegression
                 "runtime-page-human-map-choice-reaches-runtime-identity-owner");
             check(page.SessionView!.Runtime.LiveAuthorization == false,
                 "runtime-page-does-not-promote-native-fit-to-display-authorization");
+            page.HandleShortcut("escape"); await page.DrainAsync();
+            var heldCapture = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var captureEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            capture.HoldNext = heldCapture; capture.Entered = captureEntered;
+            int callsWhileHeld;
+            try
+            {
+                page.HandleShortcut("map");
+                await captureEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                page.HandleShortcut("map");
+                check(page.State is { MapOpen: false, NativeGeometryVerified: false } && page.SessionView!.WorkerActive,
+                    "runtime-page-second-physical-map-edge-revokes-pending-open-before-capture-exits");
+                callsWhileHeld = capture.Calls;
+                page.HandleShortcut("map");
+                check(capture.Calls == callsWhileHeld && page.SessionView!.QueuedCount == 1,
+                    "runtime-page-third-physical-map-edge-replaces-close-with-one-fresh-open");
+            }
+            finally { heldCapture.TrySetResult(); }
+            await page.DrainAsync();
+            check(page.State is { MapOpen: true, IdentityLocked: true, NativeGeometryVerified: true }
+                && page.State.Context.FrameId == capture.Calls.ToString() && capture.Calls > callsWhileHeld,
+                "runtime-page-open-close-open-consumes-only-new-frame-through-real-session-fit");
+            page.HandleShortcut("toggle-round"); await page.DrainAsync();
+            page.HandleShortcut("toggle-round"); await page.DrainAsync();
+            int callsBeforeNextRound = capture.Calls;
+            page.HandleShortcut("map"); await page.DrainAsync();
+            check(page.State is { RoundActive: true, MapOpen: true } && capture.Calls > callsBeforeNextRound,
+                "runtime-page-toggle-round-end-start-resets-physical-map-intent");
+            var applying = page.Configure(resourceRoot, new SettingsDocument(new JsonObject { ["routeProfileId"] = "display-preference-regression" }));
+            check(!applying.IsCompleted && page.SessionView!.PendingAction == "set_context",
+                "runtime-page-display-setting-is-pending-through-real-session");
+            page.HandleShortcut("map");
+            check(page.SessionView!.PendingAction == "set_context",
+                "runtime-page-physical-map-edge-during-configure-preserves-explicit-context-work");
+            check(await applying && page.State!.Context.ProfileId == "display-preference-regression",
+                "runtime-page-configure-completes-despite-pass-through-map-edge");
+            var delayedRead = (Task)typeof(RuntimePage).GetMethod("CaptureAfterDelay",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(page, null)!;
+            page.HandleShortcut("end-round"); await page.DrainAsync();
+            page.HandleShortcut("start-round"); await page.DrainAsync();
+            int callsBeforeOldDelay = capture.Calls;
+            await delayedRead; await page.DrainAsync();
+            check(capture.Calls == callsBeforeOldDelay && page.State is { RoundActive: true, MapOpen: false },
+                "runtime-page-old-delayed-read-cannot-capture-after-shortcut-end-and-new-round");
             var fixedSettings = new SettingsDocument(new JsonObject { ["floorControlMode"] = "fixed" });
             string activeResource = confirmed.Context.ResourceId!;
             check(!await page.Configure(resourceRoot, fixedSettings) && page.State!.Context.ResourceId == activeResource,
@@ -122,16 +182,23 @@ internal static class RuntimeWorkspaceRegression
 
     sealed class CurrentCapture(byte[] bytes, int width, int height, DateTimeOffset capturedAt) : ICapturePort
     {
+        readonly object sync = new();
         CaptureStamp? current;
-        internal int Calls;
-        internal bool Bound = true;
+        int calls;
+        bool bound = true;
+        internal int Calls => Volatile.Read(ref calls);
+        internal bool Bound { get { lock (sync) return bound; } set { lock (sync) bound = value; } }
+        internal TaskCompletionSource? HoldNext, Entered;
         public bool IsBound => Bound;
-        public bool IsCurrent(CaptureStamp stamp) => Bound && stamp == current;
-        public ValueTask<ClientCaptureResult> CaptureAsync(CancellationToken token)
+        public bool IsCurrent(CaptureStamp stamp) { lock (sync) return bound && stamp == current; }
+        public async ValueTask<ClientCaptureResult> CaptureAsync(CancellationToken token)
         {
-            token.ThrowIfCancellationRequested(); Calls++;
-            current = new("current-recorded-client", 1, Calls.ToString());
-            return ValueTask.FromResult(new ClientCaptureResult(new(bytes, width, height, width * 4, current, capturedAt)));
+            token.ThrowIfCancellationRequested(); int call = Interlocked.Increment(ref calls);
+            var hold = HoldNext; HoldNext = null;
+            if (hold is not null) { Entered?.TrySetResult(); await hold.Task.ConfigureAwait(false); }
+            var stamp = new CaptureStamp("current-recorded-client", 1, call.ToString());
+            lock (sync) current = stamp;
+            return new(new(bytes, width, height, width * 4, stamp, capturedAt));
         }
     }
 }

@@ -25,6 +25,8 @@ public partial class WorkspaceWindow : Window
     readonly ComboBox mode = new() { ItemsSource = new[] { new ModeChoice("nightmare", "噩梦", true), new ModeChoice("difficult", "困难", true), new ModeChoice("difficulty2", "普通（历史设置，不用于新识别）", false) }, DisplayMemberPath = "Label", SelectedValuePath = "Key" };
     readonly ComboBox season = new() { ItemsSource = new[] { "s0", "s1" } };
     readonly TextBox hotkey = new();
+    readonly TextBox[] actionHotkeys = Enumerable.Range(0, SettingsDocument.ActionOrder.Length).Select(_ => new TextBox()).ToArray();
+    readonly Button clearPickerKey = new() { Content = "清空手动选图键", Padding = new(13, 7, 13, 7), Margin = new(0, 10, 0, 0), HorizontalAlignment = HorizontalAlignment.Left };
     readonly Slider sheetOpacity = new() { Minimum = 0, Maximum = 1, TickFrequency = .05 };
     readonly Slider referenceOpacity = new() { Minimum = 0, Maximum = 1, TickFrequency = .05 };
     readonly TextBlock settingsState = new() { TextWrapping = TextWrapping.Wrap };
@@ -56,6 +58,7 @@ public partial class WorkspaceWindow : Window
         var customPage = new CustomGalleryPage(dataRoot);
         pages["custom"] = customPage;
         pages["plaza"] = Pending("路线广场", "账号、路线广场和投稿尚未接入。此版本没有登录或上传功能。");
+        InitializeInput();
         ready = true;
         ShowPage("home");
         Loaded += async (_, _) =>
@@ -69,7 +72,9 @@ public partial class WorkspaceWindow : Window
             if (closeReady) return;
             e.Cancel = true;
             if (closing) return;
-            closing = true; closed = true; resourceGeneration++; previewGeneration++;
+            closing = true;
+            if (!await CloseInput()) { closing = false; UpdateInputControls(); return; }
+            closed = true; resourceGeneration++; previewGeneration++;
             previewCancellation?.Cancel(); connectionPage?.Dispose();
             if (runtimePage is not null) await runtimePage.CloseAsync();
             runtimeCapture.Dispose(); closeReady = true;
@@ -105,7 +110,9 @@ public partial class WorkspaceWindow : Window
         runtimePage = new RuntimePage(runtimeCapture, message => Status.Text = message);
         connectionPage = new ConnectionPage(message => Status.Text = message, runtimeCapture);
         connectionPage.BindingChanged += runtimePage.BindingChanged;
+        connectionPage.BindingChanged += RefreshInputScope;
         panel.Children.Add(connectionPage);
+        panel.Children.Add(BuildInputPanel());
         runtimePage.Margin = new Thickness(0, 28, 0, 0); panel.Children.Add(runtimePage);
         panel.Children.Add(HeadingText("资源与设置", 18, new Thickness(0, 28, 0, 12)));
         panel.Children.Add(resourceSummary);
@@ -234,6 +241,15 @@ public partial class WorkspaceWindow : Window
         mode.SelectionChanged += (_, _) => MarkEdited("gameMode"); season.SelectionChanged += (_, _) => MarkEdited("gameSeason");
         hotkey.TextChanged += (_, _) => MarkEdited("hotkey"); sheetOpacity.ValueChanged += (_, _) => MarkEdited("sheetOpacity"); referenceOpacity.ValueChanged += (_, _) => MarkEdited("referenceOpacity");
         AddField(panel, "游戏模式", mode); AddField(panel, "赛季", season); AddField(panel, "地图键", hotkey);
+        string[] actionLabels = ["显示或隐藏主面板", "上一候选", "下一候选", "确认地图", "切换楼层", "结束本局", "显示或隐藏贴合图", "开始本局", "开始或结束本局", "手动选图"];
+        for (int i = 0; i < actionHotkeys.Length; i++)
+        {
+            actionHotkeys[i].TextChanged += (_, _) => MarkEdited("actionHotkeys");
+            AddField(panel, actionLabels[i], actionHotkeys[i]);
+        }
+        panel.Children.Add(new TextBlock { Text = "快捷键留空可解绑。错误原值会显示在对应输入框，修改并保存后才生效。", TextWrapping = TextWrapping.Wrap, Foreground = Brushes.SlateGray, Margin = new Thickness(0, 10, 0, 0) });
+        clearPickerKey.Click += (_, _) => { actionHotkeys[9].Text = ""; MarkEdited("actionHotkeys"); };
+        panel.Children.Add(clearPickerKey);
         AddField(panel, "贴合透明度", sheetOpacity); AddField(panel, "定点透明度", referenceOpacity);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 20, 0, 16) };
         actions.Children.Add(Button("保存并应用到测试版", async (_, _) => await SaveSettings()));
@@ -246,7 +262,7 @@ public partial class WorkspaceWindow : Window
         var loaded = await SettingsDocument.LoadAsync(dataRoot);
         if (closed) return;
         if (!loaded.Succeeded || loaded.Document is null) { settingsState.Text = "设置未载入：" + loaded.Error?.Message; return; }
-        settings = loaded.Document; DisplaySettings();
+        settings = loaded.Document; DisplaySettings(); await ApplyInputSettings();
     }
 
     void DisplaySettings()
@@ -255,12 +271,26 @@ public partial class WorkspaceWindow : Window
         loadingSettings = true;
         try
         {
-            mode.SelectedValue = settings.GameMode; season.SelectedItem = settings.GameSeason; hotkey.Text = settings.Hotkey;
+            mode.SelectedValue = settings.GameMode; season.SelectedItem = settings.GameSeason;
+            var rawValues = settings.Values;
+            hotkey.Text = rawValues.TryGetPropertyValue("hotkey", out var rawKey)
+                ? rawKey is JsonValue keyValue && keyValue.TryGetValue<string>(out var keyText) ? keyText : rawKey?.ToJsonString() ?? "null"
+                : settings.Hotkey;
+            var rawActions = rawValues["actionHotkeys"] as JsonArray;
+            for (int i = 0; i < actionHotkeys.Length; i++)
+            {
+                bool hasRaw = rawActions is not null && i < rawActions.Count;
+                var raw = hasRaw ? rawActions![i] : null;
+                actionHotkeys[i].Text = raw is JsonValue value && value.TryGetValue<string>(out var text)
+                    ? text : hasRaw ? raw?.ToJsonString() ?? "null" : settings.ActionHotkeys[i];
+            }
             sheetOpacity.Value = settings.SheetOpacity; referenceOpacity.Value = settings.ReferenceOpacity;
             editedSettings.Clear();
         }
         finally { loadingSettings = false; }
-        settingsState.Text = "当前为测试版设置。原版设置与未知字段会保留。";
+        var issues = settings.GetValidationIssues();
+        settingsState.Text = "当前为测试版设置。原版设置与未知字段会保留。"
+            + (issues.Count == 0 ? "" : "\n待修复：" + string.Join("；", issues.Values));
     }
 
     void MarkEdited(string key) { if (!loadingSettings && settings is not null) editedSettings.Add(key); }
@@ -269,6 +299,7 @@ public partial class WorkspaceWindow : Window
     {
         "gameMode" => JsonValue.Create(mode.SelectedValue?.ToString()), "gameSeason" => JsonValue.Create(season.SelectedItem?.ToString()),
         "hotkey" => JsonValue.Create(hotkey.Text), "sheetOpacity" => JsonValue.Create(sheetOpacity.Value), "referenceOpacity" => JsonValue.Create(referenceOpacity.Value),
+        "actionHotkeys" => new JsonArray(actionHotkeys.Select(editor => (JsonNode?)JsonValue.Create(editor.Text)).ToArray()),
         _ => throw new InvalidOperationException("Unknown edited setting.")
     };
 
@@ -279,7 +310,7 @@ public partial class WorkspaceWindow : Window
         settingsBusy = true;
         try
         {
-            if (editedSettings.Count == 0) { settingsState.Text = "设置没有更改，正在应用已保存设置。"; await ConfigureRuntime(); return; }
+            if (editedSettings.Count == 0) { settingsState.Text = "设置没有更改，正在应用已保存设置。"; await ConfigureRuntime(); await ApplyInputSettings(); return; }
             var changes = new Dictionary<string, JsonNode?>();
             foreach (var key in editedSettings)
                 changes[key] = ReadSettingControl(key);
@@ -291,6 +322,7 @@ public partial class WorkspaceWindow : Window
                     if (JsonNode.DeepEquals(value, ReadSettingControl(key))) editedSettings.Remove(key);
                 settingsState.Text = editedSettings.Count == 0 ? "已保存到测试版数据目录；没有修改原版设置。" : "本次更改已保存，仍有新更改尚未保存。";
                 await ConfigureRuntime();
+                await ApplyInputSettings();
             }
             else settingsState.Text = "没有保存：" + saved.Error?.Message;
         }
@@ -323,6 +355,7 @@ public partial class WorkspaceWindow : Window
             if (!result.Succeeded || result.Document is null) { settingsState.Text = "没有导入：" + result.Error?.Message; return; }
             settings = result.Document; DisplaySettings(); settingsState.Text = "已复制并回读原版设置。原文件保留。";
             await ConfigureRuntime();
+            await ApplyInputSettings();
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException) { settingsState.Text = "没有导入：" + error.Message; }
         finally { settingsBusy = false; SetSettingsEditing(!resourcesBusy); }
@@ -331,6 +364,8 @@ public partial class WorkspaceWindow : Window
     void SetSettingsEditing(bool enabled)
     {
         foreach (var control in new Control[] { mode, season, hotkey, sheetOpacity, referenceOpacity }) control.IsEnabled = enabled;
+        foreach (var editor in actionHotkeys) editor.IsEnabled = enabled;
+        clearPickerKey.IsEnabled = enabled;
     }
 
     async Task ConfigureRuntime()

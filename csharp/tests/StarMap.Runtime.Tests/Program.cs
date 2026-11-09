@@ -46,7 +46,13 @@ await Run("explicit-bind-start-and-actual-current-floor-main-producer", async ()
 {
     Check((await driver.Ask("set_context", new { season = "s0", mode = "nightmare", profileId = "display-preference-only" })).Receipt.Success, "actual context bound");
     Check(port.Calls == 0 && !runtime.ReadState().RoundActive, "binding does not capture or start round");
-    Check((await driver.Ask("start_round")).Receipt.Success && port.Calls == 0, "explicit round start does not capture");
+    port.IsBound = false;
+    Check(runtime.ReadSnapshot().AvailableCommands.Contains("start_round")
+        && (await driver.Ask("start_round")).Receipt.Success && port.Calls == 0
+        && !runtime.ReadSnapshot().LiveEngineAvailable && !runtime.ReadSnapshot().LiveAuthorization,
+        "explicit preparation without game does not grant capture or input authority");
+    Check(!(await driver.Ask("capture_now")).Receipt.Success && port.Calls == 0, "unbound prepared round cannot acquire pixels");
+    port.IsBound = true;
     var result = await driver.Ask("capture_now");
     var state = runtime.ReadState();
     var floor = FloorObservation.Observe(original, "s0", "nightmare");
@@ -191,6 +197,11 @@ await Run("preparation-deadline-rejects-valid-late-probe-" + lateProbe, async ()
     var before = actual.ReadState();
     var result = await calls.Ask("capture_now");
     var state = actual.ReadState();
+    Check(state.Diagnostics.GetProperty("phase").GetString() == "capture-finished-after-deadline"
+        && state.Diagnostics.GetProperty("probes").GetInt32() == lateProbe
+        && state.Diagnostics.GetProperty("elapsedMs").GetDouble() > state.Diagnostics.GetProperty("budgetMs").GetDouble()
+        && state.Diagnostics.GetProperty("capturedFrameId").GetString() is not null,
+        "late capture retains phase, probe, deadline and current frame diagnostics");
     File.WriteAllText(Path.Combine(output, "late-probe-" + lateProbe + ".json"), JsonSerializer.Serialize(new
     { before, result, state, capture.Calls, starts, clockTicks = clock.GetTimestamp(), floatingProbeLimit = Math.Ceiling(new LiveRuntimeOptions().PreparationTimeout.TotalSeconds / new LiveRuntimeOptions().PreparationInterval.TotalSeconds) }));
     if (lateProbe == 1)
@@ -471,7 +482,7 @@ sealed class FixtureCapture(byte[] pixels, int width, int height, DateTimeOffset
     public Func<int, byte[]>? PixelsForCall { get; init; }
     public Action<int>? BeforeReturn { get; init; }
     public Action<CaptureStamp>? BeforeCurrentCheck { get; init; }
-    public bool IsBound => true;
+    public bool IsBound { get; set; } = true;
     public bool IsCurrent(CaptureStamp stamp) { BeforeCurrentCheck?.Invoke(stamp); lock (_sync) return stamp == _current && stamp.Generation == _generation; }
     public ValueTask<ClientCaptureResult> CaptureAsync(CancellationToken cancellationToken)
     {
