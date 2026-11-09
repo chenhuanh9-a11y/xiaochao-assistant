@@ -13,12 +13,15 @@ namespace StarMap.Vision;
 public sealed class SharedStructureFitPipeline : IDisposable
 {
     private readonly ResourceCatalog _resources;
+    private readonly Func<ResourceCatalogEntry, ResourceLoadResult<SharedStructureData>> _loadReference;
     private readonly Dictionary<string, PreparedReference> _references = new(StringComparer.Ordinal);
     private readonly Dictionary<string, StructureCatalog> _catalogs = new(StringComparer.Ordinal);
     private bool _disposed;
     private sealed record PreparedReference(StructureGeometry Geometry, FastPrepared? Fast, string CoordinatePackId);
 
-    public SharedStructureFitPipeline(ResourceCatalog resources) => _resources = resources;
+    public SharedStructureFitPipeline(ResourceCatalog resources,
+        Func<ResourceCatalogEntry, ResourceLoadResult<SharedStructureData>>? loadReference = null)
+    { _resources = resources; _loadReference = loadReference ?? resources.LoadSharedStructure; }
 
     /// <summary>
     /// Fits one explicitly selected resource to this frame, from fresh scale estimation.
@@ -78,7 +81,7 @@ public sealed class SharedStructureFitPipeline : IDisposable
         if (entry is null && catalog is not null) entry = _resources.Find(catalog.Mode, catalog.Season, "shared-structure", mapId, floor);
         if (entry is null) return null;
         if (_references.TryGetValue(entry.StableKey, out var cached)) return cached;
-        var loaded = _resources.LoadSharedStructure(entry);
+        var loaded = _loadReference(entry);
         if (loaded.Value is null) { reason = loaded.Error?.Code ?? reason; return null; }
         var geometry = StructureGeometry.Open(loaded.Value);
         FastPrepared? fast = null;

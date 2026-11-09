@@ -59,7 +59,8 @@ public partial class WorkspaceWindow : Window
             message => Status.Text = message, () => settings?.SheetOpacity ?? .55,
             () => runtimePage?.AlignedVisible ?? settings?.SheetVisibilityEnabled ?? true,
             () => runtimePage?.ReadPendingGroupMaterial(), packet => runtimePage?.AcceptGroupMaterialReady(packet) == true,
-            (packet, reason) => runtimePage?.RejectGroupMaterial(packet, reason));
+            (packet, reason) => runtimePage?.RejectGroupMaterial(packet, reason),
+            () => runtimePage?.ReadMaterialToRemember(), packet => runtimePage?.RememberMaterialReady(packet) == true);
         pages["gallery"] = BuildGallery();
         pages["settings"] = BuildSettings();
         pages["help"] = BuildHelp();

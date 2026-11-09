@@ -76,7 +76,7 @@ public sealed partial class LiveRuntime
             {
                 // Current evidence withdrew the provisional group. Warm geometry
                 // cannot preserve an automatic identity on its own.
-                _mapId = null; _identitySource = ""; _trustedFloors.Clear();
+                ResetSteady(); _mapId = null; _identitySource = ""; _trustedFloors.Clear();
                 RevokeDisplay("registered-group-current-evidence-withdrawn"); _alignment = null;
             }
             _reason = _mapId is null ? "candidates-awaiting-confirmation" : "identity-locked-pose-pending";

@@ -3,6 +3,7 @@ using StarMap.Core.Alignment;
 using StarMap.Core.Display;
 using StarMap.Core.Resources;
 using StarMap.Vision;
+using StarMap.Vision.Steady;
 
 namespace StarMap.Runtime;
 
@@ -17,6 +18,7 @@ public sealed class RuntimeRenderPacket
         long generation, long epoch)
     { Material = material; Stamp = frame.Stamp; Client = frame.Context; Authorization = authorization; Generation = generation; Epoch = epoch; }
     public PreparedDisplayLayer Material { get; }
+    public string MaterialToken { get; } = Guid.NewGuid().ToString("N");
     public CaptureStamp Stamp { get; }
     public string MapId => Authorization.MapId;
     public ClientFrameContext? Client { get; }
@@ -54,10 +56,12 @@ public sealed partial class LiveRuntime
         && render.Stamp == _canonical!.Stamp && ReferenceEquals(render.Authorization, _canonical.Authorization);
 
     private sealed record CanonicalGrant(CaptureStamp Stamp, long Epoch, DisplayAuthorization Authorization,
-        string PackId, DisplayAffine Matrix, SharedStructureData Reference);
+        string PackId, DisplayAffine Matrix, SharedStructureData Reference,
+        SharedStructureData NativeReference, DisplayAffine NativeToClient, SteadyCoverageState? ProposedCoverage);
 
     private sealed record PreparedRuntimeDisplay(DisplaySelectionResult Selection, DisplayMaterialResult Material,
-        DisplayBridgeResult? CanonicalBasis);
+        DisplayBridgeResult? CanonicalBasis, SharedStructureData NativeReference, DisplayAffine NativeToClient,
+        SteadyCoverageState? ProposedCoverage = null);
 
     private PreparedRuntimeDisplay PrepareDisplay(BoundResources bound, ResourceCatalogEntry entry, double[][] matrix,
         SharedStructureData fittedReference, string preferred, CancellationToken token)
@@ -77,7 +81,7 @@ public sealed partial class LiveRuntime
                 "shared-structure", referenceToClient, neutral: true);
             basis = preparer.Prepare(neutral, fittedReference, token).Layer?.Bridge;
         }
-        return new(selection, material, basis);
+        return new(selection, material, basis, fittedReference, referenceToClient);
     }
 
     private static IReadOnlyDictionary<string, object?> ReadResidualEvidence(System.Text.Json.Nodes.JsonNode residual)
@@ -102,7 +106,7 @@ public sealed partial class LiveRuntime
         var entry = bound.Catalog.Find(bound.Passports.Mode, bound.Passports.Season,
             bound.Passports.MapProfiles[pose.MapId], pose.MapId, pose.FloorId);
         if (entry is null) return;
-        var prepared = PrepareDisplay(bound, entry, pose.ToMatrix(), previous.Reference, preferred, token);
+        var prepared = PrepareDisplay(bound, entry, pose.ToMatrix(), previous.NativeReference, preferred, token);
         lock (_sync)
         {
             RequireCurrent(epoch, token, frame, bound);
@@ -160,7 +164,8 @@ public sealed partial class LiveRuntime
             alignment.RevokeDisplay("runtime-canonical-commit-rejected");
             return new(alignment, null, null, new(false, false, false, verdict.Reason));
         }
-        var grant = new CanonicalGrant(frame.Stamp, _epoch, authorization, bridge.CanonicalPackId, canonical, bridge.Reference!);
+        var grant = new CanonicalGrant(frame.Stamp, _epoch, authorization, bridge.CanonicalPackId, canonical, bridge.Reference!,
+            prepared.NativeReference, prepared.NativeToClient, prepared.ProposedCoverage);
         var render = layer is null ? null : new RuntimeRenderPacket(layer, frame, authorization, _frameGeneration, _epoch);
         return new(alignment, grant, render, new(layer is not null, true, render?.IsLive == true,
             layer is not null ? "display-prepared" : prepared.Material.Reason, selection.PreferredProfileId,

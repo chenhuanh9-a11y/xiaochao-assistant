@@ -153,6 +153,12 @@ internal sealed class RuntimePage : UserControl
     bool CanAcknowledgeGroupMaterial => !closed && !configuring && !loadingResources
         && session?.Read() is { WorkerActive: false, Busy: false, ContextPending: false, ResourceLocked: false, QueuedCount: 0 };
     internal RuntimeRenderPacket? ReadPendingGroupMaterial() => CanAcknowledgeGroupMaterial ? runtime?.ReadPendingGroupMaterial() : null;
+    internal RuntimeRenderPacket? ReadMaterialToRemember() => CanAcknowledgeGroupMaterial ? runtime?.ReadMaterialToRemember() : null;
+    internal bool RememberMaterialReady(RuntimeRenderPacket packet)
+    {
+        if (!CanAcknowledgeGroupMaterial || !ReferenceEquals(runtime?.ReadMaterialToRemember(), packet)) return false;
+        return session!.DispatchMaintenance(packet.MaterialToken);
+    }
     internal bool AcceptGroupMaterialReady(RuntimeRenderPacket packet)
     {
         if (!CanAcknowledgeGroupMaterial || runtime?.AcceptGroupMaterialReady(packet) != true) return false;
@@ -211,8 +217,9 @@ internal sealed class RuntimePage : UserControl
         SetAlignedVisibility(settings.SheetVisibilityEnabled);
         if (configuring) { status("另一项运行设置正在应用，本次设置尚未应用，请稍后重试。"); return false; }
         var desired = new SessionSelection(settings.GameSeason, settings.GameMode, settings.RouteProfileId);
+        bool steadyEnabled = settings.Get("idvb0059Enabled") is JsonValue steadyValue && steadyValue.TryGetValue<bool>(out var savedSteady) ? savedSteady : true;
         var controls = JsonSerializer.SerializeToElement(new JsonObject { ["floorControlMode"] = settings.FloorControlMode,
-            ["floorControlRegion"] = settings.FloorControlRegion });
+            ["floorControlRegion"] = settings.FloorControlRegion, ["idvb0059Enabled"] = steadyEnabled });
         bool replace = reloadResources || runtime is null || root != resourceRoot || floorSettings is null || !JsonElement.DeepEquals(floorSettings.Value, controls);
         if (replace && !CanReplaceResources)
         { status("设置已保存；请先结束本局并等待识别停止，再点击“保存并应用到测试版”。"); return false; }
@@ -225,7 +232,8 @@ internal sealed class RuntimePage : UserControl
             {
                 // Bind the proposed resource/settings context before replacing
                 // the idle current runtime. A failed bind leaves it available.
-                var nextRuntime = new LiveRuntime(capture, root, new() { FloorSettings = controls, SheetVisibilityEnabled = alignedVisible });
+                var nextRuntime = new LiveRuntime(capture, root, new() { FloorSettings = controls, SheetVisibilityEnabled = alignedVisible,
+                    Idvb0059Enabled = steadyEnabled });
                 var nextSession = new SessionService(new SynchronizationContextSessionDispatcher(new DispatcherSynchronizationContext(Dispatcher)), nextRuntime);
                 proposedRuntime = nextRuntime; proposedSession = nextSession;
                 bool proposedAccepted = nextSession.Reconfigure(settings.GameMode, settings.RouteProfileId, settings.GameSeason);
@@ -428,6 +436,7 @@ internal sealed class RuntimePage : UserControl
         "context-bound" => "资源已就绪，开始本局不会自动开图或采集。", "round-started" => "请在游戏中打开地图，再读取画面。",
         "entry-neighborhood-candidates" or "candidates-awaiting-confirmation" => "画面尚不能唯一确认地图，可选择候选或手动选图。", "window-binding-changed" => "窗口连接已改变，请重新读取。",
         "map-closed" => "地图已关闭，已确认的地图选择保留。", "cancelled" => "识别已取消。",
+        "idvb0059-steady" => "当前楼层结构已对齐。",
         "map-open-preparation-deadline" => "未在准备时间内读到完整地图，请打开地图并重试。", _ => string.IsNullOrEmpty(reason) ? "" : "当前结果：" + reason };
     static Button Add(Panel panel, string title, RoutedEventHandler action)
     {

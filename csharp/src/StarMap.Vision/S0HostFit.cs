@@ -58,17 +58,20 @@ public sealed partial class S0HostFit : IDisposable
     private readonly SideEntryRanker side;
     private readonly MainEntryRanker main;
     private readonly S0HostFitServices services;
+    private readonly Func<ResourceCatalogEntry, ResourceLoadResult<SharedStructureData>> loadReference;
     private readonly Dictionary<string, Prepared> prepared = new(StringComparer.Ordinal);
     private static readonly System.Text.Json.JsonSerializerOptions DiagnosticJson = new()
     { NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals };
     private bool disposed;
 
-    public S0HostFit(ResourceCatalog resources, EntryPassportCatalog catalog, S0HostFitServices? services = null)
+    public S0HostFit(ResourceCatalog resources, EntryPassportCatalog catalog, S0HostFitServices? services = null,
+        Func<ResourceCatalogEntry, ResourceLoadResult<SharedStructureData>>? loadReference = null)
     {
         if (catalog.Season != "s0" || !string.Equals(Path.TrimEndingDirectorySeparator(resources.RootPath),
             Path.TrimEndingDirectorySeparator(catalog.ResourceRoot), OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
             throw new ArgumentException("S0 Host and entry catalog must use the same S0 resource context.");
         this.resources = resources; this.catalog = catalog; this.services = services ?? new();
+        this.loadReference = loadReference ?? resources.LoadSharedStructure;
         side = new(catalog, resources); main = new(catalog, resources);
     }
 

@@ -86,6 +86,7 @@ public sealed partial class LiveRuntime
             var pending = _pendingGroupMaterial;
             if (_workActive || !PendingGroupCurrent(pending) || !ReferenceEquals(packet, pending!.Commit.Render)) return false;
             _alignment?.Close(reason: "group-member-material-ready");
+            ResetSteady();
             _trustedFloors.Clear();
             _mapId = pending.Plan.MapId; _identitySource = "group-manual"; _heldGroupMember = _mapId;
             _pose = pending.Pose; _trustedFloors[_pose.FloorId] = _pose;

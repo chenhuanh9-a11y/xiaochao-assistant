@@ -16,7 +16,7 @@ public sealed partial class S0HostFit
     {
         reason = "shared-reference-unavailable";
         if (prepared.TryGetValue(target.StableKey, out var found)) return found;
-        var loaded = resources.LoadSharedStructure(target);
+        var loaded = loadReference(target);
         if (loaded.Value is null) return null;
         var geometry = StructureGeometry.Open(loaded.Value);
         try

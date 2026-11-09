@@ -17,7 +17,7 @@ namespace StarMap.Runtime;
 /// state under one lock; heavy capture/vision executes outside that lock and is
 /// admitted by a serial worker. Invalidation never waits for vision or capture.
 /// </summary>
-public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISessionRuntimeProgress
+public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryControl, ISessionRuntimeProgress, ISessionMaintenanceRuntime
 {
     private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
     private static readonly string[] Gaps = ["steady-tracking-fallback-unavailable",
@@ -101,7 +101,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     }
 
     public void InvalidateCapture(string reason = "capture-invalidated")
-    { lock (_sync) { if (_closed) return; _epoch++; RevokeFrame(reason); Publish(); } }
+    { lock (_sync) { if (_closed) return; if (reason == "window-binding-changed") ResetSteady(); _epoch++; RevokeFrame(reason); Publish(); } }
 
     public void InvalidateResources(string reason = "resources-invalidated")
     {
@@ -430,7 +430,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     }
 
     private sealed record PreparedRuntimeFit(ResourceCatalogEntry Entry, JsonObject Result, double[][]? Matrix,
-        PreparedRuntimeDisplay? Display, JsonArray? Stages, JsonArray? Events);
+        PreparedRuntimeDisplay? Display, JsonArray? Stages, JsonArray? Events, JsonObject SteadyDiagnostic);
 
     // Produces a candidate without changing the current identity, pose or pixels.
     // Ordinary fits and a staged group choice consume this same numerical path.
@@ -453,23 +453,39 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 prior = new(owner, epoch, entry, trusted.ToMatrix());
         }
         JsonObject fit; SharedStructureData? source; JsonArray? stages = null, events = null;
+        PreparedSteadyFit? steady = null;
+        JsonObject steadyDiagnostic = new() { ["attempted"] = false, ["reason"] = "steady-disabled" };
         if (bound.StructureCatalog is not null)
         {
-            using var pipeline = new SharedStructureFitPipeline(bound.Catalog);
-            fit = pipeline.Fit(frame, entry, () => Obsolete(epoch, token, captured, bound));
-            source = StructureEvidence.VerifiedPose(fit) ? bound.Catalog.LoadSharedStructure(entry).Value : null;
+            source = bound.LoadReference(entry).Value;
+            if (source is not null)
+                steady = TrySteady(epoch, token, captured, bound, entry, source, frame, preferred, null, out steadyDiagnostic);
+            if (steady is not null) fit = steady.Fit;
+            else
+            {
+                using var pipeline = new SharedStructureFitPipeline(bound.Catalog, bound.LoadReference);
+                fit = pipeline.Fit(frame, entry, () => Obsolete(epoch, token, captured, bound));
+                source = StructureEvidence.VerifiedPose(fit) ? bound.LoadReference(entry).Value : null;
+            }
         }
         else
         {
-            using var host = new S0HostFit(bound.Catalog, bound.Passports);
-            var result = host.Fit(frame, entry, entryCandidate, new() { OwnerScope = owner, Epoch = epoch, PosePrior = prior },
+            var services = new S0HostFitServices(Steady: context =>
+            {
+                steady = TrySteady(epoch, token, captured, bound, entry, context.Reference, frame, preferred,
+                    context.CanonicalPackId, out steadyDiagnostic);
+                return steady?.Fit;
+            });
+            using var host = new S0HostFit(bound.Catalog, bound.Passports, services, bound.LoadReference);
+            var result = host.Fit(frame, entry, entryCandidate, new() { OwnerScope = owner, Epoch = epoch, PosePrior = prior,
+                SteadyRequested = SteadyEnabled },
                 () => Obsolete(epoch, token, captured, bound), token);
             fit = result.Fit; source = result.Reference; stages = result.Stages; events = result.Events;
         }
         bool verified = StructureEvidence.VerifiedPose(fit);
         var matrix = verified ? fit["matrixSourceToClient"]!.Deserialize<double[][]>()! : null;
-        var display = verified && source is not null ? PrepareDisplay(bound, entry, matrix!, source, preferred, token) : null;
-        return new(entry, fit, matrix, display, stages, events);
+        var display = verified && source is not null ? steady?.Display ?? PrepareDisplay(bound, entry, matrix!, source, preferred, token) : null;
+        return new(entry, fit, matrix, display, stages, events, steadyDiagnostic);
     }
 
     private RuntimeOperationResult Fit(SessionRuntimeRequest request, long epoch, CancellationToken token,
@@ -477,7 +493,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     {
         var prepared = PrepareFit(epoch, token, captured, bound, map, floor, frame);
         if (prepared is null) return FailCurrent(request, epoch, "target-floor-resource-unavailable");
-        var (entry, fit, matrix, display, stages, events) = prepared;
+        var (entry, fit, matrix, display, stages, events, steadyDiagnostic) = prepared;
         bool verified = matrix is not null;
         lock (_sync)
         {
@@ -494,7 +510,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             _diagnostics = JsonSerializer.SerializeToElement(new { stage = bound.StructureCatalog is null ? "s0-host-fit" : "shared-fit", identitySource = _identitySource,
                 floor = floorEvidence,
                 nativeReferenceKey = entry.StableKey, priorUsed = stages?.Any(row => row?["stage"]?.ToString() == "fast-prior") == true,
-                fit, stages, events, main }, Json);
+                fit, stages, events, main, steadyAttempt = steadyDiagnostic }, Json);
             Publish();
             return Receipt(request, verified, _reason);
         }
@@ -550,12 +566,12 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
 
     private void LockIdentity(string mapId, string source)
     {
-        if (_mapId != mapId) { _trustedFloors.Clear(); RevokeDisplay("identity-changed"); _alignment = null; }
+        if (_mapId != mapId) { ResetSteady(); _trustedFloors.Clear(); RevokeDisplay("identity-changed"); _alignment = null; }
         if (source is not ("group-default" or "group-manual")) { ClearGroupChoice(); _nativeIdentity = null; }
         _mapId = mapId; _identitySource = source;
     }
     private void ClearIdentity()
-    { ClearGroupChoice(); _mapId = null; _identitySource = ""; _nativeIdentity = null; _trustedFloors.Clear(); _structureSession?.EndRound(); _structureSession = null; _structureTicket = null; _alignment = null; _roundFitOwner = new(); }
+    { ResetSteady(); ClearGroupChoice(); _mapId = null; _identitySource = ""; _nativeIdentity = null; _trustedFloors.Clear(); _structureSession?.EndRound(); _structureSession = null; _structureTicket = null; _alignment = null; _roundFitOwner = new(); }
     private void ClearFloor()
     { _floor = _manualFloor = _observedFloor = null; _manualFloorStarted = null; }
     private void AdvanceOwnedEpoch() { _epoch++; _progressEpoch = _epoch; }
@@ -673,11 +689,35 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     }
     private sealed class BoundResources(ResourceCatalog catalog, EntryPassportCatalog passports, S0IdentityRankPipeline? identity, StructureCatalog? structureCatalog)
     {
+        private readonly object referenceSync = new();
+        private readonly LinkedList<(string Key, SharedStructureData Reference)> references = new();
         public string Id { get; } = Guid.NewGuid().ToString("N");
         public ResourceCatalog Catalog { get; } = catalog;
         public EntryPassportCatalog Passports { get; } = passports;
         public S0IdentityRankPipeline? Identity { get; } = identity;
         public StructureCatalog? StructureCatalog { get; } = structureCatalog;
+        public ResourceLoadResult<SharedStructureData> LoadReference(ResourceCatalogEntry entry)
+        {
+            // Like the original SharedReferenceProvider: declarations belong to
+            // this resource instance, and only six typed references stay hot.
+            if (!Catalog.Entries.Any(row => ReferenceEquals(row, entry))) return Catalog.LoadSharedStructure(entry);
+            lock (referenceSync)
+            {
+                for (var node = references.First; node is not null; node = node.Next)
+                    if (node.Value.Key == entry.StableKey)
+                    {
+                        var hit = node.Value; references.Remove(node); references.AddLast(hit);
+                        return new(hit.Reference, null);
+                    }
+                var loaded = Catalog.LoadSharedStructure(entry);
+                if (loaded.Value is { } reference)
+                {
+                    references.AddLast((entry.StableKey, reference));
+                    if (references.Count > 6) references.RemoveFirst();
+                }
+                return loaded;
+            }
+        }
         public static BoundResources Load(string root, SessionSelection selection)
         {
             var catalog = ResourceCatalog.Load(root);

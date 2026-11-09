@@ -15,6 +15,7 @@ public sealed record LiveRuntimeOptions
     public S1FloorUse S1FloorUse { get; init; } = S1FloorUse.Unavailable;
     public JsonElement? FloorSettings { get; init; }
     public bool SheetVisibilityEnabled { get; init; } = true;
+    public bool Idvb0059Enabled { get; init; } = true;
     public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
 }
 
