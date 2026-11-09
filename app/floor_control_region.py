@@ -170,7 +170,7 @@ def _read_axis(gray: np.ndarray, floors, tiles, origin, size, reason: str) -> di
 
 
 def _vertical_label_evidence(gray, points, bounds, order, selected, origin, size):
-    """Score the whole signed column with stored synthetic glyph exemplars.
+    """Score the whole signed column and measure its actual numeral centers.
 
     A weak glyph can be supported by the other rows and the measured highlight;
     an alternative digit or missing minus cannot be relabelled by the mode.
@@ -179,7 +179,7 @@ def _vertical_label_evidence(gray, points, bounds, order, selected, origin, size
     fw, fh = size
     ox, oy = origin
     tw, th = bounds[2] * fw, bounds[3] * fh
-    evidence = []
+    evidence, measured_points = [], []
     for floor, (cx, cy) in zip(order, points):
         x, y = cx * fw - ox, cy * fh - oy
         x0, x1 = int(x - tw * .35), int(x + tw * .35)
@@ -192,11 +192,15 @@ def _vertical_label_evidence(gray, points, bounds, order, selected, origin, size
         score = match["scores"][floor]
         evidence.append(dict(floor=floor, negative=floor<0,
             digitAspect=match["digitAspect"], score=score))
+        # Fill edges change with exposure; the recognized numeral does not.
+        # Pitch from the fill only proposes the crop. Keep the actual glyph's
+        # center for comparing columns and binding current click geometry.
+        measured_points.append([cx, (oy+y0+match["digitCenterY"])/fh])
     scores = [row["score"] for row in evidence]
     if (min(scores) < .45 or sum(score >= .70 for score in scores) < len(scores)-1
             or float(np.mean(scores)) < .70):
         return None
-    return evidence
+    return evidence, measured_points
 
 
 def _read_vertical(gray, floors, origin, size, reason):
@@ -220,12 +224,14 @@ def _read_vertical(gray, floors, origin, size, reason):
         centers = read.pop("centers")
         before, after = read.pop("left"), read.pop("right")
         points = [[x + w / 2, cy] for cy in centers]
-        evidence = _vertical_label_evidence(gray, points, [x,y,w,h], order,
-                                            read["selectedFloor"], origin, size)
-        if evidence is None:
+        labels = _vertical_label_evidence(gray, points, [x,y,w,h], order,
+                                          read["selectedFloor"], origin, size)
+        if labels is None:
             first_failure = first_failure or _unread("vertical-labels-unverified")
             continue
-        pitch = read.pop("pitch")
+        evidence, points = labels
+        read.pop("pitch")
+        pitch = float(np.mean(np.diff([point[1] for point in points])))
         result = dict(read, controlAxis="vertical", observedOrder=list(order),
                       tileBounds=[x,y,w,h], centerPoints=points, axisPitch=pitch,
                       before=before, after=after, labelEvidence=evidence,
