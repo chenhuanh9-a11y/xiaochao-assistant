@@ -13,6 +13,9 @@ internal sealed class RuntimeOverlayHost : IDisposable
     readonly Action<string> report;
     readonly Func<double> opacity;
     readonly Func<bool> visible;
+    readonly Func<RuntimeRenderPacket?> readPendingMaterial;
+    readonly Func<RuntimeRenderPacket, bool> acceptMaterialReady;
+    readonly Action<RuntimeRenderPacket, string> rejectMaterial;
     readonly WpfAlignedOverlaySurface surface;
     readonly DispatcherTimer timer;
     RuntimeRenderPacket? requested, applied;
@@ -20,15 +23,21 @@ internal sealed class RuntimeOverlayHost : IDisposable
     double appliedOpacity;
     WpfAlignedOverlayTicket? ticket;
     Task? preparing;
+    Task? preparingGroupMaterial;
     bool disposed;
     int captureLeases;
 
     internal RuntimeOverlayHost(Dispatcher dispatcher, Func<RuntimeRenderPacket?> read,
-        WindowsRuntimeCapturePort capture, Action<string> report, Func<double>? opacity = null, Func<bool>? visible = null)
+        WindowsRuntimeCapturePort capture, Action<string> report, Func<double>? opacity = null, Func<bool>? visible = null,
+        Func<RuntimeRenderPacket?>? readPendingMaterial = null, Func<RuntimeRenderPacket, bool>? acceptMaterialReady = null,
+        Action<RuntimeRenderPacket, string>? rejectMaterial = null)
     {
         this.dispatcher = dispatcher; this.read = read; this.capture = capture; this.report = report;
         this.opacity = opacity ?? (() => .55);
         this.visible = visible ?? (() => true);
+        this.readPendingMaterial = readPendingMaterial ?? (() => null);
+        this.acceptMaterialReady = acceptMaterialReady ?? (_ => false);
+        this.rejectMaterial = rejectMaterial ?? ((_, _) => { });
         surface = new(dispatcher);
         capture.AcquireOverlayCaptureLease = SuspendForCapture;
         timer = new(TimeSpan.FromMilliseconds(50), DispatcherPriority.Background, (_, _) => Pulse(), dispatcher);
@@ -41,6 +50,10 @@ internal sealed class RuntimeOverlayHost : IDisposable
     void Pulse()
     {
         if (disposed) return;
+        // Hidden and Recorded material still reaches the real WPF consumer.
+        // Its readiness cannot authorize native display or bypass Session receipt collection.
+        if (preparingGroupMaterial is not { IsCompleted: false } && readPendingMaterial() is { } candidate)
+            preparingGroupMaterial = PrepareGroupMaterial(candidate);
         var packet = read();
         if (packet is null || !Current(packet)) { Withdraw(); return; }
         if (ReferenceEquals(failed, packet)) return;
@@ -52,7 +65,8 @@ internal sealed class RuntimeOverlayHost : IDisposable
             return;
         }
         requested = packet;
-        bool sibling = applied is not null && applied.Stamp == packet.Stamp && applied.Client == packet.Client && surface.HasMaterial;
+        bool sibling = applied is not null && applied.MapId == packet.MapId && applied.Stamp == packet.Stamp
+            && applied.Client == packet.Client && surface.HasMaterial;
         ticket = sibling ? surface.Stage(packet) : surface.Reserve(packet);
         preparing = PrepareAndShow(packet, ticket, desiredOpacity);
     }
@@ -60,6 +74,25 @@ internal sealed class RuntimeOverlayHost : IDisposable
     // The visibility owner calls this synchronously on F11/UI changes; do not
     // leave an already visible HWND until the next timer tick.
     internal void RefreshVisibility() { dispatcher.VerifyAccess(); Pulse(); }
+
+    async Task PrepareGroupMaterial(RuntimeRenderPacket packet)
+    {
+        try
+        {
+            var ready = await Task.Run(() => WpfDisplayMaterialConsumer.PrepareMaterialReady(packet.Material));
+            dispatcher.VerifyAccess();
+            if (disposed || !ReferenceEquals(readPendingMaterial(), packet)) return;
+            if (ready.IsFrozen && acceptMaterialReady(packet)) Pulse();
+        }
+        catch (Exception error)
+        {
+            if (!disposed && ReferenceEquals(readPendingMaterial(), packet))
+            {
+                rejectMaterial(packet, "wpf-material-error:" + error.GetType().Name);
+                report("所选地图素材暂不可用，保留当前选择：" + error.Message);
+            }
+        }
+    }
 
     async Task PrepareAndShow(RuntimeRenderPacket packet, WpfAlignedOverlayTicket ownTicket, double desiredOpacity)
     {

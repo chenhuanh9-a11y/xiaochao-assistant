@@ -18,6 +18,7 @@ public sealed class RuntimeRenderPacket
     { Material = material; Stamp = frame.Stamp; Client = frame.Context; Authorization = authorization; Generation = generation; Epoch = epoch; }
     public PreparedDisplayLayer Material { get; }
     public CaptureStamp Stamp { get; }
+    public string MapId => Authorization.MapId;
     public ClientFrameContext? Client { get; }
     public long Generation { get; }
     internal long Epoch { get; }
@@ -129,10 +130,13 @@ public sealed partial class LiveRuntime
         }
     }
 
-    private void CommitDisplay(PreparedRuntimeDisplay prepared, IReadOnlyDictionary<string, object?> residual,
-        CapturedClientFrame frame, string map, string floor)
+    private sealed record CanonicalDisplayCommit(AlignmentCoreV2? Alignment, CanonicalGrant? Grant,
+        RuntimeRenderPacket? Render, RuntimeDisplayState Display);
+
+    private CanonicalDisplayCommit PrepareCanonicalCommit(PreparedRuntimeDisplay prepared,
+        IReadOnlyDictionary<string, object?> residual, CapturedClientFrame frame, string map, string floor,
+        AlignmentCoreV2? alignment = null)
     {
-        _render = null; _canonical = null;
         var selection = prepared.Selection;
         var layer = prepared.Material.Layer;
         var bridge = prepared.CanonicalBasis;
@@ -140,32 +144,39 @@ public sealed partial class LiveRuntime
             || !residual.TryGetValue("coordinatePackId", out var pack) || pack?.ToString() != bridge.CanonicalPackId
             || !AlignmentObservationEvidence.RenderedProfileResidualIsVerified(residual))
         {
-            _display = new(false, false, false, layer is null ? prepared.Material.Reason : "canonical-fit-basis-mismatch",
-                selection.PreferredProfileId, selection.EffectiveProfileId, selection.DisplayKind);
-            return;
+            return new(alignment, null, null,
+                new(false, false, false, layer is null ? prepared.Material.Reason : "canonical-fit-basis-mismatch",
+                    selection.PreferredProfileId, selection.EffectiveProfileId, selection.DisplayKind));
         }
-        _alignment ??= new(floors: _resources!.Passports.Floors);
-        _alignment.BeginObservation(new(_roundId!), map, floor, _frameGeneration, [frame.Stamp.FrameId, _resources!.Id]);
+        alignment ??= new(floors: _resources!.Passports.Floors);
+        alignment.BeginObservation(new(_roundId!), map, floor, _frameGeneration, [frame.Stamp.FrameId, _resources!.Id]);
         var candidate = new AlignmentCandidate(map, floor, new(canonical.ToArray()), "initial-structure-v2", _frameGeneration,
             currentFrameVerified: true, residualVerified: true, globalResidualVerified: true,
             metadata: new Dictionary<string, object?> { ["routeProfileId"] = "shared-canonical", ["independentFloorAnchor"] = true });
-        var verdict = _alignment.Adjudicate(candidate);
-        var authorization = _alignment.Authorize(verdict);
-        if (authorization is null || !_alignment.Commit(authorization))
+        var verdict = alignment.Adjudicate(candidate);
+        var authorization = alignment.Authorize(verdict);
+        if (authorization is null || !alignment.Commit(authorization))
         {
-            _alignment.RevokeDisplay("runtime-canonical-commit-rejected");
-            _display = new(false, false, false, verdict.Reason);
-            return;
+            alignment.RevokeDisplay("runtime-canonical-commit-rejected");
+            return new(alignment, null, null, new(false, false, false, verdict.Reason));
         }
-        _canonical = new(frame.Stamp, _epoch, authorization, bridge.CanonicalPackId, canonical, bridge.Reference!);
-        _render = layer is null ? null : new(layer, frame, authorization, _frameGeneration, _epoch);
-        _display = new(layer is not null, true, _render?.IsLive == true,
+        var grant = new CanonicalGrant(frame.Stamp, _epoch, authorization, bridge.CanonicalPackId, canonical, bridge.Reference!);
+        var render = layer is null ? null : new RuntimeRenderPacket(layer, frame, authorization, _frameGeneration, _epoch);
+        return new(alignment, grant, render, new(layer is not null, true, render?.IsLive == true,
             layer is not null ? "display-prepared" : prepared.Material.Reason, selection.PreferredProfileId,
-            selection.EffectiveProfileId, selection.DisplayKind);
+            selection.EffectiveProfileId, selection.DisplayKind));
+    }
+
+    private void CommitDisplay(PreparedRuntimeDisplay prepared, IReadOnlyDictionary<string, object?> residual,
+        CapturedClientFrame frame, string map, string floor)
+    {
+        var commit = PrepareCanonicalCommit(prepared, residual, frame, map, floor, _alignment);
+        _alignment = commit.Alignment; _canonical = commit.Grant; _render = commit.Render; _display = commit.Display;
     }
 
     private void RevokeDisplay(string reason)
     {
+        DiscardGroupMaterial(reason);
         _alignment?.Close(reason: reason); _render = null; _canonical = null; _frameGeneration++;
         _display = new(false, false, false, reason);
     }

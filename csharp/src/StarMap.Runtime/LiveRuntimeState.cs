@@ -56,5 +56,6 @@ public sealed record LiveRuntimeState(RuntimeContext Context, bool ResourcesBoun
     public string? MapDisplayName { get; init; }
     public string? IdentityGroupId { get; init; }
     public IReadOnlyList<string> IdentityMemberIds { get; init; } = Array.Empty<string>();
+    public RuntimeGroupChoice GroupChoice { get; init; } = new(0, null, null, null, null, "", "", Array.Empty<RuntimeGroupMember>());
     public RuntimeDisplayState Display { get; init; } = new(false, false, false, "pose-not-verified");
 }

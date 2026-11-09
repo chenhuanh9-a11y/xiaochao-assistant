@@ -57,7 +57,9 @@ public partial class WorkspaceWindow : Window
         pages["home"] = BuildHome();
         runtimeOverlay = new(Dispatcher, () => runtimePage?.ReadRender(), runtimeCapture,
             message => Status.Text = message, () => settings?.SheetOpacity ?? .55,
-            () => runtimePage?.AlignedVisible ?? settings?.SheetVisibilityEnabled ?? true);
+            () => runtimePage?.AlignedVisible ?? settings?.SheetVisibilityEnabled ?? true,
+            () => runtimePage?.ReadPendingGroupMaterial(), packet => runtimePage?.AcceptGroupMaterialReady(packet) == true,
+            (packet, reason) => runtimePage?.RejectGroupMaterial(packet, reason));
         pages["gallery"] = BuildGallery();
         pages["settings"] = BuildSettings();
         pages["help"] = BuildHelp();
@@ -460,7 +462,7 @@ public partial class WorkspaceWindow : Window
     {
         var panel = new StackPanel();
         panel.Children.Add(HeadingText("当前测试版", 20, new Thickness(0, 0, 0, 16)));
-        panel.Children.Add(new TextBlock { Text = "这是完整迁移的进行中版本。资源、设置、当前楼层观察、S0 入口与登记相似组、S1 结构候选、当前帧贴合和显示素材使用 C#，不启动 Python。稳态跟踪、组内选图、完整作者路线交互、账号与在线服务仍在迁移。\n\n窗口绑定、开始本局和采集只有你明确操作才执行。不会自动打开游戏地图或发送按键。\n\n原始资源不会被修改；缺失楼层或坐标信息会显示问题。安装、实机与回退的验证状态单独记录。", TextWrapping = TextWrapping.Wrap, MaxWidth = 650, HorizontalAlignment = HorizontalAlignment.Left, LineHeight = 25 });
+        panel.Children.Add(new TextBlock { Text = "这是完整迁移的进行中版本。资源、设置、当前楼层观察、S0 入口与登记相似组、S1 结构候选、组内成员选择、当前帧贴合和显示素材使用 C#，不启动 Python。稳态跟踪、手动选图浮层、完整作者路线交互、账号与在线服务仍在迁移。\n\n窗口绑定、开始本局和采集只有你明确操作才执行。不会自动打开游戏地图或发送按键。\n\n原始资源不会被修改；缺失楼层或坐标信息会显示问题。安装、实机与回退的验证状态单独记录。", TextWrapping = TextWrapping.Wrap, MaxWidth = 650, HorizontalAlignment = HorizontalAlignment.Left, LineHeight = 25 });
         return panel;
     }
 

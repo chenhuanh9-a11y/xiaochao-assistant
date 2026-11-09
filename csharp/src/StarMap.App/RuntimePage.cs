@@ -24,6 +24,11 @@ internal sealed class RuntimePage : UserControl
     readonly TextBlock candidateCaption = new() { Text = "读取游戏地图后，候选会显示在这里。", TextWrapping = TextWrapping.Wrap, Foreground = Brushes.SlateGray, Margin = new(0, 4, 0, 8) };
     readonly ListBox candidates = new() { MinHeight = 60, MaxHeight = 170, Margin = new(0, 4, 0, 8), Visibility = Visibility.Collapsed };
     readonly ComboBox manualMap = new() { MinWidth = 240, MaxWidth = 620, HorizontalAlignment = HorizontalAlignment.Stretch };
+    readonly ComboBox groupMember = new() { MinWidth = 240, DisplayMemberPath = "Name", SelectedValuePath = "MapId", Margin = new(0, 0, 0, 8) };
+    readonly TextBlock groupChoiceMessage = new() { TextWrapping = TextWrapping.Wrap, Margin = new(0, 0, 0, 8) };
+    readonly StackPanel groupArea = new() { Visibility = Visibility.Collapsed, Margin = new(0, 8, 0, 12) };
+    readonly Button chooseGroupMember;
+    LiveRuntimeState? renderedGroupState;
     readonly ComboBox floor = new() { MinWidth = 130, HorizontalAlignment = HorizontalAlignment.Left, DisplayMemberPath = "Label", SelectedValuePath = "Id" };
     readonly Button start, end, acquire, cancel, previous, next, confirm, pick, applyFloor, toggleVisibility;
     readonly DispatcherTimer renderTimer;
@@ -84,6 +89,15 @@ internal sealed class RuntimePage : UserControl
         previous = Add(choices, "上一候选", (_, _) => Dispatch("previous_candidate"));
         next = Add(choices, "下一候选", (_, _) => Dispatch("next_candidate"));
         confirm = Add(choices, "确认所选地图", (_, _) => Dispatch("confirm_route")); candidateArea.Children.Add(choices);
+        groupArea.Children.Add(groupChoiceMessage); groupArea.Children.Add(groupMember);
+        chooseGroupMember = Add(groupArea, "使用组内地图", (_, _) =>
+        {
+            if (groupMember.SelectedValue is string map && renderedGroupState is { } state)
+                Dispatch("select_group_member", new { mapId = map, groupId = state.IdentityGroupId,
+                    groupGeneration = state.GroupChoice.Generation, cycleId = state.GroupChoice.CycleId, floor = state.Context.FloorId });
+        });
+        chooseGroupMember.Name = "RuntimeChooseGroupMember";
+        candidateArea.Children.Add(groupArea);
         panel.Children.Add(candidateArea);
         var manual = new StackPanel { Margin = new(0, 8, 0, 8) };
         manual.Children.Add(new Label { Content = "地图", Target = manualMap, Padding = new(0), Margin = new(0, 0, 0, 8) });
@@ -136,6 +150,44 @@ internal sealed class RuntimePage : UserControl
         toggleVisibility.Content = AlignedVisible ? "隐藏路线" : "显示路线";
     }
     internal RuntimeRenderPacket? ReadRender() => runtime?.TryReadRender(out var packet) == true ? packet : null;
+    bool CanAcknowledgeGroupMaterial => !closed && !configuring && !loadingResources
+        && session?.Read() is { WorkerActive: false, Busy: false, ContextPending: false, ResourceLocked: false, QueuedCount: 0 };
+    internal RuntimeRenderPacket? ReadPendingGroupMaterial() => CanAcknowledgeGroupMaterial ? runtime?.ReadPendingGroupMaterial() : null;
+    internal bool AcceptGroupMaterialReady(RuntimeRenderPacket packet)
+    {
+        if (!CanAcknowledgeGroupMaterial || runtime?.AcceptGroupMaterialReady(packet) != true) return false;
+        session!.RefreshRuntime(); Render(); return true;
+    }
+    internal void RejectGroupMaterial(RuntimeRenderPacket packet, string reason)
+    {
+        if (runtime?.RejectGroupMaterial(packet, reason) == true) { session?.RefreshRuntime(); Render(); }
+    }
+    internal void RefreshGroupControls()
+    {
+        var state = runtime?.ReadState(); var view = session?.Read();
+        renderedGroupState = state;
+        var members = state?.GroupChoice.Members ?? Array.Empty<RuntimeGroupMember>();
+        groupArea.Visibility = members.Count > 1 || state?.GroupChoice.DesiredMapId is not null ? Visibility.Visible : Visibility.Collapsed;
+        if (!(groupMember.ItemsSource is IReadOnlyList<RuntimeGroupMember> previousMembers) || !previousMembers.SequenceEqual(members))
+        {
+            string? selected = groupMember.SelectedValue as string;
+            groupMember.ItemsSource = members;
+            groupMember.SelectedValue = members.Any(member => member.MapId == selected) ? selected
+                : members.Any(member => member.MapId == state?.GroupChoice.DesiredMapId) ? state?.GroupChoice.DesiredMapId : state?.Context.MapId;
+        }
+        chooseGroupMember.IsEnabled = !closed && !configuring && !loadingResources && view is { WorkerActive: false, Busy: false }
+            && view.Runtime.AvailableCommands.Contains("select_group_member");
+        string MemberName(string? id) => members.FirstOrDefault(member => member.MapId == id)?.Name ?? "所选地图";
+        string phaseMessage = state?.GroupChoice.Status switch
+        {
+            "awaiting-material" => $"正在准备“{MemberName(state.GroupChoice.PendingMapId)}”，完成前保留当前地图。",
+            "awaiting-geometry" => "已保留选择，等待当前楼层定位；当前地图尚未切换。",
+            "confirmed" => $"本局保持“{MemberName(state.GroupChoice.HeldMapId)}”。只有已登记的组内成员会显示在这里。",
+            _ => "这组地图的局部结构相似。可选择组内地图，核对成功后切换。"
+        };
+        groupChoiceMessage.Text = view?.LastReceipt is { Action: "select_group_member", Success: false } failed
+            && !string.IsNullOrEmpty(failed.Message) ? failed.Message + "\n" + phaseMessage : phaseMessage;
+    }
     internal string? ResourceRoot => runtime?.ReadState().ResourcesBound == true ? resourceRoot : null;
     internal SessionView? SessionView => session?.Read();
     internal bool CanReplaceResources => !configuring && !loadingResources && pendingCapture is null
@@ -296,6 +348,7 @@ internal sealed class RuntimePage : UserControl
     void Render()
     {
         if (closed || !IsVisible) return;
+        RefreshGroupControls();
         var view = session?.Read(); var state = runtime?.ReadState();
         resourceCaption.Text = state is { ResourcesBound: true } ? "本局运行资源：" + resourceRoot : "本局运行资源尚未绑定。";
         bool active = state?.RoundActive == true;

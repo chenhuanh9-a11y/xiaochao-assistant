@@ -1,7 +1,5 @@
-using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using OpenCvSharp;
 using StarMap.Core.Session;
 using StarMap.Runtime;
 
@@ -247,6 +245,110 @@ await Run("S0-front-similarity-and-human-A1-consume-real-Host-fit", async () =>
     Save("s0-front-human-A1", state);
 });
 
+await Run("registered-group-choice-retains-predecessor-until-material-ready", async () =>
+{
+    await Ask("end_round");
+    await Ask("set_context", new { season = "s0", mode = "nightmare", profileId = "shared-structure" });
+    await Ask("start_round"); port.Select("batch01-event-000006"); await Ask("capture_now");
+    var before = runtime.ReadState(); runtime.TryReadRender(out var predecessor); int calls = port.Calls;
+    Check(runtime.ReadSnapshot().AvailableCommands.Contains("select_group_member") && before.IdentityMemberIds.Count == 3,
+        "registered members have their own scoped action instead of unrestricted manual confirmation");
+    var invalid = await Ask("select_group_member", GroupPayload("nightmare-31"));
+    var stale = await Ask("select_group_member", new { mapId = "nightmare-12", groupId = before.IdentityGroupId,
+        groupGeneration = before.GroupChoice.Generation + 1, cycleId = before.GroupChoice.CycleId, floor = before.Context.FloorId });
+    Check(!invalid.Receipt.Success && !stale.Receipt.Success && runtime.ReadPendingGroupMaterial() is null
+        && runtime.TryReadRender(out var unchanged) && ReferenceEquals(unchanged, predecessor),
+        "outside-group and stale-scope choices preserve the current member and exact material");
+    var selected = await Ask("select_group_member", GroupPayload("nightmare-12"));
+    var pending = runtime.ReadPendingGroupMaterial();
+    Check(selected.Receipt.Success && pending is { MapId: "nightmare-12" } && runtime.ReadState().Context.MapId == before.Context.MapId
+        && ReferenceEquals(runtime.ReadState().NativePose, before.NativePose)
+        && runtime.TryReadRender(out unchanged) && ReferenceEquals(unchanged, predecessor) && port.Calls == calls,
+        "actual target Host fit stages material without changing predecessor pose pixels or capture");
+    Check(runtime.RejectGroupMaterial(pending!, "recorded-consumer-rejected") && runtime.ReadState().Context.MapId == before.Context.MapId
+        && runtime.ReadState().GroupChoice is { DesiredMapId: "nightmare-12", Status: "awaiting-geometry" }
+        && runtime.TryReadRender(out unchanged) && ReferenceEquals(unchanged, predecessor),
+        "consumer refusal retains the exact predecessor and desired member for retry");
+    await Ask("select_group_member", GroupPayload("nightmare-12"));
+    var nextPending = runtime.ReadPendingGroupMaterial();
+    Check(nextPending is not null && !runtime.AcceptGroupMaterialReady(pending!) && !runtime.RejectGroupMaterial(pending!, "late-refusal")
+        && ReferenceEquals(runtime.ReadPendingGroupMaterial(), nextPending), "late callbacks cannot accept or clear a newer candidate");
+    // Explicit Recorded consumer seam; real WPF material readiness is checked separately.
+    Check(runtime.AcceptGroupMaterialReady(nextPending!) && runtime.ReadState() is { IdentitySource: "group-manual", NativeGeometryVerified: true }
+        && runtime.ReadState().Context.MapId == "nightmare-12" && runtime.ReadState().IdentityMemberIds.SequenceEqual(before.IdentityMemberIds)
+        && runtime.ReadState().GroupChoice is { HeldMapId: "nightmare-12", Status: "confirmed" }
+        && runtime.TryReadRender(out var accepted) && ReferenceEquals(accepted, nextPending) && !accepted!.IsLive,
+        "Recorded material-ready ACK commits target identity pose grant and pixels together without live authority");
+    var expected = JsonNode.Parse(File.ReadAllBytes(Path.Combine(oracle, "batch01-event-000006", "downstream-fit.json")))!["candidates"]!
+        .AsArray().Single(row => row!["mapId"]!.GetValue<string>() == "nightmare-12")!["fit"]!;
+    MatrixEqual(runtime.ReadState().NativePose!.ToMatrix(), expected["matrixSourceToClient"]!, "group choice uses independent original Host geometry");
+    var duplicate = await Ask("select_group_member", GroupPayload("nightmare-12"));
+    Check(duplicate.Receipt is { Success: true, Reason: "already-current" } && runtime.ReadPendingGroupMaterial() is null,
+        "choosing the already held member is idempotent");
+    runtime.TryReadRender(out var heldPredecessor);
+    await Ask("select_group_member", GroupPayload("nightmare-19"));
+    var cancelledTarget = runtime.ReadPendingGroupMaterial();
+    var returned = await Ask("select_group_member", GroupPayload("nightmare-12"));
+    Check(cancelledTarget is not null && returned.Receipt.Success && !runtime.AcceptGroupMaterialReady(cancelledTarget)
+        && runtime.ReadState().GroupChoice is { DesiredMapId: "nightmare-12", HeldMapId: "nightmare-12", PendingMapId: null, Status: "confirmed" }
+        && runtime.TryReadRender(out var held) && ReferenceEquals(held, heldPredecessor),
+        "returning to the held member cancels a pending sibling without replacing current material");
+    await Ask("close_map"); port.Select("batch02-event-000018"); await Ask("capture_now");
+    Check(runtime.ReadState().Context.MapId == "nightmare-12" && runtime.ReadState().Context.FloorId == "2"
+        && runtime.ReadState().GroupChoice.HeldMapId == "nightmare-12" && runtime.ReadState().IdentitySource == "group-manual",
+        "a real other-floor opening keeps the held member even when that floor cannot produce a front-door registered group");
+    port.Select("batch01-event-000006"); await Ask("capture_now"); calls = port.Calls;
+    await Ask("close_map");
+    var waiting = await Ask("select_group_member", GroupPayload("nightmare-19"));
+    Check(waiting.Receipt.Success && runtime.ReadState().Context.MapId == "nightmare-12" && runtime.ReadPendingGroupMaterial() is null
+        && runtime.ReadState().GroupChoice is { DesiredMapId: "nightmare-19", Status: "awaiting-geometry" },
+        "closed-map selection waits without changing committed identity");
+    port.Select("batch01-event-000006"); await Ask("capture_now");
+    var reopened = runtime.ReadPendingGroupMaterial();
+    Check(reopened is { MapId: "nightmare-19" } && runtime.ReadState().Context.MapId == "nightmare-12"
+        && runtime.ReadState().GroupChoice.HeldMapId == "nightmare-12" && port.Calls == calls + 1,
+        "fresh reopening revalidates the group and retries desired geometry while retaining the held member");
+    Check(runtime.AcceptGroupMaterialReady(reopened!) && runtime.ReadState().Context.MapId == "nightmare-19",
+        "retried identity changes only after its own material-ready ACK");
+    await Ask("select_group_member", GroupPayload("nightmare-12"));
+    var beforeAuthor = runtime.ReadPendingGroupMaterial();
+    await Ask("set_context", new { season = "s0", mode = "nightmare", profileId = "custom:unavailable-test" });
+    Check(beforeAuthor is not null && !runtime.AcceptGroupMaterialReady(beforeAuthor) && runtime.ReadState().Context.MapId == "nightmare-19"
+        && runtime.ReadState().GroupChoice.DesiredMapId == "nightmare-12", "author changes revoke only pending material and retain desired and held identity");
+    port.Select("batch01-event-000006"); await Ask("capture_now");
+    Check(runtime.ReadState().Context.MapId == "nightmare-19" && runtime.ReadState().GroupChoice.Status == "awaiting-geometry"
+        && runtime.ReadPendingGroupMaterial() is null, "successful geometry with missing target material cannot commit a member");
+    await Ask("set_context", new { season = "s0", mode = "nightmare", profileId = "shared-structure" });
+    await Ask("select_group_member", GroupPayload("nightmare-12"));
+    var beforeClose = runtime.ReadPendingGroupMaterial();
+    await Ask("close_map");
+    Check(beforeClose is not null && !runtime.AcceptGroupMaterialReady(beforeClose) && !runtime.TryReadRender(out _)
+        && runtime.ReadState().Context.MapId == "nightmare-19", "close revokes materials and rejects delayed ACK while retaining held identity");
+    await Ask("end_round");
+    Check(runtime.ReadState().GroupChoice is { DesiredMapId: null, HeldMapId: null, PendingMapId: null }
+        && runtime.ReadState().IdentityMemberIds.Count == 0, "end round clears desired pending and held group choice");
+    Save("registered-group-member-transactions", runtime.ReadState());
+});
+
+await Run("unconfirmed-desired-member-survives-current-none-evidence", async () =>
+{
+    await Ask("end_round");
+    await Ask("set_context", new { season = "s0", mode = "nightmare", profileId = "shared-structure" });
+    await Ask("start_round"); port.Select("batch01-event-000006"); await Ask("capture_now");
+    await Ask("close_map"); await Ask("select_group_member", GroupPayload("nightmare-12"));
+    port.Select("batch02-event-000018"); await Ask("capture_now");
+    Check(runtime.ReadState().GroupChoice is { DesiredMapId: "nightmare-12", HeldMapId: null, Status: "awaiting-geometry" }
+        && runtime.ReadPendingGroupMaterial() is null && !runtime.TryReadRender(out _),
+        "a current none observation withdraws provisional authority but retains the unconfirmed desired member");
+    port.Select("batch01-event-000006"); await Ask("capture_now");
+    var recovered = runtime.ReadPendingGroupMaterial();
+    Check(recovered is { MapId: "nightmare-12" } && runtime.ReadState().GroupChoice.HeldMapId is null,
+        "the newly verified same registered member set retries the retained choice without inventing a hold");
+    Check(runtime.AcceptGroupMaterialReady(recovered!) && runtime.ReadState().GroupChoice.HeldMapId == "nightmare-12",
+        "recovered desired member still requires its own material-ready ACK");
+    await Ask("end_round");
+});
+
 foreach (string id in new[] { "batch02-event-000053", "batch02-event-000097", "batch02-event-000147" })
 await Run(id + "-automatic-S0-identity-reaches-canonical-material", async () =>
 {
@@ -286,6 +388,12 @@ return failures.Count == 0 ? 0 : 1;
 Task<RuntimeOperationResult> Ask(string action, object? payload = null) => runtime.DispatchAsync(new(action,
     JsonSerializer.SerializeToElement(payload ?? new { }), new(sequence.Issue(), runtime.ReadSnapshot().Context)), CancellationToken.None).AsTask();
 JsonObject Original(string id) => JsonNode.Parse(File.ReadAllBytes(Path.Combine(oracle, id, "recognition.json")))!.AsObject();
+object GroupPayload(string map)
+{
+    var state = runtime.ReadState();
+    return new { mapId = map, groupId = state.IdentityGroupId, groupGeneration = state.GroupChoice.Generation,
+        cycleId = state.GroupChoice.CycleId, floor = state.Context.FloorId };
+}
 string[] Ids(JsonNode? value) => value!.AsArray().Select(v => v!.GetValue<string>()).ToArray();
 void Save(string name, object value) => File.WriteAllText(Path.Combine(output, name + ".json"), JsonSerializer.Serialize(value, new JsonSerializerOptions { WriteIndented = true }));
 void Check(bool condition, string name)
@@ -307,42 +415,5 @@ async Task Run(string name, Func<Task> body)
         Save(name + "-failure", new { state = runtime.ReadState(), error = error.ToString() });
         if (!failures.Contains(error.Message)) failures.Add(name + ": " + error);
         Console.Error.WriteLine(name + ": " + error);
-    }
-}
-
-sealed class RecordedCapture(Dictionary<string, JsonObject> index) : ICapturePort
-{
-    JsonObject? selected; CaptureStamp? current; long generation = 1, sequence;
-    Hold? nextHold;
-    public sealed record Hold(TaskCompletionSource Started, TaskCompletionSource Release);
-    public Hold HoldNext() => nextHold = new(new(TaskCreationOptions.RunContinuationsAsynchronously), new(TaskCreationOptions.RunContinuationsAsynchronously));
-    public int Calls { get; private set; }
-    public bool IsBound => true;
-    public void Select(string id) { selected = index[id]; Advance(); }
-    public void Advance() { generation++; current = null; }
-    public bool IsCurrent(CaptureStamp stamp) => current == stamp && stamp.Generation == generation;
-    public async ValueTask<ClientCaptureResult> CaptureAsync(CancellationToken cancellation)
-    {
-        cancellation.ThrowIfCancellationRequested(); Calls++;
-        if (nextHold is { } hold)
-        {
-            nextHold = null; hold.Started.TrySetResult();
-            await hold.Release.Task.WaitAsync(cancellation);
-        }
-        var sample = selected ?? throw new InvalidOperationException("No recorded input selected.");
-        var captured = DateTimeOffset.Parse(sample["capturedAt"]!.GetValue<string>());
-        if (captured < new DateTimeOffset(2026, 11, 5, 0, 0, 0, TimeSpan.Zero)) throw new InvalidDataException("Old UI capture rejected.");
-        using var bgr = Cv2.ImDecode(File.ReadAllBytes(sample["image"]!.GetValue<string>()), ImreadModes.Color);
-        using var bgra = new Mat(); Cv2.CvtColor(bgr, bgra, ColorConversionCodes.BGR2BGRA);
-        int width = bgra.Cols, height = bgra.Rows, stride = checked(width * 4);
-        var pixels = new byte[checked(stride * height)];
-        for (int row = 0; row < height; row++) Marshal.Copy(bgra.Ptr(row), pixels, row * stride, stride);
-        var geometry = sample["physicalClient"]!;
-        if (geometry["Width"]!.GetValue<int>() != width || geometry["Height"]!.GetValue<int>() != height)
-            throw new InvalidDataException("Recorded physical client disagrees with actual PNG.");
-        current = new("recorded-only", generation, "recorded-frame-" + ++sequence);
-        return new ClientCaptureResult(new(pixels, width, height, stride, current, captured,
-            new(CaptureEvidenceKind.RecordedClient, new(geometry["Left"]!.GetValue<int>(), geometry["Top"]!.GetValue<int>(),
-                width, height, geometry["Dpi"]!.GetValue<uint>()), "preserved-client-png")));
     }
 }

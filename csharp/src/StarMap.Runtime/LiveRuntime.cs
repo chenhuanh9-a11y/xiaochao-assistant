@@ -23,8 +23,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     private static readonly string[] Gaps = ["steady-tracking-fallback-unavailable",
         "automatic-map-open-recovery-unavailable",
         "locked-canvas-floor-reuse-unavailable", "similarity-group-competition-unavailable",
-        "established-condition-inventory-review-unavailable", "established-round-layer-group-fit-unavailable",
-        "registered-group-member-selection-unavailable"];
+        "established-condition-inventory-review-unavailable", "established-round-layer-group-fit-unavailable"];
     private readonly object _sync = new();
     private readonly SemaphoreSlim _worker = new(1, 1);
     private readonly ICapturePort _capture;
@@ -153,7 +152,11 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         {
             lock (_sync)
                 if (!_closed && _operation == operation && _progressRequest == request.Context)
-                { _epoch++; RevokeFrame("cancelled"); Publish(); }
+                {
+                    if (request.Action == "select_group_member") DiscardGroupMaterial("group-choice-cancelled");
+                    else { _epoch++; RevokeFrame("cancelled"); }
+                    Publish();
+                }
         });
         try
         {
@@ -203,6 +206,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 "map" => IsMapOpen() ? CloseMap(request) : await CaptureAndSolve(request, epoch, cancellationToken).ConfigureAwait(false),
                 "capture_now" => await CaptureAndSolve(request, epoch, cancellationToken).ConfigureAwait(false),
                 "confirm_route" => ConfirmMap(request, epoch, cancellationToken),
+                "select_group_member" => SelectGroupMember(request, epoch, cancellationToken),
                 "select_candidate" or "previous_candidate" or "next_candidate" => SelectCandidate(request),
                 "set_floor" or "cycle_floor" => await SetFloor(request, epoch, cancellationToken).ConfigureAwait(false),
                 "reselect_map" => ReselectMap(request),
@@ -244,6 +248,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 AdvanceOwnedEpoch(); RevokeFrame("context-bound"); ClearIdentity(); ClearFloor();
                 _resources = bound; _resourceRoot = root;
             }
+            if (desired.ProfileId != _selection.ProfileId) DiscardGroupMaterial("group-author-preference-changed");
             _selection = desired; _reason = "context-bound"; Publish();
         }
         if (!reload) RefreshDisplayPreference(epoch, token, desired.ProfileId);
@@ -299,7 +304,9 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             if (!_roundActive) return Receipt(request, false, "start-round-before-capture");
             if (_resources is null) return Receipt(request, false, "resources-not-bound");
             if (!_capture.IsBound) return Receipt(request, false, "capture-not-bound");
-            bound = _resources; RevokeFrame("map-open-preparing"); _workActive = true; Publish();
+            bound = _resources;
+            if (!_mapOpen) _mapCycle++;
+            RevokeFrame("map-open-preparing"); _workActive = true; Publish();
         }
         var started = _options.TimeProvider.GetTimestamp();
         var limit = _options.PreparationTimeout;
@@ -388,6 +395,8 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         if (floor is null) return Receipt(request, false, "current-floor-unavailable");
         using var current = ToBgr(captured);
         bool reviewGroup;
+        // A confirmed manual member is durable across floors and side openings.
+        // Only the automatic group's provisional reference re-enters discovery.
         lock (_sync) reviewGroup = _identitySource == "group-default";
         if (map is null || reviewGroup)
         {
@@ -396,7 +405,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             map = RankS0(epoch, token, captured, bound, floor, current, preparation);
         }
         if (map is null) return Receipt(request, false, "candidates-awaiting-confirmation");
-        return Fit(request, epoch, token, captured, bound, map, floor, current);
+        return RetryDesiredGroupChoice(request, epoch, token, Fit(request, epoch, token, captured, bound, map, floor, current));
     }
 
     private RuntimeOperationResult ConfirmMap(SessionRuntimeRequest request, long epoch, CancellationToken token)
@@ -420,13 +429,18 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         return Fit(request, epoch, token, captured, bound, map, floor, frame);
     }
 
-    private RuntimeOperationResult Fit(SessionRuntimeRequest request, long epoch, CancellationToken token,
+    private sealed record PreparedRuntimeFit(ResourceCatalogEntry Entry, JsonObject Result, double[][]? Matrix,
+        PreparedRuntimeDisplay? Display, JsonArray? Stages, JsonArray? Events);
+
+    // Produces a candidate without changing the current identity, pose or pixels.
+    // Ordinary fits and a staged group choice consume this same numerical path.
+    private PreparedRuntimeFit? PrepareFit(long epoch, CancellationToken token,
         CapturedClientFrame captured, BoundResources bound, string map, string floor, Mat frame)
     {
         CheckCurrent(epoch, token, captured, bound);
         var profile = bound.Passports.MapProfiles[map];
         var entry = bound.Catalog.Find(bound.Passports.Mode, bound.Passports.Season, profile, map, floor);
-        if (entry is null) return FailCurrent(request, epoch, "target-floor-resource-unavailable");
+        if (entry is null) return null;
         JsonObject? entryCandidate; S0HostPosePrior? prior = null; object owner; string preferred;
         lock (_sync)
         {
@@ -455,6 +469,16 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         bool verified = StructureEvidence.VerifiedPose(fit);
         var matrix = verified ? fit["matrixSourceToClient"]!.Deserialize<double[][]>()! : null;
         var display = verified && source is not null ? PrepareDisplay(bound, entry, matrix!, source, preferred, token) : null;
+        return new(entry, fit, matrix, display, stages, events);
+    }
+
+    private RuntimeOperationResult Fit(SessionRuntimeRequest request, long epoch, CancellationToken token,
+        CapturedClientFrame captured, BoundResources bound, string map, string floor, Mat frame)
+    {
+        var prepared = PrepareFit(epoch, token, captured, bound, map, floor, frame);
+        if (prepared is null) return FailCurrent(request, epoch, "target-floor-resource-unavailable");
+        var (entry, fit, matrix, display, stages, events) = prepared;
+        bool verified = matrix is not null;
         lock (_sync)
         {
             RequireCurrent(epoch, token, captured, bound);
@@ -527,11 +551,11 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     private void LockIdentity(string mapId, string source)
     {
         if (_mapId != mapId) { _trustedFloors.Clear(); RevokeDisplay("identity-changed"); _alignment = null; }
-        if (source != "group-default") _nativeIdentity = null;
+        if (source is not ("group-default" or "group-manual")) { ClearGroupChoice(); _nativeIdentity = null; }
         _mapId = mapId; _identitySource = source;
     }
     private void ClearIdentity()
-    { _mapId = null; _identitySource = ""; _nativeIdentity = null; _trustedFloors.Clear(); _structureSession?.EndRound(); _structureSession = null; _structureTicket = null; _alignment = null; _roundFitOwner = new(); }
+    { ClearGroupChoice(); _mapId = null; _identitySource = ""; _nativeIdentity = null; _trustedFloors.Clear(); _structureSession?.EndRound(); _structureSession = null; _structureTicket = null; _alignment = null; _roundFitOwner = new(); }
     private void ClearFloor()
     { _floor = _manualFloor = _observedFloor = null; _manualFloorStarted = null; }
     private void AdvanceOwnedEpoch() { _epoch++; _progressEpoch = _epoch; }
@@ -583,12 +607,12 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             return Receipt(request, false, reason);
         }
     }
-    private RuntimeOperationResult Receipt(SessionRuntimeRequest request, bool success, string reason)
+    private RuntimeOperationResult Receipt(SessionRuntimeRequest request, bool success, string reason, string? message = null)
     {
         lock (_sync)
         {
             var snapshot = ReadSnapshot();
-            return new(new(request.Action, success, request.Context, snapshot.Context, reason, reason), snapshot);
+            return new(new(request.Action, success, request.Context, snapshot.Context, reason, message ?? reason), snapshot);
         }
     }
     private RuntimeContext Context() => new(_selection.Season, _selection.Mode, _selection.ProfileId,
@@ -601,8 +625,8 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         { Closed = _closed, ManualFloor = _manualFloor, ObservedFloor = _observedFloor, Display = _display, AlignedVisible = _alignedVisible,
             IdentityKind = _identitySource == "group-default" ? "group" : _mapId is null ? "unresolved" : "map",
             MapDisplayName = _resources?.Passports.Maps.FirstOrDefault(map => map.MapId == _mapId)?.Name,
-            IdentityGroupId = _identitySource == "group-default" ? _nativeIdentity?.GroupId : null,
-            IdentityMemberIds = _identitySource == "group-default" ? _nativeIdentity!.MemberIds : Array.Empty<string>() };
+            IdentityGroupId = HasRegisteredGroup ? _nativeIdentity!.GroupId : null,
+            IdentityMemberIds = HasRegisteredGroup ? _nativeIdentity!.MemberIds : Array.Empty<string>(), GroupChoice = ReadGroupChoice() };
         _publishedSnapshot = Snapshot(_publishedState);
         _publishedBindingState = _capture.IsBound;
     }
@@ -616,6 +640,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             commands.AddRange(["capture_now", "map"]);
             if (state.MapOpen) commands.Add("cycle_floor");
             if (state.Candidates.Count > 0 && !state.IdentityLocked) commands.AddRange(["select_candidate", "previous_candidate", "next_candidate", "confirm_route"]);
+            if (state.IdentityMemberIds.Count > 1 && state.Context.FloorId is not null) commands.Add("select_group_member");
         }
         if (state.Closed) commands.Clear();
         return new(state.Context, engineConnected: !state.Closed, commands, state.RoundActive,

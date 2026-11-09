@@ -20,7 +20,7 @@ public sealed partial class LiveRuntime
             RequireCurrent(epoch, token, captured, bound);
             previous = _nativeIdentity;
             // A group's display member is not a confirmed unique map.
-            context = pipeline.Context(_roundId!, floor, _identitySource == "group-default" ? null : _mapId);
+            context = pipeline.Context(_roundId!, floor, HasRegisteredGroup ? null : _mapId);
         }
         var started = Stopwatch.GetTimestamp();
         var rank = pipeline.Rank(frame, floor, _options.MainEntryBudget, previous?.Prior(), context, token);
@@ -33,6 +33,15 @@ public sealed partial class LiveRuntime
         lock (_sync)
         {
             RequireCurrent(epoch, token, captured, bound);
+            bool desiredMatches = decision.IsRegisteredGroup && _desiredGroupChoice is { } desired
+                && desired.Round == _roundId && desired.Resource == bound.Id
+                && desired.Members.ToHashSet(StringComparer.Ordinal).SetEquals(decision.NativeState.MemberIds);
+            bool sameGroup = decision.IsRegisteredGroup && (desiredMatches || previous?.RegisteredGroup == true
+                && previous.MemberIds.ToHashSet(StringComparer.Ordinal).SetEquals(decision.NativeState.MemberIds));
+            if (decision.IsRegisteredGroup && !sameGroup) ClearGroupChoice(resetCycle: false);
+            else if (!decision.IsRegisteredGroup) DiscardGroupMaterial("registered-group-not-observed");
+            if (desiredMatches)
+                _desiredGroupChoice = _desiredGroupChoice! with { Group = decision.NativeState.GroupId!, Members = decision.NativeState.MemberIds.ToArray() };
             _nativeIdentity = decision.NativeState;
             _entryCandidates.Clear();
             foreach (var entry in decision.EntryCandidatesByMap)
@@ -59,10 +68,11 @@ public sealed partial class LiveRuntime
                 rankElapsedMs = elapsed, rankBudgetMs = _options.MainEntryBudget.TotalMilliseconds }, Json);
             string? selected = decision.SelectedProvisionalMapId;
             if (decision.IsRegisteredGroup && selected is not null)
-                LockIdentity(selected, "group-default");
+                LockIdentity(sameGroup && _heldGroupMember is not null ? _heldGroupMember : selected,
+                    sameGroup && _heldGroupMember is not null ? "group-manual" : "group-default");
             else if (decision.UniqueHardIdentityCandidate && selected is not null)
                 LockIdentity(selected, "automatic-hard-gate");
-            else if (_identitySource == "group-default")
+            else if (_identitySource is "group-default" or "group-manual")
             {
                 // Current evidence withdrew the provisional group. Warm geometry
                 // cannot preserve an automatic identity on its own.

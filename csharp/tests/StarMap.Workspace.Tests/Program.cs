@@ -146,6 +146,9 @@ internal static class Program
                 "real-window-construction-does-not-start-global-observer");
             Await(VisibilityWorkspaceRegression.Run(output, Check));
             int resourcesOption = Array.IndexOf(args, "--resources");
+            int replayOption = Array.IndexOf(args, "--original-replay");
+            if (resourcesOption >= 0 && replayOption >= 0)
+                Await(GroupChoiceWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption + 1]), Path.GetFullPath(args[replayOption + 1]), output, Check));
             int captureOption = Array.IndexOf(args, "--capture-record");
             if (resourcesOption >= 0 && captureOption >= 0)
                 Await(RuntimeWorkspaceRegression.Run(Path.GetFullPath(args[captureOption + 1]), Path.GetFullPath(args[resourcesOption + 1]), output, Check));
