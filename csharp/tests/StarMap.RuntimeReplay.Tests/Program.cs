@@ -317,7 +317,8 @@ await Run("registered-group-choice-retains-predecessor-until-material-ready", as
         && runtime.ReadState().GroupChoice.DesiredMapId == "nightmare-12", "author changes revoke only pending material and retain desired and held identity");
     port.Select("batch01-event-000006"); await Ask("capture_now");
     Check(runtime.ReadState().Context.MapId == "nightmare-19" && runtime.ReadState().GroupChoice.Status == "awaiting-geometry"
-        && runtime.ReadPendingGroupMaterial() is null, "successful geometry with missing target material cannot commit a member");
+        && runtime.ReadState().GroupChoice.Reason == "custom-display-unavailable" && runtime.ReadPendingGroupMaterial() is null,
+        "successful geometry with missing target material cannot commit a member and reports the actual material failure");
     await Ask("set_context", new { season = "s0", mode = "nightmare", profileId = "shared-structure" });
     await Ask("select_group_member", GroupPayload("nightmare-12"));
     var beforeClose = runtime.ReadPendingGroupMaterial();

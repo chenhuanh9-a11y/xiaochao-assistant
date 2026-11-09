@@ -150,8 +150,10 @@ public sealed partial class LiveRuntime
                 RequireCurrent(epoch, token, captured, bound);
                 if (intent != _groupIntent || !GroupMemberChoicePlanner.IsCurrent(plan, GroupChoiceState(ignorePending: true)))
                     return Receipt(request, false, "group-choice-context-expired");
-                if (prepared?.Matrix is not { } matrix || prepared.Display?.Material.Layer is null)
+                if (prepared?.Matrix is not { } matrix)
                     return GroupChoiceWaiting(request, prepared?.Result["reason"]?.GetValue<string>() ?? "target-material-unavailable");
+                if (prepared.Display?.Material.Layer is null)
+                    return GroupChoiceWaiting(request, prepared.Display?.Material.Reason ?? "target-material-unavailable");
                 // A separate core owns the candidate. Failed preparation cannot revoke the predecessor's grant.
                 var commit = PrepareCanonicalCommit(prepared.Display,
                     ReadResidualEvidence(prepared.Result["selectedRouteCurrentFrameResidual"]!), captured, plan.MapId, plan.Scope.Floor);
