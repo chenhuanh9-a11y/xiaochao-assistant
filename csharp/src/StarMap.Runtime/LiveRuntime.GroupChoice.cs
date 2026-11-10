@@ -143,6 +143,8 @@ public sealed partial class LiveRuntime
         {
             using var frame = ToBgr(captured);
             var prepared = PrepareFit(epoch, token, captured, bound, plan.MapId, plan.Scope!.Floor, frame);
+            if(prepared?.Display is { } display && prepared.Matrix is not null)
+                prepared=prepared with { Display=display with { Scene=PrepareMapScene(bound,prepared.Entry,display,token) } };
             lock (_sync)
             {
                 RequireCurrent(epoch, token, captured, bound);

@@ -9,18 +9,20 @@ namespace StarMap.Runtime;
 
 /// <summary>Small serializable render status; pixel ownership stays outside snapshots.</summary>
 public sealed record RuntimeDisplayState(bool Prepared, bool CanonicalVerified, bool LiveAuthorized,
-    string Reason, string? PreferredProfile = null, string? EffectiveProfile = null, string? DisplayKind = null);
+    string Reason, string? PreferredProfile = null, string? EffectiveProfile = null, string? DisplayKind = null,
+    int SceneFloors = 0, string? SceneReason = null);
 
 /// <summary>Immutable material plus the exact captured-client and core authorization lifetime.</summary>
 public sealed class RuntimeRenderPacket
 {
     internal RuntimeRenderPacket(PreparedDisplayLayer material, CapturedClientFrame frame, DisplayAuthorization authorization,
-        long generation, long epoch, bool remembersGeometry = true)
-    { Material = material; Stamp = frame.Stamp; Client = frame.Context; Authorization = authorization; Generation = generation; Epoch = epoch; RemembersGeometry = remembersGeometry; }
+        long generation, long epoch, bool remembersGeometry = true, RuntimeSceneFrame? scene = null)
+    { Material = material; Stamp = frame.Stamp; Client = frame.Context; Authorization = authorization; Generation = generation; Epoch = epoch; RemembersGeometry = remembersGeometry; Scene=scene; }
     internal RuntimeRenderPacket(RuntimeRenderPacket previous, CapturedClientFrame frame, DisplayAuthorization authorization,
-        long generation, long epoch) : this(previous.Material, frame, authorization, generation, epoch)
+        long generation, long epoch) : this(previous.Material, frame, authorization, generation, epoch, scene: previous.Scene)
     { MaterialToken = previous.MaterialToken; }
     public PreparedDisplayLayer Material { get; }
+    public RuntimeSceneFrame? Scene { get; }
     public string MaterialToken { get; } = Guid.NewGuid().ToString("N");
     public CaptureStamp Stamp { get; }
     public string MapId => Authorization.MapId;
@@ -67,7 +69,7 @@ public sealed partial class LiveRuntime
 
     private sealed record PreparedRuntimeDisplay(DisplaySelectionResult Selection, DisplayMaterialResult Material,
         DisplayBridgeResult? CanonicalBasis, SharedStructureData NativeReference, DisplayAffine NativeToClient,
-        SteadyCoverageState? ProposedCoverage = null);
+        SteadyCoverageState? ProposedCoverage = null, RuntimeSceneSources? Scene = null);
 
     private PreparedRuntimeDisplay PrepareDisplay(BoundResources bound, ResourceCatalogEntry entry, double[][] matrix,
         SharedStructureData fittedReference, string preferred, CancellationToken token)
@@ -113,6 +115,7 @@ public sealed partial class LiveRuntime
             bound.Passports.MapProfiles[pose.MapId], pose.MapId, pose.FloorId);
         if (entry is null) return false;
         var prepared = PrepareDisplay(bound, entry, pose.ToMatrix(), previous.NativeReference, preferred, token);
+        prepared = prepared with { Scene = PrepareMapScene(bound, entry, prepared, token) };
         lock (_sync)
         {
             RequireCurrent(epoch, token, frame, bound);
@@ -134,9 +137,11 @@ public sealed partial class LiveRuntime
             else
             {
                 _geometryGroup?.Model.RebaseDisplayProfile(prepared.Selection.EffectiveProfileId, pose.FloorId, GroupPixels(layer));
-                _render = new(layer, frame, previous.Authorization, _frameGeneration, _epoch, remembersGeometry: false);
+                _render = new(layer, frame, previous.Authorization, _frameGeneration, _epoch, remembersGeometry: false,
+                    scene: ProjectMapScene(prepared,pose.FloorId));
                 _display = new(true, true, _render.IsLive, "display-prepared", preferred,
-                    prepared.Selection.EffectiveProfileId, prepared.Selection.DisplayKind);
+                    prepared.Selection.EffectiveProfileId, prepared.Selection.DisplayKind,
+                    prepared.Scene?.Floors.Count??0, prepared.Scene is null ? "common-space-source-unavailable" : prepared.Scene.Unavailable.Count==0?"common-scene-ready":"common-scene-partial");
             }
             bool reprojected = _render is not null && ReferenceEquals(_render.Authorization, previous.Authorization);
             if (reprojected) _reason = "route-display-reprojected";
@@ -183,10 +188,12 @@ public sealed partial class LiveRuntime
         var grant = new CanonicalGrant(frame.Stamp, _epoch, authorization, bridge.CanonicalPackId, canonical, bridge.Reference!,
             prepared.NativeReference, prepared.NativeToClient, prepared.ProposedCoverage, stagedGroup);
         SeedGroupCore(alignment, stagedGroup);
-        var render = layer is null ? null : new RuntimeRenderPacket(layer, frame, authorization, _frameGeneration, _epoch);
+        var render = layer is null ? null : new RuntimeRenderPacket(layer, frame, authorization, _frameGeneration, _epoch,
+            scene: ProjectMapScene(prepared,floor));
         return new(alignment, grant, render, new(layer is not null, true, render?.IsLive == true,
             layer is not null ? "display-prepared" : prepared.Material.Reason, selection.PreferredProfileId,
-            selection.EffectiveProfileId, selection.DisplayKind), stagedGroup);
+            selection.EffectiveProfileId, selection.DisplayKind, prepared.Scene?.Floors.Count??0,
+            prepared.Scene is null?"common-space-source-unavailable":prepared.Scene.Unavailable.Count==0?"common-scene-ready":"common-scene-partial"), stagedGroup);
     }
 
     private void ApplyCanonicalCommit(CanonicalDisplayCommit commit)

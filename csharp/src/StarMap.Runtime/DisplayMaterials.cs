@@ -48,11 +48,13 @@ public sealed record DisplayMaterialResult(PreparedDisplayLayer? Layer, string R
 /// <summary>Loads one explicitly selected display layer; author/fallback policy remains with the runtime owner.</summary>
 public sealed class DisplayMaterialPreparer
 {
+    public DisplayMaterialPreparer(int retainedSources = 1)
+    { if(retainedSources<1)throw new ArgumentOutOfRangeException(nameof(retainedSources));capacity=retainedSources; }
     internal const int MaximumPixelBytes = 128 * 1024 * 1024;
     readonly DisplayBridgeResolver resolver = new(new OpenCvDisplayRasterValidator());
     readonly object pixelSync = new();
-    DisplayBridgeResult? previousSource;
-    PreparedDisplayPixels? previousPixels;
+    readonly int capacity;
+    readonly List<(DisplayBridgeResult Source,PreparedDisplayPixels Pixels)> sources=[];
 
     public DisplayMaterialResult Prepare(DisplaySelectionResult selection, SharedStructureData? fittedReference = null,
         CancellationToken cancellation = default)
@@ -95,10 +97,12 @@ public sealed class DisplayMaterialPreparer
                 return new(null, "display-reference-differs-from-fit-reference");
             int length = PixelLength(bridge.Width, bridge.Height);
             var input = bridge;
-            if (previousPixels is { } cached && previousSource is { } cachedSource && SamePixelSource(cachedSource, input))
+            int hit=sources.FindIndex(s=>SamePixelSource(s.Source,input));
+            if (hit>=0)
             {
+                var cached=sources[hit];sources.RemoveAt(hit);sources.Insert(0,cached);
                 cancellation.ThrowIfCancellationRequested();
-                return bridge.IsCurrent() ? new(new(OutputBridge(bridge), cached), "prepared")
+                return bridge.IsCurrent() ? new(new(OutputBridge(bridge), cached.Pixels), "prepared")
                     : new(null, "display-resource-changed-during-material-preparation");
             }
             byte[] pixels;
@@ -159,9 +163,9 @@ public sealed class DisplayMaterialPreparer
             var payload = new PreparedDisplayPixels(bridge.Width, bridge.Height, pixels);
             // Snapshot caller-supplied collection membership; subsequent list
             // edits must not retroactively change the stored pixel recipe.
-            previousSource = input with { Resources = input.Resources?.ToArray(),
+            var retained = input with { Resources = input.Resources?.ToArray(),
                 BaseAtlas = input.BaseAtlas is { } atlas ? atlas with { Entrances = atlas.Entrances.ToArray() } : null };
-            previousPixels = payload;
+            sources.Insert(0,(retained,payload));if(sources.Count>capacity)sources.RemoveAt(sources.Count-1);
             return new(new(bridge, payload), "prepared");
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException

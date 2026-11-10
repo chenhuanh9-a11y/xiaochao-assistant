@@ -1,5 +1,4 @@
 using System.IO;
-using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using StarMap.Runtime;
 
@@ -27,9 +26,8 @@ internal sealed class RuntimeOverlayHost : IDisposable
     double appliedOpacity;
     WpfAlignedOverlayTicket? ticket;
     Task? preparingMaterial;
-    sealed record PreparedMaterial(PreparedDisplayPixels Pixels, BitmapSource Bitmap);
-    PreparedMaterial? preparedMaterial;
-    PreparedDisplayPixels? failedPixels;
+    WpfRuntimeSceneMaterial? preparedMaterial;
+    readonly List<WpfRuntimeSceneMaterial> readyMaterials=[];
     bool disposed;
     int captureLeases;
 
@@ -65,23 +63,23 @@ internal sealed class RuntimeOverlayHost : IDisposable
         // Its readiness cannot authorize native display or bypass Session receipt collection.
         var packet = read();
         var candidate = readPendingMaterial() ?? readMaterialToRemember() ?? packet;
-        if (candidate is not null && !ReferenceEquals(candidate.Material.Pixels, failedPixels))
+        if (candidate is not null && !ReferenceEquals(candidate, failed))
         {
-            if (preparedMaterial is { Bitmap.IsFrozen: true } ready && ReferenceEquals(candidate.Material.Pixels, ready.Pixels))
-                CompleteMaterialReady(candidate);
+            if (readyMaterials.FirstOrDefault(r=>r.Matches(candidate)) is { } ready)
+            { preparedMaterial=ready;CompleteMaterialReady(candidate); }
             else if (preparingMaterial is not { IsCompleted: false }) preparingMaterial = PrepareMaterial(candidate);
         }
         if (packet is null) observeDisplayContext();
         if (packet is null || !Current(packet)) { Withdraw(); return; }
-        if (ReferenceEquals(failed, packet) || ReferenceEquals(failedPixels, packet.Material.Pixels)) return;
+        if (ReferenceEquals(failed, packet)) return;
         double desiredOpacity = opacity();
         if (ReferenceEquals(applied, packet) && surface.IsVisible && appliedOpacity == desiredOpacity) return;
-        if (preparedMaterial is not { Bitmap.IsFrozen: true } source || !ReferenceEquals(source.Pixels, packet.Material.Pixels))
+        if (readyMaterials.FirstOrDefault(r=>r.Matches(packet)) is not { } source)
         { Withdraw(); return; }
         bool sibling = applied is not null && applied.MapId == packet.MapId && applied.Stamp == packet.Stamp
             && applied.Client == packet.Client && surface.HasMaterial;
         ticket = sibling ? surface.Stage(packet) : surface.Reserve(packet);
-        PrepareAndShow(packet, ticket, source.Bitmap, desiredOpacity);
+        PrepareAndShow(packet, ticket, source, desiredOpacity);
     }
 
     // The visibility owner calls this synchronously on F11/UI changes; do not
@@ -92,23 +90,30 @@ internal sealed class RuntimeOverlayHost : IDisposable
     {
         try
         {
-            var ready = await Task.Run(() => WpfDisplayMaterialConsumer.PrepareMaterialReady(packet.Material));
+            var ready = await Task.Run(() => WpfRuntimeSceneMaterial.Prepare(packet));
             dispatcher.VerifyAccess();
-            if (disposed || !ready.IsFrozen) return;
+            if (disposed) return;
             var current = readPendingMaterial() ?? readMaterialToRemember() ?? read();
-            if (current is not null && ReferenceEquals(current.Material.Pixels, packet.Material.Pixels))
-            { preparedMaterial = new(packet.Material.Pixels, ready); CompleteMaterialReady(current); }
+            if (current is not null && ready.Matches(current))
+            {
+                readyMaterials.RemoveAll(r=>ReferenceEquals(r.Owner,ready.Owner));readyMaterials.Insert(0,ready);
+                if(readyMaterials.Count>2)readyMaterials.RemoveAt(2);
+                preparedMaterial=ready;CompleteMaterialReady(current);
+                if(ready.Unavailable.Count>0)report("部分楼层素材暂不可用，当前楼层继续显示。");
+            }
         }
         catch (Exception error)
         {
-            if (!disposed && readPendingMaterial() is { } pending && ReferenceEquals(pending.Material.Pixels, packet.Material.Pixels))
+            if (!disposed && readPendingMaterial() is { } pending
+                && ReferenceEquals(WpfRuntimeSceneMaterial.OwnerOf(pending),WpfRuntimeSceneMaterial.OwnerOf(packet)))
             {
                 rejectMaterial(pending, "wpf-material-error:" + error.GetType().Name);
                 report("所选地图素材暂不可用，保留当前选择：" + error.Message);
             }
-            else if (!disposed && (readMaterialToRemember() ?? read()) is { } current && ReferenceEquals(current.Material.Pixels, packet.Material.Pixels))
+            else if (!disposed && (readMaterialToRemember() ?? read()) is { } current
+                && ReferenceEquals(WpfRuntimeSceneMaterial.OwnerOf(current),WpfRuntimeSceneMaterial.OwnerOf(packet)))
             {
-                failedPixels = packet.Material.Pixels; failed = current; Withdraw();
+                failed = current; Withdraw();
                 report("地图素材暂不可用：" + error.Message);
             }
         }
@@ -124,15 +129,11 @@ internal sealed class RuntimeOverlayHost : IDisposable
             rememberMaterialReady(offered);
     }
 
-    void PrepareAndShow(RuntimeRenderPacket packet, WpfAlignedOverlayTicket ownTicket, BitmapSource source, double desiredOpacity)
+    void PrepareAndShow(RuntimeRenderPacket packet, WpfAlignedOverlayTicket ownTicket, WpfRuntimeSceneMaterial source, double desiredOpacity)
     {
         try
         {
-            var geometry = packet.Client!.Geometry;
-            var affine = packet.Material.Bridge.DisplayToClient ?? throw new InvalidDataException("overlay-display-transform-unavailable");
-            var prepared = WpfAlignedOverlaySurface.PrepareAffine(ownTicket, source,
-                new(affine.M00, affine.M01, affine.M02, affine.M10, affine.M11, affine.M12, 0, 0, 1),
-                new(geometry.Left, geometry.Top, geometry.Width, geometry.Height, geometry.Dpi), desiredOpacity);
+            var prepared = source.Frame(ownTicket,packet,desiredOpacity);
             dispatcher.VerifyAccess();
             if (!Current(packet) || !ReferenceEquals(ticket, ownTicket) || opacity() != desiredOpacity) return;
             if (!surface.TryApply(ownTicket, prepared)) return;
@@ -181,6 +182,6 @@ internal sealed class RuntimeOverlayHost : IDisposable
         dispatcher.VerifyAccess();
         if (disposed) return;
         disposed = true; timer.Stop(); capture.AcquireOverlayCaptureLease = null;
-        Withdraw(); surface.Dispose(); preparedMaterial = null; failedPixels = null;
+        Withdraw(); surface.Dispose(); preparedMaterial = null; readyMaterials.Clear();failed=null;
     }
 }

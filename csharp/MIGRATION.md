@@ -33,7 +33,7 @@
 
 当前原图对照包含 S1 困难全部 62 张（55 张完整候选扫描、7 张闭图或楼层未决），107 条实际 Python 索引报告与 C# 对照，以及完整 Runtime 的 14→3→1 递进。旧版在 261 的整池冲突恢复 14 张；按用户新规则保留 3 张后，307 能继续排除到 106008。它是算法结果，不把用户此前“分不出”改写为独立身份真值。预算定向反例另证明 27,264 个可行假设不可被误作无解；修正后整个观察返回未知，而非用不完整域作永久排除。
 
-以上仍是录制客户区、实际算法与 WPF 素材消费的验证，不是原生游戏/显示延迟验收。预算反例执行的是实际 domain 单元；整帧预算异常的上浮另由源码消费链核对，尚无真实帧触发整帧预算的集成反例。多楼层统一画布且只切显隐、后台并行复核仍缺。CartoVeil 的机制研究另存外部报告，不将其静态实现或语言选择称作星图性能收益。
+以上仍是录制客户区、实际算法与 WPF 素材消费的验证，不是原生游戏/显示延迟验收。预算反例执行的是实际 domain 单元；整帧预算异常的上浮另由源码消费链核对，尚无真实帧触发整帧预算的集成反例。多楼层共同场景的状态如下；后台并行复核仍缺。CartoVeil 的机制研究另存外部报告，不将其静态实现或语言选择称作星图性能收益。
 
 ### 同姿态续权与稳定素材
 
@@ -41,7 +41,15 @@ S0 默认尚无已记忆0059素材、或公开关闭0059时，`refresh_map` 会�
 
 素材就绪、当前帧记忆 proposal 的 accepted/consumed、0059 prior 是否可写分别维护。迟到的同素材回执和排队任务只能绑定最新的已验证 proposal；关闭、换层、换作者素材或本局/资源失效后拒绝旧回执。关闭0059允许消费就绪任务，但不写新 prior，也不清既有 ready cache。
 
-`PreparedDisplayPixels` 与本帧 `PreparedDisplayLayer.Bridge` 分开。每个资源 owner 的 producer 只保留一份像素缓存，核对实际来源、资源快照、静态桥、neutral mask 和 atlas 图标布局；每次仍检查实际文件及本帧拟合参考。新位置/尺度保留 payload，但生成新的 bridge/material/proposal。WPF 按 payload 复用一张 frozen BitmapSource，并给每帧新 surface ticket。运行时 affine 直接设置 Image 的 RenderTransform、opacity；Canvas 保留原图完整范围，客户区在变换后裁剪。CPU/projective `Prepare` 仍可用，不把完整 H 截成 affine；没有 GPU 上传次数或实机端到端提速结论。
+`PreparedDisplayPixels` 与本帧 `PreparedDisplayLayer.Bridge` 分开。资源 owner 的 producer 按楼层数保留最多两套地图的像素缓存，核对实际来源、资源快照、静态桥、neutral mask 和 atlas 图标布局；每次仍检查实际文件及本帧拟合参考。新位置/尺度保留 payload，但生成新的 bridge/material/proposal。WPF 按像素或共同场景 owner 复用 frozen BitmapSource，并给每帧新 surface ticket。运行时 affine 直接设置 Image 的 RenderTransform、opacity；Canvas 保留原图完整范围，客户区在变换后裁剪。CPU/projective `Prepare` 仍可用，不把完整 H 截成 affine；没有 GPU 上传次数或实机端到端提速结论。
+
+### 多楼层共同场景
+
+`CommonFloorSpace` 从实际原生 NPZ 声明读取静态 reference→common 坐标。S0 使用 renderer bounds、60px 静态网格和 product 变换；S1 使用 imageToMapPlaneXZ。它们是资源位置，不是目标楼层测得的 scale seed 或可信 pose；已有校准桥按声明合成。252 层实际 NPZ 均已检查，旧困难图29两层缺少可靠共同空间，继续独立贴合，不补造关系。
+
+`RuntimeSceneSources` 准备同图各层的真实显示来源和各自静态桥，最多保留两套地图/偏好。当前帧仍通过原数值拟合、残差和 Core canonical 提交，由唯一 Runtime owner 派生共同根变换；未将静态关系写进几何组、0059 或其他楼层求解先验。WPF 同时持有各层 Image/source/transform，仅显示当前获许可的层；共同根变动会一起更新隐藏层。关图撤销 ticket 和显示许可，保留不可变素材；退出释放视觉引用。缺失层逐项报告，不能获得显示或学习许可。
+
+`phase15-workspace-scene-04-four-modes` 使用四模式真实录制输入，检查所有楼层常驻、完整客户区像素与既有显示桥一致、Image/source/transform 实例复用，以及 C1 的319→323真实换层。后续同组检查覆盖96/120/144/192 DPI的软件像素。隐藏层坏资源曾导致每次创建新的partial scene，`phase15-workspace-scene-05-partial-before` 保留实际失败；修后继续重试缺失层，但可用来源、静态位置和缺失原因均未变化时复用同一owner，资源修复后再替换。未观察楼层的显隐/共同移动是明确的离屏显示控制，不是游戏拟合成功。常驻准备增加的首次开销、真实游戏切层、GPU 上传和首像素延迟仍未测得；500/300ms目标未据此宣布达到。
 
 原 Qt 的 NoShow RenderControl 软件输出另有41例（37个控制、两张自然求解素材各有 recorded 拒绝与绘图副本）。纯显示副本显式替换授权布尔；原 Runtime 输出和拒绝控制未改，不是实机 Live 验收。四档 DPI 的坐标、独立整数控制已核对；一般采样并非逐像素一致：Qt 软件纯平移会将绘图目标取整，WPF 保留亚像素采样；剪切恰落边界时存在覆盖归属差异。两张真实素材 Qt/WPF 最大通道差为2/4，实际角点差小于0.00005逻辑像素。保留原 H，不作半像素或整数补偿。该软件证据不代表原 GPU、实际显示观感或耗时验收。
 

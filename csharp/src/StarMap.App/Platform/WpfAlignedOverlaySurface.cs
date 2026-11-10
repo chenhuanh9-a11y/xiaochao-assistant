@@ -21,6 +21,8 @@ public sealed class WpfAlignedOverlayTicket
     internal void Revoke() => preparation.Cancel();
 }
 
+internal sealed record WpfSceneLayer(string Floor,BitmapSource Image,WpfOverlayHomography DisplayToCommon);
+
 public sealed class WpfAlignedOverlayPreparedFrame
 {
     internal WpfAlignedOverlayPreparedFrame(WpfAlignedOverlayTicket ticket, WpfOverlayBgra32 clientPixels,
@@ -42,6 +44,10 @@ public sealed class WpfAlignedOverlayPreparedFrame
     public WpfOverlayHomography ImageToClient { get; } = WpfOverlayHomography.Identity;
     public double Opacity { get; }
     public BitmapSource Image { get; }
+    internal object? SceneIdentity { get; init; }
+    internal IReadOnlyList<WpfSceneLayer>? SceneLayers { get; init; }
+    internal string? SelectedFloor { get; init; }
+    internal WpfOverlayHomography CommonToClient { get; init; }
 }
 
 /// <summary>
@@ -143,6 +149,24 @@ public sealed class WpfAlignedOverlaySurface : IDisposable
         _ = h.Inverse(); _ = h.Corners(source.PixelWidth, source.PixelHeight);
         cancellationToken.ThrowIfCancellationRequested(); ticket.PreparationCancellation.ThrowIfCancellationRequested();
         return new(ticket, source, client, h, opacity);
+    }
+
+    internal static WpfAlignedOverlayPreparedFrame PrepareScene(WpfAlignedOverlayTicket ticket,object identity,
+        IReadOnlyList<WpfSceneLayer> layers,string selectedFloor,WpfOverlayHomography commonToClient,
+        WpfOverlayClientGeometry client,double opacity)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        var keys=new HashSet<string>(StringComparer.Ordinal);
+        WpfAlignedOverlayPreparedFrame? current=null;
+        foreach(var layer in layers)
+        {
+            if(!keys.Add(layer.Floor))throw new ArgumentException("Duplicate scene floor.");
+            var checkedFrame=PrepareAffine(ticket,layer.Image,commonToClient*layer.DisplayToCommon,client,opacity);
+            if(layer.Floor==selectedFloor)current=checkedFrame;
+        }
+        if(current is null)throw new ArgumentException("Selected scene floor is unavailable.");
+        return new WpfAlignedOverlayPreparedFrame(ticket,current.Image,client,current.ImageToClient,opacity) {
+            SceneIdentity=identity,SceneLayers=Array.AsReadOnly(layers.ToArray()),SelectedFloor=selectedFloor,CommonToClient=commonToClient };
     }
 
     public bool IsCurrent(WpfAlignedOverlayTicket ticket)
@@ -333,6 +357,7 @@ public sealed class WpfAlignedOverlaySurface : IDisposable
         try { Withdraw(); }
         finally
         {
+            viewport.ReleaseScene();
             window.Dispose();
         }
     }
@@ -344,18 +369,53 @@ internal sealed class WpfAlignedOverlayVisual : Grid
     readonly Image image = new() { Stretch = Stretch.Fill, IsHitTestVisible = false, Focusable = false,
         HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, RenderTransformOrigin = new(0, 0) };
     readonly MatrixTransform transform = new();
+    readonly Canvas canvas=new();
+    readonly Dictionary<string,(Image Image,MatrixTransform Transform,WpfSceneLayer Layer)> floors=new(StringComparer.Ordinal);
+    object? sceneIdentity;
+    bool hasMaterial;
     internal WpfAlignedOverlayVisual()
     {
         Background = Brushes.Transparent; ClipToBounds = true; IsHitTestVisible = false; Focusable = false;
         // Canvas gives the source its full pixel extent before RenderTransform.
         // Grid's constrained child slot can otherwise clip it BEFORE scaling.
         image.RenderTransform = transform;
-        var canvas = new Canvas(); canvas.Children.Add(image); Children.Add(canvas);
+        canvas.Children.Add(image); Children.Add(canvas);
     }
-    internal bool HasMaterial => image.Source is not null;
+    internal bool HasMaterial => hasMaterial;
     internal void Apply(WpfAlignedOverlayPreparedFrame prepared, double actualDpiX, double actualDpiY)
     {
         var size = prepared.Client.DipSize(actualDpiX, actualDpiY);
+        if(prepared.SceneLayers is { } layers)
+        {
+            bool changed=!ReferenceEquals(sceneIdentity,prepared.SceneIdentity);
+            if(changed)
+            {
+                ReleaseScene();sceneIdentity=prepared.SceneIdentity;
+                foreach(var layer in layers)
+                {
+                    var child=new Image { Source=layer.Image,Width=layer.Image.PixelWidth,Height=layer.Image.PixelHeight,
+                        Stretch=Stretch.Fill,IsHitTestVisible=false,Focusable=false,RenderTransformOrigin=new(0,0) };
+                    var matrix=new MatrixTransform();child.RenderTransform=matrix;
+                    RenderOptions.SetBitmapScalingMode(child,BitmapScalingMode.Linear);RenderOptions.SetEdgeMode(child,EdgeMode.Aliased);
+                    floors.Add(layer.Floor,(child,matrix,layer));canvas.Children.Add(child);
+                }
+            }
+            image.Visibility=Visibility.Hidden;
+            foreach(var pair in floors)
+            {
+                var floorMatrix=prepared.CommonToClient*pair.Value.Layer.DisplayToCommon;
+                pair.Value.Transform.Matrix=new(floorMatrix.M00*96/actualDpiX,floorMatrix.M10*96/actualDpiY,floorMatrix.M01*96/actualDpiX,
+                    floorMatrix.M11*96/actualDpiY,floorMatrix.M02*96/actualDpiX,floorMatrix.M12*96/actualDpiY);
+                pair.Value.Image.Opacity=prepared.Opacity;
+                pair.Value.Image.Visibility=pair.Key==prepared.SelectedFloor?Visibility.Visible:Visibility.Hidden;
+            }
+            bool resized=Width!=size.Width||Height!=size.Height;
+            Width=size.Width;Height=size.Height;hasMaterial=true;
+            if(changed||resized){Measure(new(size.Width,size.Height));Arrange(new Rect(0,0,size.Width,size.Height));UpdateLayout();}
+            return;
+        }
+        if(sceneIdentity is not null)ReleaseScene();
+        image.Visibility=Visibility.Visible;hasMaterial=true;
         bool sourceAffine = prepared.ClientPixels is null;
         double imageWidth = sourceAffine ? prepared.Image.PixelWidth : size.Width;
         double imageHeight = sourceAffine ? prepared.Image.PixelHeight : size.Height;
@@ -372,5 +432,11 @@ internal sealed class WpfAlignedOverlayVisual : Grid
         if (layoutChanged)
         { Measure(new Size(size.Width, size.Height)); Arrange(new Rect(0, 0, size.Width, size.Height)); UpdateLayout(); }
     }
-    internal void ClearMaterial() { image.Source = null; image.Opacity = 0; Width = 0; Height = 0; }
+    internal void ClearMaterial()
+    {
+        hasMaterial=false;image.Source=null;image.Opacity=0;Width=0;Height=0;
+        foreach(var floor in floors.Values){floor.Image.Visibility=Visibility.Hidden;floor.Image.Opacity=0;}
+    }
+    internal void ReleaseScene()
+    {ClearMaterial();foreach(var floor in floors.Values)canvas.Children.Remove(floor.Image);floors.Clear();sceneIdentity=null;}
 }

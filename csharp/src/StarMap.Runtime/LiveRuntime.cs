@@ -630,6 +630,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         if (prepared is null) return FailCurrent(request, epoch, "target-floor-resource-unavailable");
         var (entry, fit, matrix, display, stages, events, steadyDiagnostic) = prepared;
         bool verified = matrix is not null;
+        if(verified && display is not null) display=display with { Scene=PrepareMapScene(bound,entry,display,token) };
         lock (_sync)
         {
             RequireCurrent(epoch, token, captured, bound);
@@ -841,7 +842,8 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         public AuthorCoordinateAdapter Coordinates => coordinates.Value;
         public string Id { get; } = Guid.NewGuid().ToString("N");
         public ResourceCatalog Catalog { get; } = catalog;
-        public DisplayMaterialPreparer DisplayMaterials { get; } = new();
+        public DisplayMaterialPreparer DisplayMaterials { get; } = new(Math.Max(1,passports.Floors.Count*2));
+        public List<RuntimeSceneSources> Scenes { get; } = [];
         public EntryPassportCatalog Passports { get; } = passports;
         public S0IdentityRankPipeline? Identity { get; } = identity;
         public StructureCatalog? StructureCatalog { get; } = structureCatalog;

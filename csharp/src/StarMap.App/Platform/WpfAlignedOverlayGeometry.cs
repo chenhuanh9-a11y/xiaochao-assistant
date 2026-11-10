@@ -33,6 +33,10 @@ public readonly record struct WpfOverlayClientGeometry(int Left, int Top, int Wi
 public readonly record struct WpfOverlayHomography(double M00, double M01, double M02,
     double M10, double M11, double M12, double M20, double M21, double M22)
 {
+    public static WpfOverlayHomography operator *(WpfOverlayHomography a,WpfOverlayHomography b) => new(
+        a.M00*b.M00+a.M01*b.M10+a.M02*b.M20,a.M00*b.M01+a.M01*b.M11+a.M02*b.M21,a.M00*b.M02+a.M01*b.M12+a.M02*b.M22,
+        a.M10*b.M00+a.M11*b.M10+a.M12*b.M20,a.M10*b.M01+a.M11*b.M11+a.M12*b.M21,a.M10*b.M02+a.M11*b.M12+a.M12*b.M22,
+        a.M20*b.M00+a.M21*b.M10+a.M22*b.M20,a.M20*b.M01+a.M21*b.M11+a.M22*b.M21,a.M20*b.M02+a.M21*b.M12+a.M22*b.M22);
     public static WpfOverlayHomography Identity => new(1, 0, 0, 0, 1, 0, 0, 0, 1);
     public (double X, double Y) Apply(double x, double y)
     {
