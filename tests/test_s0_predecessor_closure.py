@@ -23,7 +23,7 @@ class PublishedS0ClosureTests(unittest.TestCase):
         self.release = dict(s0BaseFiles={'_internal/' + name: row for name, row in self.resources.items()},
                             s0Predecessors=[self.evidence(self.manifest)])
         item = patch.object(build, 'source_support_assets', return_value={})
-        item.start(); self.addCleanup(item.stop)
+        self.source_support = item.start(); self.addCleanup(item.stop)
 
     @staticmethod
     def evidence(manifest, setup='a'*64, crlf=False):
@@ -125,15 +125,21 @@ class PublishedS0ClosureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'base ownership'):
             self.check(release=release)
 
-    def test_bundled_author_relocation_cannot_satisfy_old_active_ownership(self):
+    def test_retired_bundled_author_selection_cannot_bypass_old_active_ownership(self):
         name = 'assets/zhan10-native/map/floor.png'
         current = dict(self.resources, **{name: self.row('old active author')})
         predecessor = managed.manifest_for_rows(self.manifest['files'] + [dict(path='_internal/' + name, **current[name])],
                                                'published-owned-author-fixture')
         release = copy.deepcopy(self.release); release['s0Predecessors'] = [self.evidence(predecessor)]
-        # Bytes remain in the input, but bundling moves them out of candidate base.
-        with self.assertRaisesRegex(ValueError, 'Unreviewed S0 omission'):
+        before = copy.deepcopy((current, release))
+        # Production no longer supports bundled display defaults. That explicit
+        # selection is rejected before source support or predecessor traversal.
+        with self.assertRaisesRegex(ValueError, 'Production Setup no longer bundles optional author packages'):
             self.check(current, release, bundled_packages=('difficult-zhan10',))
+        self.source_support.assert_not_called()
+        self.assertEqual((current, release), before)
+        # Without the retired option, the original closure rule still applies:
+        # omitted display input cannot satisfy a predecessor's active ownership.
         with self.assertRaisesRegex(ValueError, 'Unreviewed S0 omission'):
             self.check(current, release)  # omitted author images are not base either
 
