@@ -11,6 +11,10 @@ internal static class Program
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true, NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals };
     private static int Main(string[] args)
     {
+        bool difficultOnly = args.Length > 0 && args[0] == "--difficult-only";
+        if (difficultOnly) args = args[1..];
+        if (args.Length == 2 && args[0] == "--structure-index-budget-regressions") return StructureIndexBudgetRegression.Run(args[1]);
+        if (args.Length == 4 && args[0] == "--structure-index-oracle") return StructureIndexOracle.Run(args[1], args[2], args[3]);
         if (args.Length == 4 && args[0] == "--fit-probe") return StructureFitProbe.Run(args[1],args[2],args[3]);
         if (args.Length == 4 && args[0] == "--resource-binding-regressions") return ResourceBindingRegressions.Run(args[1],args[2],args[3]);
         if (args.Length == 3 && args[0] == "--contour-oracle") return StructureFitProbe.ContourOracle(args[1],args[2]);
@@ -41,6 +45,7 @@ internal static class Program
         {
             var item = node!.AsObject();
             if (item["season"] is { } season && season.GetValue<string>() != "s1") continue;
+            if (difficultOnly && item["mode"]!.GetValue<string>() != "difficult") continue;
             inputCount++;
             string id = Text(item, "id"), mode = Text(item, "mode");
             var sourceStatus = fullIndex ? Read(Path.Combine(args[1], id, "status.json")).AsObject() : item;
@@ -124,6 +129,7 @@ internal static class Program
 
     private static void StateContracts()
     {
+        StructurePoolRegression.Run();
         var cat = new StructureCatalog("s1", "difficult", "test-generation", ["a", "b", "c"], ["-1", "-2", "-3", "-4"]);
         using var frame = new Mat(8, 8, MatType.CV_8UC3, Scalar.All(1));
         JsonObject Pose() => new() { ["success"] = true, ["reason"] = "shared-fit", ["matrixSourceToClient"] = new JsonArray(new JsonArray(1d,0d,0d),new JsonArray(0d,1d,0d),new JsonArray(0d,0d,1d)), ["coordinateSpace"] = "shared-structure-to-client",

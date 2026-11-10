@@ -53,8 +53,9 @@ internal static class S1ExplicitDomainWorkspaceRegression
                 "S1-mode-change-uses-the-production-settings-and-Session-reconfiguration-entry");
             page.SetAlignedVisibility(false);
             await Action("start_round"); await Capture("batch02-event-000255");
-            check(!page.State!.IdentityLocked && page.State.Candidates.Count == 5,
-                "S1-difficult-five-compatible-candidates-keep-the-user-undistinguished-identity");
+            check(!page.State!.IdentityLocked && page.State.Context.MapId is null && page.State.RemainingMapIds.Count == 14
+                && page.ReadRender()?.MapId == page.State.ProvisionalMapId && page.State.ProvisionalMapId == "106008",
+                "S1-difficult-first-compatible-material-does-not-exclude-unknown-maps-or-invent-identity");
             // Explicit numerical reference, not a unique identity or user answer.
             await Action("confirm_route", new { mapId = "106008" }); Compare("batch02-event-000255");
             foreach (int number in Enumerable.Range(256, 6))

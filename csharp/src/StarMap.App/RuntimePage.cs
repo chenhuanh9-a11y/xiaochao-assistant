@@ -420,10 +420,14 @@ internal sealed class RuntimePage : UserControl
         summary.Text = $"{state.Context.Season} · {ModeLabel(state.Context.Mode)}";
         roundState.Text = !available ? "资源未就绪" : configuring || loadingResources ? "正在准备" : !active ? "等待开始" : working ? "正在处理" : "本局进行中";
         mapIdentity.Text = state.IdentityKind == "group" ? $"已确认相似组 · {state.IdentityMemberIds.Count} 张地图"
-            : state.IdentityLocked ? $"已锁定 {state.MapDisplayName ?? state.Context.MapId}" : state.Candidates.Count > 0 ? $"{state.Candidates.Count} 个候选待确认" : "尚未确认";
+            : state.IdentityLocked ? $"已锁定 {state.MapDisplayName ?? state.Context.MapId}"
+            : state.ProvisionalMapId is not null ? $"临时参考 {state.MapDisplayName ?? state.ProvisionalMapId} · 剩余 {state.RemainingMapIds.Count} 张"
+            : state.RemainingMapIds.Count > 0 ? $"剩余 {state.RemainingMapIds.Count} 张结构候选"
+            : state.Candidates.Count > 0 ? $"{state.Candidates.Count} 个候选待确认" : "尚未确认";
         currentFloor.Text = state.Context.FloorId is null ? "尚未确认" : FloorLabel(state.Context.FloorId);
         candidateCaption.Text = state.IdentityKind == "group" ? $"当前显示参考：{state.MapDisplayName ?? state.Context.MapId}。组内成员仍待区分，可手动选图。"
             : state.IdentityLocked ? (state.NativeGeometryVerified ? "地图身份已锁定，结构已对齐。" : "地图身份已锁定，等待结构对齐。")
+            : state.ProvisionalMapId is not null ? "临时参考尚未锁定身份。继续探图后自动筛选，换层保留已有范围。"
             : state.Candidates.Count > 0 ? "选择候选后确认地图；也可以展开手动选图。" : "读取游戏地图后，候选会显示在这里。";
         candidates.Visibility = state.Candidates.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         detail.Text = configuring || loadingResources ? "正在读取资源或应用设置，请稍候。"
@@ -483,6 +487,10 @@ internal sealed class RuntimePage : UserControl
         "map-closed" => "地图已关闭，已确认的地图选择保留。", "cancelled" => "识别已取消。",
         "capture-context-changed" or "capture-context-obsolete" => "窗口或显示环境已变化，旧对齐已撤销，请重新开图读取。",
         "idvb0059-steady" => "当前楼层结构已对齐。",
+        "s1-candidate-material-current" => "已贴合临时候选，继续探图筛选地图。",
+        "s1-structure-index-locked" => "结构索引已锁定地图，当前楼层已对齐。",
+        "structure-coordinate-conflict-retained" => "当前结构存在冲突，已保留本局候选，等待更多结构。",
+        "map-excluded-this-round" => "这张地图已在本局排除，请从剩余候选中选择。",
         "map-open-preparation-deadline" => "未在准备时间内读到完整地图，请打开地图并重试。", _ => string.IsNullOrEmpty(reason) ? "" : "当前结果：" + reason };
     static Button Add(Panel panel, string title, RoutedEventHandler action)
     {

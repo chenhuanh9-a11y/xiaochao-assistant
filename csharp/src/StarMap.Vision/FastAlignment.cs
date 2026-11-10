@@ -174,7 +174,8 @@ public static class FastAlignment
         return best;
     }
 
-    public static List<FastPose> ChainSeeds(IReadOnlyList<FastObservedChain> query, FastPrepared prepared, Func<bool>? cancelled = null)
+    public static List<FastPose> ChainSeeds(IReadOnlyList<FastObservedChain> query, FastPrepared prepared, Func<bool>? cancelled = null,
+        Action? budgetExceeded = null)
     {
         var rows = new List<FastPose>();
         if (prepared.Chains.Length == 0) return rows;
@@ -208,7 +209,7 @@ public static class FastAlignment
                 if (scale >= .03 && scale <= 6 && error <= 4)
                     rows.Add(new(0, scale, [node.Points[1][0] - scale * prepared.Chains[i][1][0], node.Points[1][1] - scale * prepared.Chains[i][1][1]], false));
             }
-            if (rows.Count > 4096) return [];
+            if (rows.Count > 4096) { budgetExceeded?.Invoke(); return []; }
         }
         return rows;
     }
@@ -313,7 +314,7 @@ public static class FastAlignment
 
     // NumPy's contiguous float64 reduction groups eight accumulators and
     // recursively partitions larger blocks; keep tie-breaking losses stable.
-    static double PairwiseSum(double[] values, int start, int count)
+    internal static double PairwiseSum(double[] values, int start, int count)
     {
         if (count < 8) { double sum = -0.0; for (int i = 0; i < count; i++) sum += values[start + i]; return sum; }
         if (count <= 128)

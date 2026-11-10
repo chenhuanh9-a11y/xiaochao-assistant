@@ -50,6 +50,8 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     private object _roundFitOwner = new();
     private int _selected = -1;
     private StructureEvidenceSession? _structureSession;
+    private StarMap.Core.Selection.StructureCandidatePool? _structurePool;
+    private string _recognitionPath = "ordinary";
     private NativeSimilarityState? _nativeIdentity;
     private ObservationTicket? _structureTicket;
     private JsonElement _diagnostics = JsonSerializer.SerializeToElement(new { });
@@ -125,7 +127,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         lock (_sync)
         {
             if (_closed) return;
-            _epoch++; RevokeFrame(reason); _resources = null; _roundActive = false; _roundId = null;
+            _epoch++; RevokeFrame(reason); _resources = null; _roundActive = false; _roundId = null; _structurePool = null;
             ClearIdentity(); ClearFloor(); Publish();
         }
     }
@@ -150,7 +152,8 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         {
             if (_closed) return;
             _closed = true; _epoch++; RevokeFrame("runtime-closed"); ClearIdentity();
-            _roundActive = false; _roundId = null; ClearFloor(); _resources = null; Publish();
+            _roundActive = false; _roundId = null; _structurePool = null; ClearFloor(); _resources = null;
+            if (_worker.CurrentCount > 0) DisposeStructureIndex(); Publish();
         }
     }
 
@@ -204,6 +207,15 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         }
         finally
         {
+            ReleaseRuntimeWorker();
+        }
+    }
+
+    private void ReleaseRuntimeWorker()
+    {
+        lock (_sync)
+        {
+            if (_closed) DisposeStructureIndex();
             _worker.Release();
         }
     }
@@ -302,6 +314,10 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 _roundActive = true; _roundId = Guid.NewGuid().ToString("N");
                 _probeMisses = 0;
                 _structureSession = _resources.StructureCatalog is { } catalog ? new(catalog, _roundId) : null;
+                _structurePool = _resources.StructureCatalog is { } structure
+                    ? new(_roundId, structure.ResourceKey, structure.MapIds) : null;
+                _recognitionPath = "ordinary";
+                _structureIndexEntered = false;
             }
             _reason = "round-started"; Publish(); return Receipt(request, true, _reason);
         }
@@ -312,7 +328,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         lock (_sync)
         {
             AdvanceOwnedEpoch(); RevokeFrame("round-ended"); ClearIdentity(); _roundActive = false;
-            _roundId = null; ClearFloor(); Publish(); return Receipt(request, true, _reason);
+            _roundId = null; _structurePool = null; ClearFloor(); Publish(); return Receipt(request, true, _reason);
         }
     }
 
@@ -499,7 +515,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         // Original Runtime re-enters identity ranking only when no map is
         // selected. A provisional group display member also owns this slot;
         // reopening with less structure must not restart discovery implicitly.
-        if (map is null)
+        if (map is null || IsStructureProvisional)
         {
             if (bound.StructureCatalog is not null)
                 return ScanStructure(request, epoch, token, captured, bound, floor, current, preparation);
@@ -528,6 +544,8 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             bound = _resources;
             map = Text(request.Payload, "mapId") ?? (_selected >= 0 && _selected < _candidates.Length ? _candidates[_selected].MapId : "");
             if (!bound.Passports.MapProfiles.ContainsKey(map)) return Receipt(request, false, "invalid-manual-map");
+            if (_structurePool is { } pool && !pool.Remaining.Contains(map))
+                return Receipt(request, false, "map-excluded-this-round");
             LockIdentity(map, "manual");
             // Identity commits before any preparation/fit, and survives fit failure.
             RevokeDisplay("identity-confirmed-pose-pending"); _pose = null; _reason = "identity-locked-pose-pending";
@@ -566,7 +584,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             // client_live_runtime._solve_observation calls the S1 Host with
             // explicit full-client bounds; that path does not request steady.
             steadyDiagnostic["reason"] = "explicit-domain-independent-fit";
-            using var pipeline = new SharedStructureFitPipeline(bound.Catalog, bound.LoadReference);
+            var pipeline = GetStructureFits(bound);
             fit = pipeline.Fit(frame, entry, () => Obsolete(epoch, token, captured, bound));
             source = StructureEvidence.VerifiedPose(fit) ? bound.LoadReference(entry).Value : null;
         }
@@ -595,9 +613,9 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     }
 
     private RuntimeOperationResult Fit(SessionRuntimeRequest request, long epoch, CancellationToken token,
-        CapturedClientFrame captured, BoundResources bound, string map, string floor, Mat frame)
+        CapturedClientFrame captured, BoundResources bound, string map, string floor, Mat frame, PreparedRuntimeFit? preparedFit = null)
     {
-        var prepared = PrepareFit(epoch, token, captured, bound, map, floor, frame);
+        var prepared = preparedFit ?? PrepareFit(epoch, token, captured, bound, map, floor, frame);
         if (prepared is null) return FailCurrent(request, epoch, "target-floor-resource-unavailable");
         var (entry, fit, matrix, display, stages, events, steadyDiagnostic) = prepared;
         bool verified = matrix is not null;
@@ -678,10 +696,10 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     {
         if (_mapId != mapId) { ResetSteady(); _geometryGroup = null; RevokeDisplay("identity-changed"); _alignment = null; }
         if (source is not ("group-default" or "group-manual")) { ClearGroupChoice(); _nativeIdentity = null; }
-        _mapId = mapId; _identitySource = source;
+        _mapId = mapId; _s1ProvisionalMapId = null; _identitySource = source;
     }
     private void ClearIdentity()
-    { ResetSteady(); _geometryGroup = null; ClearGroupChoice(); _mapId = null; _identitySource = ""; _nativeIdentity = null; _structureSession?.EndRound(); _structureSession = null; _structureTicket = null; _alignment = null; _roundFitOwner = new(); }
+    { ResetSteady(); _geometryGroup = null; ClearGroupChoice(); _mapId = null; _s1ProvisionalMapId = null; _identitySource = ""; _nativeIdentity = null; _structureSession?.EndRound(); _structureSession = null; _structureTicket = null; _alignment = null; _roundFitOwner = new(); }
     private void ClearFloor()
     { _floor = _manualFloor = _observedFloor = null; _manualFloorStarted = null; }
     private void AdvanceOwnedEpoch() { _epoch++; _progressEpoch = _epoch; }
@@ -747,13 +765,16 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     private void Publish()
     {
         _publishedState = new(Context(), _resources is not null, _roundActive, _mapOpen, _workActive,
-            _mapId is not null, _identitySource, _pose is not null, _pose, Array.AsReadOnly(_candidates.ToArray()), _selected,
+            _mapId is not null && !IsStructureProvisional, _identitySource, _pose is not null, _pose, Array.AsReadOnly(_candidates.ToArray()), _selected,
             _reason, _diagnostics.Clone(), Array.AsReadOnly(Gaps))
         { Closed = _closed, ManualFloor = _manualFloor, ObservedFloor = _observedFloor, Display = _display, AlignedVisible = _alignedVisible,
             MapOpenRecovery = RecoveryStatus(),
+            RemainingMapIds = _structurePool?.Remaining ?? Array.Empty<string>(),
+            EliminatedMapIds = _structurePool?.Eliminated ?? Array.Empty<string>(), RecognitionPath = _recognitionPath,
+            ProvisionalMapId = _s1ProvisionalMapId,
             ProbeMisses = _probeMisses,
-            IdentityKind = _identitySource == "group-default" ? "group" : _mapId is null ? "unresolved" : "map",
-            MapDisplayName = _resources?.Passports.Maps.FirstOrDefault(map => map.MapId == _mapId)?.Name,
+            IdentityKind = _identitySource == "group-default" ? "group" : IsStructureProvisional ? "candidate" : _mapId is null ? "unresolved" : "map",
+            MapDisplayName = _resources?.Passports.Maps.FirstOrDefault(map => map.MapId == EffectiveMapId)?.Name,
             IdentityGroupId = HasRegisteredGroup ? _nativeIdentity!.GroupId : null,
             IdentityMemberIds = HasRegisteredGroup ? _nativeIdentity!.MemberIds : Array.Empty<string>(), GroupChoice = ReadGroupChoice() };
         _publishedSnapshot = Snapshot(_publishedState);

@@ -23,8 +23,20 @@ internal static class MapRecoveryWorkspaceRegression
             page.Dispatch("start_round"); await page.DrainAsync();
             check(!page.IsVisible && timer.IsEnabled && capture.Calls == 0, "recovery-pulse-is-independent-of-page-visibility-and-idle-does-not-capture");
             var consumed = new List<SessionCompletion>();
+            bool recoveryRetiredAtCollection = false;
             var session = (SessionService)typeof(RuntimePage).GetField("session", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(page)!;
-            session.ResultConsumed += consumed.Add;
+            session.ResultConsumed += completion =>
+            {
+                consumed.Add(completion);
+                // This assertion measures recovery, not the next legitimate
+                // passive refresh. Model foreground loss at receipt collection;
+                // keep the actual observer timer running throughout.
+                if (completion is { Action: "recover_map_open", Disposition: "Accepted" })
+                {
+                    recoveryRetiredAtCollection = page.State?.MapOpenRecovery is { Pending: false, Id: null };
+                    capture.Foreground = false;
+                }
+            };
             page.HandleShortcut("map"); await page.DrainAsync();
             check(page.State!.MapOpenRecovery.Pending && page.State.MapOpenRecovery.Remaining == 8,
                 "real-WPF-shortcut-reaches-preparation-and-arms-recovery-through-session");
@@ -36,6 +48,14 @@ internal static class MapRecoveryWorkspaceRegression
                 if (deadline.Elapsed > TimeSpan.FromSeconds(5)) throw new TimeoutException("Hidden recovery did not settle.");
                 await Task.Delay(10);
             }
+            await Task.Delay(250);
+            await File.WriteAllTextAsync(Path.Combine(output, "map-recovery-boundary.json"), JsonSerializer.Serialize(new {
+                preparedCalls, captureCalls = capture.Calls, state = page.State, session = page.SessionView,
+                renderMap = page.ReadRender()?.MapId, consumed, foreground = capture.Foreground, recoveryRetiredAtCollection
+            }, new JsonSerializerOptions { WriteIndented = true }));
+            check(!capture.Foreground && timer.IsEnabled, "recovery-counter-is-observed-after-foreground-loss-with-the-production-timer-still-running");
+            check(recoveryRetiredAtCollection && page.State?.MapOpenRecovery is { Pending: false, Id: null },
+                "successful-recovery-retires-its-ticket-before-foreground-loss-and-keeps-it-retired-after-settlement");
             check(!page.IsVisible && capture.Calls == preparedCalls+1 && page.State!.Context.MapId == "nightmare-04"
                 && page.ReadRender() is { IsLive: false }, "hidden-page-timer-recovers-exactly-one-real-frame-and-publishes-current-canonical-material");
             check(consumed.Count(row => row.Action == "recover_map_open" && row.Disposition == "Accepted") == 1
@@ -46,6 +66,7 @@ internal static class MapRecoveryWorkspaceRegression
                 scope = "Actual hidden WPF page/DispatcherTimer/Session/Runtime and recorded 2026-11-09 PNGs; no Show, native input, capture or game acceptance."
             }, new JsonSerializerOptions { WriteIndented = true }));
             page.HandleShortcut("map"); await page.DrainAsync();
+            capture.Foreground = true;
             capture.Select("batch01-event-000002", invalidateBinding: false);
             page.HandleShortcut("map"); await page.DrainAsync();
             check(page.State!.MapOpenRecovery.Pending, "second-physical-opening-gets-a-new-bounded-ticket");

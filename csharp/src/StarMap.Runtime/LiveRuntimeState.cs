@@ -16,6 +16,7 @@ public sealed record LiveRuntimeOptions
     public JsonElement? FloorSettings { get; init; }
     public bool SheetVisibilityEnabled { get; init; } = true;
     public bool Idvb0059Enabled { get; init; } = true;
+    public string StructureIndexAssetDirectory { get; init; } = Path.Combine(AppContext.BaseDirectory, "s1-private-assets");
     public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
 }
 
@@ -51,6 +52,10 @@ public sealed record LiveRuntimeState(RuntimeContext Context, bool ResourcesBoun
 {
     public MapOpenRecoveryStatus MapOpenRecovery { get; init; } = new(false);
     public int ProbeMisses { get; init; }
+    public IReadOnlyList<string> RemainingMapIds { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> EliminatedMapIds { get; init; } = Array.Empty<string>();
+    public string RecognitionPath { get; init; } = "ordinary";
+    public string? ProvisionalMapId { get; init; }
     public bool Closed { get; init; }
     public string? ManualFloor { get; init; }
     public string? ObservedFloor { get; init; }

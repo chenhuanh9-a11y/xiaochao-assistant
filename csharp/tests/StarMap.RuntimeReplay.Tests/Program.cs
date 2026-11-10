@@ -3,7 +3,7 @@ using System.Text.Json.Nodes;
 using StarMap.Core.Session;
 using StarMap.Runtime;
 
-if (args.Length == 5 && args[0] is "--identity-prior-only" or "--unselected-floor-only" or "--map-recovery-only" or "--map-recovery-late-only" or "--passive-refresh-only" or "--passive-context-only")
+if (args.Length == 5 && args[0] is "--identity-prior-only" or "--unselected-floor-only" or "--map-recovery-only" or "--map-recovery-late-only" or "--passive-refresh-only" or "--passive-context-only" or "--s1-rich-sequence-only")
 {
     string priorOnlyOutput = Path.GetFullPath(args[4]);
     if (Directory.Exists(priorOnlyOutput)) throw new IOException("Preserve previous evidence; use a new output.");
@@ -15,7 +15,9 @@ if (args.Length == 5 && args[0] is "--identity-prior-only" or "--unselected-floo
             priorOnlyChecks.Add(new { name, passed });
             if (!passed) { priorOnlyFailures.Add(name); throw new InvalidOperationException(name); }
         };
-        if (args[0] == "--identity-prior-only")
+        if (args[0] == "--s1-rich-sequence-only")
+            await StructureIndexRuntimeRegression.Run(args[1], args[2], args[3], priorOnlyOutput, priorOnlyCheck);
+        else if (args[0] == "--identity-prior-only")
             await IdentityEntryRuntimeRegression.RunPrior(args[1], args[2], args[3], priorOnlyOutput, priorOnlyCheck);
         else if (args[0] == "--map-recovery-only")
             await MapRecoveryRuntimeRegression.Run(args[1], args[2], args[3], priorOnlyOutput, priorOnlyCheck);
@@ -65,7 +67,7 @@ await Run("S1-single-supported-map-still-needs-human-identity", async () =>
         string id = "batch02-event-" + number.ToString("D6");
         port.Select(id); await Ask("capture_now");
         var current = runtime.ReadState();
-        Check(!current.IdentityLocked && !runtime.TryReadRender(out _), id + " sequence observation cannot guess identity");
+        Check(!current.IdentityLocked && current.Context.MapId is null, id + " sequence observation cannot guess formal identity");
         if (number == 316)
             Check(!current.MapOpen && !current.NativeGeometryVerified, "closed frame in sequence revokes current geometry without inventing floor");
         else
@@ -74,10 +76,11 @@ await Run("S1-single-supported-map-still-needs-human-identity", async () =>
             // the front; a fresh standalone scan has a different row order.
             var expectedOrder = JsonNode.Parse(File.ReadAllBytes(Path.Combine(Path.GetDirectoryName(oracle)!,
                 "s1-sequence-order-python-01.json")))!["cases"]![id]!;
-            Check(current.Candidates.Select(c => c.MapId).SequenceEqual(Ids(expectedOrder["supportedMapIds"]))
-                && current.Diagnostics.GetProperty("report").GetProperty("checkedMapIds").EnumerateArray()
-                    .Select(value => value.GetString()!).SequenceEqual(Ids(expectedOrder["checkedMapIds"])),
-                id + " current support and complete scan order match the original history scheduler");
+            var checkedIds = current.Diagnostics.GetProperty("report").GetProperty("checkedMapIds").EnumerateArray().Select(value => value.GetString()!).ToArray();
+            Check(current.Candidates.All(c => Ids(expectedOrder["supportedMapIds"]).Contains(c.MapId))
+                && checkedIds.Distinct().Count() == checkedIds.Length && checkedIds.All(current.RemainingMapIds.Contains)
+                && checkedIds.Length > 0,
+                id + " early material uses original supported geometry and searches only surviving candidates once");
         }
         Save(id + "-sequence", current);
     }
@@ -86,7 +89,8 @@ await Run("S1-single-supported-map-still-needs-human-identity", async () =>
     Check(state.MapOpen && state.Context.FloorId == "-1", "fresh S1 floor observed in real runtime");
     Check(state.Candidates.Select(c => c.MapId).SequenceEqual(Ids(expected["supportedMapIds"])), "full catalog scan matches original positive candidates");
     Check(state.Candidates.Count == 1 && !state.IdentityLocked && state.Candidates.All(c => !c.IdentityVerified), "one supported candidate does not silently lock identity");
-    Check(!runtime.TryReadRender(out _) && !runtime.ReadSnapshot().LiveAuthorization, "unconfirmed candidate has no display authority");
+    Check(runtime.TryReadRender(out var candidate) && candidate!.MapId == state.ProvisionalMapId && state.Context.MapId is null
+        && !runtime.ReadSnapshot().LiveAuthorization, "provisional candidate has current recorded display authority without formal identity or native live authority");
     Save("s1-single-candidate", state);
 });
 
@@ -211,8 +215,11 @@ await Run("S1-difficult-unknowns-and-similar-candidates-stay-unconfirmed", async
     {
         string id = "batch02-event-" + number.ToString("D6"); port.Select(id);
         await Ask("capture_now"); var state = runtime.ReadState(); var expected = Original(id);
-        Check(state.Candidates.Select(c => c.MapId).SequenceEqual(Ids(expected["supportedMapIds"])), id + " actual positive candidates match original");
-        Check(!state.IdentityLocked && !runtime.TryReadRender(out _), id + " no guessed identity or render");
+        Check(state.Candidates.All(c => Ids(expected["supportedMapIds"]).Contains(c.MapId))
+            && (Ids(expected["supportedMapIds"]).Any() == state.Candidates.Any()), id + " early supported geometry belongs to original full-scan positives");
+        Check(!state.IdentityLocked && state.Context.MapId is null && (!runtime.TryReadRender(out var temporary)
+            || temporary!.MapId == state.ProvisionalMapId && Ids(expected["supportedMapIds"]).Contains(temporary.MapId)),
+            id + " temporary display never becomes guessed formal identity");
         Check(state.Diagnostics.GetProperty("report").GetProperty("excludedMapIds").GetArrayLength() == 0, id + " failed fits remain UNKNOWN");
         Save(id, state);
     }

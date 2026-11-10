@@ -91,7 +91,7 @@ public sealed partial class LiveRuntime
                 _rememberedMaterial = renderToken;
             }
         }
-        finally { _worker.Release(); }
+        finally { ReleaseRuntimeWorker(); }
     }
 
     private PreparedSteadyFit? TrySteady(long epoch, CancellationToken token, CapturedClientFrame captured,

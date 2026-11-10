@@ -6,6 +6,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Content Include="ThirdParty/*" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../../s1-private-assets/*" Link="s1-private-assets/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <ProjectReference Include="../StarMap.Core/StarMap.Core.csproj" />
     <ProjectReference Include="../StarMap.Vision/StarMap.Vision.csproj" />
   </ItemGroup>
