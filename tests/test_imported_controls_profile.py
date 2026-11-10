@@ -298,6 +298,27 @@ class ImportedControlsProfileTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'template-label-count-mismatch'):
             S0ControlsProfile(package.view)
 
+    def test_cached_context_checks_catalog_and_actual_manifest_identity(self):
+        alive = [True]
+        def check_current():
+            if not alive[0]:
+                raise packages.files.ImportRejected('resource-catalog-superseded')
+        package = self.package(guard=check_current)
+        profile = S0ControlsProfile(package.view)
+        self.assertIsNotNone(profile.for_context('s0', 'nightmare'))
+        alive[0] = False
+        with self.assertRaisesRegex(ValueError, 'resource-catalog-superseded'):
+            profile.for_context('s0', 'nightmare')
+
+        package = self.package()
+        profile = S0ControlsProfile(package.view)
+        manifest = package.package_root/'manifest.json'
+        replacement = manifest.with_suffix('.replacement')
+        replacement.write_bytes(manifest.read_bytes())
+        replacement.replace(manifest)
+        with self.assertRaises(ValueError):
+            profile.for_context('s0', 'nightmare')
+
     def test_undeclared_npy_and_stale_catalog_guard_fail_without_fallback(self):
         package = self.package(declared_npy=False)
         with self.assertRaisesRegex(ValueError, 'file-not-declared'):

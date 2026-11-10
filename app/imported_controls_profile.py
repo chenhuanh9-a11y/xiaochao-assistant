@@ -190,6 +190,7 @@ class S0ControlsProfile:
     def __init__(self, view: PackageView):
         if not isinstance(view, PackageView):
             _reject('package-view-required')
+        self._view, self._root = view, view.root
         self.detector_id = DETECTOR_ID
         component = view.component
         declared_s0 = _s0_contexts(component)
@@ -240,9 +241,15 @@ class S0ControlsProfile:
         self.fixed_search_region = fixed
         self.expanded_search_region = expanded
         self.templates = TemplateBank(vectors, label_array, tuple(LABELS), family)
+        self.assert_current()
+
+    def assert_current(self):
+        if self._view.root != self._root:
+            _reject('component-root-changed')
 
     def for_context(self, season, mode):
         """Return the declared S0 contract/order, or None for unsupported data."""
+        self.assert_current()
         if not isinstance(season, str) or not isinstance(mode, str):
             return None
         key = f'{season}:{mode}'

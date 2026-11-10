@@ -419,3 +419,8 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 - 成功构造和 cache 命中共用同一能力报告，`dataReady` 表示数据 engine 已取得，`rankReady`/原 `available` 表示可执行 rank；显式 `qt_rank_ready=False` 不会被普通或 imported factory 的 cache 命中改回 true，也不会保留 live 可用资格。未声明该字段的旧 engine 按原默认处理。首次构造失败、成功后 binding 失效或 imported 当前性校验失败均同步撤销数据/rank/live 资格，写入具体失败类别；恢复后重新取得 engine 可恢复资格，不冻结失败状态。
 - 离线识别的实际 dispatch 在首次和缓存 engine 上均核资格；实时 `_get_engine(require_live=True)` 及 native engine 公开 rank 入口同样拒绝 false，读取数据的 getter 保留。主页在数据就绪但尚无识别资格时说明识别功能未开放，不误报文件损坏或要求重复导入；输入与采集前置保持拒绝。
 - 这些是 engine DTO/资源绑定及采集替身下的真实 factory、offline、runtime、coordinator/native 入口回归，不是 S0 困难默认工厂接入或实帧识别。新负例先复现 6 处失败及 1 处 error，主页另有错误提示反例；独立审阅又复现晚失败残留 live=true，新增 2 项回归修前 3 处失败，覆盖成功→失效→重试恢复与首次构造失败。修后 provider/offline/runtime 99 项、资源反馈/coordinator 61 项分别通过；新测试只加入候选 core，不加入缺少该文件的两个历史 baseline。
+
+### 导入上下文的组件绑定与引用
+
+- S1 原有的 base/reader/root/ref、controls 和楼层合同校验集中为共享数据上下文；S1 保留原错误类别与观测资格，不复制生命周期逻辑。S0 困难的独立适配器复用这些检查，提供 native/legacy 引用与真实 pending native bindings；两种引用不合并成一种 native 资格，不读取旧 author/RGB 磁盘上下文，也不在此接入 rank 或启用入口。
+- S0 控件对象新增当前性检查，缓存合同在 catalog 或同字节 manifest 替换后也会拒绝，不仅在初次读取时校验。定向反例修前未抛失效异常；修后 S0 控件/观测 15 项、共享逻辑提取后的原 S1 上下文 6 项、新困难上下文 4 项通过。困难用完整 30 图微型合成 ZIP、公用 decoder 和真实 SharedReferenceProvider 验证两类引用、实际 manifest 替换失效、跨安装 base 拒绝及返回元数据不回写；这些是数据和组件引用证据，不是完整客户端、默认 S0 困难 factory 或游戏验收。

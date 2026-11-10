@@ -226,6 +226,7 @@ jobs:
                 'test_imported_native_base',
                 'test_imported_s1_native_base', 'test_imported_s1_controls_profile',
                 'test_entry_semantic_capability', 'test_imported_s1_native_context',
+                'test_imported_difficult_native_context',
                 'test_s1_floor_observation', 'test_s1_map_ui_geometry',
                 'test_client_shared_reference_context',
                 'test_client_imported_providers', 'test_client_native_base_provider',
