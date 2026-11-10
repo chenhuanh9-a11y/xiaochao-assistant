@@ -13,11 +13,14 @@ public sealed record FloorChoice(string Id, string Name);
 /// <summary>UI-thread-owned selection; workers own resources, never navigation or visibility.</summary>
 public sealed class GalleryViewModel : INotifyPropertyChanged
 {
-    private PythonWorker? worker;
+    private IWorkerConnection? worker;
     private BrowseCatalog? catalog;
+    private BrowseCatalog? pendingCatalog;
+    private BrowsePreview? pendingPreview;
+    private Task<BitmapSource>? previewDecode;
     private CancellationTokenSource contextCancellation = new(), previewCancellation = new();
     private long contextGeneration, previewGeneration;
-    private bool closing, restoring;
+    private bool closing, restoring, visible = true, needsReload;
     private BrowseContext? context;
     private RouteProfile? profile;
     private FloorChoice? floor;
@@ -43,6 +46,17 @@ public sealed class GalleryViewModel : INotifyPropertyChanged
     public FloorChoice[] Floors { get; private set; } = [AllFloors];
     public ICollectionView? Rows { get; private set; }
     public bool Busy { get => busy; private set => Set(ref busy, value); }
+    public bool IsVisible
+    {
+        get => visible;
+        set
+        {
+            if (!Set(ref visible, value) || !value || closing) return;
+            if (pendingCatalog is { } loaded) { pendingCatalog = null; ApplyCatalog(loaded); }
+            else if (needsReload) _ = ReloadAsync();
+            else _ = PublishPreviewAsync();
+        }
+    }
     public string Status { get => status; private set => Set(ref status, value); }
     public string PreviewStatus { get => previewStatus; private set => Set(ref previewStatus, value); }
     public ImageSource? Preview { get => preview; private set => Set(ref preview, value); }
@@ -87,7 +101,7 @@ public sealed class GalleryViewModel : INotifyPropertyChanged
         }
     }
 
-    public async Task AttachAsync(PythonWorker connection)
+    public async Task AttachAsync(IWorkerConnection connection)
     {
         RevokeContext();
         worker = connection;
@@ -105,7 +119,7 @@ public sealed class GalleryViewModel : INotifyPropertyChanged
             restoring = true;
             Context = Contexts.FirstOrDefault();
             restoring = false;
-            await ReloadAsync();
+            if (IsVisible) await ReloadAsync(); else needsReload = true;
         }
         catch (OperationCanceledException) { }
         catch (Exception error)
@@ -118,6 +132,7 @@ public sealed class GalleryViewModel : INotifyPropertyChanged
     public async Task ReloadAsync()
     {
         if (closing || worker is null || Context is null) return;
+        needsReload = false;
         RememberSelection();
         RevokeContext();
         var generation = contextGeneration;
@@ -132,22 +147,7 @@ public sealed class GalleryViewModel : INotifyPropertyChanged
             if (closing || generation != contextGeneration || worker != connection || Context != selectedContext) return;
             if (result.Season != selectedContext.Season || result.Mode != selectedContext.Mode)
                 throw new InvalidDataException("资源服务返回了其他赛季或模式。");
-            catalog = result;
-            Profiles = result.Profiles;
-            Floors = [AllFloors, .. result.Rows.Select(row => new FloorChoice(row.Floor, row.FloorLabel))
-                .DistinctBy(item => item.Id)];
-            Changed(nameof(Profiles));
-            Changed(nameof(Floors));
-            Rows = CollectionViewSource.GetDefaultView(result.Rows);
-            Rows.Filter = item => item is BrowseRow row && Matches(row);
-            Changed(nameof(Rows));
-            selections.TryGetValue(ContextKey(selectedContext), out var saved);
-            restoring = true;
-            Profile = Profiles.FirstOrDefault(item => item.Id == saved.Profile) ?? Profiles.FirstOrDefault();
-            Floor = Floors.FirstOrDefault(item => item.Id == saved.Floor) ?? AllFloors;
-            Search = saved.Search ?? "";
-            restoring = false;
-            FilterRows(saved.Key);
+            if (IsVisible) ApplyCatalog(result); else pendingCatalog = result;
             Status = $"已读取 {result.Rows.Select(row => row.MapId).Distinct().Count()} 份图 · {result.Rows.Length} 张楼层图片";
             if (result.Warnings.Length > 0) Status += " · " + string.Join("；", result.Warnings);
         }
@@ -157,6 +157,24 @@ public sealed class GalleryViewModel : INotifyPropertyChanged
             if (!closing && generation == contextGeneration) Status = "资源读取失败：" + error.Message;
         }
         finally { if (!closing && generation == contextGeneration) Busy = false; }
+    }
+
+    private void ApplyCatalog(BrowseCatalog result)
+    {
+        catalog = result;
+        Profiles = result.Profiles;
+        Floors = [AllFloors, .. result.Rows.Select(row => new FloorChoice(row.Floor, row.FloorLabel)).DistinctBy(item => item.Id)];
+        Changed(nameof(Profiles)); Changed(nameof(Floors));
+        Rows = CollectionViewSource.GetDefaultView(result.Rows);
+        Rows.Filter = item => item is BrowseRow row && Matches(row);
+        Changed(nameof(Rows));
+        selections.TryGetValue(ContextKey(Context!), out var saved);
+        restoring = true;
+        Profile = Profiles.FirstOrDefault(item => item.Id == saved.Profile) ?? Profiles.FirstOrDefault();
+        Floor = Floors.FirstOrDefault(item => item.Id == saved.Floor) ?? AllFloors;
+        Search = saved.Search ?? "";
+        restoring = false;
+        FilterRows(saved.Key);
     }
 
     private bool Matches(BrowseRow row) => row.ProfileId == Profile?.Id
@@ -188,15 +206,30 @@ public sealed class GalleryViewModel : INotifyPropertyChanged
             var result = await connection.PreviewAsync(currentCatalog.CatalogId, row.Key, previewCancellation.Token);
             if (result.CatalogId != currentCatalog.CatalogId || result.Key != row.Key)
                 throw new InvalidDataException("预览响应与当前地图不一致。");
-            var bitmap = await Task.Run(() => Decode(result));
             if (closing || generation != previewGeneration || catalog != currentCatalog || worker != connection || SelectedRow != row) return;
-            Preview = bitmap;
-            PreviewStatus = "";
+            pendingPreview = result;
+            await PublishPreviewAsync();
         }
         catch (OperationCanceledException) { }
         catch (Exception error)
         {
             if (!closing && generation == previewGeneration) PreviewStatus = "图片读取失败：" + error.Message;
+        }
+    }
+
+    private async Task PublishPreviewAsync()
+    {
+        if (!IsVisible || closing || pendingPreview is not { } result || Preview is not null) return;
+        var generation = previewGeneration;
+        try
+        {
+            var bitmap = await (previewDecode ??= Task.Run(() => Decode(result)));
+            if (closing || !IsVisible || generation != previewGeneration) return;
+            Preview = bitmap; PreviewStatus = "";
+        }
+        catch (Exception error)
+        {
+            if (!closing && IsVisible && generation == previewGeneration) PreviewStatus = "图片读取失败：" + error.Message;
         }
     }
 
@@ -226,6 +259,7 @@ public sealed class GalleryViewModel : INotifyPropertyChanged
     private void RevokePreview()
     {
         previewGeneration++;
+        pendingPreview = null; previewDecode = null;
         previewCancellation.Cancel();
         previewCancellation.Dispose();
         previewCancellation = new();
@@ -233,6 +267,7 @@ public sealed class GalleryViewModel : INotifyPropertyChanged
     private void RevokeContext()
     {
         contextGeneration++;
+        pendingCatalog = null;
         contextCancellation.Cancel();
         contextCancellation.Dispose();
         contextCancellation = new();
@@ -263,6 +298,7 @@ public sealed class GalleryViewModel : INotifyPropertyChanged
     {
         RevokeContext();
         worker = null;
+        needsReload = false;
         ClearCatalog();
         Busy = false;
         Status = "选择本机资源目录，开始浏览地图。";

@@ -1,0 +1,80 @@
+<UserControl x:Class="StarMap.Desktop.RuntimePage" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <ScrollViewer x:Name="PageScroll" Margin="28,16,28,20" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+  <Grid Height="{Binding ActualHeight, ElementName=PageScroll}" MinHeight="620">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+      <RowDefinition Height="*" /><RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+    <Border Background="#2F66EB" CornerRadius="12" Padding="22,18" Margin="0,0,0,14">
+      <DockPanel>
+        <StackPanel DockPanel.Dock="Right" VerticalAlignment="Center" Margin="20,0,0,0">
+          <TextBlock Text="{Binding RoundStatus}" Foreground="White" FontWeight="SemiBold" />
+          <TextBlock Text="保存画面回放" Foreground="#E3EBFF" Margin="0,6,0,0" />
+        </StackPanel>
+        <StackPanel>
+          <TextBlock Text="地图与路线，随手查看。" Foreground="White" FontSize="26" FontWeight="Bold" />
+          <TextBlock Text="当前入口使用保存画面，尚未连接游戏捕获。" Foreground="#E3EBFF" Margin="0,7,0,0" TextWrapping="Wrap" />
+        </StackPanel>
+      </DockPanel>
+    </Border>
+    <WrapPanel Grid.Row="1" Margin="0,0,0,12" VerticalAlignment="Center">
+      <ComboBox x:Name="RuntimeContextSelector" Width="210" ItemsSource="{Binding Contexts}" SelectedItem="{Binding Context}"
+                DisplayMemberPath="Label" IsEnabled="{Binding CanChangeContext}" AutomationProperties.Name="本局赛季与模式" Margin="0,0,8,8" />
+      <Button Content="准备资源" IsEnabled="{Binding CanChangeContext}" Click="OnPrepare" Margin="0,0,8,8" />
+      <Button x:Name="OpenFrameButton" Content="选择保存画面" IsEnabled="{Binding CanLoadFrame}" Click="OnOpenFrame" Margin="0,0,8,8" />
+      <Button x:Name="StartRoundButton" Content="开始本局" IsEnabled="{Binding CanStart}" Click="OnStart" Margin="0,0,8,8" />
+      <Button x:Name="CaptureButton" Content="重新识别" IsEnabled="{Binding CanCapture}" Click="OnCapture" Margin="0,0,8,8" />
+      <Button x:Name="EndRoundButton" Content="结束本局" IsEnabled="{Binding CanEnd}" Click="OnEnd" Margin="0,0,8,8" />
+      <Button x:Name="CancelButton" Content="取消识别" IsEnabled="{Binding Busy}" Click="OnCancel" Margin="0,0,0,8" />
+    </WrapPanel>
+    <Grid Grid.Row="2" Margin="0,0,0,14">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+      <StackPanel><TextBlock Text="当前地图" Foreground="{StaticResource Muted}" /><TextBlock Text="{Binding MapName}" FontSize="18" FontWeight="SemiBold" Margin="0,5,12,0" TextTrimming="CharacterEllipsis" /></StackPanel>
+      <StackPanel Grid.Column="1"><TextBlock Text="观察楼层" Foreground="{StaticResource Muted}" /><TextBlock Text="{Binding FloorLabel}" FontSize="18" FontWeight="SemiBold" Margin="0,5,0,0" /></StackPanel>
+      <WrapPanel Grid.Column="2" VerticalAlignment="Bottom">
+        <ComboBox x:Name="RuntimeFloorSelector" Width="90" ItemsSource="{Binding Floors}" SelectedItem="{Binding SelectedFloor}" DisplayMemberPath="Name" IsEnabled="{Binding CanSetFloor}" AutomationProperties.Name="本局目标楼层" Margin="0,0,8,0" />
+        <Button Content="使用楼层" IsEnabled="{Binding CanSetFloor}" Click="OnSetFloor" Margin="0,0,8,0" />
+        <Button Content="贴合显隐" IsEnabled="{Binding CanToggleSheet}" Click="OnToggleSheet" />
+      </WrapPanel>
+    </Grid>
+    <Grid Grid.Row="3">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="220" /><ColumnDefinition Width="14" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+      <Grid>
+        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+        <TextBlock Text="地图候选" FontWeight="SemiBold" Margin="0,0,0,8" />
+        <ListBox x:Name="RuntimeCandidateList" Grid.Row="1" ItemsSource="{Binding Candidates}" SelectedItem="{Binding SelectedCandidate}"
+                 BorderThickness="0" Background="White" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                 VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" AutomationProperties.Name="本局地图候选">
+          <ListBox.ItemContainerStyle><Style TargetType="ListBoxItem"><Setter Property="Padding" Value="10" /><Setter Property="HorizontalContentAlignment" Value="Stretch" /><Setter Property="AutomationProperties.Name" Value="{Binding Name}" /></Style></ListBox.ItemContainerStyle>
+          <ListBox.ItemTemplate><DataTemplate><StackPanel>
+            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+            <TextBlock Text="{Binding Detail}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,4,0,0" />
+          </StackPanel></DataTemplate></ListBox.ItemTemplate>
+        </ListBox>
+        <WrapPanel Grid.Row="2" Margin="0,10,0,0">
+          <Button x:Name="SelectCandidateButton" Content="选择地图" IsEnabled="{Binding CanSelectCandidate}" Click="OnSelectCandidate" Margin="0,0,8,0" />
+          <Button x:Name="ConfirmButton" Content="确认路线" IsEnabled="{Binding CanConfirm}" Click="OnConfirm" />
+        </WrapPanel>
+      </Grid>
+      <Border Grid.Column="2" CornerRadius="12" Background="White" Padding="12">
+        <Grid><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+          <TextBlock Text="{Binding FrameLabel}" TextTrimming="CharacterEllipsis" Foreground="{StaticResource Muted}" Margin="0,0,0,10" />
+          <Viewbox Grid.Row="1" Stretch="Uniform">
+            <Canvas x:Name="RuntimeViewport" Width="{Binding ClientWidth}" Height="{Binding ClientHeight}" ClipToBounds="True" Background="#18263C">
+              <Image x:Name="SavedFrameImage" Source="{Binding FrameImage}" Width="{Binding ClientWidth}" Height="{Binding ClientHeight}" Stretch="Fill" />
+              <Image x:Name="AlignedFrameImage" Source="{Binding AlignedImage}" Width="{Binding ImageWidth}" Height="{Binding ImageHeight}" Stretch="Fill"
+                     RenderTransform="{Binding OverlayTransform}" RenderOptions.BitmapScalingMode="Linear" AutomationProperties.Name="当前保存画面的贴合预览" />
+            </Canvas>
+          </Viewbox>
+        </Grid>
+      </Border>
+    </Grid>
+    <StackPanel Grid.Row="4" Margin="0,14,0,0">
+      <ProgressBar IsIndeterminate="{Binding Busy}" Height="3" Margin="0,0,0,10" />
+      <TextBlock Text="{Binding Status}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+      <TextBlock Text="{Binding Detail}" TextWrapping="Wrap" Foreground="{StaticResource Muted}" FontSize="11" Margin="0,5,0,0" MaxHeight="32" />
+    </StackPanel>
+  </Grid>
+  </ScrollViewer>
+</UserControl>

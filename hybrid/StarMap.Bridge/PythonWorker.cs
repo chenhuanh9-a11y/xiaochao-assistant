@@ -6,9 +6,10 @@ using System.Text.Json.Nodes;
 namespace StarMap.Bridge;
 
 /// <summary>Owns one worker. Serial RPC keeps both queues bounded; stderr is drained independently.</summary>
-public sealed class PythonWorker : IAsyncDisposable
+public sealed class PythonWorker : IWorkerConnection
 {
     private readonly Process process;
+    private readonly int processId;
     private readonly SemaphoreSlim serial = new(1, 1);
     private readonly SemaphoreSlim inputWriter = new(1, 1);
     private readonly CancellationTokenSource stopWriting = new();
@@ -26,12 +27,23 @@ public sealed class PythonWorker : IAsyncDisposable
     private PythonWorker(Process process, TimeSpan timeout)
     {
         this.process = process;
+        processId = process.Id;
         requestTimeout = timeout;
         stderrPump = DrainErrorsAsync();
     }
 
-    public int ProcessId => process.Id;
-    public bool HasExited => exited || process.HasExited;
+    public int ProcessId => processId;
+    public bool HasExited
+    {
+        get
+        {
+            if (exited) return true;
+            try { return process.HasExited; }
+            catch (ObjectDisposedException) { return true; }
+            catch (InvalidOperationException) { return true; }
+        }
+    }
+    public bool SupportsRuntime => false;
     public string DiagnosticTail { get { lock (recentErrors) return string.Join(Environment.NewLine, recentErrors); } }
 
     public static PythonWorker Start(string python, string workerScript, string resourceRoot,
@@ -68,6 +80,9 @@ public sealed class PythonWorker : IAsyncDisposable
 
     public Task<BrowsePreview> PreviewAsync(long catalogId, string key, CancellationToken cancellation = default) =>
         CallAsync<BrowsePreview>("preview", new { catalogId, key }, cancellation);
+
+    public Task<JsonElement> InvokeAsync(string operation, object? arguments = null, CancellationToken cancellation = default) =>
+        CallAsync<JsonElement>(operation, arguments, cancellation);
 
     private async Task<T> CallAsync<T>(string operation, object? arguments, CancellationToken cancellation)
     {
@@ -149,40 +164,82 @@ public sealed class PythonWorker : IAsyncDisposable
 
     private async Task CloseCoreAsync()
     {
+        var closeDeadline = Stopwatch.StartNew();
         stopping = true;
         // EOF is the normal stop path, including a currently executing read-only request.
-        // StreamWriter.Close cannot race its own asynchronous write/flush.
-        stopWriting.Cancel();
-        await inputWriter.WaitAsync().ConfigureAwait(false);
-        Exception? closeError = null;
-        try { process.StandardInput.Close(); }
-        catch (IOException error) { closeError = error; }
-        finally { inputWriter.Release(); }
+        // Let an acquired asynchronous write finish before cancelling queued writes or closing the stream.
+        var writerAcquired = false;
+        var closeTimedOut = false;
+        var remaining = TimeSpan.FromSeconds(5) - closeDeadline.Elapsed;
         try
         {
-            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            exited = true;
+            if (remaining <= TimeSpan.Zero) throw new TimeoutException();
+            if (!await inputWriter.WaitAsync(remaining).ConfigureAwait(false)) throw new TimeoutException();
+            writerAcquired = true;
+        }
+        catch (TimeoutException) { closeTimedOut = true; }
+
+        Exception? closeError = null;
+        try
+        {
+            if (!writerAcquired)
+            {
+                stopWriting.Cancel();
+                TerminateForCloseTimeout();
+                await process.WaitForExitAsync().ConfigureAwait(false);
+                exited = true;
+                await inputWriter.WaitAsync().ConfigureAwait(false);
+                writerAcquired = true;
+            }
+
+            stopWriting.Cancel();
+            try { process.StandardInput.Close(); }
+            catch (IOException error) { closeError = error; }
+            catch (ObjectDisposedException error) { closeError = error; }
+            finally
+            {
+                if (writerAcquired) inputWriter.Release();
+                writerAcquired = false;
+            }
+
+            if (!closeTimedOut)
+            {
+                remaining = TimeSpan.FromSeconds(5) - closeDeadline.Elapsed;
+                if (remaining <= TimeSpan.Zero) throw new TimeoutException();
+                await process.WaitForExitAsync().WaitAsync(remaining).ConfigureAwait(false);
+                exited = true;
+            }
         }
         catch (TimeoutException)
         {
-            process.Kill(entireProcessTree: true);
+            closeTimedOut = true;
+            TerminateForCloseTimeout();
             await process.WaitForExitAsync().ConfigureAwait(false);
             exited = true;
-            throw new IOException("Python 服务未在退出期限内结束，已终止本次自有服务进程。");
         }
         finally
         {
+            if (writerAcquired) inputWriter.Release();
             await serial.WaitAsync().ConfigureAwait(false);
             serial.Release();
             await stderrPump.ConfigureAwait(false);
         }
+        if (closeTimedOut)
+            throw new IOException("Python 服务未在退出期限内结束，已终止本次自有服务进程。" + DiagnosticTail);
         if (process.ExitCode != 0) throw new IOException($"Python 服务退出失败（{process.ExitCode}）。" + DiagnosticTail);
         if (closeError is not null) throw new IOException("关闭 Python 输入管道失败，服务进程已结束。", closeError);
+    }
+
+    private void TerminateForCloseTimeout()
+    {
+        try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+        catch (InvalidOperationException) { }
+        catch (System.ComponentModel.Win32Exception) { }
     }
 
     public async ValueTask DisposeAsync()
     {
         try { await CloseAsync().ConfigureAwait(false); }
-        finally { process.Dispose(); }
+        finally { exited = true; process.Dispose(); }
     }
 }

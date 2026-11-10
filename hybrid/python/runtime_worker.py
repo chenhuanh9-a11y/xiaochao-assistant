@@ -29,6 +29,11 @@ from grid_backend import GridBackend
 from output_pipe import OutputPipe
 from runtime_session import RecordedRuntimeSession
 from fast_structure_alignment import using_grid_backend, _grid as python_grid
+from worker import create_browse_worker
+
+
+BROWSE_OPERATIONS = frozenset(("hello", "catalog", "preview"))
+RUNTIME_OPERATIONS = ("hello", "catalog", "preview", "prepare", "set_frame", "dispatch", "snapshot")
 
 
 def native(value):
@@ -79,12 +84,29 @@ def render_result(runtime):
     return metadata
 
 
+def browse_terminal(browse, request, *, cancelled=None):
+    """Adapt the existing gallery response to the runtime worker's async RPC."""
+    response, _ = browse.handle(request, cancelled=cancelled)
+    terminal = dict(event="result", session=request["session"], id=request["id"],
+                    ok=response.get("ok") is True, render=None)
+    if terminal["ok"]:
+        result = response["result"]
+        if request.get("operation") == "hello":
+            result = dict(result, operations=list(RUNTIME_OPERATIONS))
+        terminal["result"] = result
+    else:
+        terminal["error"] = response.get("error") or dict(
+            code="browse-error", message="gallery request failed")
+    return terminal
+
+
 def run(args):
     state_lock = threading.Lock()
     active = None
     computation = None
     with redirect_stdout(sys.stderr):
         runtime = RecordedRuntimeSession(args.resource_root, args.data_root, args.frame_root)
+        browse = create_browse_worker(args.resource_root, args.installation_root)
     backend = None
     try:
         backend = GridBackend(args.grid_executable, args.data_root / "grid-cache",
@@ -118,42 +140,55 @@ def run(args):
 
         try:
             send(dict(event="started", session=context.session, id=context.id))
-            scope = backend.request(context.session, context.id, max(.001, context.deadline-time.monotonic()), context.cancelled) if backend else nullcontext()
-            grid_scope = using_grid_backend(backend if backend else observed_python_grid)
-            with scope, grid_scope, redirect_stdout(sys.stderr):
+            if request.get("operation") in BROWSE_OPERATIONS:
                 context.check()
-                operation = request["operation"]
-                if operation == "prepare":
-                    result = dict(capability=runtime.prepare(request["season"], request["mode"]), snapshot=runtime.snapshot())
-                elif operation == "set_frame":
-                    result = dict(frame=runtime.set_frame(request["path"], capture_context=request.get("captureContext")), snapshot=runtime.snapshot())
-                elif operation == "dispatch":
-                    result = runtime.dispatch(request["action"], request.get("payload", {}), context.cancelled)
-                elif operation == "snapshot":
-                    result = dict(snapshot=runtime.snapshot())
-                else:
-                    raise ValueError("unknown-runtime-operation")
+                terminal = browse_terminal(browse, request, cancelled=context.cancelled)
                 context.check()
-            result["render"] = render_result(runtime)
-            context.check()
-            terminal = dict(event="result", session=context.session, id=context.id, ok=True,
-                result=result, gridBackend=args.grid_backend, gridCalls=list(backend.calls) if backend else python_calls,
-                gridProcessId=backend.process_id if backend else None,
-                computeMs=(time.monotonic()-started)*1000)
+            else:
+                scope = backend.request(context.session, context.id, max(.001, context.deadline-time.monotonic()), context.cancelled) if backend else nullcontext()
+                grid_scope = using_grid_backend(backend if backend else observed_python_grid)
+                with scope, grid_scope, redirect_stdout(sys.stderr):
+                    context.check()
+                    operation = request["operation"]
+                    if operation == "prepare":
+                        result = dict(capability=runtime.prepare(request["season"], request["mode"]), snapshot=runtime.snapshot())
+                    elif operation == "set_frame":
+                        result = dict(frame=runtime.set_frame(request["path"], capture_context=request.get("captureContext")), snapshot=runtime.snapshot())
+                    elif operation == "dispatch":
+                        result = runtime.dispatch(request["action"], request.get("payload", {}), context.cancelled)
+                    elif operation == "snapshot":
+                        result = dict(snapshot=runtime.snapshot())
+                    else:
+                        raise ValueError("unknown-runtime-operation")
+                    context.check()
+                result["render"] = render_result(runtime)
+                context.check()
+                terminal = dict(event="result", session=context.session, id=context.id, ok=True,
+                    result=result, gridBackend=args.grid_backend, gridCalls=list(backend.calls) if backend else python_calls,
+                    gridProcessId=backend.process_id if backend else None,
+                    computeMs=(time.monotonic()-started)*1000)
+            terminal["computeMs"] = (time.monotonic()-started)*1000
         except Exception as error:
             traceback.print_exc(file=sys.stderr)
-            runtime.invalidate(context.reason or "runtime-request-failed")
+            is_browse = request.get("operation") in BROWSE_OPERATIONS
+            if not is_browse:
+                runtime.invalidate(context.reason or "runtime-request-failed")
             terminal = dict(event="result", session=context.session, id=context.id, ok=False,
                 error=dict(code=context.reason or type(error).__name__, message=str(error)),
-                snapshot=runtime.snapshot(), render=None, gridBackend=args.grid_backend,
-                gridCalls=list(backend.calls) if backend else python_calls)
+                render=None, computeMs=(time.monotonic()-started)*1000)
+            if not is_browse:
+                terminal.update(snapshot=runtime.snapshot(), gridBackend=args.grid_backend,
+                    gridCalls=list(backend.calls) if backend else python_calls)
         with state_lock:
             try:
                 context.check()
             except InterruptedError:
-                runtime.invalidate(context.reason or "cancelled")
+                if request.get("operation") not in BROWSE_OPERATIONS:
+                    runtime.invalidate(context.reason or "cancelled")
                 terminal = dict(event="result", session=context.session, id=context.id, ok=False,
-                    error=dict(code=context.reason, message=context.reason), snapshot=runtime.snapshot(), render=None)
+                    error=dict(code=context.reason, message=context.reason), render=None)
+                if request.get("operation") not in BROWSE_OPERATIONS:
+                    terminal["snapshot"] = runtime.snapshot()
             try:
                 send(terminal)
             except BrokenPipeError:
@@ -192,13 +227,19 @@ def run(args):
                         matched = active is not None and (active.session, active.id) == (session, rid)
                         if matched:
                             active.cancel("cancelled")
-                            runtime.invalidate("cancelled")
+                            if active.value.get("operation") not in BROWSE_OPERATIONS:
+                                runtime.invalidate("cancelled")
                         send(dict(event="cancel-ack", session=session, id=rid, matched=matched))
                     elif active is not None:
-                        active.cancel("superseded")
-                        runtime.invalidate("superseded")
+                        if request.get("operation") in BROWSE_OPERATIONS:
+                            code, message = "busy-retry", "Wait for the current request before retrying."
+                        else:
+                            active.cancel("superseded")
+                            if active.value.get("operation") not in BROWSE_OPERATIONS:
+                                runtime.invalidate("superseded")
+                            code, message = "busy-retry", "Wait for the current cancelled request before retrying."
                         send(dict(event="result", session=session, id=rid, ok=False,
-                            error=dict(code="busy-retry", message="Wait for the current cancelled request before retrying."), render=None))
+                            error=dict(code=code, message=message), render=None))
                     else:
                         active = Request(request, output)
                         computation = threading.Thread(target=compute, args=(active,), name="hybrid-runtime-computation")
@@ -210,7 +251,8 @@ def run(args):
         with state_lock:
             if active is not None:
                 active.cancel("closed")
-                runtime.invalidate("closed")
+                if active.value.get("operation") not in BROWSE_OPERATIONS:
+                    runtime.invalidate("closed")
         if computation is not None:
             computation.join(timeout=10)
         try:
@@ -230,6 +272,8 @@ def main():
     parser.add_argument("--resource-root", type=Path, required=True)
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--frame-root", type=Path, required=True)
+    parser.add_argument("--installation-root", type=Path,
+                        help="installation root owning the resource transaction lock")
     parser.add_argument("--grid-backend", choices=("python", "csharp"), default="csharp")
     parser.add_argument("--grid-executable", type=Path)
     args = parser.parse_args()
@@ -238,6 +282,19 @@ def main():
         if not path.is_absolute():
             parser.error("explicit absolute roots are required")
         setattr(args, name, path.resolve())
+    if args.installation_root is None:
+        args.installation_root = (args.resource_root.parent if args.resource_root.name.casefold() == "_internal"
+                                  else args.resource_root)
+    elif not args.installation_root.is_absolute():
+        parser.error("installation root must be absolute")
+    try:
+        args.installation_root = args.installation_root.resolve(strict=True)
+    except OSError as error:
+        parser.error(f"installation root must exist: {type(error).__name__}")
+    if not args.installation_root.is_dir():
+        parser.error("installation root must be a directory")
+    if args.resource_root not in (args.installation_root, args.installation_root / "_internal"):
+        parser.error("resource root must be the installation root or its _internal directory")
     if not args.resource_root.is_dir() or not args.frame_root.is_dir():
         parser.error("resource and frame roots must exist")
     if args.data_root.is_relative_to(args.resource_root) or args.data_root.is_relative_to(args.frame_root):

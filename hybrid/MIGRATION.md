@@ -6,7 +6,7 @@
 
 WPF/C# 负责窗口、持久页面、用户交互、Windows 输入/捕获适配、像素呈现和 Python 服务生命周期，并承接已验证混合实验中的持久 C# `_grid` 网格候选搜索。Python 保留其余 rank/识别、后续 refine、最终 pose、当前帧验证和接受/拒绝、结构渲染、楼层策略、作者显示桥、资源校验/事务及用户数据格式；两种模式继续走同一核心。C# grid 不是完整识别链；C# 失败不能把内部 entry 竞争误称为自动回退 Python，也不能让显示反过来决定身份或位姿。
 
-Python 服务采用自有子进程和本地标准输入/输出 JSONL；不监听网络。业务请求有递增 ID，每个连接仅一个执行中的请求。当前图库是串行只读切片；未来本局操作需独立的可取消调度和当前资源/轮次校验，不能把图库队列直接当本局调度。日志走 stderr，C# 同时排空两条输出。页面持有当前请求代次，切模式/选图/关闭立即撤销旧结果的显示资格。图片只按服务当前清单中的 key 读取，不接受任意图片路径。
+Python 服务采用自有子进程和本地标准输入/输出 JSONL；不监听网络。当前图库与保存帧本局共用一个进程和资源所有者，连接内仅一个计算；业务请求有 session/递增 ID，取消匹配当前计算并排空终态，随后才执行下一请求。图库失败不改变本局，浏览模式独立。日志走 stderr，C# 同时排空两条输出。页面持有当前请求代次，切模式/选图/关闭立即撤销旧结果的显示资格；隐藏页面保留有界最新结果、可见时补写。图库图片只按服务当前清单中的 key 读取，本局帧仅接受显式选择并复制到自有帧根的 PNG。
 
 资源目录由用户或显式启动参数选择，不从旧安装猜测；`_internal` 与安装根分开。沿用现有 `resource_read_lock` 和 `assert_resources_ready`，会创建/使用安装根的 `work/map-packages/import.lock`，不会写设置、导入或修复资源。预览不是身份、安装完整性或本局能力证明。
 
@@ -15,11 +15,11 @@ Python 服务采用自有子进程和本地标准输入/输出 JSONL；不监听
 | 范围 | 当前 Qt 入口与实际状态写者 | 混合路线当前状态 | 必须验收的使用流程 |
 | --- | --- | --- | --- |
 | 启动、错误边界、单实例、后台和退出 | `tools/qt_client_entry.py` → `client.main/QtClient`；`client_single_instance`、`client_startup_cleanup` | 图库测试入口及自有 worker EOF/重连/退出已实现并有窗口主机回归；完整产品生命周期未迁 | 重启恢复窗口，启动失败可诊断；X 的后台/取消/退出；所有自有任务、监听和子进程排空 |
-| 主页面与本局、候选及人工选择 | `ClientHome/Controls/MapPicker.qml`；`SessionService` → `LiveRuntime` | 已接 Qt-free 保存帧生产 session/RPC 的 prepare→start_round→capture_now；WPF 本局页面、完整操作/实时采集未迁 | 显式开始→捕获→身份/楼层→首贴→后续开图；手选、取消、迟到、结束及重开 |
+| 主页面与本局、候选及人工选择 | `ClientHome/Controls/MapPicker.qml`；`SessionService` → `LiveRuntime` | WPF 保存帧主页已接统一服务，开始/实际捕获求解/本局状态/贴合预览/取消/结束/重连有生产回放消费者检查；候选/确认/换层已接命令但实际交互未验，完整原 UI 与实时采集未迁 | 显式开始→捕获→身份/楼层→首贴→后续开图；手选、取消、迟到、结束及重开 |
 | C# grid 热点与 Python 后续消费 | `fast_structure_alignment._grid` → `propose/refine`；历史 protocol 2 的 `GridBridge` | 已携入持久服务，作用域注入当前生产链；当前原帧确实执行 grid，合成已知目标 Host 接受对照通过；完整 Runtime 自动 grid 接受/原生显示仍缺 | 同输入候选、实际 Python refine/最终接受拒绝轨迹；延迟启动、取消/超时/崩溃和重启；原图与合成分开 |
 | Windows 窗口、捕获、全局输入 | `client_game_focus/capture/input/native_keys/map_input`；coordinator | 未迁 | 严格绑定及游戏重启，完整客户区、前台失效、按键穿透；局外按键不开始对局 |
 | 参考/贴合/提示窗口、作者显示桥 | `client_windows`、`LiveImages`、`ClientAligned/Reference/Toast.qml`；runtime/core | 未迁 | 作者切换保持身份/结构位姿；定点和贴合分别显隐；DPI、捕获排除及旧帧撤回 |
-| 地图与楼层图库 | `ClientGallery.qml` → `Backend` → `load_browse_context` | WPF 选择/筛选/实际图片与 Qt-free worker 已实现；合成/静态资源与窗口主机检查通过，桌面输入/捕获受限，原 UI 全量等价未验 | 两模式、两赛季、变体、缺图、坏图、刷新、快速换层/模式、真实桌面像素 |
+| 地图与楼层图库 | `ClientGallery.qml` → `Backend` → `load_browse_context` | WPF 选择/筛选/实际图片已接统一 worker；隐藏时延后列表/解码，可见时复用当前结果；合成/静态资源与窗口主机检查通过，桌面输入/捕获受限，原 UI 全量等价未验 | 两模式、两赛季、变体、缺图、坏图、刷新、快速换层/模式、真实桌面像素 |
 | 图包导入、升级、删除与恢复 | `ResourceService/PackageManagerService` → `star_map_import/author_package_management/resource_transaction` | 未迁 | 真文件选择，普通新增、替换确认、取消、失败/重复、列表与 provider/cache 失效及恢复 |
 | 在线图包 | `OnlinePackagesService` → `star_map_download` | 未迁 | 刷新、下载、校验、取消/重试、实际安装和失败恢复 |
 | 自定义路线与图库 | `CustomGalleryService/CustomGalleryDisplay` | 未迁 | 创建/编辑/导入导出、保存/取消、启用、跨层显示与图片缓存失效 |
@@ -85,3 +85,34 @@ Median 修正后的最终同树复验完整落在 `work/hybrid-median-final-2026
 待继续：WPF 原主页/本局与该服务的真实交互、原生捕获/输入/显示、完整作者/设置/资源操作与所有页面。接 UI 时图库与本局须在同一资源所有者下组合，不能让两个独立 Python 服务互相争用安装独占租约。RPC 的 `ok` 只表示请求处理，业务成功仍读 receipt/capability/候选与当前 render；取消和页面代次由 C# UI 消费者再次核对。真实帧的自动 grid→最终显示接受正例、长期全进程资源及同条件端到端延迟、安装/升级/回退仍未证明。本轮不宣称全量迁移、完整 UI 或实机通过。
 
 参考：进程重定向和并发排空遵循 [Microsoft ProcessStartInfo 文档](https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.processstartinfo) 与 [标准输出重定向说明](https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.processstartinfo.redirectstandardoutput)；WPF 呈现/UI 所有权参照 [WPF 概述](https://learn.microsoft.com/en-us/dotnet/desktop/wpf/overview/)。外观沿用现有 Qt 图库的蓝色、字体及左右列表/预览关系，不在本次迁移中重新设计产品。
+
+### 2026-11-10：统一服务与 WPF 保存帧主页
+
+本阶段把 `hello/catalog/preview` 合入可取消 runtime worker，图库与本局只启动一个 Python 服务并共享原资源租约。图库失败、取消、忙重试与切浏览模式不会撤销或改变本局。C# `HybridWorker` 严格匹配 session/id，忽略进度与无关终态，取消后排空当前终态才释放下一个请求；两条输出持续排空，仍仅管理本次自有进程。旧图库 worker 留作窄回归入口。
+
+WPF 主页通过同一服务消费原 `LiveRuntime`，没有另写识别或本局算法。开始后保留生产 `roundPreparing` 阶段，首次捕获后才可能 `roundActive`；两者都锁住本局上下文。显式选 PNG 复制到自有帧目录，当前帧、请求代次、资源及本局元数据再次核对后才呈现 Python 材料图和仿射变换。主页与图库是固定实例；隐藏主页仍收取业务状态，但延后列表/图片投影，隐藏图库延后列表/解码，恢复不重复 RPC。材料缓存绑定实际资源、地图、楼层、有效来源及 PNG，保留未提交的楼层选择。
+
+独立复核发现的两个状态错误已修复并保留定向回归：按钮原接生产 `cancel` 会结束本局，现由传输取消/排空当前工作后执行原 `close_map`，只撤销当前图并保留本局身份；RPC 错误原清空 UI 快照、错误放开上下文，现重新获取实际 snapshot。同步也失败时保留已知本局、关闭业务操作，明确提供重新连接资源目录的路径；显式重连会正常排空旧服务并新建会话。结束与关闭立即撤销旧消费者，迟到的真实成功回复不得恢复图片或本局。
+
+验证使用同一现有 .NET SDK 10.0.403 和精确 Python 3.13.3/OpenCV 4.12.0/NumPy 2.2.6/Pillow 12.3.0。未操作游戏、重新采样、安装、发布或修改正式 Qt 入口。
+
+| 检查/实际输入 | 结果及边界 |
+| --- | --- |
+| `python` 的 `test_hybrid_browse_worker/test_hybrid_runtime_session/test_hybrid_runtime_worker/test_hybrid_unified_service` | 匹配依赖下 27/27。真实子进程/资源锁/协议与明确合成替身分开；统一服务在阻断 Qt 导入下能读 PNG，持有 runtime 租约后仍能浏览且不改本局 |
+| `StarMap.TransportTests` 与 Release 构建 | 40/40，构建 0 警告/0 错误。真实服务/资源 14 项；其余使用明确的传输故障 worker，覆盖阻塞发送的超时/调用取消、半条 JSON 连接拒复用、已排空超时/业务拒绝后复用，及坏 JSON/非对象/缺 event/非法 ID 的错误和收尾。日志 `work/hybrid-transport-final-20261110-04.txt` |
+| `StarMap.IntegrationTests` 同次联合执行（4 个位置参数） | 发送/输出泵修复后 Release 构建 0 警告/0 错误，原图库/窗口 26 项及新本局消费者 27 项全部通过。日志 `work/hybrid-unified-wpf-final-20261110-02.txt`；结束后未见本次自有 WPF/Python/grid/代理残留。随后只改非法 ID 检查，该差异由上行 40 项传输回归覆盖 |
+| `StarMap.IntegrationTests ... <current-frame-index> --runtime-only` | 当前保存帧消费者 27/27。使用 2026-11-09 采集的 `batch02-event-000097` 与隔离真实资源副本，不传地图/位姿答案；自动身份为 S0 困难 `difficult-map-23`、本例 grid 0，不能补作 C# grid 最终显示接受正例 |
+| 程序化 WPF 事件/消费者 | 开始、实际捕获求解、隐藏收取、材料 PNG 解码像素相等、完整六项仿射参数、全客户区裁剪、显隐复用位图、结束/取消后的迟到成功拒绝、错误后重试和实际 EOF 后显式重连均检查；错误注入只将一次 RPC operation 改成未知值，让真实服务返回错误，不替换求解/快照 |
+| 普通/最小窗口离屏图 | 1080×760、760×560 及小窗滚动后的实际 `RenderTargetBitmap` 已生成并人工看图。最小窗口原候选/预览被挤到数十像素，已用页面最小内容高度与滚动保留可用区域；这不是桌面截图、鼠标/键盘或真实文件选择器验收 |
+
+当前末次联合检查的离屏证据在忽略目录 `work/hybrid-runtime-renders/1daeb1db73364867b5054627e54220b1`（图库同次位于 `work/hybrid-gallery-renders/f304bd45cef5488eb53b39844eaf4970`），前面的失败/改前图片保留。本例仅比较材料 PNG 与变换消费，不把它称为有独立真值的合成最终屏幕像素验收，也未测从真实输入到可见像素的端到端延迟。
+
+旧图库关闭检查曾间歇触发真实 5 秒超时：请求已送到 Python，但 C# 在写入转读取的间隙被关闭取消，代理写约 159 KB 应答时背压堵塞。两个 Bridge 现先在同一 5 秒总期限内等待活跃写入，再取消排队写并关闭 stdin，保证已发请求进入读取排空；真正超时仍明确失败并仅终止自有进程树。没有延长期限或放宽正常退出断言。测试代理的可选 trace/marker 仅定位时序，不改生产 PNG/loader；失败与修后正常关闭分别记录，强制清理不算正常退出。
+
+最终独立故障注入另复现了发送期限未覆盖 stdin 写入，以及坏协议后满 channel 令已退出进程的输出泵仍阻塞。现请求的发送与等待共用同一期限；写入中断后不复用可能只发送半条 JSON 的连接，并明确终止自有进程，控制取消写另有 1 秒上限。协议故障完成 channel、解除等待写并继续丢弃排空 stdout；泵不再等待进程退出，退出与异常收尾由有界关闭路径管理。正常进程退出预算仍为 5 秒，失败后的任务/管道清理有独立短期限且始终报失败，不能算正常退出。
+
+两个独立原始 probe 修后均已重跑：阻塞发送在 2 秒检查前已失败结束、自有进程已退出；坏 JSON 后再发十条事件，Close 也已完成而不再挂住。新增 200ms 超时与 200ms 调用取消分别检查，并记录最先触发的原因。最初测试把调用取消计时放在进程就绪之前，不能保证“超时先到”，失败证据保留；改为完成握手后才比较两只计时器。ready 仍独立有界（30 秒，与默认原值一致），请求预算从 ready 后开始，未放宽计算超时断言或退出预算。传输机制参考 [Microsoft Channels](https://learn.microsoft.com/en-us/dotnet/core/extensions/channels)。
+
+后续 fresh 复核另以实际桥复现了非法 `id`（字符串）绕过协议错误处理、连接仍可复用的问题。现先检查匹配 session 的 ID 是整数，再做当前 ID 比较；字符串/object/null 均按协议失败撤销连接，合法的旧 ID 与 foreign session 仍忽略。三类非法 ID 的拒绝、拒复用和自有进程退出均保留回归。等待终态期间若调用方也取消，仍优先报告调用取消并排空；发送阶段单独记录最先中断写入的原因。
+
+尚未完成：真实文件框选帧、两模式候选/确认/换层的实际 WPF 使用流程；完整原主页与其他页面；实时捕获/输入与原生定点/贴合/提示窗口；后台/托盘/单实例与 X 的产品退出选择；保存帧暂存长期清理和跨启动数据根；投影矩阵显示、计算中即时显隐。资源写者、作者/设置、导入下载、账号/帮助等继续按全量清单迁移。当前没有 Setup，不能作为正式客户端或全量迁移完成。

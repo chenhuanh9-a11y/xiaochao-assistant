@@ -61,7 +61,7 @@ class _BrowseWorker:
         self._catalog_sequence = 0
         self._snapshot: _CatalogSnapshot | None = None
 
-    def handle(self, request):
+    def handle(self, request, *, cancelled=None):
         request_id = request.get("id") if isinstance(request, dict) else None
         if type(request_id) is not int:
             return self._failure(None, "invalid-request", "request id must be an integer"), False
@@ -71,9 +71,9 @@ class _BrowseWorker:
         if operation == "hello":
             return {"id": request_id, "ok": True, "result": self._hello()}, False
         if operation == "catalog":
-            return self._catalog(request_id, request), False
+            return self._catalog(request_id, request, cancelled=cancelled), False
         if operation == "preview":
-            return self._preview(request_id, request), False
+            return self._preview(request_id, request, cancelled=cancelled), False
         if operation == "shutdown":
             return {"id": request_id, "ok": True, "result": {}}, True
         return self._failure(request_id, "unknown-operation", "unknown operation"), False
@@ -91,7 +91,7 @@ class _BrowseWorker:
                                  "label": self._context_label(season, mode)})
         return {"contexts": contexts, "python": platform.python_version()}
 
-    def _catalog(self, request_id, request):
+    def _catalog(self, request_id, request, *, cancelled=None):
         # Every catalog attempt invalidates the previous snapshot, including
         # invalid requests and failed loads. IDs never get reused in-process.
         self._catalog_sequence += 1
@@ -102,7 +102,7 @@ class _BrowseWorker:
                 or not isinstance(mode, str) or mode not in self._modes_for_season(season)):
             return self._failure(request_id, "invalid-context", "unknown season or mode")
         try:
-            with self._resource_read_lock(self.installation_root, wait=True):
+            with self._resource_read_lock(self.installation_root, wait=True, cancelled=cancelled):
                 self._assert_resources_ready(self.installation_root)
                 context = self._load_browse_context(self.resource_root, mode, season=season)
                 if context.error:
@@ -152,7 +152,7 @@ class _BrowseWorker:
             "warnings": [str(warning) for warning in context.warnings],
         }}
 
-    def _preview(self, request_id, request):
+    def _preview(self, request_id, request, *, cancelled=None):
         catalog_id = request.get("catalogId")
         key = request.get("key")
         if type(catalog_id) is not int or not isinstance(key, str):
@@ -168,7 +168,7 @@ class _BrowseWorker:
         if not binding.available:
             return self._failure(request_id, "preview-unavailable", "preview resource was missing at catalog load")
         try:
-            with self._resource_read_lock(self.installation_root, wait=True):
+            with self._resource_read_lock(self.installation_root, wait=True, cancelled=cancelled):
                 self._assert_resources_ready(self.installation_root)
                 data = self._read_bound_resource(binding)
             png, width, height = self._make_preview(data)
@@ -245,6 +245,27 @@ class _PreviewTooLarge(Exception):
         super().__init__(message)
 
 
+def create_browse_worker(resource_root: Path, installation_root: Path) -> _BrowseWorker:
+    """Build the existing gallery worker over the production resource services."""
+    app_root = Path(__file__).resolve().parents[2] / "app"
+    app_directory = str(app_root)
+    if app_directory not in sys.path:
+        sys.path.insert(0, app_directory)
+    from PIL import Image
+    from map_resource_context import load_browse_context
+    from resource_transaction import assert_resources_ready, resource_read_lock
+    from season_context import SEASONS, SeasonContext, modes_for_season
+
+    return _BrowseWorker(resource_root, installation_root,
+        browse_loader=load_browse_context,
+        read_lock=resource_read_lock,
+        readiness_check=assert_resources_ready,
+        seasons=SEASONS,
+        modes_for_season=modes_for_season,
+        context_label=lambda season, mode: SeasonContext(season, mode).label,
+        image_module=Image)
+
+
 def _emit(output, response):
     output.write(json.dumps(response, ensure_ascii=False, separators=(",", ":")) + "\n")
     output.flush()
@@ -305,23 +326,7 @@ def main(argv=None):
         sys.stdout.reconfigure(encoding="utf-8", errors="strict", newline="\n")
     protocol_output = sys.stdout
     with redirect_stdout(sys.stderr):
-        app_root = Path(__file__).resolve().parents[2]
-        app_directory = str(app_root / "app")
-        if app_directory not in sys.path:
-            sys.path.insert(0, app_directory)
-        from PIL import Image
-        from map_resource_context import load_browse_context
-        from resource_transaction import assert_resources_ready, resource_read_lock
-        from season_context import SEASONS, SeasonContext, modes_for_season
-
-        worker = _BrowseWorker(resource_root, installation_root,
-            browse_loader=load_browse_context,
-            read_lock=resource_read_lock,
-            readiness_check=assert_resources_ready,
-            seasons=SEASONS,
-            modes_for_season=modes_for_season,
-            context_label=lambda season, mode: SeasonContext(season, mode).label,
-            image_module=Image)
+        worker = create_browse_worker(resource_root, installation_root)
         return _serve(worker, sys.stdin.buffer, protocol_output)
 
 

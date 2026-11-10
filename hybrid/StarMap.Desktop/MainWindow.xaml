@@ -1,16 +1,31 @@
 <Window x:Class="StarMap.Desktop.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Style="{StaticResource {x:Type Window}}"
+        xmlns:local="clr-namespace:StarMap.Desktop"
         Title="星图 · WPF 混合迁移" Width="1080" Height="760" MinWidth="760" MinHeight="560"
         Closing="OnClosing" Loaded="OnLoaded">
-  <Grid Margin="28">
+  <Grid>
+    <Grid.ColumnDefinitions><ColumnDefinition Width="82" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+    <Border Background="White" Padding="8,24">
+      <StackPanel>
+        <TextBlock Text="星图" FontSize="22" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,26" />
+        <Button x:Name="HomeNavigation" Content="主页" Click="OnHomeNavigation" Padding="4,10" Margin="0,0,0,10" />
+        <Button x:Name="GalleryNavigation" Content="地图资源" Click="OnGalleryNavigation" Padding="4,10" />
+      </StackPanel>
+    </Border>
+    <Grid Grid.Column="1">
+      <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+      <DockPanel Margin="28,18,28,0">
+        <Button x:Name="OpenResourcesButton" DockPanel.Dock="Right" Content="选择资源目录" Click="OnOpenResources" AutomationProperties.Name="选择资源目录" />
+        <TextBlock x:Name="ResourcePathLabel" Text="尚未选择资源目录" Foreground="{StaticResource Muted}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,16,0" />
+      </DockPanel>
+      <local:RuntimePage x:Name="HomePage" Grid.Row="1" OpenFrameRequested="OnOpenFrame" />
+      <Grid x:Name="GalleryPage" Grid.Row="1" Margin="28,16,28,20" Visibility="Collapsed">
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
       <RowDefinition Height="*" /><RowDefinition Height="Auto" />
     </Grid.RowDefinitions>
     <DockPanel Margin="0,0,0,16">
-      <Button x:Name="OpenResourcesButton" DockPanel.Dock="Right" Content="选择资源目录" Click="OnOpenResources"
-              AutomationProperties.Name="选择资源目录" />
       <StackPanel>
         <TextBlock Text="地图资源" FontSize="26" FontWeight="Bold" />
         <TextBlock Text="浏览本机图包中的地图与楼层" Foreground="{StaticResource Muted}" Margin="0,6,20,0" />
@@ -18,8 +33,6 @@
     </DockPanel>
     <Grid Grid.Row="1" Margin="0,0,0,12">
       <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-      <TextBlock x:Name="ResourcePathLabel" VerticalAlignment="Center" Foreground="{StaticResource Muted}"
-                 Text="尚未选择资源目录" TextTrimming="CharacterEllipsis" Margin="0,0,12,0" />
       <Button x:Name="RefreshButton" Grid.Column="1" Content="刷新本机" Click="OnRefresh" />
     </Grid>
     <Grid Grid.Row="2" Margin="0,0,0,16">
@@ -83,5 +96,7 @@
       <ProgressBar IsIndeterminate="{Binding Busy}" Height="3" Margin="0,0,0,10" />
       <TextBlock Text="{Binding Status}" TextWrapping="Wrap" Foreground="{StaticResource Muted}" AutomationProperties.LiveSetting="Polite" />
     </StackPanel>
+      </Grid>
+    </Grid>
   </Grid>
 </Window>

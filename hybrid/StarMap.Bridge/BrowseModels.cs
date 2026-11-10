@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace StarMap.Bridge;
 
 public sealed record BrowseContext(string Season, string Mode, string Label);
-public sealed record WorkerHello(BrowseContext[] Contexts, string Python);
+public sealed record WorkerHello(BrowseContext[] Contexts, string Python, string[]? Operations = null);
 public sealed record RouteProfile(string Id, string Name);
 public sealed record BrowseRow(string Key, string Title, string MapId, string ProfileId,
     string Variant, string Floor, string FloorLabel, bool Available)

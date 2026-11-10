@@ -19,9 +19,9 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
-        if (args.Length != 3)
+        if (args.Length is not (3 or 4 or 5) || (args.Length == 5 && args[4] != "--runtime-only"))
         {
-            Console.Error.WriteLine("usage: StarMap.IntegrationTests SOURCE_ROOT PYTHON FIXTURE_RESOURCE_ROOT");
+            Console.Error.WriteLine("usage: StarMap.IntegrationTests SOURCE_ROOT PYTHON RESOURCE_ROOT [CURRENT_FRAME_INDEX [--runtime-only]]");
             return 2;
         }
         var exitCode = 1;
@@ -33,7 +33,12 @@ internal static class Program
         app.Startup += async (_, _) =>
         {
             SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(app.Dispatcher));
-            try { await RunAsync(args[0], args[1], args[2]); exitCode = 0; }
+            try
+            {
+                if (args.Length != 5) await RunAsync(args[0], args[1], args[2]);
+                if (args.Length >= 4) await RuntimeWorkspaceChecks.RunAsync(args[0], args[1], args[2], args[3]);
+                exitCode = 0;
+            }
             catch (Exception error) { Console.Error.WriteLine(error); }
             finally { app.Shutdown(); }
         };
@@ -113,6 +118,7 @@ internal static class Program
             return worker;
         });
         window.Show();
+        window.ShowGallery();
         await window.ConnectAsync(resourceRoot);
         if (window.Gallery.SelectedRow?.Available != true)
             SelectAvailableProfile(window.Gallery);
@@ -138,6 +144,7 @@ internal static class Program
             return PythonWorker.Start(python, Path.Combine(sourceRoot, "hybrid", "python", "worker.py"), root, installation);
         });
         selectedInternal.Show();
+        selectedInternal.ShowGallery();
         await selectedInternal.ConnectAsync(internalRoot);
         Check(actualRoot == internalRoot && actualInstallation == temporary, "selecting _internal keeps parent installation lock identity");
         selectedInternal.Close();
@@ -153,6 +160,7 @@ internal static class Program
             return worker;
         });
         recovery.Show();
+        recovery.ShowGallery();
         await recovery.ConnectAsync(resourceRoot);
         await recovery.ConnectAsync(resourceRoot);
         Check(recoveryWorkers.Count == 2 && recoveryWorkers[0].HasExited && recovery.Gallery.Rows is not null,
