@@ -84,14 +84,17 @@ def _directory_sync(path):
 
 
 def _write_new(path, data):
+    """Persist exclusive new bytes and return identity from their create handle."""
     _adapter()._no_links(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     _adapter()._no_links(path.parent)
     with path.open("xb") as handle:
+        identity = _identity(os.fstat(handle.fileno()))
         handle.write(data)
         handle.flush()
         os.fsync(handle.fileno())
     _directory_sync(path.parent)
+    return identity
 
 
 def _encoded(value):

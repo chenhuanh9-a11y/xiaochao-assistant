@@ -19,12 +19,18 @@ CONTEXTS = frozenset(f'{season}:{mode}' for season in ('s0', 's1')
                      for mode in ('difficult', 'nightmare'))
 ROLES = {'recognitionBase': 'recognition-base', 'controls': 'controls-profile',
          'reviewedGroups': 'reviewed-group-registry'}
+PENDING_CATALOG = 'transactions/pending-catalog.json'
 
 
 class ResourceCatalogError(ValueError):
     def __init__(self, code):
         super().__init__(code)
         self.code = code
+
+
+def assert_catalog_ready(root):
+    if files._target(Path(root), PENDING_CATALOG).exists():
+        raise ResourceCatalogError('resource-catalog-recovery-required')
 
 
 def _issue_code(error):
@@ -43,6 +49,35 @@ def _reference(value):
         raise ResourceCatalogError('resource-catalog-reference-invalid')
     return ComponentRef(package_id=value['packageId'], resource_version=value['resourceVersion'],
                         component_id=value['componentId'], manifest_sha256=value['manifestSha256'])
+
+
+def parse_catalog(value):
+    """Parse the one catalog wire format without reading or activating data."""
+    if not isinstance(value, dict) or value.get('schema') != SCHEMA:
+        raise ResourceCatalogError('resource-catalog-format-unsupported')
+    if set(value) != {'schema', 'generation', 'contexts', 'displays'}:
+        raise ResourceCatalogError('resource-catalog-invalid')
+    generation = value['generation']
+    try:
+        if not isinstance(generation, str):
+            raise ValueError('generation must be a string')
+        uuid.UUID(generation)
+    except (ValueError, AttributeError):
+        raise ResourceCatalogError('resource-catalog-generation-invalid') from None
+    contexts, displays = value['contexts'], value['displays']
+    if (not isinstance(contexts, dict) or not set(contexts) <= CONTEXTS
+            or not isinstance(displays, list)):
+        raise ResourceCatalogError('resource-catalog-context-invalid')
+    parsed = {}
+    for key, row in contexts.items():
+        if not isinstance(row, dict) or set(row) != set(ROLES):
+            raise ResourceCatalogError('resource-catalog-context-invalid')
+        parsed[key] = MappingProxyType({role: None if ref is None else _reference(ref)
+                                       for role, ref in row.items()})
+    selected = tuple(_reference(row) for row in displays)
+    if len(set(selected)) != len(selected):
+        raise ResourceCatalogError('resource-catalog-display-duplicate')
+    return generation, MappingProxyType(parsed), selected
 
 
 @dataclass(frozen=True)
@@ -76,6 +111,7 @@ class CatalogSnapshot:
         files._no_links(self.root)
         if self.root.exists() and not self.root.is_dir():
             raise ResourceCatalogError('resource-root-not-directory')
+        assert_catalog_ready(self.root)
         self.catalog_path = files._target(self.root, 'catalog.json')
         self._trusted_registries = frozenset(project_registry_refs)
         self._supported_capabilities = frozenset(supported_capabilities)
@@ -86,45 +122,32 @@ class CatalogSnapshot:
         try:
             raw, stamp = _metadata(self.catalog_path)
         except FileNotFoundError:
+            assert_catalog_ready(self.root)
             return  # A clean installation has no activated resource components.
         value = files._json(raw)
-        if (not isinstance(value, dict) or value.get('schema') != SCHEMA):
-            raise ResourceCatalogError('resource-catalog-format-unsupported')
-        if set(value) != {'schema', 'generation', 'contexts', 'displays'}:
-            raise ResourceCatalogError('resource-catalog-invalid')
-        generation = value['generation']
-        try:
-            if not isinstance(generation, str):
-                raise ValueError('generation must be a string')
-            uuid.UUID(generation)
-        except (ValueError, AttributeError):
-            raise ResourceCatalogError('resource-catalog-generation-invalid') from None
-        contexts, displays = value['contexts'], value['displays']
-        if (not isinstance(contexts, dict) or not set(contexts) <= CONTEXTS
-                or not isinstance(displays, list)):
-            raise ResourceCatalogError('resource-catalog-context-invalid')
-        parsed = {}
-        for key, row in contexts.items():
-            if not isinstance(row, dict) or set(row) != set(ROLES):
-                raise ResourceCatalogError('resource-catalog-context-invalid')
-            parsed[key] = MappingProxyType({role: None if ref is None else _reference(ref)
-                                            for role, ref in row.items()})
-        selected = tuple(_reference(row) for row in displays)
-        if len(set(selected)) != len(selected):
-            raise ResourceCatalogError('resource-catalog-display-duplicate')
-        self.contexts = MappingProxyType(parsed)
-        self.displays = selected
-        self.generation, self._catalog_stamp = generation, stamp
+        self.generation, self.contexts, self.displays = parse_catalog(value)
+        self._catalog_stamp = stamp
+        assert_catalog_ready(self.root)
 
     def assert_current(self):
+        assert_catalog_ready(self.root)
         try:
             _, current = _metadata(self.catalog_path)
         except FileNotFoundError:
             if self._catalog_stamp is None:
+                assert_catalog_ready(self.root)
                 return
             raise ResourceCatalogError('resource-catalog-superseded') from None
         if current != self._catalog_stamp:
             raise ResourceCatalogError('resource-catalog-superseded')
+        assert_catalog_ready(self.root)
+
+    @property
+    def catalog_stamp(self):
+        self.assert_current()
+        if self._catalog_stamp is None:
+            return None
+        return dict(self._catalog_stamp, identity=list(self._catalog_stamp['identity']))
 
     def component_view(self, ref):
         self.assert_current()
