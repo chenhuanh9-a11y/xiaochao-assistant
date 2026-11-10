@@ -21,10 +21,17 @@ public sealed class RuntimeRenderPacket
     internal RuntimeRenderPacket(RuntimeRenderPacket previous, CapturedClientFrame frame, DisplayAuthorization authorization,
         long generation, long epoch) : this(previous.Material, frame, authorization, generation, epoch, scene: previous.Scene)
     { MaterialToken = previous.MaterialToken; }
-    internal RuntimeRenderPacket(RuntimeRenderPacket previous,double offsetX,double offsetY,long revision)
+    // A separate material ACK intent over the same observation and geometry.
+    internal RuntimeRenderPacket(RuntimeRenderPacket previous)
     {
-        Material=previous.Material;Scene=previous.Scene;MaterialToken=previous.MaterialToken;Stamp=previous.Stamp;
+        Material=previous.Material;Scene=previous.Scene;Stamp=previous.Stamp;
         Client=previous.Client;Authorization=previous.Authorization;Generation=previous.Generation;Epoch=previous.Epoch;
+        RemembersGeometry=previous.RemembersGeometry;PresentationOffsetX=previous.PresentationOffsetX;
+        PresentationOffsetY=previous.PresentationOffsetY;TransformRevision=previous.TransformRevision;IsTransient=previous.IsTransient;
+    }
+    internal RuntimeRenderPacket(RuntimeRenderPacket previous,double offsetX,double offsetY,long revision) : this(previous)
+    {
+        MaterialToken=previous.MaterialToken;
         RemembersGeometry=false;PresentationOffsetX=offsetX;PresentationOffsetY=offsetY;TransformRevision=revision;IsTransient=true;
     }
     public PreparedDisplayLayer Material { get; }

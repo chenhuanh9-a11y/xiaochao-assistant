@@ -93,6 +93,43 @@ internal static class GameMapDragWorkspaceRegression
                 {
                     string sourceFrame=page.State!.Context.FrameId!;int calls=capture.Calls;
                     page.RefreshGroupControls();var members=Field<ComboBox>(page,"groupMember");var choose=Field<Button>(page,"chooseGroupMember");
+                    bool allowCurrentAck=false;string currentMap=page.State.Context.MapId!;
+                    page.SetAlignedVisibility(false);using var currentMaterialCapture=new WindowsRuntimeCapturePort();
+                    var currentMessages=new List<string>();
+                    using(var currentHost=new RuntimeOverlayHost(Dispatcher.CurrentDispatcher,page.ReadRender,currentMaterialCapture,currentMessages.Add,
+                        visible:()=>page.AlignedVisible,readPendingMaterial:()=>allowCurrentAck?page.ReadPendingGroupMaterial():null,
+                        acceptMaterialReady:page.AcceptGroupMaterialReady,rejectMaterial:page.RejectGroupMaterial,
+                        readMaterialToRemember:page.ReadMaterialToRemember,rememberMaterialReady:page.RememberMaterialReady))
+                    {
+                        var warmClock=Stopwatch.StartNew();
+                        while(Field<WpfRuntimeSceneMaterial?>(currentHost,"preparedMaterial") is null)
+                        {if(warmClock.Elapsed>TimeSpan.FromSeconds(15))throw new TimeoutException("current source material warmup");await Task.Delay(5);}
+                        var frozenSource=Field<WpfRuntimeSceneMaterial>(currentHost,"preparedMaterial");
+                        members.SelectedValue=currentMap;choose.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));await page.DrainAsync();
+                        var sameMember=page.ReadPendingGroupMaterial();
+                        check(sameMember is not null && sameMember.MaterialToken!=released!.MaterialToken && capture.Calls==calls
+                            && ReferenceEquals(sameMember.Material,released.Material) && ReferenceEquals(page.ReadRender(),released)
+                            && page.State!.GroupChoice.HeldMapId is null && page.GamePointerContextSlot.Read()==context,
+                            "current-group actual UI/Session stages existing translated material without a new capture or identity commit");
+                        allowCurrentAck=true;warmClock.Restart();
+                        while(page.State?.GroupChoice.HeldMapId!=currentMap)
+                        {if(warmClock.Elapsed>TimeSpan.FromSeconds(15))throw new TimeoutException("current material ACK");await Task.Delay(5);}
+                        await page.DrainAsync();released=page.ReadRender();
+                        check(ReferenceEquals(released,sameMember) && released is {IsTransient:true,PresentationOffsetX:15,PresentationOffsetY:-6}
+                            && capture.Calls==calls && page.State!.Context.FrameId==sourceFrame && page.State.NativePose==state.NativePose
+                            && page.GamePointerContextSlot.Read()==context && ReferenceEquals(frozenSource,Field<WpfRuntimeSceneMaterial>(currentHost,"preparedMaterial")),
+                            "current-group production material consumer reuses frozen bitmaps and retains the source observation and drag offset");
+                        visual.Apply(ready.Frame(ticket,released!,.7),96,96);
+                        check(images.Select(i=>i.Source).SequenceEqual(sources) && images.Select(i=>i.RenderTransform).SequenceEqual(transforms)
+                            && images.Select((image,i)=>Math.Abs(((MatrixTransform)image.RenderTransform).Matrix.OffsetX-matrices[i].OffsetX-15)<1e-7
+                                && Math.Abs(((MatrixTransform)image.RenderTransform).Matrix.OffsetY-matrices[i].OffsetY+6)<1e-7).All(v=>v)
+                            && runtime.ReadMaterialToRemember() is null && currentMessages.Count==0,
+                            "current-group real Image/BitmapSource/transforms remain resident without double translation or transient learning");
+                        var currentSurface=Field<WpfAlignedOverlaySurface>(currentHost,"surface");
+                        check(currentSurface.NativeHandle==0 && !currentSurface.IsVisible && currentMaterialCapture.Binding is null,
+                            "current-group recorded material ACK remains separate from native display permission");
+                    }
+                    page.RefreshGroupControls();
                     check(choose.IsEnabled && members.Items.Cast<RuntimeGroupMember>().Any(member=>member.MapId=="nightmare-12"),
                         "drag-group real UI offers only the registered target");
                     members.SelectedValue="nightmare-12";hold=capture.HoldNext();

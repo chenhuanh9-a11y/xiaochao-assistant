@@ -25,7 +25,7 @@ public sealed partial class LiveRuntime
         GroupMemberChoicePlan Plan, CapturedClientFrame Frame, BoundResources Resources,
         NativeGeometryPose Pose, CanonicalDisplayCommit Commit, CancellationToken Cancellation,
         CapturedClientFrame SourceFrame,RuntimeRenderPacket? SourceRender,MapDragCycle? SourceDragCycle,
-        FloorObservationResult? StagedObservation,SessionRequestContext OwnerContext)
+        FloorObservationResult? StagedObservation,SessionRequestContext OwnerContext,bool ReusesSourceGeometry=false)
     {
         public CancellationTokenRegistration CancellationRegistration {get;set;}
     }
@@ -88,7 +88,8 @@ public sealed partial class LiveRuntime
         && !pending.Cancellation.IsCancellationRequested && _mapOpen && ReferenceEquals(pending.SourceFrame, _frame)
         && ReferenceEquals(pending.SourceRender,_render) && ReferenceEquals(pending.SourceDragCycle,_dragCycle)
         && _capture.IsObservationContextCurrent(pending.SourceFrame)
-        && ReferenceEquals(pending.Resources, _resources) && _capture.IsCurrent(pending.Frame.Stamp)
+        && ReferenceEquals(pending.Resources, _resources)
+        && (pending.ReusesSourceGeometry ? RenderCurrent() : _capture.IsCurrent(pending.Frame.Stamp))
         && DesiredGroupCurrent() && GroupMemberChoicePlanner.IsCurrent(pending.Plan, GroupChoiceState(ignorePending: true));
 
     /// <summary>ACK for consumer material readiness, never a native-window or GPU-present ACK.</summary>
@@ -101,8 +102,11 @@ public sealed partial class LiveRuntime
             if (_activeDrag is not null || _workActive || !PendingGroupCurrent(pending) || !ReferenceEquals(packet, pending!.Commit.Render)
                 || !_nativeIdentity!.TrySelectRegisteredMember(pending.Plan.MapId,out var selectedIdentity)) return false;
             pending.CancellationRegistration.Unregister();
-            _alignment?.Close(reason: "group-member-material-ready");
-            ResetSteady();
+            if(!pending.ReusesSourceGeometry)
+            {
+                _alignment?.Close(reason: "group-member-material-ready");
+                ResetSteady();
+            }
             _nativeIdentity=selectedIdentity;
             _mapId = pending.Plan.MapId; _identitySource = "group-manual"; _heldGroupMember = _mapId;
             if(pending.StagedObservation is { } observation)
@@ -111,7 +115,13 @@ public sealed partial class LiveRuntime
                 _floor=pending.Plan.Scope!.Floor;_observedFloor=observation.FloorId;
                 RememberPointerObservation(pending.Frame,observation);_probeMisses=0;_entryCandidates.Clear();
             }
-            _pose = pending.Pose; ApplyCanonicalCommit(pending.Commit);
+            _pose = pending.Pose;
+            if(pending.ReusesSourceGeometry)
+            {
+                _render=pending.Commit.Render;_display=pending.Commit.Display;
+                RegisterMaterialProposal();
+            }
+            else ApplyCanonicalCommit(pending.Commit);
             _pendingGroupMaterial = null;
             _groupChoiceStatus = "confirmed"; _groupChoiceReason = "本局保持手动选择";
             _reason = "group-member-confirmed"; Publish();
@@ -159,6 +169,13 @@ public sealed partial class LiveRuntime
             bound = _resources!;
             _desiredGroupChoice = new(_roundId!, bound.Id, _nativeIdentity!.GroupId!, _nativeIdentity.MemberIds.ToArray(), plan.MapId);
             _groupChoiceStatus = "awaiting-geometry"; _groupChoiceReason = "已选择地图，等待定位；当前显示尚未切换";
+            if(plan.MapId==_mapId && RenderCurrent())
+            {
+                _groupChoiceWorkOwner=request.Context;
+                var currentCommit=new CanonicalDisplayCommit(_alignment,_canonical,new RuntimeRenderPacket(_render!),_display,_geometryGroup);
+                return StageGroupMaterial(request,new(intent,epoch,_frameGeneration,plan,_frame!,bound,_pose!,currentCommit,token,
+                    _frame!,_render,_dragCycle,null,request.Context,ReusesSourceGeometry:true));
+            }
             fresh=DragCycleCurrent;sourceFrame=_frame;sourceRender=_render;sourceCycle=_dragCycle;sourceGeneration=_frameGeneration;
             captured = !fresh && _mapOpen && _frame is { } current && _capture.IsCurrent(current.Stamp) ? current : null;
             _workActive = fresh || captured is not null; Publish();
@@ -219,27 +236,7 @@ public sealed partial class LiveRuntime
                 var pending = new PendingGroupMaterial(intent, epoch, sourceGeneration, plan, captured!, bound,
                     new(plan.MapId, plan.Scope.Floor, bound.Id, captured!.Stamp.FrameId, matrix), commit, token,
                     sourceFrame!,sourceRender,sourceCycle,stagedRead,request.Context);
-                _pendingGroupMaterial=pending;
-                pending.CancellationRegistration=token.Register(()=>
-                {
-                    lock(_sync)
-                    {
-                        if(!ReferenceEquals(_pendingGroupMaterial,pending))return;
-                        DiscardGroupMaterial("group-choice-cancelled");
-                        _reason="group-member-awaiting-geometry";Publish();
-                    }
-                });
-                if(!ReferenceEquals(_pendingGroupMaterial,pending) || token.IsCancellationRequested)
-                {
-                    // Cancellation can be marked before its callback starts.
-                    // Clearing cannot depend on a callback we are unregistering.
-                    if(ReferenceEquals(_pendingGroupMaterial,pending))DiscardGroupMaterial("group-choice-cancelled");
-                    else pending.CancellationRegistration.Unregister();
-                    throw new OperationCanceledException("group-choice-cancelled",token);
-                }
-                _groupChoiceStatus = "awaiting-material"; _groupChoiceReason = "正在准备所选地图，当前显示尚未切换";
-                _reason = "group-member-awaiting-material"; Publish();
-                return Receipt(request, true, _reason);
+                return StageGroupMaterial(request,pending);
             }
         }
         catch (OperationCanceledException) { throw; }
@@ -264,6 +261,31 @@ public sealed partial class LiveRuntime
                     throw new OperationCanceledException("group-choice-context-expired",token);
             }
         }
+    }
+
+    // Both current-material reuse and a freshly fitted member share one pending lifetime.
+    // Callers hold _sync through registration and publication.
+    private RuntimeOperationResult StageGroupMaterial(SessionRuntimeRequest request,PendingGroupMaterial pending)
+    {
+        _pendingGroupMaterial=pending;
+        pending.CancellationRegistration=pending.Cancellation.Register(()=>
+        {
+            lock(_sync)
+            {
+                if(!ReferenceEquals(_pendingGroupMaterial,pending))return;
+                DiscardGroupMaterial("group-choice-cancelled");
+                _reason="group-member-awaiting-geometry";Publish();
+            }
+        });
+        if(!ReferenceEquals(_pendingGroupMaterial,pending) || pending.Cancellation.IsCancellationRequested)
+        {
+            // Clearing cannot depend on a cancelled callback we are unregistering.
+            if(ReferenceEquals(_pendingGroupMaterial,pending))DiscardGroupMaterial("group-choice-cancelled");
+            else pending.CancellationRegistration.Unregister();
+            throw new OperationCanceledException("group-choice-cancelled",pending.Cancellation);
+        }
+        _groupChoiceStatus="awaiting-material";_groupChoiceReason="正在准备所选地图，当前显示尚未切换";
+        _reason="group-member-awaiting-material";Publish();return Receipt(request,true,_reason);
     }
 
     private RuntimeOperationResult GroupChoiceWaiting(SessionRuntimeRequest request, string reason)
