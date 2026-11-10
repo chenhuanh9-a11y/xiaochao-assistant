@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import textwrap
 from types import SimpleNamespace
 import unittest
 
@@ -26,6 +27,19 @@ def touch(path: Path, age: int, size: int = 10) -> Path:
 
 def frame(seed: int) -> np.ndarray:
     return np.random.default_rng(seed).integers(0, 255, (60, 120, 3), dtype=np.uint8)
+
+
+def qt_startup_statements(*, include_lifecycle=False):
+    """Execute the current startup boundary without constructing unrelated UI.
+
+    The optional end includes the real journal's first record. The trace writer
+    remains a separately substituted opt-in service in that test.
+    """
+    source = (APP.parent / 'experiments/qt_quick/client.py').read_text(encoding='utf-8-sig')
+    start = source.index('        try:\n            from diagnostic_export import DIAGNOSTIC_LOG_LIMIT, prune_diagnostic_logs')
+    end = source.index('        self._closed = False' if include_lifecycle else
+                       '        from client_lifecycle_trace', start)
+    return textwrap.dedent(source[start:end])
 
 
 class RetentionTests(unittest.TestCase):
@@ -59,24 +73,30 @@ class RetentionTests(unittest.TestCase):
         # Execute the actual Qt startup statements, not a reimplementation.
         from unittest.mock import patch
         import diagnostic_export
-        live = self.root / 'nightmare-live'
+        from client_paths import RuntimePaths
+        paths = RuntimePaths(self.root, production=False)
+        live = paths.work_root / 'nightmare-live'
         sentinel = touch(live / 'events-user.jsonl', 0)
-        before = sentinel.read_bytes()
-        sources = [
-            ('experiments/qt_quick/client.py', '        try:\n            from diagnostic_export import DIAGNOSTIC_LOG_LIMIT, prune_diagnostic_logs',
-             '        from client_lifecycle_trace')]
-        import textwrap
-        for relative, first, last in sources:
-            source = (APP.parent / relative).read_text('utf-8-sig')
-            start = source.index(first); end = source.index(last, start)
-            with patch.object(diagnostic_export, 'prune_diagnostic_logs', wraps=prune_diagnostic_logs) as call, \
-                 patch('star_map_download.prune_installed_downloads') as downloads:
-                exec(textwrap.dedent(source[start:end]), dict(
-                    LIVE_ROOT=live, DIAGNOSTIC_LOG_LIMIT=8, ROOT=self.root, Path=Path,
-                    self=SimpleNamespace(sandbox=self.root, paths=SimpleNamespace(work_root=self.root))))
-                call.assert_called_once_with(live, 7)
-                downloads.assert_called_once_with(self.root/'work/map-packages/downloads', self.root)
-            self.assertEqual(sentinel.read_bytes(), before)
+        state = paths.work_root / 'map-packages'
+        archive = touch(state / 'downloads' / f'pack-{"a" * 64}.zip', 0)
+        unknown = touch(state / 'downloads' / 'user-download.zip', 1)
+        partial = touch(state / 'downloads' / 'star-map-user.part', 2)
+        receipt = state / 'pack.json'
+        receipt.write_text(json.dumps(dict(packageId='pack', archiveSha256='a' * 64)), encoding='utf-8')
+        before = {path: path.read_bytes() for path in (sentinel, archive, unknown, partial, receipt)}
+        results = []
+        def observe_prune(*args):
+            result = prune_diagnostic_logs(*args)
+            results.append(result)
+            return result
+        with patch.object(diagnostic_export, 'prune_diagnostic_logs', side_effect=observe_prune) as call, \
+             patch('star_map_download.prune_installed_downloads', wraps=prune_installed_downloads) as downloads:
+            exec(qt_startup_statements(), dict(self=SimpleNamespace(sandbox=self.root, paths=paths)))
+            call.assert_called_once_with(live, 7)
+            downloads.assert_not_called()
+        self.assertEqual(results, [None])
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+        self.assertEqual(set((state / 'downloads').iterdir()), {archive, unknown, partial})
         status = diagnostic_export.diagnostic_log_retention_status()
         self.assertEqual(status['legacyHistory'], 'preserved-unowned-not-pruned')
         self.assertEqual(status['budgetScope'], 'new-managed-logs-only-not-all-historical-files')
@@ -143,10 +163,37 @@ class RetentionTests(unittest.TestCase):
 
 class StartupWiringTests(unittest.TestCase):
     def test_qt_client_prunes_before_opening_their_logs(self):
-        root = Path(__file__).resolve().parents[1]
-        qt = (root / 'experiments' / 'qt_quick' / 'client.py').read_text('utf-8')
-        self.assertLess(qt.index('prune_diagnostic_logs(self.paths.work_root'), qt.index('ProblemsService(self.paths'))
-        self.assertLess(qt.index('prune_installed_downloads(self.sandbox'), qt.index('LifecycleJournal(self.paths.work_root)'))
+        from unittest.mock import patch
+        import diagnostic_export
+        import client_lifecycle
+        from client_paths import RuntimePaths
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            paths = RuntimePaths(root, production=False)
+            live = paths.work_root / 'nightmare-live'
+            events = []
+            open_log = client_lifecycle.RotatingFileHandler
+            def observe_prune(*args):
+                self.assertEqual(list(live.glob('events-qt-lifecycle-*.jsonl')), [])
+                events.append('prune')
+                return prune_diagnostic_logs(*args)
+            def observe_open(*args, **kwargs):
+                events.append('log-open')
+                return open_log(*args, **kwargs)
+            owner = SimpleNamespace(sandbox=root, paths=paths)
+            # Only opt-in tracing is substituted; the startup statements and
+            # lifecycle file open/write/flush are the production implementation.
+            with patch.object(diagnostic_export, 'prune_diagnostic_logs', side_effect=observe_prune) as prune, \
+                 patch('star_map_download.prune_installed_downloads', wraps=prune_installed_downloads) as downloads, \
+                 patch('client_lifecycle_trace.create_lifecycle_trace', return_value=None), \
+                 patch('s1_candidate_purpose.packaged_native_candidate_purpose', return_value=None), \
+                 patch.object(client_lifecycle, 'RotatingFileHandler', side_effect=observe_open):
+                exec(qt_startup_statements(include_lifecycle=True), dict(self=owner))
+                prune.assert_called_once_with(live, 7)
+                downloads.assert_not_called()
+            self.assertEqual(events, ['prune', 'log-open'])
+            rows = [json.loads(row) for row in owner.lifecycle.path.read_text(encoding='utf-8').splitlines()]
+            self.assertEqual([row['stage'] for row in rows], ['client-created'])
 
 
 if __name__ == '__main__':

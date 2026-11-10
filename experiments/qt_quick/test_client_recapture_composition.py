@@ -36,6 +36,7 @@ def composition():
     from test_client_recapture_focus import APP, RecaptureFocusTests
     from test_client_manual_map import qml_item
     from test_client_input import Native as InputNative
+    from client_input import NativeShortcutBackend
     import test_client_live_runtime as fixtures
 
     fixture = RecaptureFocusTests('test_main_qml_click_returns_game_then_captures_via_real_guard')
@@ -50,10 +51,12 @@ def composition():
         with tempfile.TemporaryDirectory(prefix='qt-recapture-composition-', dir=WORK_ROOT) as directory:
             root = Path(directory)
             (root / '.qt-lab-owner').write_text('qt-quick-isolated-v1', encoding='utf-8')
-            with patch('client_input.NativeWindowAPI', return_value=InputNative()), \
+            with patch('client_input.NativeShortcutBackend', side_effect=lambda *a, **k: NativeShortcutBackend(InputNative())), \
                  patch('client_capture.ClientCaptureProvider', return_value=fixture.capture), \
-                 patch('client_providers.build_engine_factories', return_value=providers):
+                 patch('client_imported_providers.build_imported_engine_factories', return_value=providers) as factory:
                 client = QtClient(APP, root, probe_output=root / 'probe-unused.json', info_fetch=lambda *a, **k: {})
+                factory.assert_called_once_with(client.resource_resolver, client.paths)
+                assert client.resource_resolver.root == client.paths.imported_resource_root
             for timer in (client.coordinator._foreground_timer, client.coordinator._tracking_timer):
                 timer.stop()
             def wait(predicate):

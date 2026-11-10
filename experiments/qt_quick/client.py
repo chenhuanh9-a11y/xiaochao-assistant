@@ -10,7 +10,7 @@ from uuid import uuid4
 from PySide6.QtCore import QTimer, QUrl, QThreadPool, Qt
 from PySide6.QtGui import QFont, QGuiApplication, QIcon, QWindow
 from PySide6.QtQml import QQmlApplicationEngine
-from client_paths import APP_ROOT, DEFAULT_SANDBOX, FROZEN, PRODUCTION, RESOURCE_ROOT, WORK_ROOT, owned_sandbox, runtime_paths
+from client_paths import APP_ROOT, DEFAULT_SANDBOX, FROZEN, PRODUCTION, RESOURCE_ROOT, WORK_ROOT, RuntimePaths, owned_sandbox, runtime_paths
 from client_manual_map_service import ManualMapPickerService
 from qt_startup_splash import set_startup_stage
 
@@ -638,7 +638,10 @@ def main():
             from season_context import SEASONS, modes_for_season
             from client_resource_startup import program_runtime
             installation = owned_sandbox(args.sandbox.resolve()) if PRODUCTION else args.sandbox.resolve()
-            paths = runtime_paths(installation)
+            # Explicit source self-checks may inspect a not-yet-initialized
+            # directory. They neither create an ownership marker nor start IO
+            # services; normal clients still require their owned installation.
+            paths = runtime_paths(installation) if PRODUCTION else RuntimePaths(installation, False)
             resolver = ResourceResolver(paths.imported_resource_root, supported_capabilities=SUPPORTED_CAPABILITIES)
             with program_runtime(installation, production=PRODUCTION):
                 registry = build_imported_engine_factories(resolver, paths)

@@ -10,6 +10,8 @@ import os
 from pathlib import Path
 import tempfile
 import time
+from contextlib import redirect_stdout
+from io import StringIO
 import unittest
 from unittest.mock import Mock, patch
 
@@ -231,6 +233,24 @@ class ImportedResourceStartupTests(unittest.TestCase):
                              {'recognition-base-missing', 'controls-profile-missing'})
             self.assertEqual(legacy.read_bytes(), b'{"legacy":"must remain untouched"}')
             self.assertFalse((root / 'work/imported-resources/catalog.json').exists())
+
+    def test_readonly_selfcheck_can_report_an_uninitialized_explicit_source_root(self):
+        import json
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            output = StringIO()
+            with patch.object(client, 'PRODUCTION', False), patch.object(client, 'FROZEN', False), \
+                 patch.object(__import__('sys'), 'argv', ['client', '--sandbox', str(root), '--self-check', '--verify-resources']), \
+                 patch.object(client, 'QGuiApplication', side_effect=AssertionError('self-check created GUI')), \
+                 redirect_stdout(output):
+                self.assertEqual(client.main(), 1)
+            report = json.loads(output.getvalue())
+            self.assertTrue(report['ready'])
+            self.assertFalse(report['resourcesReady'])
+            self.assertEqual(set(report['resourceContexts']), {'s0:nightmare', 's0:difficult', 's1:nightmare', 's1:difficult'})
+            self.assertFalse(report['nativeInputStarted'])
+            self.assertFalse(report['captureStarted'])
+            self.assertEqual(list(root.iterdir()), [])
 
 
 if __name__ == '__main__':

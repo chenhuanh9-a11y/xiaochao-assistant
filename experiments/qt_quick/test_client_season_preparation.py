@@ -3,7 +3,9 @@
 Each scenario runs in an isolated process and owned temporary installation. Only
 native input, capture, heavy engine construction and explicit detector evidence
 are fixtures. Settings, coordinator, session, runtime, S0 geometry validation,
-EngineFactories and QTimer connections are real.
+ImportedEngineFactories caching/preparation and QTimer connections are real.
+Only this lifecycle fixture supplies an S0 binding and synthetic engine; it does
+not establish imported-package decoder readiness.
 """
 import json
 import os
@@ -97,19 +99,22 @@ def scenario(name, root):
     from PySide6.QtGui import QGuiApplication
     from PySide6.QtTest import QTest
     from client import QtClient
-    from client_providers import EngineFactories
+    from client_providers import EngineFactories, ProviderResourceBinding
+    from client_imported_providers import ImportedEngineFactories, ImportedProviderUnavailable
+    from client_input import NativeShortcutBackend
+    from season_context import SeasonContext
     from test_client_input import Native
     from test_client_live_runtime import FixtureCapture, fixture_engine
 
     app = QGuiApplication.instance() or QGuiApplication([])
     calls, builds = [], []
     entered, release = threading.Event(), threading.Event()
-    from client_resources import ResourceService
+    from client_imported_resources import ImportedResourceService
     inventory_reads = []
-    original_snapshot = ResourceService._declarations
-    def snapshot(service, cancel):
+    original_scan = ImportedResourceService._scan
+    def scan(service, verify):
         inventory_reads.append(True)
-        return original_snapshot(service, cancel)
+        return original_scan(service, verify)
     original_prepare = EngineFactories.prepare_context
     def prepare(self, mode, cancelled=None, *, season="s0"):
         calls.append(season)
@@ -126,6 +131,14 @@ def scenario(name, root):
         if name == "failed-close":
             raise ValueError("controlled-invalid-resource")
         return fixture_engine(mode)
+
+    class LifecycleFactories(ImportedEngineFactories):
+        def _resource_binding(self, mode, season="s0"):
+            if season != "s0":
+                raise ImportedProviderUnavailable("fixture-s1-unavailable", ("fixture-s1-unavailable",))
+            return ProviderResourceBinding(SeasonContext(season=season, mode=mode), self.root)
+
+        _build = build
 
     def wait(predicate, label, seconds=5):
         deadline = time.monotonic() + seconds
@@ -152,13 +165,14 @@ def scenario(name, root):
     capture.is_current = lambda *args, **kwargs: True
     client = None
     try:
-        with patch("client_input.NativeWindowAPI", return_value=Native()), \
+        with patch("client_input.NativeShortcutBackend", side_effect=lambda *a, **k: NativeShortcutBackend(Native())), \
              patch("client_capture.ClientCaptureProvider", return_value=capture), \
              patch("client_coordinator.another_assistant_running", return_value=False), \
-             patch.object(EngineFactories, "_build", build), \
+             patch("client_imported_providers.build_imported_engine_factories", side_effect=LifecycleFactories) as factory, \
              patch.object(EngineFactories, "prepare_context", prepare), \
-             patch.object(ResourceService, "_declarations", snapshot):
+             patch.object(ImportedResourceService, "_scan", scan):
             client = QtClient(app, root, probe_output=root / "unused.json", info_fetch=lambda *a, **k: {})
+            factory.assert_called_once_with(client.resource_resolver, client.paths)
             if name == "cancelled-late":
                 wait(entered.is_set, "startup entered controlled build")
                 # Save through the public coordinator while the real startup
@@ -264,7 +278,7 @@ def scenario(name, root):
                         observation, floor, reading = client.runtime._observe(engine, frame)
                         assert locate.call_count == 1, locate.call_args_list
                         args, kwargs = locate.call_args
-                        assert args[0] is frame and args[1] == mode and kwargs == {"season": "s0"}
+                        assert args[0] is frame and args[1] == mode and kwargs == {"season": "s0", "controls": None}
                         assert floor == "1", (mode, reading)
                         assert reading["floorSource"] == "fixed", (mode, reading)
                         assert reading["season"] == "s0" and reading["mode"] == mode
@@ -340,7 +354,7 @@ def scenario(name, root):
                 wait(ready, "current mode ready without management scan")
                 assert inventory_reads == [], inventory_reads
                 client.main.setProperty("page", "resources")
-                wait(lambda: bool(inventory_reads) and idle() and not client.package_manager.busy,
+                wait(lambda: bool(inventory_reads) and idle(),
                      "opening management page triggers inventory")
                 assert len(inventory_reads) == 1, inventory_reads
                 client.main.setProperty("page", "resources")
