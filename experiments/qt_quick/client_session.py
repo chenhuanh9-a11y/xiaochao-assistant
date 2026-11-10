@@ -7,6 +7,7 @@ authority. Only the runtime's snapshot is presented as engine state.
 from __future__ import annotations
 
 from copy import deepcopy
+from contextlib import nullcontext
 import sys
 import threading
 import time
@@ -57,12 +58,23 @@ class _RuntimeWork(QRunnable):
             self.diagnostics.record("worker-start", jobId=id(self), action=self.action,
                 cancelled=self.cancelled.is_set(), frameId=self.context.get("frameId"))
         operation = "runtime-dispatch"
+        grid = None
         try:
-            receipt = self.runtime.dispatch(self.action, self.payload, self.cancelled)
-            operation = "runtime-snapshot"
-            state = self.runtime.snapshot()
+            grid = getattr(self.runtime, "grid_runtime", None)
+            scope = grid.request_scope(self.cancelled.is_set) if grid is not None else nullcontext(self.cancelled)
+            with scope as cancelled:
+                receipt = self.runtime.dispatch(self.action, self.payload, cancelled)
+                operation = "runtime-snapshot"
+                state = self.runtime.snapshot()
             self.signals.done.emit(id(self), self.context, (receipt, state), None)
         except Exception as error:
+            if grid is not None and grid.request_failed:
+                # A failed native search cannot leave a pose from an incomplete
+                # candidate pool authorized after this worker reports failure.
+                try:
+                    self.runtime.invalidate("grid-computation-failed")
+                except Exception as invalidation_error:
+                    error.add_note("Runtime invalidation failed: " + type(invalidation_error).__name__)
             # Preserve main's original error signal/string before optional evidence.
             message = f"{type(error).__name__}: {error}"
             self.failure_diagnostics = dict(exceptionType=type(error).__name__,

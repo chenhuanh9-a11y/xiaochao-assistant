@@ -75,3 +75,7 @@ Desktop.ini
 # Windows update notice drafts (tools/publish_windows_notice.py)
 /notes.txt
 /release-local/
+
+# Generated outputs of the native grid candidate service.
+/hybrid/StarMap.Grid/bin/
+/hybrid/StarMap.Grid/obj/
