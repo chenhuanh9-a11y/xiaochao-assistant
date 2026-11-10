@@ -65,6 +65,8 @@ internal static class RuntimeWorkspaceChecks
             Check(window.Runtime.Snapshot!.Value.GetProperty("render").GetProperty("token").GetString() == token,
                 "returning to persistent home reuses current runtime result without recognition");
             Check(PixelsEqual((BitmapSource)window.Runtime.AlignedImage!, recorded.LastRender!.Value), "WPF image pixels equal actual Python render payload");
+            Check(recorded.LastRender!.Value.GetProperty("captureDpi").GetInt32() == physical.GetProperty("Dpi").GetInt32(),
+                "final production render carries DPI from the accepted capture context");
             var h = recorded.LastRender!.Value.GetProperty("matrix");
             var matrix = ((MatrixTransform)window.Runtime.OverlayTransform).Matrix;
             Check(matrix.M11 == h[0][0].GetDouble() && matrix.M12 == h[1][0].GetDouble()

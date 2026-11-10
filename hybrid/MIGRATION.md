@@ -17,8 +17,8 @@ Python 服务采用自有子进程和本地标准输入/输出 JSONL；不监听
 | 启动、错误边界、单实例、后台和退出 | `tools/qt_client_entry.py` → `client.main/QtClient`；`client_single_instance`、`client_startup_cleanup` | 图库测试入口及自有 worker EOF/重连/退出已实现并有窗口主机回归；完整产品生命周期未迁 | 重启恢复窗口，启动失败可诊断；X 的后台/取消/退出；所有自有任务、监听和子进程排空 |
 | 主页面与本局、候选及人工选择 | `ClientHome/Controls/MapPicker.qml`；`SessionService` → `LiveRuntime` | WPF 保存帧主页已接统一服务，开始/实际捕获求解/本局状态/贴合预览/取消/结束/重连有生产回放消费者检查；候选/确认/换层已接命令但实际交互未验，完整原 UI 与实时采集未迁 | 显式开始→捕获→身份/楼层→首贴→后续开图；手选、取消、迟到、结束及重开 |
 | C# grid 热点与 Python 后续消费 | `fast_structure_alignment._grid` → `propose/refine`；历史 protocol 2 的 `GridBridge` | 已携入持久服务，作用域注入当前生产链；当前原帧确实执行 grid，合成已知目标 Host 接受对照通过；完整 Runtime 自动 grid 接受/原生显示仍缺 | 同输入候选、实际 Python refine/最终接受拒绝轨迹；延迟启动、取消/超时/崩溃和重启；原图与合成分开 |
-| Windows 窗口、捕获、全局输入 | `client_game_focus/capture/input/native_keys/map_input`；coordinator | 未迁 | 严格绑定及游戏重启，完整客户区、前台失效、按键穿透；局外按键不开始对局 |
-| 参考/贴合/提示窗口、作者显示桥 | `client_windows`、`LiveImages`、`ClientAligned/Reference/Toast.qml`；runtime/core | 未迁 | 作者切换保持身份/结构位姿；定点和贴合分别显隐；DPI、捕获排除及旧帧撤回 |
+| Windows 窗口、捕获、全局输入 | `client_game_focus/capture/input/native_keys/map_input`；coordinator | C# Win32 事实/GDI、独立 native pipe 和原 Python provider 已接；自有窗口整帧/ROI 取像通过，真实前台门通过后的端到端阳性未验；全局输入未迁 | 严格绑定及游戏重启，完整客户区、前台失效、按键穿透；局外按键不开始对局 |
+| 参考/贴合/提示窗口、作者显示桥 | `client_windows`、`LiveImages`、`ClientAligned/Reference/Toast.qml`；runtime/core | WPF 被动仿射贴合层及自身窗口 affinity 排除/恢复已实现，实际透明层/DPI/排除事务未验；参考/提示窗口未迁 | 作者切换保持身份/结构位姿；定点和贴合分别显隐；DPI、捕获排除及旧帧撤回 |
 | 地图与楼层图库 | `ClientGallery.qml` → `Backend` → `load_browse_context` | WPF 选择/筛选/实际图片已接统一 worker；隐藏时延后列表/解码，可见时复用当前结果；合成/静态资源与窗口主机检查通过，桌面输入/捕获受限，原 UI 全量等价未验 | 两模式、两赛季、变体、缺图、坏图、刷新、快速换层/模式、真实桌面像素 |
 | 图包导入、升级、删除与恢复 | `ResourceService/PackageManagerService` → `star_map_import/author_package_management/resource_transaction` | 未迁 | 真文件选择，普通新增、替换确认、取消、失败/重复、列表与 provider/cache 失效及恢复 |
 | 在线图包 | `OnlinePackagesService` → `star_map_download` | 未迁 | 刷新、下载、校验、取消/重试、实际安装和失败恢复 |
@@ -116,3 +116,34 @@ WPF 主页通过同一服务消费原 `LiveRuntime`，没有另写识别或本�
 后续 fresh 复核另以实际桥复现了非法 `id`（字符串）绕过协议错误处理、连接仍可复用的问题。现先检查匹配 session 的 ID 是整数，再做当前 ID 比较；字符串/object/null 均按协议失败撤销连接，合法的旧 ID 与 foreign session 仍忽略。三类非法 ID 的拒绝、拒复用和自有进程退出均保留回归。等待终态期间若调用方也取消，仍优先报告调用取消并排空；发送阶段单独记录最先中断写入的原因。
 
 尚未完成：真实文件框选帧、两模式候选/确认/换层的实际 WPF 使用流程；完整原主页与其他页面；实时捕获/输入与原生定点/贴合/提示窗口；后台/托盘/单实例与 X 的产品退出选择；保存帧暂存长期清理和跨启动数据根；投影矩阵显示、计算中即时显隐。资源写者、作者/设置、导入下载、账号/帮助等继续按全量清单迁移。当前没有 Setup，不能作为正式客户端或全量迁移完成。
+
+### 2026-11-10：原生捕获与被动贴合层
+
+新增 `StarMap.Windows` 将 `GetClientRect/ClientToScreen/GetDpiForWindow`、进程创建时间与可执行路径复核，以及 client/screen DC 的 DIB/BitBlt/GdiFlush 放在 C#；各捕获共用原语，不自动降级到屏幕。生产目标仍同时要求原游戏标题政策和 `dwrg.exe`，未知身份或几何失败即拒绝。Python `ClientCaptureProvider` 保留唯一 generation/启停/前台/空白判定/fallback/捕获前后上下文检查，默认 Qt 构造只调整为延迟导入 `NativeWindowAPI`。共用 `RuntimeSession` 持资源租约和工厂，recorded 与 native 组合分别构造；native 不接受 `set_frame`，不能给保存 PNG 改 live 标签。
+
+每个自有 native worker 使用独立、仅当前 Windows 用户的命名管道，实测客户端 PID 必须等于本 worker。业务 JSONL 保留原 session/id/取消终态；二进制回调绑定当前请求及 callId，元数据回调不进入业务串行锁，避免持 Python runtime 锁的 `is_current` 等待取消线程回包。取像只在 dispatch 作用域，图库不获得取像权。BGR 体有 32M 像素上限与两秒 I/O 截止；半帧或错误通道拒复用。取消挂起 overlapped I/O 后须观察该操作完成才释放缓冲、结构及事件；原先提前释放的 P1 已复现并修正。若一秒取消收尾仍无法证明完成，专用 Python worker 保持栈缓冲至非零退出 70，由父进程按失败处理，而不释放仍被内核引用的内存。
+
+WPF 可选择“连接游戏窗口”或 `--live-capture`，显式选择/绑定后准备本局；实时重新识别、选图、确认和换层统一提供三秒切回游戏的调度，不放宽前台条件。此等待不是算法耗时或性能达标证据。贴合层不激活、不接受输入，按已接受捕获的物理 origin/size/DPI 放置；普通页面隐藏时仍可消费本局材料。上下文在解码前、解码后或显示期间失效，立即撤材料和旧 token，并走原 `close_map` 撤后端显示，不能返回同窗口/页面后复活。原生层只做仿射显示，参考/提示窗口、全局输入、投影和正式生命周期仍继续迁移。
+
+| 本轮检查 | 实际证据与边界 |
+| --- | --- |
+| Python native capture 与已有 hybrid 四模块 | 13+27 项通过。原生13项含真实 kernel pipe 的合成 peer、半帧、取消后排空、Qt 导入阻断、错误身份，以及真实 pending write 的关闭唤醒；内核不确认完成的分支仅用隔离子进程模拟，验证退出70 |
+| 原 Qt 受影响核心 | 匹配 Qt 6.11.1 环境，`test_client_capture_full/test_client_capture_compat/test_client_capture_exclusion/test_client_live_runtime` 93 项通过；使用原合成 native/求解替身，并非真实 GUI/游戏 |
+| `StarMap.NativeTests <source> <python> <resources>` | 自建且持续泵消息的 Win32 窗口：整帧/ROI 红绿蓝像素符合独立绘图值、预取消拒帧、移动后拒旧几何；12次捕获 GDI 对象前后均11。严格默认身份政策拒该测试窗，受控集成单独注入仅本测试 PID 的选择政策 |
+| 真实 native worker 使用链 | C#→原 Python 会话的 hello/prepare/bind/start/end/EOF 通过，前置元数据流程 PixelCalls=0。Windows 拒绝将测试窗置于前台，实际 capture_now 被 `CaptureForegroundUnavailable` 拒绝且未取像；日志 `work/hybrid-native-owned-window-20261110-01.txt`。这不是完整实时取像阳性 |
+| 额外 `--simulate-foreground` | 仅替换“前台 HWND”事实，仍用真实自有 GDI 窗口像素与原生产 Python：一次完整客户区经 C# BGR 管道进入生产链，返回 `map-not-observed`，没有显示接受。日志 `work/hybrid-native-simulated-foreground-20261110-01.txt`；此项仅为 IPC/原消费者组合检查，不能代替上行被拒的真实前台路径 |
+| WPF native 消费者反例 | 12项通过：明确替换 RPC/OS 当前性，使用实际 VM/PNG 解码；复现并修复解码前后失效旧 token 复活，验证全部四种取帧 UI 动作在切回等待时可取消。没有启动窗口、捕获或游戏 |
+| 本轮最终 WPF 联合检查 | 图库26项、当前保存帧本局28项及上行native消费者12项，共66项通过，含最终 `render_payload.captureDpi` 来源回归。日志 `work/hybrid-native-wpf-final-20261110-01.txt`；普通/最小/滚动离屏图已复看，分别位于 `work/hybrid-runtime-renders/7f79675badd14313ac9c1cbd6f39b8e5` 与 `work/hybrid-gallery-renders/3611c3e8269040e197f3c7874e8bef1e`，不是桌面或游戏验收 |
+| 本轮最终传输与构建 | `StarMap.TransportTests` 40项通过，日志 `work/hybrid-native-transport-final-20261110-01.txt`；Bridge/Windows/Desktop Release构建0警告0错误。覆盖当前native接入后的recorded传输恢复，不扩大为原生取像阳性 |
+
+初次自有 native 窗口测试在跨线程后缺少持续消息泵，卡在自身窗口检查/取像入口；补正确消息线程后才获得上述实际 GDI 证据。首轮完整宿主也曾因探针未设置嵌入式 Python 的路径、及读错 `capability.available` 字段在取像前失败；这些失败不算 native 产品故障或取像通过。实际 worker 入口已直接验证。独立复核还发现 DPI 字段加到了待切图接口而非最终 `render_payload`，现已移到最终已接受捕获来源，并用真实保存帧最终消费者保留 DPI 回归。原失败未通过放宽前台/退出/断言变绿。
+
+参考 [Microsoft 客户区坐标](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getclientrect)、[display affinity](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowdisplayaffinity) 与 [CancelIoEx 完成语义](https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-cancelioex)。实际全客户区到授权正确浮层像素、1.5/多屏 DPI、排除期间取消/退出与实机仍未验；源码接入、模拟、直接 GDI 和产品验收保持分开，没有 Setup。
+
+### PR #129 的 Qt 退出 CI 未关闭项
+
+远端 `9cfeb259` 的 [运行 42780060440](https://github.com/chenhuanh9-a11y/xiaochao-assistant/actions/runs/42780060440) 有12个矩阵成功、1个 tutorials 失败：[job 129707663193](https://github.com/chenhuanh9-a11y/xiaochao-assistant/actions/runs/42780060440/job/129707663193) 的 `test_accepted_resource_writer_drains_before_quit` 在约1.806秒以 code7/timeout 退出。同一次 core job 在同一 head 明确运行该项并通过；main-baseline 的8b147149也明确通过该项，但其四个相关文件不同，不能代替原 Qt 基线对照。
+
+隔离归档9cfeb259与正式迁移前cc5100c6，不触碰当前 native 改动。两者的退出测试、fixture、coordinator与Client.qml的Git内容相同。使用本机已有隔离 Python3.13.3 x64、与CI全部六项应用依赖精确同版（含PySide6/shiboken6 6.11.1）、offscreen/software/1.5缩放，按原 `python -B -X utf8 -m unittest -v test_client_shutdown` 交替串行各三次：两个提交均3/3模块通过，共30项，资源写入6/6。CI宿主Server2025/26100，本机Win11/22631；没有改截止/断言，没有触发远端重跑。对照与原始日志在本地 `work/ci-shutdown-comparison-20261110/RESULTS.md` 和 `results/`。
+
+原失败的 `writerFinished/activeWorkers` 是在 `app.exec` 超时返回、再次 `release.set()` 与 `waitForDone(1000)` 后才采样，且未记录wait返回值。它们不能证明1.8秒时写入已完成；心跳178表明主事件循环曾持续处理事件。证据不足以认定迁移引入、缩放、Qt具体竞态或宿主环境是根因。原CI保持未关闭；再次出现时应补240ms release实际触发、worker返回、退出前池/写者状态和wait结果，不以一次重跑成功关闭问题。

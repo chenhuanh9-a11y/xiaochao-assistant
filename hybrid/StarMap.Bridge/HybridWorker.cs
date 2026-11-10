@@ -16,12 +16,13 @@ public sealed class HybridWorker : IWorkerConnection
     private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ReadyTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan CancelWriteTimeout = TimeSpan.FromSeconds(1);
-    private static readonly string[] RuntimeOperations = ["prepare", "set_frame", "dispatch", "snapshot"];
+    private static readonly string[] RuntimeOperations = ["prepare", "dispatch", "snapshot"];
 
     private readonly Process process;
     private readonly int processId;
     private readonly string session = Guid.NewGuid().ToString("D");
     private readonly TimeSpan requestTimeout;
+    private readonly IWorkerCaptureService? captureService;
     private readonly SemaphoreSlim serial = new(1, 1);
     private readonly SemaphoreSlim inputWriter = new(1, 1);
     private readonly CancellationTokenSource stopWriting = new();
@@ -49,11 +50,12 @@ public sealed class HybridWorker : IWorkerConnection
     private bool ready;
     private Exception? terminalError;
 
-    private HybridWorker(Process process, TimeSpan timeout)
+    private HybridWorker(Process process, TimeSpan timeout, IWorkerCaptureService? captureService)
     {
         this.process = process;
         processId = process.Id;
         requestTimeout = NormalizeTimeout(timeout);
+        this.captureService = captureService;
         stdoutPump = PumpStdoutAsync();
         stderrPump = DrainErrorsAsync();
     }
@@ -70,11 +72,12 @@ public sealed class HybridWorker : IWorkerConnection
         }
     }
     public bool SupportsRuntime => supportsRuntime;
+    public string EvidenceKind => captureService is null ? "recorded" : "live-client-capture";
     public string DiagnosticTail { get { lock (diagnosticGate) return diagnostics.ToString(); } }
 
     public static HybridWorker Start(string python, string workerScript, string resourceRoot,
         string dataRoot, string frameRoot, string? installationRoot = null,
-        TimeSpan? requestTimeout = null)
+        TimeSpan? requestTimeout = null, IWorkerCaptureService? captureService = null)
     {
         if (!Path.IsPathFullyQualified(workerScript) || !File.Exists(workerScript))
             throw new FileNotFoundException("找不到统一 Python 服务脚本，请选择当前源码根目录。", workerScript);
@@ -107,9 +110,18 @@ public sealed class HybridWorker : IWorkerConnection
             start.ArgumentList.Add("--installation-root");
             start.ArgumentList.Add(installationRoot);
         }
+        if (captureService is not null)
+        {
+            start.ArgumentList.Add("--native-pipe");
+            start.ArgumentList.Add(captureService.PipeName);
+        }
         start.Environment["PYTHONIOENCODING"] = "utf-8";
         var process = Process.Start(start) ?? throw new IOException("无法启动统一 Python 服务。");
-        try { return new HybridWorker(process, requestTimeout ?? TimeSpan.FromSeconds(30)); }
+        try
+        {
+            captureService?.BindWorker(process.Id);
+            return new HybridWorker(process, requestTimeout ?? TimeSpan.FromSeconds(30), captureService);
+        }
         catch
         {
             try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
@@ -124,7 +136,8 @@ public sealed class HybridWorker : IWorkerConnection
         var hello = value.Deserialize<WorkerHello>(Json)
             ?? throw new InvalidDataException("Python 服务返回了空 hello。");
         supportsRuntime = hello.Operations is not null && RuntimeOperations.All(
-            operation => hello.Operations.Contains(operation, StringComparer.Ordinal));
+            operation => hello.Operations.Contains(operation, StringComparer.Ordinal))
+            && (EvidenceKind == "live-client-capture" || hello.Operations.Contains("set_frame", StringComparer.Ordinal));
         return hello;
     }
 
@@ -161,6 +174,9 @@ public sealed class HybridWorker : IWorkerConnection
                 throw new InvalidDataException("Python 请求超过 64 KiB 协议限制。");
 
             using var timeout = new CancellationTokenSource(requestTimeout);
+            using var nativeCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellation, timeout.Token, stopWriting.Token);
+            using var nativeRequest = operation is "hello" or "catalog" or "preview" ? null
+                : captureService?.BeginRequest(session, id, operation, nativeCancellation.Token);
             var cancelSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             using var registration = cancellation.Register(static state =>
                 ((TaskCompletionSource)state!).TrySetResult(), cancelSignal);
@@ -303,9 +319,9 @@ public sealed class HybridWorker : IWorkerConnection
             throw new IOException(error.Message, error);
         }
         if (!message.TryGetProperty("ready", out var readyValue) || readyValue.ValueKind != JsonValueKind.True ||
-            !TryGetString(message, "evidenceKind", out var evidence) || evidence != "recorded")
+            !TryGetString(message, "evidenceKind", out var evidence) || evidence != EvidenceKind)
         {
-            var error = new InvalidDataException("Python 服务没有返回 recorded ready 握手。" + DiagnosticTail);
+            var error = new InvalidDataException("Python 服务的采集类型与本次连接不一致。" + DiagnosticTail);
             FailOutput(error);
             throw new IOException(error.Message, error);
         }
@@ -589,6 +605,13 @@ public sealed class HybridWorker : IWorkerConnection
     {
         var closeDeadline = Stopwatch.StartNew();
         stopping = true;
+        Exception? nativeCloseError = null;
+        if (captureService is not null)
+        {
+            captureService.CancelPending();
+            try { await captureService.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception error) { nativeCloseError = error; }
+        }
         var writerAcquired = false;
         var closeTimedOut = false;
         var remaining = ShutdownTimeout - closeDeadline.Elapsed;
@@ -661,6 +684,8 @@ public sealed class HybridWorker : IWorkerConnection
         }
         if (closeTimedOut)
             throw new IOException("Python 服务退出或管道收尾超时；本次连接不可复用。" + DiagnosticTail, terminalError);
+        if (nativeCloseError is not null)
+            throw new IOException("本机捕获通道未正常收尾，Python 服务已结束。", nativeCloseError);
         if (forcedTermination)
             throw new IOException("Python 服务在请求传输失败后被终止；连接不可复用。" + DiagnosticTail, terminalError);
         if (transportFailed)

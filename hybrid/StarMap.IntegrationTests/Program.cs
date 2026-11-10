@@ -19,7 +19,8 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
-        if (args.Length is not (3 or 4 or 5) || (args.Length == 5 && args[4] != "--runtime-only"))
+        var nativePresentationOnly = args.Length == 1 && args[0] == "--native-presentation-only";
+        if (!nativePresentationOnly && (args.Length is not (3 or 4 or 5) || (args.Length == 5 && args[4] != "--runtime-only")))
         {
             Console.Error.WriteLine("usage: StarMap.IntegrationTests SOURCE_ROOT PYTHON RESOURCE_ROOT [CURRENT_FRAME_INDEX [--runtime-only]]");
             return 2;
@@ -35,8 +36,12 @@ internal static class Program
             SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(app.Dispatcher));
             try
             {
-                if (args.Length != 5) await RunAsync(args[0], args[1], args[2]);
-                if (args.Length >= 4) await RuntimeWorkspaceChecks.RunAsync(args[0], args[1], args[2], args[3]);
+                if (!nativePresentationOnly)
+                {
+                    if (args.Length != 5) await RunAsync(args[0], args[1], args[2]);
+                    if (args.Length >= 4) await RuntimeWorkspaceChecks.RunAsync(args[0], args[1], args[2], args[3]);
+                }
+                await NativePresentationChecks.RunAsync();
                 exitCode = 0;
             }
             catch (Exception error) { Console.Error.WriteLine(error); }

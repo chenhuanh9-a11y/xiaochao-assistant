@@ -13,6 +13,11 @@ public partial class MainWindow : Window
     private Task? connectionTask;
     private readonly Func<string, string, IWorkerConnection> createWorker;
     private readonly string frameRoot;
+    private readonly CaptureExclusionOwner exclusion;
+    private readonly AlignedOverlayWindow overlay;
+    private NativeCaptureService? nativeCapture;
+    private string? selectedRoot;
+    private bool initialized;
     private bool connecting, closing, closeReady;
     public GalleryViewModel Gallery { get; } = new();
     public RuntimeViewModel Runtime { get; } = new();
@@ -20,15 +25,26 @@ public partial class MainWindow : Window
     public MainWindow(StartupOptions options, Func<string, string, IWorkerConnection>? workerFactory = null)
     {
         this.options = options;
+        exclusion = new(Dispatcher, () => closing);
         var dataRoot = options.DataRoot ?? Path.Combine(options.SourceRoot, "work", "hybrid-desktop", Guid.NewGuid().ToString("N"));
         frameRoot = Path.Combine(dataRoot, "frames");
         createWorker = workerFactory ?? ((root, installation) =>
         {
             Directory.CreateDirectory(frameRoot);
+            if (LiveModeSwitch.IsChecked == true)
+            {
+                nativeCapture = new(exclusion.CaptureAsync);
+                Runtime.NativeContextIsCurrent = nativeCapture.IsRenderCurrent;
+                return HybridWorker.Start(options.Python, Path.Combine(options.SourceRoot, "hybrid", "python", "runtime_worker.py"),
+                    root, Path.Combine(dataRoot, "live"), frameRoot, installation, captureService: nativeCapture);
+            }
             return HybridWorker.Start(options.Python, Path.Combine(options.SourceRoot, "hybrid", "python", "runtime_worker.py"),
                 root, dataRoot, frameRoot, installation);
         });
         InitializeComponent();
+        exclusion.Register(this);
+        overlay = new(Runtime, render => nativeCapture?.IsRenderCurrent(render) == true);
+        exclusion.Register(overlay);
         DataContext = Gallery;
         Gallery.IsVisible = false;
         HomePage.DataContext = Runtime;
@@ -38,6 +54,8 @@ public partial class MainWindow : Window
             if (e.PropertyName is nameof(RuntimeViewModel.HasRound) or nameof(RuntimeViewModel.Busy) or nameof(RuntimeViewModel.ServiceUnavailable)) UpdateResourceActions();
         };
         Gallery.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(GalleryViewModel.Busy)) UpdateResourceActions(); };
+        initialized = true;
+        LiveModeSwitch.IsChecked = options.LiveCapture;
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -74,6 +92,9 @@ public partial class MainWindow : Window
                 try { await previous.DisposeAsync(); }
                 catch (IOException) when (previous.HasExited) { /* A crashed worker cannot block an explicit new connection. */ }
             }
+            if (nativeCapture is not null) await nativeCapture.DisposeAsync();
+            await exclusion.DrainAsync();
+            nativeCapture = null; Runtime.NativeContextIsCurrent = null;
             if (closing) return;
             var installation = Path.TrimEndingDirectorySeparator(Path.GetFullPath(selectedRoot));
             if (Path.GetFileName(installation).Equals("_internal", StringComparison.OrdinalIgnoreCase))
@@ -81,10 +102,12 @@ public partial class MainWindow : Window
             var root = Directory.Exists(Path.Combine(installation, "_internal"))
                 ? Path.Combine(installation, "_internal") : installation;
             worker = createWorker(root, installation);
+            this.selectedRoot = root;
             ResourcePathLabel.Text = root;
             ResourcePathLabel.ToolTip = root;
             await Gallery.AttachAsync(worker);
             if (!closing) await Runtime.AttachAsync(worker, frameRoot);
+            if (!closing && Runtime.IsLive) Runtime.SetGameWindows(GameWindowCatalog.Read());
         }
         catch (Exception error)
         {
@@ -104,6 +127,32 @@ public partial class MainWindow : Window
         var refresh = !closing && !connecting && !Runtime.Busy && !Gallery.Busy;
         if (OpenResourcesButton.IsEnabled != choose) OpenResourcesButton.IsEnabled = choose;
         if (RefreshButton.IsEnabled != refresh) RefreshButton.IsEnabled = refresh;
+        if (LiveModeSwitch.IsEnabled != choose) LiveModeSwitch.IsEnabled = choose;
+    }
+
+    private async void OnCaptureModeChanged(object sender, RoutedEventArgs e)
+    {
+        if (!initialized || closing || selectedRoot is null) return;
+        if (Runtime.HasRound && !Runtime.ServiceUnavailable)
+        {
+            LiveModeSwitch.IsChecked = worker?.EvidenceKind == "live-client-capture";
+            return;
+        }
+        await ConnectAsync(selectedRoot);
+    }
+    private void OnRefreshWindows(object? sender, EventArgs e)
+    {
+        if (Runtime.CanChangeContext) Runtime.SetGameWindows(GameWindowCatalog.Read());
+    }
+    private async void OnBindWindow(object? sender, EventArgs e)
+    {
+        if (!Runtime.CanBindWindow || nativeCapture is null || Runtime.SelectedGameWindow is not { } selected) return;
+        try
+        {
+            nativeCapture.SelectTarget(selected.Hwnd);
+            await Runtime.BindCaptureAsync(selected.Hwnd);
+        }
+        catch (Exception error) { MessageBox.Show(this, error.Message, "游戏窗口未绑定", MessageBoxButton.OK, MessageBoxImage.Information); }
     }
 
     private async void OnOpenFrame(object? sender, EventArgs e)
@@ -147,10 +196,15 @@ public partial class MainWindow : Window
             finally
             {
                 try { if (connectionTask is not null) await connectionTask; }
-                finally { await Runtime.DrainCopiesAsync(); }
+                finally
+                {
+                    await Runtime.DrainCopiesAsync();
+                    if (nativeCapture is not null) await nativeCapture.DisposeAsync();
+                    await exclusion.DrainAsync();
+                }
             }
         }
         catch (Exception error) { MessageBox.Show(this, error.Message, "资源服务退出异常", MessageBoxButton.OK, MessageBoxImage.Warning); }
-        finally { closeReady = true; Close(); }
+        finally { overlay.Dispose(); closeReady = true; Close(); }
     }
 }

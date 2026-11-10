@@ -1,7 +1,7 @@
-"""Recorded production session + optional persistent C# grid, with async cancel.
+"""Production session with recorded PNGs or an explicit C# native capture lane.
 
-This development entry never captures a window or sends input. Recorded pixels
-retain their evidence kind through the original final Python/Core consumers.
+The Python process never acquires desktop pixels or sends input itself. Native
+callbacks belong to the C# owner; recorded evidence never gains live authority.
 """
 from __future__ import annotations
 
@@ -104,8 +104,15 @@ def run(args):
     state_lock = threading.Lock()
     active = None
     computation = None
+    native_capture = None
     with redirect_stdout(sys.stderr):
-        runtime = RecordedRuntimeSession(args.resource_root, args.data_root, args.frame_root)
+        if getattr(args, "native_pipe", None):
+            from native_capture import NativeCaptureProxy
+            from runtime_session import LiveRuntimeSession
+            native_capture = NativeCaptureProxy(args.native_pipe)
+            runtime = LiveRuntimeSession(args.resource_root, args.data_root, native_capture)
+        else:
+            runtime = RecordedRuntimeSession(args.resource_root, args.data_root, args.frame_root)
         browse = create_browse_worker(args.resource_root, args.installation_root)
     backend = None
     try:
@@ -143,16 +150,21 @@ def run(args):
             if request.get("operation") in BROWSE_OPERATIONS:
                 context.check()
                 terminal = browse_terminal(browse, request, cancelled=context.cancelled)
+                if native_capture and request.get("operation") == "hello" and terminal.get("ok"):
+                    terminal["result"]["operations"] = [operation for operation in RUNTIME_OPERATIONS if operation != "set_frame"]
                 context.check()
             else:
                 scope = backend.request(context.session, context.id, max(.001, context.deadline-time.monotonic()), context.cancelled) if backend else nullcontext()
                 grid_scope = using_grid_backend(backend if backend else observed_python_grid)
-                with scope, grid_scope, redirect_stdout(sys.stderr):
+                capture_scope = native_capture.request(context.session, context.id, context.cancelled, context.deadline) if native_capture else nullcontext()
+                with capture_scope, scope, grid_scope, redirect_stdout(sys.stderr):
                     context.check()
                     operation = request["operation"]
                     if operation == "prepare":
                         result = dict(capability=runtime.prepare(request["season"], request["mode"]), snapshot=runtime.snapshot())
                     elif operation == "set_frame":
+                        if native_capture:
+                            raise ValueError("recorded-frames-not-accepted-by-native-session")
                         result = dict(frame=runtime.set_frame(request["path"], capture_context=request.get("captureContext")), snapshot=runtime.snapshot())
                     elif operation == "dispatch":
                         result = runtime.dispatch(request["action"], request.get("payload", {}), context.cancelled)
@@ -161,8 +173,10 @@ def run(args):
                     else:
                         raise ValueError("unknown-runtime-operation")
                     context.check()
-                result["render"] = render_result(runtime)
-                context.check()
+                    result["render"] = render_result(runtime)
+                    # render_payload can revoke a pose after native context recheck.
+                    result["snapshot"] = runtime.snapshot()
+                    context.check()
                 terminal = dict(event="result", session=context.session, id=context.id, ok=True,
                     result=result, gridBackend=args.grid_backend, gridCalls=list(backend.calls) if backend else python_calls,
                     gridProcessId=backend.process_id if backend else None,
@@ -198,7 +212,7 @@ def run(args):
                     active = None
 
     try:
-        send(dict(ready=True, evidenceKind="recorded", gridBackend=args.grid_backend, pid=os.getpid(),
+        send(dict(ready=True, evidenceKind="live-client-capture" if native_capture else "recorded", gridBackend=args.grid_backend, pid=os.getpid(),
             dependencies=dict(python=sys.version.split()[0], opencv=cv2.__version__, numpy=np.__version__, pillow=PIL.__version__),
             sourceRuntimeModule=sys.modules[RecordedRuntimeSession.__module__].__file__))
         while True:
@@ -274,6 +288,7 @@ def main():
     parser.add_argument("--frame-root", type=Path, required=True)
     parser.add_argument("--installation-root", type=Path,
                         help="installation root owning the resource transaction lock")
+    parser.add_argument("--native-pipe", help="explicit C#-owned native capture callback pipe; recorded frames remain separate")
     parser.add_argument("--grid-backend", choices=("python", "csharp"), default="csharp")
     parser.add_argument("--grid-executable", type=Path)
     args = parser.parse_args()

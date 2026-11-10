@@ -14,7 +14,7 @@ public partial class App : Application
     }
 }
 
-public sealed record StartupOptions(string SourceRoot, string Python, string? ResourceRoot, string? DataRoot = null)
+public sealed record StartupOptions(string SourceRoot, string Python, string? ResourceRoot, string? DataRoot = null, bool LiveCapture = false)
 {
     public static StartupOptions Parse(string[] args)
     {
@@ -32,6 +32,6 @@ public sealed record StartupOptions(string SourceRoot, string Python, string? Re
             source = directory?.FullName ?? Environment.CurrentDirectory;
         }
         return new(Path.GetFullPath(source),
-            Value("--python") ?? "python", Value("--resource-root"), Value("--data-root"));
+            Value("--python") ?? "python", Value("--resource-root"), Value("--data-root"), args.Contains("--live-capture"));
     }
 }

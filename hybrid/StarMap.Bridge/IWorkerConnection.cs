@@ -8,6 +8,7 @@ public interface IWorkerConnection : IAsyncDisposable
     int ProcessId { get; }
     bool HasExited { get; }
     bool SupportsRuntime { get; }
+    string EvidenceKind => "recorded";
     Task<WorkerHello> HelloAsync(CancellationToken cancellation = default);
     Task<BrowseCatalog> CatalogAsync(string season, string mode, CancellationToken cancellation = default);
     Task<BrowsePreview> PreviewAsync(long catalogId, string key, CancellationToken cancellation = default);

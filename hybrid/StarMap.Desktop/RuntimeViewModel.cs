@@ -48,6 +48,21 @@ public sealed class RuntimeViewModel : INotifyPropertyChanged
     private string? cachedFramePath, cachedRenderKey, cachedRenderPng;
     private string? floorSelectionContext, lastPublishedFloor;
     private BitmapSource? cachedFrame, cachedRender;
+    private ImageSource? nativeMaterial;
+    private string? rejectedNativeToken;
+    private GameWindowChoice? selectedGameWindow;
+    public Func<JsonElement, bool>? NativeContextIsCurrent { get; set; }
+    public bool IsLive => connection?.EvidenceKind == "live-client-capture";
+    private bool HasCaptureInput => IsLive ? BoundHwnd != 0 : HasFrame;
+    public long BoundHwnd => snapshot.HasValue && snapshot.Value.TryGetProperty("capture", out var capture)
+        && long.TryParse(String(capture, "hwnd"), out var hwnd) ? hwnd : 0;
+    public string CaptureSourceLabel => IsLive ? "游戏窗口采集" : "保存画面回放";
+    public string CaptureSourceHelp => IsLive ? "绑定游戏窗口后开始本局；点击重新识别后，请在三秒内切回游戏。" : "当前入口使用保存画面，尚未连接游戏捕获。";
+    public GameWindowChoice[] GameWindows { get; private set; } = [];
+    public GameWindowChoice? SelectedGameWindow { get => selectedGameWindow; set { if (Set(ref selectedGameWindow, value)) NotifyActions(); } }
+    public bool CanBindWindow => IsLive && SelectedGameWindow is not null && CanChangeContext;
+    public ImageSource? NativeMaterial { get => nativeMaterial; private set => Set(ref nativeMaterial, value); }
+    public JsonElement? ActiveRender => pendingRender;
 
     public event PropertyChangedEventHandler? PropertyChanged;
     private void Changed([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new(name));
@@ -66,13 +81,13 @@ public sealed class RuntimeViewModel : INotifyPropertyChanged
     public bool ServiceUnavailable { get => serviceUnavailable; private set { if (Set(ref serviceUnavailable, value)) NotifyActions(); } }
     public bool HasFrame => stagedFrame is not null;
     public bool CanChangeContext => connection is not null && !ServiceUnavailable && !Busy && !HasRound && !closing;
-    public bool CanStart => prepared && HasFrame && !Busy && !HasRound && !closing && Command("start_round");
-    public bool CanCapture => !ServiceUnavailable && HasFrame && HasRound && !Busy && !closing && Command("capture_now");
+    public bool CanStart => prepared && HasCaptureInput && !Busy && !HasRound && !closing && Command("start_round");
+    public bool CanCapture => !ServiceUnavailable && HasCaptureInput && HasRound && !Busy && !closing && Command("capture_now");
     public bool CanEnd => !ServiceUnavailable && HasRound && !closing;
-    public bool CanSelectCandidate => !ServiceUnavailable && HasFrame && HasRound && !Busy && !closing && SelectedCandidate is not null && Command("select_candidate");
-    public bool CanSetFloor => !ServiceUnavailable && HasFrame && HasRound && !Busy && !closing && SelectedFloor is not null && Command("set_floor");
-    public bool CanConfirm => !ServiceUnavailable && HasFrame && HasRound && !Busy && !closing && Command("confirm_route");
-    public bool CanLoadFrame => connection?.SupportsRuntime == true && !ServiceUnavailable && !closing;
+    public bool CanSelectCandidate => !ServiceUnavailable && HasCaptureInput && HasRound && !Busy && !closing && SelectedCandidate is not null && Command("select_candidate");
+    public bool CanSetFloor => !ServiceUnavailable && HasCaptureInput && HasRound && !Busy && !closing && SelectedFloor is not null && Command("set_floor");
+    public bool CanConfirm => !ServiceUnavailable && HasCaptureInput && HasRound && !Busy && !closing && Command("confirm_route");
+    public bool CanLoadFrame => !IsLive && connection?.SupportsRuntime == true && !ServiceUnavailable && !closing;
     public bool CanToggleSheet => connection?.SupportsRuntime == true && !ServiceUnavailable && !Busy && !closing;
     public JsonElement? Snapshot => snapshot;
     public string Status { get => status; private set => Set(ref status, value); }
@@ -118,7 +133,9 @@ public sealed class RuntimeViewModel : INotifyPropertyChanged
     {
         Detach();
         connection = worker;
+        Changed(nameof(IsLive)); Changed(nameof(CaptureSourceLabel)); Changed(nameof(CaptureSourceHelp));
         frameRoot = ownedFrameRoot;
+        if (IsLive) FrameLabel = "当前游戏客户区的贴合预览";
         if (!worker.SupportsRuntime) { Status = "当前连接只提供图库。"; return; }
         var hello = await worker.HelloAsync();
         if (closing || connection != worker) return;
@@ -171,15 +188,23 @@ public sealed class RuntimeViewModel : INotifyPropertyChanged
     }
 
     public Task StartRoundAsync() => !CanStart ? Task.CompletedTask : ExecuteAsync("dispatch", new { action = "start_round" }, "正在开始本局…");
-    public Task CaptureAsync() => !CanCapture ? Task.CompletedTask : ExecuteAsync("dispatch", new { action = "capture_now" }, "正在识别与贴合…");
+    public Task CaptureAsync() => !CanCapture ? Task.CompletedTask : ExecuteFrameActionAsync("capture_now", null, "正在识别与贴合…");
+    public Task BindCaptureAsync(nint hwnd) => !IsLive || !CanChangeContext ? Task.CompletedTask :
+        ExecuteAsync("dispatch", new { action = "bind_capture", payload = new { hwnd = hwnd.ToInt64() } }, "正在绑定游戏窗口…");
+    public void SetGameWindows(GameWindowChoice[] windows)
+    {
+        var selected = SelectedGameWindow?.Hwnd;
+        GameWindows = windows; Changed(nameof(GameWindows));
+        SelectedGameWindow = windows.FirstOrDefault(row => row.Hwnd == selected) ?? windows.FirstOrDefault();
+    }
     public Task EndRoundAsync() => !CanEnd ? Task.CompletedTask : ExecuteAsync("dispatch", new { action = "end_round" }, "正在结束本局…");
     public Task CancelAsync() => ExecuteAsync("dispatch", new { action = "close_map" }, "正在取消识别…");
-    public Task ConfirmAsync() => !CanConfirm ? Task.CompletedTask : ExecuteAsync("dispatch", new { action = "confirm_route" }, "正在确认路线…");
+    public Task ConfirmAsync() => !CanConfirm ? Task.CompletedTask : ExecuteFrameActionAsync("confirm_route", null, "正在确认路线…");
     public Task SetFloorAsync()
     {
         var floor = SelectedFloor;
         return !CanSetFloor || floor is null ? Task.CompletedTask :
-            ExecuteAsync("dispatch", new { action = "set_floor", payload = new { floor = floor.Id } }, "正在核对楼层…");
+            ExecuteFrameActionAsync("set_floor", new { floor = floor.Id }, "正在核对楼层…");
     }
     public Task ToggleSheetAsync() => !CanToggleSheet ? Task.CompletedTask : ExecuteAsync("dispatch", new { action = "toggle_sheet_visibility" }, "正在更新显示…");
     public Task SelectCandidateAsync()
@@ -192,16 +217,39 @@ public sealed class RuntimeViewModel : INotifyPropertyChanged
         if (Flag(row, "structureSupported"))
             foreach (var key in new[] { "mapId", "structureFrameId", "structureGeneration", "structureRoundId" })
                 if (row.TryGetProperty(key, out var value)) payload[key] = value.Clone();
-        return ExecuteAsync("dispatch", new { action = "select_candidate", payload }, "正在核对所选地图…");
+        return ExecuteFrameActionAsync("select_candidate", payload, "正在核对所选地图…");
     }
 
-    private async Task ExecuteAsync(string operation, object arguments, string message)
+    private Task ExecuteFrameActionAsync(string action, object? payload, string message) =>
+        ExecuteAsync("dispatch", new { action, payload }, message, IsLive ? 3000 : 0);
+
+    public async Task WithdrawNativeDisplayAsync(string? presentationFailure = null)
+    {
+        var token = pendingRender.HasValue ? String(pendingRender.Value, "token") : null;
+        pendingRender = null; AlignedImage = null; NativeMaterial = null;
+        if (!IsLive || string.IsNullOrEmpty(token) || token == rejectedNativeToken) return;
+        rejectedNativeToken = token;
+        var pending = ExecuteAsync("dispatch", new { action = "close_map" }, "窗口上下文已变化，贴合已撤回。");
+        var owner = generation;
+        await pending;
+        if (!closing && !ServiceUnavailable && owner == generation && presentationFailure is not null)
+        { Status = "贴合窗口未能显示。"; Detail = presentationFailure; }
+    }
+
+    private async Task ExecuteAsync(string operation, object arguments, string message, int returnToGameDelay = 0)
     {
         if (connection is null || !connection.SupportsRuntime || closing) return;
         var worker = connection;
         var current = Begin(message);
         try
         {
+            if (returnToGameDelay > 0)
+            {
+                Status = "请切回绑定的游戏窗口，三秒后识别当前画面…";
+                await Task.Delay(returnToGameDelay, request.Token);
+                if (!Current(current, worker)) return;
+                Status = message;
+            }
             var result = await worker.InvokeAsync(operation, arguments, request.Token);
             if (!Current(current, worker)) return;
             if (result.TryGetProperty("capability", out var unavailable) && !Flag(unavailable, "available"))
@@ -260,7 +308,7 @@ public sealed class RuntimeViewModel : INotifyPropertyChanged
     {
         generation++; viewGeneration++;
         request.Cancel(); request.Dispose(); request = new();
-        pendingRender = null; AlignedImage = null;
+        pendingRender = null; AlignedImage = null; NativeMaterial = null;
         Busy = true; Status = message; Detail = "";
         return generation;
     }
@@ -281,22 +329,23 @@ public sealed class RuntimeViewModel : INotifyPropertyChanged
         Changed(nameof(Snapshot));
         Changed(nameof(RoundActive)); Changed(nameof(RoundPreparing)); Changed(nameof(HasRound));
         Changed(nameof(RoundStatus)); Changed(nameof(MapName)); Changed(nameof(FloorLabel));
+        Changed(nameof(BoundHwnd));
         NotifyActions();
     }
     private void NotifyActions()
     {
         foreach (var name in new[] { nameof(CanChangeContext), nameof(CanStart), nameof(CanCapture), nameof(CanEnd),
-            nameof(CanSelectCandidate), nameof(CanSetFloor), nameof(CanConfirm), nameof(CanLoadFrame), nameof(CanToggleSheet), nameof(HasFrame) }) Changed(name);
+            nameof(CanSelectCandidate), nameof(CanSetFloor), nameof(CanConfirm), nameof(CanLoadFrame), nameof(CanToggleSheet), nameof(HasFrame), nameof(CanBindWindow) }) Changed(name);
     }
     private bool Command(string name) => snapshot.HasValue && snapshot.Value.TryGetProperty("availableCommands", out var list)
         && list.ValueKind == JsonValueKind.Array && list.EnumerateArray().Any(item => item.GetString() == name);
 
     private async Task PublishVisibleAsync()
     {
-        if (!IsVisible || closing) return;
+        if ((!IsVisible && !IsLive) || closing) return;
         var current = generation; var view = ++viewGeneration;
         if (!snapshot.HasValue) ClearChoices();
-        if (snapshot.HasValue)
+        if (IsVisible && snapshot.HasValue)
         {
             var state = snapshot.Value;
             var selected = SelectedCandidate?.Key;
@@ -328,7 +377,8 @@ public sealed class RuntimeViewModel : INotifyPropertyChanged
             floorSelectionContext = actualContext; lastPublishedFloor = actualFloor;
         }
         var path = stagedFrame;
-        var render = path is not null && snapshot.HasValue && Flag(snapshot.Value, "alignedVisible") ? pendingRender : null;
+        var render = (IsLive || path is not null) && snapshot.HasValue && Flag(snapshot.Value, "alignedVisible") ? pendingRender : null;
+        if (IsLive && render.HasValue && String(render.Value, "token") == rejectedNativeToken) render = null;
         var stateForRender = snapshot;
         var oldFramePath = cachedFramePath; var oldFrame = cachedFrame;
         var oldRenderKey = cachedRenderKey; var oldRenderPng = cachedRenderPng; var oldRender = cachedRender;
@@ -337,15 +387,23 @@ public sealed class RuntimeViewModel : INotifyPropertyChanged
             if (render.HasValue)
             {
                 ValidateRender(render.Value, stateForRender!.Value);
-                if (render.Value.GetProperty("clientWidth").GetInt32() != frameWidth || render.Value.GetProperty("clientHeight").GetInt32() != frameHeight)
+                if (IsLive && (!Flag(render.Value, "liveAuthorization") || String(render.Value, "evidenceKind") != "live-client-capture"
+                    || NativeContextIsCurrent?.Invoke(render.Value) != true))
+                { await WithdrawNativeDisplayAsync(); return; }
+                if (!IsLive && (render.Value.GetProperty("clientWidth").GetInt32() != frameWidth || render.Value.GetProperty("clientHeight").GetInt32() != frameHeight))
                     throw new InvalidDataException("贴合坐标与当前保存画面尺寸不一致。");
             }
-            var images = await Task.Run(() => (Frame: path is null ? null : oldFramePath == path ? oldFrame : DecodeFile(path),
+            var images = await Task.Run(() => (Frame: !IsVisible || path is null ? null : oldFramePath == path ? oldFrame : DecodeFile(path),
                 Overlay: render.HasValue ? DecodeRender(render.Value, oldRenderKey, oldRenderPng, oldRender) : null));
-            if (closing || !IsVisible || generation != current || viewGeneration != view) return;
-            FrameImage = images.Frame;
-            cachedFramePath = path; cachedFrame = images.Frame;
-            AlignedImage = images.Overlay?.Image;
+            if (closing || generation != current) return;
+            if (IsLive && render.HasValue && NativeContextIsCurrent?.Invoke(render.Value) != true)
+            { await WithdrawNativeDisplayAsync(); return; }
+            if (IsVisible && viewGeneration == view)
+            {
+                FrameImage = images.Frame;
+                cachedFramePath = path; cachedFrame = images.Frame;
+                AlignedImage = images.Overlay?.Image;
+            }
             if (images.Overlay is { } overlay)
             {
                 cachedRenderKey = overlay.Key; cachedRenderPng = overlay.Png; cachedRender = overlay.Image;
@@ -353,10 +411,11 @@ public sealed class RuntimeViewModel : INotifyPropertyChanged
                 ClientWidth = overlay.ClientWidth; ClientHeight = overlay.ClientHeight;
                 OverlayTransform = overlay.Transform;
             }
+            NativeMaterial = IsLive ? images.Overlay?.Image : null;
         }
         catch (Exception error)
         {
-            if (!closing && generation == current && viewGeneration == view) { AlignedImage = null; Detail = "预览未显示：" + error.Message; }
+            if (!closing && generation == current) { AlignedImage = null; NativeMaterial = null; Detail = "预览未显示：" + error.Message; }
         }
     }
 
@@ -429,6 +488,9 @@ public sealed class RuntimeViewModel : INotifyPropertyChanged
         cachedFramePath = cachedRenderKey = cachedRenderPng = null; cachedFrame = cachedRender = null;
         floorSelectionContext = lastPublishedFloor = null; frameWidth = frameHeight = 0;
         FrameImage = null; AlignedImage = null; Candidates.Clear(); Floors = [];
+        NativeMaterial = null; GameWindows = []; Changed(nameof(GameWindows)); SelectedGameWindow = null;
+        rejectedNativeToken = null;
+        Changed(nameof(IsLive)); Changed(nameof(CaptureSourceLabel)); Changed(nameof(CaptureSourceHelp));
         Changed(nameof(Floors)); SelectedCandidate = null; SelectedFloor = null;
         Busy = false; FrameLabel = "尚未选择保存画面"; Status = "先选择本机资源目录。"; Detail = "";
         NotifySnapshot();

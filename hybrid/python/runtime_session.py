@@ -1,8 +1,8 @@
-"""Qt-free saved-PNG adapter over the production LiveRuntime transaction.
+"""Qt-free recorded and native capture sessions over production LiveRuntime.
 
-The capture source is deliberately recorded evidence. It only decodes files
-under the explicitly supplied frame root and never talks to desktop capture,
-input, or listener APIs.
+Recorded sessions only decode PNG evidence under an explicit frame root. Live
+sessions inject the scoped native callback primitive through the same existing
+ClientCaptureProvider and runtime transaction.
 """
 from __future__ import annotations
 
@@ -206,28 +206,24 @@ class _RecordedPngCapture:
                 else "recorded-png-origin-unknown")
 
 
-class RecordedRuntimeSession:
-    """Qt-free session over production EngineFactories and LiveRuntime.
+class RuntimeSession:
+    """Shared Qt-free production session and resource-lease owner."""
 
-    Construction is lazy with respect to resource IO and engine preparation.
-    Resource locking begins on the first ``prepare`` and lasts until ``close``.
-    """
-
-    def __init__(self, resource_root, data_root, frame_root):
+    def __init__(self, resource_root, data_root, capture_provider, *, evidence_kind,
+                 allowed_read_root=None):
         self.resource_root = Path(resource_root).expanduser().resolve()
         self.installation_root = (self.resource_root.parent if self.resource_root.name.casefold() == "_internal"
                                   else self.resource_root)
         self.data_root = Path(data_root).expanduser().resolve()
-        self.frame_root = Path(frame_root).expanduser().resolve()
-        if self.data_root.is_relative_to(self.resource_root) or self.data_root.is_relative_to(self.frame_root):
-            raise ValueError("recorded data root must be outside resource and frame roots")
         self._lease = None
         self._closed = False
-        self._capture = _RecordedPngCapture()
+        self._capture = capture_provider
         self._factories = EngineFactories(self.resource_root, memory_root=self.data_root / "memory",
                                          resource_guard=self._ensure_resources_ready)
         self._runtime = LiveRuntime(engine_factories=self._factories,
-            capture_provider=self._capture, allowed_read_root=self.data_root, evidence_kind="recorded")
+            capture_provider=self._capture,
+            allowed_read_root=Path(allowed_read_root or self.data_root).expanduser().resolve(),
+            evidence_kind=evidence_kind)
 
     def _ensure_resources_ready(self):
         if self._closed:
@@ -267,6 +263,57 @@ class RecordedRuntimeSession:
             report["available"] = False
             report["reason"] = str(receipt.get("reason", "context-update-failed"))
         return report
+
+    def dispatch(self, action, payload=None, cancelled=None):
+        if self._closed:
+            receipt = dict(action=str(action), success=False, reason="session-closed",
+                liveAuthorization=False)
+        else:
+            receipt = self._runtime.dispatch(str(action), payload or {}, cancelled)
+        return dict(receipt=receipt, snapshot=self.snapshot())
+
+    def snapshot(self):
+        return self._runtime.snapshot()
+
+    def invalidate(self, reason="cancelled"):
+        """Immediately fence in-flight production work without queueing a command."""
+        self._runtime.invalidate(str(reason))
+        return self.snapshot()
+
+    def render(self):
+        state = self.snapshot()
+        metadata = state.get("render") or {}
+        token = metadata.get("token")
+        if not token:
+            return None
+        return self._runtime.render_payload(token)
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._runtime.shutdown()
+        finally:
+            try:
+                self._factories.invalidate()
+            finally:
+                if self._lease is not None:
+                    self._lease.close()
+                    self._lease = None
+
+
+class RecordedRuntimeSession(RuntimeSession):
+    """Recorded PNG evidence over the shared production runtime transaction."""
+
+    def __init__(self, resource_root, data_root, frame_root):
+        self.frame_root = Path(frame_root).expanduser().resolve()
+        resolved_resources = Path(resource_root).expanduser().resolve()
+        resolved_data = Path(data_root).expanduser().resolve()
+        if resolved_data.is_relative_to(resolved_resources) or resolved_data.is_relative_to(self.frame_root):
+            raise ValueError("recorded data root must be outside resource and frame roots")
+        super().__init__(resolved_resources, resolved_data, _RecordedPngCapture(),
+            evidence_kind="recorded", allowed_read_root=resolved_data)
 
     def set_frame(self, path, *, capture_context=None):
         if self._closed:
@@ -317,40 +364,22 @@ class RecordedRuntimeSession:
             return dict(success=False, reason=f"{type(error).__name__}:{error}",
                 evidenceKind="recorded", liveAuthorization=False)
 
-    def dispatch(self, action, payload=None, cancelled=None):
-        if self._closed:
-            receipt = dict(action=str(action), success=False, reason="session-closed",
-                liveAuthorization=False)
-        else:
-            receipt = self._runtime.dispatch(str(action), payload or {}, cancelled)
-        return dict(receipt=receipt, snapshot=self.snapshot())
+class LiveRuntimeSession(RuntimeSession):
+    """Live native-window capture over the same production runtime pipeline."""
 
-    def snapshot(self):
-        return self._runtime.snapshot()
-
-    def invalidate(self, reason="cancelled"):
-        """Immediately fence in-flight production work without queueing a command."""
-        self._runtime.invalidate(str(reason))
-        return self.snapshot()
-
-    def render(self):
-        state = self.snapshot()
-        metadata = state.get("render") or {}
-        token = metadata.get("token")
-        if not token:
-            return None
-        return self._runtime.render_payload(token)
+    def __init__(self, resource_root, data_root, proxy):
+        resolved_resources = Path(resource_root).expanduser().resolve()
+        resolved_data = Path(data_root).expanduser().resolve()
+        if resolved_data.is_relative_to(resolved_resources):
+            raise ValueError("live data root must be outside resource root")
+        from client_capture import ClientCaptureProvider
+        self._proxy = proxy
+        provider = ClientCaptureProvider(native=proxy, backend=proxy, full_capture=proxy.full_capture)
+        super().__init__(resolved_resources, resolved_data, provider,
+            evidence_kind="live-client-capture", allowed_read_root=resolved_data)
 
     def close(self):
-        if self._closed:
-            return
-        self._closed = True
         try:
-            self._runtime.shutdown()
+            super().close()
         finally:
-            try:
-                self._factories.invalidate()
-            finally:
-                if self._lease is not None:
-                    self._lease.close()
-                    self._lease = None
+            self._proxy.close()

@@ -16,10 +16,12 @@
     <Grid Grid.Column="1">
       <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
       <DockPanel Margin="28,18,28,0">
+        <CheckBox x:Name="LiveModeSwitch" DockPanel.Dock="Right" Content="连接游戏窗口" VerticalAlignment="Center" Margin="0,0,16,0"
+                  Checked="OnCaptureModeChanged" Unchecked="OnCaptureModeChanged" />
         <Button x:Name="OpenResourcesButton" DockPanel.Dock="Right" Content="选择资源目录" Click="OnOpenResources" AutomationProperties.Name="选择资源目录" />
         <TextBlock x:Name="ResourcePathLabel" Text="尚未选择资源目录" Foreground="{StaticResource Muted}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,16,0" />
       </DockPanel>
-      <local:RuntimePage x:Name="HomePage" Grid.Row="1" OpenFrameRequested="OnOpenFrame" />
+      <local:RuntimePage x:Name="HomePage" Grid.Row="1" OpenFrameRequested="OnOpenFrame" RefreshWindowsRequested="OnRefreshWindows" BindWindowRequested="OnBindWindow" />
       <Grid x:Name="GalleryPage" Grid.Row="1" Margin="28,16,28,20" Visibility="Collapsed">
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
