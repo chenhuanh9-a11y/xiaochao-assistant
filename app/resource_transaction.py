@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 import stat
 import tempfile
 import threading
+from local_path_safety import is_link_or_reparse
 
 
 class ResourceTransactionError(ValueError):
@@ -28,10 +29,10 @@ _states = {}
 def _safe(path):
     for item in (path, *path.parents):
         try:
-            info = item.lstat()
+            linked = is_link_or_reparse(item)
         except FileNotFoundError:
             continue
-        if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+        if linked:
             raise ResourceTransactionError('resource-linked-target')
     return path
 

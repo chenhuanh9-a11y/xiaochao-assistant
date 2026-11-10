@@ -16,6 +16,7 @@ import unicodedata
 import zipfile
 from packaged_product_identity import CLOSED_EXE_NAMES
 from generic_author_package import is_generic_profile
+from local_path_safety import is_link_or_reparse
 from resource_transaction import (ResourceTransactionError, resource_read_lock,
                                   resource_write_lock, assert_resources_ready,
                                   preflight_hardlinks, preflight_resource_publication)
@@ -327,10 +328,10 @@ def _no_links(path: Path) -> None:
     # Check lexical ancestors too: resolving first would conceal junctions.
     for item in (path, *path.parents):
         try:
-            info = item.lstat()
+            linked = is_link_or_reparse(item)
         except FileNotFoundError:
             continue
-        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+        if linked:
             raise ImportRejected(f"linked-target: {item}")
 
 
