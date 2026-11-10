@@ -7,7 +7,7 @@ using StarMap.Vision;
 
 internal static class StructureIndexOracle
 {
-    internal static int Run(string resources, string oracle, string output)
+    internal static int Run(string resources, string oracle, string output,bool sharedPreparation=false)
     {
         if (Directory.Exists(output)) throw new IOException("Preserve previous evidence; use a new output.");
         Directory.CreateDirectory(output); StructurePoolRegression.Run();
@@ -29,7 +29,10 @@ internal static class StructureIndexOracle
                 var expected = row["expected"]!;
                 var ids = row["inputMapIds"]!.AsArray().Select(id => id!.GetValue<string>()).ToArray();
                 var timer = System.Diagnostics.Stopwatch.StartNew();
-                var actual = filter.Evaluate(frame, ids, row["floor"]!.GetValue<string>(), () => row["cancelled"]?.GetValue<bool>() == true);
+                using var prepared=sharedPreparation?new StructureFramePreparation(frame):null;
+                Func<bool> cancelled=()=>row["cancelled"]?.GetValue<bool>()==true;
+                var actual = prepared is null?filter.Evaluate(frame, ids, row["floor"]!.GetValue<string>(),cancelled)
+                    :filter.Evaluate(prepared,ids,row["floor"]!.GetValue<string>(),filter.DetectAnchor(prepared,cancelled),cancelled);
                 double elapsed = timer.Elapsed.TotalMilliseconds;
                 foreach (string key in new[] { "mode", "resourceKey", "floor", "reason", "coordinateVerified", "evaluatedMapIds", "contradictedMapIds",
                     "unknownMapIds", "gateStatus", "gateReason", "candidateChecks", "poseAvailable", "matrixEntranceRendererToClient", "coordinateEvidence" })

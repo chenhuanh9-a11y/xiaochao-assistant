@@ -31,8 +31,19 @@ public sealed partial class StructureIndexFilter
         }
     }
 
+    /// <summary>Serially borrows complete raw observations from the same operation as the following fit scan.</summary>
+    public JsonObject Evaluate(StructureFramePreparation preparation,IReadOnlyList<string> candidateIds,string floor,
+        StructureGateAnchor anchor,Func<bool>? cancelled=null)
+    {
+        lock(_sync)
+        {
+            ObjectDisposedException.ThrowIf(_disposed,this);
+            return EvaluatePrepared(preparation.Frame,candidateIds,floor,anchor,cancelled??(()=>false),Stopwatch.StartNew(),0,preparation);
+        }
+    }
+
     private JsonObject EvaluatePrepared(Mat frame,IReadOnlyList<string> candidateIds,string floor,StructureGateAnchor anchor,
-        Func<bool> cancelled,Stopwatch total,double gateMs)
+        Func<bool> cancelled,Stopwatch total,double gateMs,StructureFramePreparation? preparation=null)
     {
         string[] ids = candidateIds.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
         double observationMs = 0,resourceMs = 0;
@@ -60,20 +71,20 @@ public sealed partial class StructureIndexFilter
         try
         {
             var extract = Stopwatch.StartNew();
-            var islands = S1StructureObservations.Islands(frame,new Rect(0,0,frame.Cols,frame.Rows));
+            var islands = preparation?.Islands()??S1StructureObservations.Islands(frame,new Rect(0,0,frame.Cols,frame.Rows));
             if (islands.Count <= 32)
             {
                 foreach (var island in islands)
                 {
                     if (cancelled()) break;
-                    var context = Geometry.FromComponent(frame,island.Bounds,island.Component);
+                    var context = preparation is null?Geometry.FromComponent(frame,island.Bounds,island.Component):preparation.For(island);
                     if (context is null) continue;
                     bool retained = false;
                     try
                     {
                         if (Geometry.ObservedChains(frame,context).Count >= 6) { contexts.Add(context); retained = true; }
                     }
-                    finally { if (!retained) context.Dispose(); }
+                    finally { if (!retained && preparation is null) context.Dispose(); }
                 }
             }
             observationMs = extract.Elapsed.TotalMilliseconds;
@@ -177,7 +188,7 @@ public sealed partial class StructureIndexFilter
                 ["observationMs"] = observationMs, ["resourceMs"] = resourceMs, ["totalMs"] = total.Elapsed.TotalMilliseconds
             };
         }
-        finally { foreach (var context in contexts) context.Dispose(); }
+        finally { if(preparation is null)foreach (var context in contexts) context.Dispose(); }
     }
 
     private static double ExtentDistance(Hypothesis a,Hypothesis b,int width,int height)

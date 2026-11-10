@@ -11,10 +11,13 @@ internal static class Program
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true, NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals };
     private static int Main(string[] args)
     {
+        bool sharedPreparation=args.Length>0 && args[0]=="--shared-preparation";
+        if(sharedPreparation)args=args[1..];
         bool difficultOnly = args.Length > 0 && args[0] == "--difficult-only";
         if (difficultOnly) args = args[1..];
+        if(args.Length==5 && args[0]=="--shared-preparation-regressions")return SharedPreparationRegression.Run(args[1],args[2],args[3],args[4]);
         if (args.Length == 2 && args[0] == "--structure-index-budget-regressions") return StructureIndexBudgetRegression.Run(args[1]);
-        if (args.Length == 4 && args[0] == "--structure-index-oracle") return StructureIndexOracle.Run(args[1], args[2], args[3]);
+        if (args.Length == 4 && args[0] == "--structure-index-oracle") return StructureIndexOracle.Run(args[1], args[2], args[3],sharedPreparation);
         if (args.Length == 4 && args[0] == "--fit-probe") return StructureFitProbe.Run(args[1],args[2],args[3]);
         if (args.Length == 4 && args[0] == "--resource-binding-regressions") return ResourceBindingRegressions.Run(args[1],args[2],args[3]);
         if (args.Length == 3 && args[0] == "--contour-oracle") return StructureFitProbe.ContourOracle(args[1],args[2]);
@@ -77,8 +80,10 @@ internal static class Program
                 var partials = new List<JsonObject>();
                 var scanner = pipeline.CreateScanner(catalog);
                 var session = new StructureEvidenceSession(catalog, "recorded-replay-" + id); var ticket = session.BeginObservation(floor!);
-                var report = scanner.Scan(frame, new(floor!, "current-frame-verified", OnProgress: progress => {
-                    if (!session.Commit(progress, ticket)) differences.Add("partial-session-commit-rejected"); partials.Add((JsonObject)progress.DeepClone()); }));
+                var options=new StructureScanOptions(floor!, "current-frame-verified", OnProgress: progress => {
+                    if (!session.Commit(progress, ticket)) differences.Add("partial-session-commit-rejected"); partials.Add((JsonObject)progress.DeepClone()); });
+                using var preparedFrame=sharedPreparation?new StructureFramePreparation(frame):null;
+                var report = preparedFrame is null?scanner.Scan(frame,options):scanner.Scan(preparedFrame,options);
                 if (!session.Commit(report, ticket)) differences.Add("final-session-commit-rejected");
                 if (report["supportedMapIds"]!.AsArray().FirstOrDefault() is { } selected && singleTargetProofs.Add(mode+"/"+floor))
                 {

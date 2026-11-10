@@ -20,33 +20,55 @@ public sealed record StructureScanOptions(string Floor, string FloorSource = "op
     Func<string, bool>? PreferredMaterialCommitted = null, IEnumerable<string>? PlannedMapIds = null,
     Func<string, bool>? FirstMaterialCommitted = null);
 
-/// <summary>Exhausts the selected catalog. Failed fits remain UNKNOWN, including after a full scan.</summary>
+/// <summary>Scans the selected catalog, optionally stopping after qualified material commits. Failed fits remain UNKNOWN.</summary>
 public sealed class StructureCandidateScanner
 {
     public StructureCatalog Catalog { get; }
     private readonly StructureFit _fit;
     private readonly Func<double> _clock;
     private readonly Func<Mat, Rect, IStructureScanFit>? _prepareFit;
+    private readonly Func<StructureFramePreparation, IStructureScanFit>? _prepareSharedFit;
 
     public StructureCandidateScanner(StructureCatalog catalog, StructureFit fit, Func<double>? clock = null,
-        Func<Mat, Rect, IStructureScanFit>? prepareFit = null)
+        Func<Mat, Rect, IStructureScanFit>? prepareFit = null,
+        Func<StructureFramePreparation, IStructureScanFit>? prepareSharedFit = null)
     {
         Catalog = catalog; _fit = fit; _clock = clock ?? (() => Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency); _prepareFit = prepareFit;
+        _prepareSharedFit=prepareSharedFit;
     }
 
     public JsonObject Scan(Mat input, StructureScanOptions options)
+    {
+        Validate(input,options);
+        double started=_clock();
+        // Public arbitrary Mat callers retain their original defensive copy.
+        using var frame=input.Clone();
+        return ScanFrame(frame,options,started,null);
+    }
+
+    /// <summary>Serially borrows this operation's owned frame/observations; never disposes the preparation owner.</summary>
+    public JsonObject Scan(StructureFramePreparation preparation,StructureScanOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(preparation);
+        var frame=preparation.Frame;Validate(frame,options);
+        return ScanFrame(frame,options,_clock(),preparation);
+    }
+
+    private void Validate(Mat input,StructureScanOptions options)
     {
         if (!Catalog.Floors.Contains(options.Floor) || options.FloorSource is not ("operator-declared" or "current-frame-verified"))
             throw new ArgumentException("s1-structure-floor-evidence-required");
         if (input.Empty() || input.Type() != MatType.CV_8UC3) throw new ArgumentException("s1-structure-frame-invalid");
         if (options.BudgetSeconds is { } budget && (!double.IsFinite(budget) || budget <= 0)) throw new ArgumentException("s1-structure-budget-invalid");
+    }
+
+    private JsonObject ScanFrame(Mat frame,StructureScanOptions options,double started,StructureFramePreparation? preparation)
+    {
         var cancelled = options.Cancelled ?? (() => false);
-        double started = _clock();
-        // Own the observation bytes. No caller buffer or capture lifetime survives this boundary.
-        using var frame = input.Clone();
         string frameKey = Convert.ToHexStringLower(SHA256.HashData(Geometry.Bytes(frame)));
         var bounds = new Rect(0, 0, frame.Cols, frame.Rows);
-        using var prepared = _prepareFit?.Invoke(frame, bounds);
+        using var prepared = preparation is not null && _prepareSharedFit is not null
+            ? _prepareSharedFit(preparation):_prepareFit?.Invoke(frame, bounds);
         StructureFit fitOne = prepared is null ? _fit : prepared.Fit;
         var order = Catalog.MapIds.ToArray();
         if (options.CandidateOrder is not null)

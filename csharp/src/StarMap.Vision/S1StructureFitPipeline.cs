@@ -46,7 +46,14 @@ public sealed class SharedStructureFitPipeline : IDisposable
             {
                 using var scan = PrepareScan(catalog, frame, bounds);
                 return scan.Fit(frame, map, floor, cancelled, bounds);
-            }, prepareFit: (frame, bounds) => PrepareScan(catalog, frame, bounds));
+            }, prepareFit: (frame, bounds) => PrepareScan(catalog, frame, bounds),
+            prepareSharedFit: preparation => PrepareScan(catalog,preparation));
+    }
+
+    private IStructureScanFit PrepareScan(StructureCatalog catalog,StructureFramePreparation preparation)
+    {
+        ObjectDisposedException.ThrowIf(_disposed,this);RequireCatalog(catalog);
+        return new Scan(this,catalog,preparation.Frame,preparation.Domain,shared:preparation);
     }
 
     public IStructureScanFit PrepareScan(StructureCatalog catalog, Mat frame, Rect bounds)
@@ -127,23 +134,26 @@ public sealed class SharedStructureFitPipeline : IDisposable
         private readonly ResourceCatalogEntry? _target;
         private readonly Mat _frame;
         private readonly Rect _domain;
+        private readonly StructureFramePreparation? _shared;
         private bool _disposed, _primaryReady;
         private Observation? _primary;
         private IReadOnlyList<Island>? _islands;
         private readonly Dictionary<Rect, Observation?> _observations = [];
-        public Scan(SharedStructureFitPipeline owner, StructureCatalog? catalog, Mat frame, Rect bounds, ResourceCatalogEntry? target = null)
-        { _owner = owner; _catalog = catalog; _frame = frame; _domain = bounds; _target = target; }
+        public Scan(SharedStructureFitPipeline owner, StructureCatalog? catalog, Mat frame, Rect bounds, ResourceCatalogEntry? target = null,
+            StructureFramePreparation? shared=null)
+        { shared?.Require(frame,bounds);_owner = owner; _catalog = catalog; _frame = frame; _domain = bounds; _target = target; _shared=shared; }
         private Observation? Primary()
         {
+            if(_shared is not null)return _shared.Primary();
             if (!_primaryReady) { _primary = Geometry.Current(_frame, _domain); _primaryReady = true; }
             return _primary;
         }
-        private IReadOnlyList<Island> Islands() => _islands ??= S1StructureObservations.Islands(_frame, _domain);
+        private IReadOnlyList<Island> Islands() => _shared?.Islands()??(_islands ??= S1StructureObservations.Islands(_frame, _domain));
         private Observation? For(Island island)
         {
             if (Primary() is { } primary && primary.Bounds == island.Bounds) return primary;
             if (!_observations.TryGetValue(island.Bounds, out var context))
-            { context = Geometry.FromComponent(_frame, island.Bounds, (JsonObject)island.Component.DeepClone()); _observations.Add(island.Bounds, context); }
+            { context = _shared is not null?_shared.For(island):Geometry.FromComponent(_frame, island.Bounds, (JsonObject)island.Component.DeepClone()); _observations.Add(island.Bounds, context); }
             return context;
         }
 
@@ -296,7 +306,8 @@ public sealed class SharedStructureFitPipeline : IDisposable
         public void Dispose()
         {
             if (_disposed) return; _disposed = true;
-            _primary?.Dispose(); foreach (var context in _observations.Values) context?.Dispose(); _observations.Clear();
+            if(_shared is null){_primary?.Dispose();foreach(var context in _observations.Values)context?.Dispose();}
+            _observations.Clear();
         }
     }
     private static bool Flag(JsonObject value, string key) => value[key]?.GetValue<bool>() == true;

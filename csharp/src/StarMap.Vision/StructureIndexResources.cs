@@ -47,6 +47,9 @@ public sealed partial class StructureIndexFilter : IDisposable
         lock (_sync) { ObjectDisposedException.ThrowIf(_disposed, this); return _locator.Detect(frame, cancelled); }
     }
 
+    public StructureGateAnchor DetectAnchor(StructureFramePreparation preparation,Func<bool>? cancelled=null) =>
+        DetectAnchor(preparation.Frame,cancelled);
+
     /// <summary>Native clean-mask pixels to client pixels for exactly the report's common feasible pose.
     /// The caller must still validate this matrix against that same frame before committing a pose.</summary>
     public double[][]? ReferenceToClient(JsonObject report, string mapId, string floor)

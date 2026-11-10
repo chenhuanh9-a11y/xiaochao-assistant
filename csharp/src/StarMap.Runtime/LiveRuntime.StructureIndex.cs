@@ -66,12 +66,13 @@ public sealed partial class LiveRuntime
             floorSource = _manualFloor is null ? "current-frame-verified" : "operator-declared";
         }
         JsonObject? indexReport = null;
+        using var preparedFrame=new StructureFramePreparation(frame);
         string poolResult = "structure-coordinate-unknown";
         JsonObject gate = new() { ["status"] = "unavailable", ["reason"] = "structure-index-resources-unavailable" };
         try
         {
             var index = GetStructureIndex(bound, epoch, token, captured);
-            var anchor = index.DetectAnchor(frame, () => Obsolete(epoch, token, captured, bound)); gate = anchor.ToJson();
+            var anchor = index.DetectAnchor(preparedFrame, () => Obsolete(epoch, token, captured, bound)); gate = anchor.ToJson();
             lock (_sync)
             {
                 RequireCurrent(epoch, token, captured, bound);
@@ -81,7 +82,7 @@ public sealed partial class LiveRuntime
             // An explicit floor override can guide fitting. Contradictory raw
             // floor evidence cannot eliminate maps from the structural ledger.
             if (_structureIndexEntered && _observedFloor == floor)
-                indexReport = index.Evaluate(frame, pool.Remaining, floor, anchor, () => Obsolete(epoch, token, captured, bound));
+                indexReport = index.Evaluate(preparedFrame, pool.Remaining, floor, anchor, () => Obsolete(epoch, token, captured, bound));
         }
         catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or JsonException or ArgumentException)
         { indexReport = new() { ["coordinateVerified"] = false, ["reason"] = "structure-index-resources-unavailable", ["detail"] = error.Message }; }
@@ -100,7 +101,7 @@ public sealed partial class LiveRuntime
         string? preferred = _s1ProvisionalMapId is { } prior && pool.Remaining.Contains(prior)
             && _s1PreferenceBinding is not null && _s1PreferenceBinding == _capture.BindingScope
             && _s1PreferenceClient == captured.Context ? prior : null;
-        var report = scanner.Scan(frame, new(floor, floorSource, CandidateOrder: session.PriorityOrder(floor),
+        var report = scanner.Scan(preparedFrame, new(floor, floorSource, CandidateOrder: session.PriorityOrder(floor),
             PlannedMapIds: pool.Remaining, PreferredMapId: preferred,
             Cancelled: () => Obsolete(epoch, token, captured, bound), OnProgress: progress =>
             {
@@ -163,7 +164,8 @@ public sealed partial class LiveRuntime
                 : current ? pool.LockedMapId is not null ? "s1-structure-index-locked" : "s1-candidate-material-current"
                 : "s1-structure-candidates-unresolved";
             _diagnostics = JsonSerializer.SerializeToElement(new { stage = "s1-structure", floor = preparation.GetProperty("floor"), report = result,
-                index = indexReport, gate, poolResult, session = session.Snapshot(), preparation }, Json);
+                index = indexReport, gate, poolResult, session = session.Snapshot(), preparation,
+                sharedFramePreparation=preparedFrame.Statistics }, Json);
             Publish();
         }
     }
