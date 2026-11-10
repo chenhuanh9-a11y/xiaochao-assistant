@@ -32,7 +32,7 @@ def _reject(reason):
 
 
 def validate_npz_bytes(raw):
-    """Reject oversized or inconsistent NPY declarations before allocation.
+    """Reject unsafe declarations and return raw member -> (shape, dtype).
 
     The actual consumer must subsequently decode and validate required fields,
     metadata, exact dtypes, canvas/graph dimensions and finite numeric values.
@@ -51,7 +51,7 @@ def validate_npz_bytes(raw):
             rows = archive.infolist()
             if not rows or len(rows) > MAX_MEMBERS:
                 _reject('member-count')
-            names, total = set(), 0
+            names, total, declarations = set(), 0, {}
             for row in rows:
                 name = row.filename
                 if (not name.endswith('.npy') or '/' in name or '\\' in name
@@ -90,6 +90,8 @@ def validate_npz_bytes(raw):
                     expected = math.prod(shape) * dtype.itemsize
                     if expected > MAX_MEMBER_BYTES or stream.tell() + expected != row.file_size:
                         _reject('payload-size')
+                    declarations[name] = (shape, dtype)
+            return declarations
     except files.ImportRejected:
         raise
     except (OSError, ValueError, TypeError, EOFError, struct.error, RecursionError,

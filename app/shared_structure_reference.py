@@ -186,7 +186,10 @@ def load_shared_structure(
                 return None
             source = candidate
         else:
-            source = BytesIO(read_resource(candidate))
+            from imported_structure_declarations import validate_structure_declarations
+            raw = read_resource(candidate)
+            validate_structure_declarations(raw, expected_binding=expected_binding, expected_shape=expected_shape)
+            source = BytesIO(raw)
         with np.load(source, allow_pickle=False) as archive:
             metadata = _metadata_from_archive(archive)
             if metadata is None or metadata.get("sourceKind") not in {
