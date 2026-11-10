@@ -9,7 +9,7 @@ static class Grid
 {
     public static (object[] Rows, Dictionary<string, double> Stages) Search(
         JsonNode doc,
-        ushort[] field,
+        ReadOnlySpan<ushort> field,
         Func<bool>? shouldCancel = null,
         Action<string, int>? progress = null)
     {

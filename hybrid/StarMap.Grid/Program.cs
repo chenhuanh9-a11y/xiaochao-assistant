@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -36,9 +37,9 @@ static class Program
         string? path;
         long length;
         DateTime lastWrite;
-        ushort[]? field;
+        byte[]? field;
 
-        public ushort[] Load(SearchWork work)
+        public ReadOnlySpan<ushort> Load(SearchWork work)
         {
             var token = work.Computation.Token;
             token.ThrowIfCancellationRequested();
@@ -48,9 +49,9 @@ static class Program
             if (info.Length != required || required > int.MaxValue)
                 throw new InvalidDataException("reference-dimensions-mismatch");
             if (path == resolved && length == info.Length && lastWrite == info.LastWriteTimeUtc && field is not null)
-                return field;
+                return MemoryMarshal.Cast<byte, ushort>(field.AsSpan());
 
-            byte[] bytes = new byte[(int)required];
+            byte[] bytes = GC.AllocateUninitializedArray<byte>((int)required);
             using (var stream = new FileStream(resolved, new FileStreamOptions
             {
                 Mode = FileMode.Open,
@@ -59,13 +60,13 @@ static class Program
                 Options = FileOptions.Asynchronous | FileOptions.SequentialScan
             }))
             {
+                // Request the remaining bytes together. The OS can still cancel an
+                // in-flight read, and a short read resumes at its actual offset.
                 int read = 0;
                 while (read < bytes.Length)
                 {
                     token.ThrowIfCancellationRequested();
-                    int count = stream.ReadAsync(
-                        bytes.AsMemory(read, Math.Min(65536, bytes.Length - read)), token)
-                        .AsTask().GetAwaiter().GetResult();
+                    int count = stream.ReadAsync(bytes.AsMemory(read), token).AsTask().GetAwaiter().GetResult();
                     if (count == 0) throw new EndOfStreamException("reference-truncated");
                     read += count;
                 }
@@ -73,14 +74,12 @@ static class Program
             }
 
             token.ThrowIfCancellationRequested();
-            var loaded = new ushort[bytes.Length / 2];
-            Buffer.BlockCopy(bytes, 0, loaded, 0, bytes.Length);
-            token.ThrowIfCancellationRequested();
             path = resolved;
             length = info.Length;
             lastWrite = info.LastWriteTimeUtc;
-            field = loaded;
-            return loaded;
+            field = bytes;
+            // The x64 service consumes the caller's little-endian u16 field in place.
+            return MemoryMarshal.Cast<byte, ushort>(bytes.AsSpan());
         }
     }
 

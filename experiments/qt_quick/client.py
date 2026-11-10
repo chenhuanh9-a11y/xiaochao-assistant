@@ -129,7 +129,7 @@ class QtClient:
         self.grid_runtime = None
         if grid_backend == "csharp":
             from csharp_grid_runtime import CSharpGridRuntime
-            executable = (self.paths.resource_root / "csharp-grid/StarMap.Grid.exe" if FROZEN else
+            executable = (RESOURCE_ROOT / "csharp-grid/StarMap.Grid.exe" if FROZEN else
                 APP_ROOT.parent / "hybrid/StarMap.Grid/bin/Release/net10.0/StarMap.Grid.exe")
             self.grid_runtime = CSharpGridRuntime(executable, self.paths.work_root / "grid-cache")
         self.runtime = LiveRuntime(engine_factories=self.providers, capture_provider=self.capture,

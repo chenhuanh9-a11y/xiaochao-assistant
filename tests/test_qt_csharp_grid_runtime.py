@@ -13,7 +13,7 @@ sys.path[:0] = [str(ROOT / part) for part in
                 ("app", "experiments/qt_quick", "hybrid/python", "tests")]
 
 import fast_structure_alignment as fast
-from csharp_grid_backend import GridFailure
+from csharp_grid_backend import GridBackend, GridFailure
 from csharp_grid_runtime import CSharpGridRuntime
 from single_map_structure import current_geometry
 from test_hybrid_grid_backend import ambiguous_scene
@@ -32,21 +32,21 @@ class CSharpGridRuntimeTests(unittest.TestCase):
                 runtime = self.runtime()
                 with self.assertRaises(GridFailure):
                     with runtime.request_scope() as cancelled:
-                        client = runtime._client
-                        client._messages = queue.Queue()
-                        def send(packet):
+                        def start(client):
+                            client._messages = queue.Queue()
+                        def send(client, packet):
                             reply = dict(event="result", session=packet["session"], id=packet["id"])
                             reply.update(terminal)
                             client._messages.put(reply)
                         # Only communication is replaced. The actual proposal,
                         # candidate validation and whole-request owner execute.
-                        with patch.object(client, "_start"), patch.object(client, "_send", side_effect=send):
+                        with patch.object(GridBackend, "_start", start), patch.object(GridBackend, "_send", send):
                             try:
                                 with runtime.fit_scope():
                                     self.propose(cancelled=cancelled)
                             except GridFailure:
                                 pass  # Actual scanner can swallow preferred-fit errors.
-                        self.assertTrue(client.request_failed)
+                        self.assertTrue(runtime._client.request_failed)
                         self.assertTrue(cancelled())
                 self.assertTrue(runtime.request_failed)
 
@@ -63,13 +63,93 @@ class CSharpGridRuntimeTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
 
     def runtime(self, **kwargs):
-        runtime = CSharpGridRuntime(EXE, self.temp.name, timeout_seconds=10, **kwargs)
+        runtime = CSharpGridRuntime(EXE, self.temp.name, **kwargs)
         self.addCleanup(runtime.close)
         return runtime
 
     def propose(self, *, cancelled=None):
         return fast.propose(self.frame, None, self.prepared, context=self.context,
                             cancelled=cancelled)
+
+    def test_request_without_grid_has_no_grid_timeout(self):
+        runtime = self.runtime(timeout_seconds=.01)
+        with runtime.request_scope() as cancelled:
+            time.sleep(.03)
+            self.assertFalse(cancelled())
+        self.assertEqual(runtime.calls, ())
+        self.assertIsNone(runtime.process_id)
+
+    def test_qt_request_routes_proposal_without_explicit_fit_scope(self):
+        runtime = self.runtime()
+        with patch.object(fast, "_grid", side_effect=AssertionError("Python grid used")):
+            with runtime.request_scope() as cancelled:
+                result = self.propose(cancelled=cancelled)
+        self.assertIsNone(fast._grid_backend.get())
+        self.assertEqual(result[2]["reason"], "fast-ambiguous")
+        self.assertEqual(len(runtime.calls), 1)
+        self.assertGreater(runtime.calls[0]["candidateCount"], 0)
+        self.assertIsNotNone(runtime.process_id)
+
+    def test_python_work_after_returned_grid_has_no_grid_timeout(self):
+        runtime = self.runtime()
+        # Warm the real process before applying the short component budget.
+        with runtime.fit_scope() as cancelled:
+            self.propose(cancelled=cancelled)
+        initial_pid = runtime.process_id
+        runtime.timeout_seconds = .15
+        with runtime.request_scope() as cancelled, runtime.fit_scope():
+            search = fast._grid_backend.get()
+            search([[1., 2.]] * 40, self.prepared, 1., None, cancelled)
+            self.assertEqual(len(runtime.calls), 1)
+            time.sleep(.2)
+            self.assertFalse(cancelled())
+            with runtime.fit_scope():
+                search([[1., 2.]] * 40, self.prepared, 1., None, cancelled)
+            self.assertEqual([call["requestId"] for call in runtime.calls], [2, 2])
+            self.assertEqual([call["gridId"] for call in runtime.calls], [2, 3])
+            self.assertEqual(runtime.process_id, initial_pid)
+
+    def test_host_cancel_during_grid_prevents_retry_in_same_outer_request(self):
+        host_cancel = threading.Event()
+        searches_started = []
+
+        def events(event):
+            if event["event"] == "started":
+                searches_started.append(event["gridId"])
+                host_cancel.set()
+
+        runtime = self.runtime(event_sink=events)
+        with self.assertRaisesRegex(InterruptedError, "grid-cancelled"):
+            with runtime.request_scope() as qt_cancel:
+                with self.assertRaises(InterruptedError), runtime.fit_scope(cancelled=host_cancel.is_set):
+                    self.propose(cancelled=host_cancel.is_set)
+                host_cancel.clear()
+                self.assertTrue(qt_cancel())
+                # Even if a later candidate omits the Qt cancellation check,
+                # the failed search cannot be reset by opening another fit.
+                with self.assertRaises(InterruptedError), runtime.fit_scope():
+                    self.propose(cancelled=None)
+        self.assertEqual(searches_started, [1])
+        self.assertIsNone(runtime.process_id)
+
+    def test_grid_timeout_during_native_work_stays_failed(self):
+        armed = False
+        def events(event):
+            if armed and event["event"] == "started":
+                time.sleep(.2)
+
+        runtime = self.runtime(event_sink=events)
+        with runtime.fit_scope() as cancelled:
+            self.propose(cancelled=cancelled)
+        armed = True
+        runtime.timeout_seconds = .15
+        with self.assertRaisesRegex(InterruptedError, "grid-timeout"):
+            with runtime.request_scope() as qt_cancel:
+                with self.assertRaisesRegex(InterruptedError, "grid-timeout"), runtime.fit_scope():
+                    self.propose(cancelled=qt_cancel)
+                self.assertTrue(qt_cancel())
+        self.assertTrue(runtime.request_failed)
+        self.assertIsNone(runtime.process_id)
 
     def test_nested_fit_uses_one_real_request_and_resets_context(self):
         runtime = self.runtime()
@@ -79,7 +159,7 @@ class CSharpGridRuntimeTests(unittest.TestCase):
 
         with runtime.request_scope() as request_cancelled:
             with runtime.fit_scope() as fit_cancelled:
-                self.assertIs(fast._grid_backend.get(), runtime._client)
+                self.assertTrue(callable(fast._grid_backend.get()))
                 self.assertFalse(request_cancelled())
                 self.assertFalse(fit_cancelled())
                 worker = threading.Thread(target=lambda: other_thread_values.append(

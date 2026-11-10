@@ -77,6 +77,10 @@ QT_LICENSE_ROOT = ROOT / "experiments/qt_quick/qt-licenses"
 RUNTIME_DISTRIBUTIONS = ("PySide6-Essentials", "shiboken6", "numpy", "opencv-python-headless", "Pillow", "psutil")
 BRAND_ICON = "assets/brand/xingtu.ico"
 BRAND_ICON_SHA256 = "7aad9827252a62999ff214c4cb0cf08dd8f64473f584dd82ca2b4a2fee353b6b"
+GRID_PROJECT = "hybrid/StarMap.Grid/StarMap.Grid.csproj"
+GRID_DIRECTORY = "_internal/csharp-grid"
+GRID_RUNTIME_PACK = "Microsoft.NETCore.App.Runtime.win-x64"
+GRID_SDK = "10.0.403"
 # Runtime libraries from LGPL-capable QtBase/QtDeclarative/QtSvg. Unexpected
 # modules stop the build for review rather than inheriting the app's license.
 QT_LGPL_MODULES = set("""Concurrent Core DBus Gui Network OpenGL OpenGLWidgets PrintSupport
@@ -481,7 +485,7 @@ def use_windows_icu(internal):
                 systemLibraryBundled=False, removed=removed)
 
 
-def collect_notices(stage, qt_closure):
+def collect_notices(stage, qt_closure, grid_runtime_pack):
     """Copy exact upstream/wheel license files plus actual binary inventory."""
     target = stage / "_internal/qt-notices"
     target.mkdir(parents=True, exist_ok=True)
@@ -510,6 +514,14 @@ def collect_notices(stage, qt_closure):
     shutil.copy2(python_license, target / "Python-LICENSE.txt")
     rows.append(dict(distribution="Python", version=sys.version.split()[0], path="Python-LICENSE.txt",
                      bytes=python_license.stat().st_size, sha256=sha256(python_license)))
+    for name in ("LICENSE.TXT", "THIRD-PARTY-NOTICES.TXT"):
+        original = _local_file(grid_runtime_pack, name)
+        destination = target / "dependencies" / GRID_RUNTIME_PACK / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(original, destination)
+        rows.append(dict(distribution=GRID_RUNTIME_PACK, version=grid_runtime_pack.name,
+                         path=destination.relative_to(target).as_posix(), bytes=destination.stat().st_size,
+                         sha256=sha256(destination)))
     artifacts = []
     for path in sorted((stage / "_internal").rglob("*")):
         if path.is_file() and path.suffix.lower() in {".dll", ".pyd"}:
@@ -598,6 +610,69 @@ def environment(iscc):
                 compiler=str(compiler) if compiler else None,
                 compilerSha256=sha256(compiler) if compiler and compiler.is_file() else None,
                 qmlRoot=str(qml_root) if qml_root else None, errors=errors)
+
+
+def grid_sdk_info(dotnet):
+    selected = dotnet or os.environ.get("STARMAP_DOTNET") or shutil.which("dotnet")
+    executable = Path(selected).resolve() if selected else None
+    if not executable or not executable.is_file():
+        raise ValueError("Pass the .NET SDK executable with --dotnet or STARMAP_DOTNET")
+    version = subprocess.check_output([str(executable), "--version"], cwd=ROOT, text=True).strip()
+    if version != GRID_SDK:
+        raise ValueError(f"Grid build requires .NET SDK {GRID_SDK}, found {version}")
+    return dict(executable=str(executable), version=version)
+
+
+def verify_csharp_grid(stage):
+    """Check the apphost and the assets declared by the published self-contained runtime."""
+    directory = Path(stage) / GRID_DIRECTORY
+    config = _read(_local_file(directory, "StarMap.Grid.runtimeconfig.json"))["runtimeOptions"]
+    frameworks = config.get("includedFrameworks", [])
+    if (config.get("tfm") != "net10.0" or "framework" in config or "frameworks" in config
+            or len(frameworks) != 1 or frameworks[0].get("name") != "Microsoft.NETCore.App"):
+        raise ValueError("Grid must include its own .NET 10 runtime")
+    version = frameworks[0]["version"]
+    deps = _read(_local_file(directory, "StarMap.Grid.deps.json"))
+    target = ".NETCoreApp,Version=v10.0/win-x64"
+    pack = "runtimepack." + GRID_RUNTIME_PACK + "/" + version
+    if deps["runtimeTarget"]["name"] != target or pack not in deps["targets"].get(target, {}):
+        raise ValueError("Grid self-contained win-x64 runtime pack is missing")
+    required = {"StarMap.Grid.exe", "StarMap.Grid.dll", "hostfxr.dll", "hostpolicy.dll", "coreclr.dll",
+                "System.Private.CoreLib.dll"}
+    for library in deps["targets"][target].values():
+        required.update(library.get("runtime", {}))
+        required.update(library.get("native", {}))
+    for name in required:
+        _local_file(directory, name)
+    return dict(directory=GRID_DIRECTORY, executable="StarMap.Grid.exe", runtimeIdentifier="win-x64",
+                selfContained=True, runtimeVersion=version)
+
+
+def publish_csharp_grid(output, stage, sdk):
+    """Build the grid from this checkout into the embedded resource root, with offline restore."""
+    directory = stage / GRID_DIRECTORY
+    artifacts = output / "grid-build"
+    if directory.exists() or artifacts.exists():
+        raise ValueError("Grid publish requires fresh build and stage directories")
+    # Only the SDK's existing packs and NuGet cache may satisfy this offline build.
+    local_feed = artifacts / "offline-feed"
+    local_feed.mkdir(parents=True)
+    subprocess.run([sdk["executable"], "publish", str(_local_file(ROOT, GRID_PROJECT)),
+                    "-c", "Release", "-r", "win-x64", "--self-contained", "true",
+                    "--artifacts-path", str(artifacts), "--output", str(directory), "--nologo",
+                    "-p:UseSharedCompilation=false", "-p:DebugType=None", "-p:NuGetAudit=false",
+                    f"-p:RestoreSources={local_feed}"], cwd=ROOT, check=True,
+                   env=dict(os.environ, DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE="true",
+                            DOTNET_CLI_TELEMETRY_OPTOUT="1"))
+    info = verify_csharp_grid(stage)
+    assets = _read(artifacts / "obj/StarMap.Grid/project.assets.json")
+    # Follow the SDK's restore order. Some SDK layouts supply the pack under packs/.
+    roots = [Path(sdk["executable"]).parent / "packs", *map(Path, assets["packageFolders"])]
+    for root in roots:
+        package = root / GRID_RUNTIME_PACK.lower() / info["runtimeVersion"]
+        if package.is_dir():
+            return package
+    raise ValueError("Cannot locate the published grid runtime pack's license and notices")
 
 
 def _local_file(root, name):
@@ -893,7 +968,7 @@ def verify_frozen(stage, resources, qml_names, product=PRODUCT, *, bundled_autho
             prohibited.append(path.relative_to(stage).as_posix())
     if prohibited:
         raise ValueError(f"Unexpected Tk runtime in Qt package: {prohibited}")
-    return dict(administratorManifests=manifests, qmlModules=list(QML_MODULES),
+    return dict(administratorManifests=manifests, qmlModules=list(QML_MODULES), csharpGrid=verify_csharp_grid(stage),
                 resourceFiles=len(resources), clientQmlFiles=len(qml_names), tkRuntimeAbsent=True)
 
 
@@ -1141,6 +1216,9 @@ def stage_release_report(stage, *, product, source, version, resource_version, r
         resourceVersionMeaning='candidate-baseline; installed health verified separately before resource consumers',
         identityFiles={name: row for name, row in selected_file_identities(stage).items()
                        if row['status'] == 'hashed'})
+    if (stage / GRID_DIRECTORY).is_dir():
+        report["csharpGrid"] = dict(verify_csharp_grid(stage), project=GRID_PROJECT,
+                                    sourceCommit=report["compiledPayloadSourceCommit"])
     path = stage / 'release-report.json'
     path.write_text(json.dumps(report, indent=2), encoding='utf-8')
     return dict(file=path.name, sha256=sha256(path), executableSha256=report['executableSha256'])
@@ -1158,9 +1236,15 @@ def main(argv=None):
     parser.add_argument("--bundled-package", action="append", choices=("difficult-zhan10",), default=[],
                         help="Include this explicitly authorized read-only display default in an isolated client/private Setup only")
     parser.add_argument("--iscc", type=Path)
+    parser.add_argument("--dotnet", type=Path, help="Path to dotnet.exe (or set STARMAP_DOTNET)")
     parser.add_argument("--output-dir", type=Path, help="NEW directory within this checkout's work/ or dist/")
     args = parser.parse_args(argv)
     tools = environment(args.iscc)
+    try:
+        tools["gridSdk"] = grid_sdk_info(args.dotnet)
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        tools["errors"].append(str(error))
+        tools["success"] = False
     if args.check_environment:
         print(json.dumps(tools, indent=2))
         return 0 if tools["success"] else 1
@@ -1169,6 +1253,7 @@ def main(argv=None):
     if not tools["success"]:
         raise ValueError("Build environment is not pinned: " + "; ".join(tools["errors"]))
     source = source_identity(args.source_commit)
+    _local_file(ROOT, GRID_PROJECT)
     qt = ROOT / "experiments/qt_quick"
     if not (qt / "client.py").is_file() or not (qt / "Client.qml").is_file():
         raise ValueError("Integrated Qt entrypoint is not present")
@@ -1207,6 +1292,8 @@ def main(argv=None):
                 importHelper=dict(included=args.instance == "production", product="star-map-import-helper"),
                 resetHelper=dict(included=args.instance == "production", product="star-map-reset-helper"),
                 gameWatcher=dict(included=args.instance == "production", executable="XingtuGameWatcher.exe"),
+                csharpGrid=dict(project=GRID_PROJECT, sourceCommit=source["commit"], directory=GRID_DIRECTORY,
+                                runtimeIdentifier="win-x64", selfContained=True),
                 sourceRoot=str(ROOT), version=version, profileId=LIGHT_PROFILE,
                 resourceRoot=str(args.resource_root.resolve()), resourceVersion=declaration["resourceVersion"],
                 resourceInventorySha256=sha256(args.resource_inventory), resourceFiles=len(resources),
@@ -1275,13 +1362,14 @@ def main(argv=None):
                     "--distpath", str(output / "freeze"), "--workpath", str(output / "pyinstaller"),
                     str(TOOLS / "qt-client.spec")], cwd=ROOT, env=environment_vars, check=True)
     stage = output / "freeze" / product
+    grid_runtime_pack = publish_csharp_grid(output, stage, tools["gridSdk"])
     if args.instance == "production":
         plan["recoveryHelper"] = assemble_recovery_helper(output, stage, environment_vars)
         plan["importHelper"] = assemble_recovery_helper(output, stage, environment_vars, kind="import")
         plan["resetHelper"] = assemble_recovery_helper(output, stage, environment_vars, kind="reset")
         plan['gameWatcher'] = assemble_game_watcher(output, stage, environment_vars)
     plan["qtClosure"] = prune_unneeded_qt(stage)
-    plan["notices"] = collect_notices(stage, plan["qtClosure"])
+    plan["notices"] = collect_notices(stage, plan["qtClosure"], grid_runtime_pack)
     plan["frozenVerification"] = verify_frozen(stage, resources, [p.name for p in qt.glob("*.qml")], product,
                                              bundled_author_paths=author_paths)
     if author_paths:

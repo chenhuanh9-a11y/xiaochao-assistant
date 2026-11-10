@@ -24,9 +24,9 @@
 
 ## 当前状态
 
-Qt 正式入口增加 `--grid-backend csharp|python`，默认 C#；直接构造测试用 `QtClient` 仍默认原 Python，便于既有隔离 fixture。比较必须明确记录从哪个入口选择了哪个后端，不把直接构造的 Python 测试称为 C# 生产入口验收。源码运行前先 Release 构建 `hybrid/StarMap.Grid`；最终打包仍需携入自包含 C# 组件，当前尚未实现打包接线或 Setup，不得用现有打包脚本冒称成品可用。
+Qt 正式入口增加 `--grid-backend csharp|python`，默认 C#；直接构造测试用 `QtClient` 仍默认原 Python，便于既有隔离 fixture。比较必须明确记录从哪个入口选择了哪个后端，不把直接构造的 Python 测试称为 C# 生产入口验收。源码运行前先 Release 构建 `hybrid/StarMap.Grid`。现有打包链已接入自包含 win-x64 服务及其实际运行时许可证，冻结校验、发布报告和安装器清单包含组件；完整 Setup 仍待最终同一远端提交干净构建。
 
-QtClient 持唯一 `CSharpGridRuntime`，显式传给原 LiveRuntime 及所有 `_AlignmentHost`。实际 Session worker 的整个业务计算持一个 request scope，每次 fit 复用该作用域；ContextVar只替换 `_grid`，其余求解和原资源完全不变。S1 scanner同步进入同一worker；它会吞掉preferred candidate异常，因此grid失败须保留至整次请求并进入当前性取消，不能漏掉失败候选后改称另一张被唯一确认。nested fit不得把派生取消回调重新加入外层，避免相互递归。原 `shutdown_client` 在Session取消/排空后关闭服务，普通关图不关闭常驻进程。
+QtClient 持唯一 `CSharpGridRuntime`，传给原 LiveRuntime 和其直接创建的 Host。实际 Session worker 的整个业务计算持一个 request scope，由该外层安装 ContextVar，只替换 `_grid`；fit 复用该作用域。S1 provider 会另建未注入 owner 的 Host，同步继承 worker 的绑定，因此不能只以 LiveRuntime 内三处 Host 注入证明接线完整。超时仅从实际 grid 搜索开始，Python 资源、rank、refine 和后处理不消耗组件预算。S1 scanner 会吞掉 preferred candidate 异常，因此 grid 首次失败须保留至整次请求并进入当前性取消。nested fit 不把派生取消回调重新加入外层。原 `shutdown_client` 在 Session 取消/排空后关闭服务，普通关图不关闭常驻进程。
 
 当前策略：取消/超时/计算或协议错误拒绝本请求；失败进程被明确收尾，下次显式请求可启动新进程。没有自动 Python 回退。Python对照只有明确选择 `--grid-backend python`。
 
@@ -38,4 +38,25 @@ QtClient 持唯一 `CSharpGridRuntime`，显式传给原 LiveRuntime 及所有 `
 
 独立复核发现协议异常可能绕过整请求失败：`rows=null` 的计数和字符串score的数值检查曾抛TypeError、未设sticky标记，preferred候选异常被吞后外层能正常退出。现先验证匹配ID、布尔终态和候选数值/平移，再记录计数；类型异常作为GridFailure进入原收尾。新反例只替换通信，真实proposal/owner继续执行，并检查吞掉错误后仍取消及整请求失败。修后服务/bridge/owner/Qt接线20项通过，日志 `work/qt-grid-protocol-final-20261110-01.txt`；没有放宽原生产断言。
 
-仍待：审后差异复核、原正式Qt入口/当前真实帧的同条件回放、S1生产入口代表样本、计算与端到端性能、打包组件/Setup以及经授权的真实游戏链路。未合并、发布、安装、恢复采样或发键。
+后续回归确实复现并修正了两个接缝：未调用 grid 的普通业务工作也被组件超时中止；S1 provider 创建的 Host 没有进入 C#。owner 现 11 项通过，另原 Session/LiveRuntime/partial cleanup 的 96 项通过（`work/qt-grid-owner-binding-qt-regression-20261110-01.log`）。冻结私有实例曾从沙盒查组件而失败，现使用程序 `RESOURCE_ROOT`；定向回归修前失败、修后私有冻结/生产冻结/源码三路均启动实际服务，未复制组件进沙盒。
+
+打包 31 项定向检查通过（`work/grid-packaging-probe-01/validation.log`），其中真实自包含子进程在系统 .NET 路径不可用时加载自己的 `coreclr.dll`，删去实际依赖 DLL 后拒绝通过冻结校验。正式资源输入按既有库存核对 855 文件、223823255 字节；这不是 Setup 安装验收。
+
+新增保存帧回放 `tests/test_qt_csharp_grid_replay.py`，只替换像素获取和窗口事实。使用 2026-11-09 的 S0/S1 困难/噩梦各一帧，原工厂、Session worker、LiveRuntime、地图与楼层传感器、求解和渲染消费者继续实际执行；不注入地图/位姿答案，也不授予保存帧 live 权限。两后端分别使用正式库存的独立资源/学习目录和新进程，交替先后顺序，各捕获三次。`work/qt-grid-recorded-replay-02.log` 的12对最终字段/receipt一致，共35次C#搜索、3对渲染像素逐元素相同。S0困难调用数为0/1/1，S0噩梦0/0/0且身份未决；S1困难3/3/3、噩梦8/8/8，均未生成最终渲染。
+
+装载已改为一次请求剩余字节并直接读取缓存的只读 ushort 视图，保留异步取消、完整读后提交及原单引用缓存；没有改变数值求解或全局 JIT 设置。真实35次 grid 输入各重放3轮，105次候选均逐项等于 Python。96次进程复用调用的 whole-grid p50/p95 从17.41/32.22ms降到11.86/26.56ms，但max由38.23升到63.89ms，后者未进一步归因；9次冷调用中位数131.64→116.22ms。单独在4.86MB真实引用加载时取消，3.73ms收到取消终态、kernel未启动，同进程下一次搜索正常。
+
+末次 `work/qt-grid-recorded-replay-03.log` 继续通过12对状态/receipt、35次C#搜索与3对渲染像素。新增整个组件调用计时，包含启动、引用导出、IPC和返回校验；两后端对齐排除各有 grid 样本的首次搜索后，32次whole-grid的 p50/p95/max 为 Python 6.07/63.95/66.04ms、C# 13.94/27.32/29.93ms。C#改善较大搜索的尾部，小搜索中位数更慢；不能称所有场景加速。
+
+以下是同一保存帧第二、第三次 Session 请求到结果的 p50/p95/max，百分位采用 NumPy 的 linear 插值。每格仅 n=2，不能外推稳定分位数。S0困难的第二次请求才首次启动C#，不是全热条件。
+
+| 保存帧 | Python（ms） | C#（ms） | 各后端三次未生成渲染数 |
+| --- | --- | --- | --- |
+| S0困难 | 249.00/249.23/249.25 | 316.67/373.46/379.77 | 0 |
+| S0噩梦 | 190.17/190.37/190.39 | 195.48/196.02/196.08 | 3 |
+| S1困难 | 907.40/907.62/907.64 | 936.52/943.87/944.68 | 3 |
+| S1噩梦 | 1066.69/1083.37/1085.23 | 994.52/997.96/998.34 | 3 |
+
+未渲染包含身份/候选未决，不合并解释为9次引擎故障。没有独立图像真值支持的错层计数，也没有游戏按键与正确可见像素端点，两者均未知；首贴500ms/后续300ms目标未据此达到。保存帧使用结构显示偏好，未验证默认作者完整GUI。末次服务/消费者/owner/Qt接线/三类运行路径26项以及真实打包3项均通过，日志 `work/qt-grid-final-joint-20261110-03.log`、`work/qt-grid-final-package-20261110-03.log`。源码53c8b38对应的五个GitHub工作流已全部成功，本轮差异待提交推送与最终构建。
+
+仍待：性能改动与末次回放复核、最终同一远端提交的 Setup、经授权的安装兼容及真实游戏链路。未合并、发布、安装、恢复采样或发键。

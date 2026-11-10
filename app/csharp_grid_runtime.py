@@ -1,22 +1,29 @@
-"""Own one persistent C# grid backend across bounded fit/request scopes."""
+"""Own one persistent C# grid backend and time only its numerical searches."""
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 import math
 import threading
-import time
 from uuid import uuid4
 
 from csharp_grid_backend import GridBackend, GridFailure
+
+
+@dataclass
+class _Request:
+    serial: int
+    calls: list = field(default_factory=list)
+    failure: tuple[type[Exception], str] | None = None
 
 
 class CSharpGridRuntime:
     """Serialize Python fit work around one lazy, persistent ``GridBackend``.
 
     ``request_scope`` is the outer unit of work, typically one S1 runtime job.
-    A nested ``fit_scope`` installs the backend in fast_structure_alignment's
-    ContextVar without opening another backend request. A standalone
-    ``fit_scope`` creates its own request for callers outside that job path.
+    It installs the numerical search callable for every solver in that worker.
+    Only invoking the callable opens a timed backend request. All searches in
+    the same outer job share diagnostics and failure state.
     """
 
     def __init__(self, executable, cache_root, timeout_seconds=10, event_sink=None):
@@ -38,8 +45,7 @@ class CSharpGridRuntime:
         self._active_thread = None
         self._client = None
         self._session = uuid4().hex
-        self._request_serial = 0
-        self._request_failed = False
+        self._request = _Request(0)
         self._local = threading.local()
         self._close_started = False
         self._close_done = False
@@ -55,49 +61,27 @@ class CSharpGridRuntime:
     def calls(self):
         """Return an immutable snapshot of the active or most recent request."""
         with self._condition:
-            client = self._client
-        if client is None:
-            return ()
-        return tuple(dict(call) for call in client.calls)
+            return tuple(dict(call) for call in self._request.calls)
 
     @property
     def request_failed(self):
         """Whether the current or most recent outer request saw a grid failure."""
         with self._condition:
-            client = self._client
-            failed = self._request_failed
-        return failed or bool(getattr(client, "request_failed", False))
+            return self._request.failure is not None
 
-    def _mark_request_failed(self):
-        with self._condition:
-            self._request_failed = True
-
-    def _raise_if_invalidated(self, state, cancelled=None):
-        if self.request_failed:
-            raise GridFailure("grid-request-failed")
-        if self._closing.is_set():
-            raise InterruptedError("grid-cancelled")
-        if time.monotonic() >= state["deadline"]:
-            raise InterruptedError("grid-timeout")
-        if cancelled is not None and cancelled():
-            raise InterruptedError("grid-cancelled")
-
-    def _acquire_request(self, deadline, cancelled):
+    def _acquire_request(self, cancelled):
         with self._condition:
             while True:
                 if self._closing.is_set():
                     raise GridFailure("grid-runtime-closed")
                 if cancelled is not None and cancelled():
                     raise InterruptedError("grid-cancelled")
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise InterruptedError("grid-timeout")
                 if not self._active:
                     self._active = True
                     self._active_thread = threading.get_ident()
-                    self._request_serial += 1
-                    return self._request_serial
-                self._condition.wait(min(remaining, .05))
+                    self._request = _Request(self._request.serial + 1)
+                    return self._request
+                self._condition.wait(.05)
 
     def _release_request(self):
         with self._condition:
@@ -109,86 +93,68 @@ class CSharpGridRuntime:
     def request_scope(self, cancelled=None):
         """Run one serialized outer request and yield its combined cancel check.
 
-        The check covers caller cancellation, this runtime closing, the
-        end-to-end deadline (including owner-queue time), and any sticky
-        backend failure already seen in this request.
+        Ordinary Qt work retains its own lifetime. A failed native search
+        invalidates the whole job, even if a candidate loop catches its error.
         """
-        active_state = getattr(self._local, "request_state", None)
-        if active_state is not None:
-            # A nested callback can itself derive from combined_cancel. Keep
-            # it local to that scope instead of feeding it back into the outer
-            # cancellation predicate.
-            yield active_state["combined_cancel"]
+        outer_cancelled = getattr(self._local, "cancelled", None)
+        if outer_cancelled is not None:
+            # A nested callback may itself call outer_cancelled.
+            def nested_cancelled():
+                return outer_cancelled() or (cancelled is not None and cancelled())
+
+            yield nested_cancelled
+            self._check_request(self._request, nested_cancelled)
             return
 
-        deadline = time.monotonic() + self.timeout_seconds
-        request_id = self._acquire_request(deadline, cancelled)
+        request = self._acquire_request(cancelled)
+
+        def combined_cancel():
+            return (request.failure is not None or self._closing.is_set()
+                    or (cancelled is not None and cancelled()))
+
+        self._local.cancelled = combined_cancel
         try:
-            with self._condition:
-                if self._closing.is_set():
-                    raise GridFailure("grid-runtime-closed")
-                self._request_failed = False
-                if self._client is None:
-                    self._client = GridBackend(self.executable, self.cache_root, event_sink=self.event_sink)
-                client = self._client
-
-            state = {
-                "client": client,
-                "deadline": deadline,
-                "cancelled": cancelled,
-            }
-
-            def combined_cancel():
-                if self._closing.is_set() or time.monotonic() >= state["deadline"]:
-                    return True
-                if state["cancelled"] is not None and state["cancelled"]():
-                    return True
-                return self.request_failed
-
-            state["combined_cancel"] = combined_cancel
-            self._local.request_state = state
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise InterruptedError("grid-timeout")
-            try:
-                with client.request(self._session, request_id, remaining, combined_cancel):
-                    yield combined_cancel
-            except GridFailure:
-                self._mark_request_failed()
-                raise
-            finally:
-                if bool(getattr(client, "request_failed", False)):
-                    self._mark_request_failed()
+            from fast_structure_alignment import using_grid_backend
+            with using_grid_backend(self._search):
+                yield combined_cancel
+            self._check_request(request, combined_cancel)
         finally:
-            if hasattr(self._local, "request_state"):
-                del self._local.request_state
+            del self._local.cancelled
             self._release_request()
 
-    @contextmanager
-    def fit_scope(self, cancelled=None):
-        """Install the grid backend for one whole fit, reusing an outer request."""
-        import fast_structure_alignment as fast
+    @staticmethod
+    def _check_request(request, cancelled):
+        if request.failure is not None:
+            error_type, message = request.failure
+            raise error_type(message)
+        if cancelled():
+            raise InterruptedError("grid-cancelled")
 
-        state = getattr(self._local, "request_state", None)
-        if state is None:
-            with self.request_scope(cancelled) as combined_cancel:
-                state = self._local.request_state
-                try:
-                    with fast.using_grid_backend(state["client"]):
-                        yield combined_cancel
-                    self._raise_if_invalidated(state, cancelled)
-                except GridFailure:
-                    self._mark_request_failed()
-                    raise
-            return
-
+    def _search(self, points, prepared, scale, prior, cancelled):
+        outer_cancelled = self._local.cancelled
+        request = self._request
         try:
-            with fast.using_grid_backend(state["client"]):
-                yield state["combined_cancel"]
-            self._raise_if_invalidated(state, cancelled)
-        except GridFailure:
-            self._mark_request_failed()
+            self._check_request(request, outer_cancelled)
+            if self._client is None:
+                self._client = GridBackend(self.executable, self.cache_root, event_sink=self.event_sink)
+            client = self._client
+            with client.request(self._session, request.serial, self.timeout_seconds, outer_cancelled):
+                try:
+                    return client(points, prepared, scale, prior, cancelled)
+                finally:
+                    with self._condition:
+                        request.calls.extend(client.calls)
+        except Exception as error:
+            with self._condition:
+                if request.failure is None:
+                    # Keep the reason without retaining frame/array tracebacks.
+                    kind = InterruptedError if isinstance(error, InterruptedError) else GridFailure
+                    request.failure = (kind, str(error))
             raise
+
+    def fit_scope(self, cancelled=None):
+        """Reuse the outer request, or open one for a standalone fit."""
+        return self.request_scope(cancelled)
 
     def close(self):
         """Invalidate waiters and active grid work, drain it, then close once."""
