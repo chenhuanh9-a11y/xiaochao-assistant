@@ -169,6 +169,66 @@ class IdentityMetadataPackageIOTests(unittest.TestCase):
         self.assertIsNone(coordinates_path.matrix_profile_to_canonical("missing", "fixture-map", "1"))
         self.assertEqual(self.reads, ["identity.json", "coordinates.json"])
 
+    def test_imported_identity_ids_cannot_become_personal_storage_paths(self):
+        for unsafe in ('../../escaped', 'a/b', 'a\\b', 'C:outside', '.', '..', 'NUL', 'COM1.json', 'map. ', 'map.'):
+            for field in ('id', 'floor', 'packId', 'routeProfileId'):
+                with self.subTest(unsafe=unsafe, field=field):
+                    identity = json.loads(self.documents()['identity.json'])
+                    if field == 'floor':
+                        identity['floors'] = [unsafe]
+                        identity['maps'][0]['layers'] = {unsafe: None}
+                    elif field == 'packId':
+                        identity[field] = unsafe
+                    else:
+                        identity['maps'][0][field] = unsafe
+                    self.prepare(overrides={'identity.json': raw_json(identity)})
+                    with self.assertRaisesRegex(ValueError, 'native identity'):
+                        self.construct('identity', packaged=True)
+
+    def test_imported_case_collisions_and_unknown_layer_floors_are_rejected(self):
+        for change in ('map-case', 'floor-case', 'unknown-floor'):
+            with self.subTest(change=change):
+                identity = json.loads(self.documents()['identity.json'])
+                if change == 'map-case':
+                    duplicate = dict(identity['maps'][0], id=identity['maps'][0]['id'].upper())
+                    identity['maps'].append(duplicate)
+                elif change == 'floor-case':
+                    identity['floors'] = ['B1', 'b1']
+                    identity['maps'][0]['layers'] = {'B1': None, 'b1': None}
+                else:
+                    identity['maps'][0]['layers']['unknown'] = None
+                self.prepare(overrides={'identity.json': raw_json(identity)})
+                with self.assertRaisesRegex(ValueError, 'native identity'):
+                    self.construct('identity', packaged=True)
+
+    def test_imported_manifest_bounds_are_checked_before_creating_map_objects(self):
+        identity = json.loads(self.documents()['identity.json'])
+        identity['maps'] *= 257
+        self.prepare(overrides={'identity.json': raw_json(identity)})
+        from unittest.mock import patch
+        with patch('difficult_native_identity.NightmareMap', side_effect=AssertionError('map allocation')):
+            with self.assertRaisesRegex(ValueError, 'native identity'):
+                self.construct('identity', packaged=True)
+
+    def test_imported_layer_paths_are_canonical_but_unavailable_layers_remain_competitors(self):
+        for relative in ('../outside.npz', 'nested/../one.npz', 'nested\\one.npz', '/one.npz', 'C:one.npz'):
+            with self.subTest(relative=relative):
+                identity = json.loads(self.documents()['identity.json'])
+                identity['maps'][0]['layers']['1'] = relative
+                self.prepare(overrides={'identity.json': raw_json(identity)})
+                with self.assertRaisesRegex(ValueError, 'native identity'):
+                    self.construct('identity', packaged=True)
+        self.prepare()
+        pack = self.construct('identity', packaged=True)
+        self.assertEqual(set(pack.by_id), {'difficult-map1'})
+        self.assertIsNone(pack.by_id['difficult-map1'].layers['1'])
+
+    def test_trusted_path_constructor_keeps_legacy_id_parsing(self):
+        identity = json.loads(self.documents()['identity.json'])
+        identity['maps'][0]['id'] = '../../legacy-name'
+        self.prepare(overrides={'identity.json': raw_json(identity)})
+        self.assertEqual(self.construct('identity', packaged=False).maps[0].id, '../../legacy-name')
+
     def _assert_package_read_fails_closed(self, which, failure):
         relative = "identity.json" if which == "identity" else "coordinates.json"
         if failure == "undeclared":
