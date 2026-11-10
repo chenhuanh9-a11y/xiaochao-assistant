@@ -20,6 +20,8 @@
       </DockPanel>
     </Border>
     <StackPanel Grid.Row="1" Margin="0,0,0,12">
+    <TextBlock Text="{Binding InputStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,8"
+               Visibility="{Binding IsLive, Converter={StaticResource BooleanVisibility}}" />
     <WrapPanel Visibility="{Binding IsLive, Converter={StaticResource BooleanVisibility}}" Margin="0,0,0,8">
       <ComboBox Width="300" ItemsSource="{Binding GameWindows}" SelectedItem="{Binding SelectedGameWindow}" DisplayMemberPath="Label"
                 IsEnabled="{Binding CanChangeContext}" AutomationProperties.Name="游戏窗口" Margin="0,0,8,8" />

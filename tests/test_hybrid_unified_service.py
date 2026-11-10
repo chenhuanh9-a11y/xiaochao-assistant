@@ -21,8 +21,8 @@ for directory in (ROOT / "app", ROOT / "experiments/qt_quick", ROOT / "hybrid/py
         sys.path.insert(0, str(directory))
 
 from client_live_runtime import _AlignmentHost
-from runtime_session import RecordedRuntimeSession
-from runtime_worker import browse_terminal
+from runtime_session import RecordedRuntimeSession, RuntimeSession
+from runtime_worker import browse_terminal, finalize_runtime_result
 from worker import create_browse_worker
 from s0_test_fixtures import synthetic_read
 from test_client_live_runtime import fixture_engine
@@ -142,6 +142,35 @@ def write_gallery_fixture(resource_root):
 
 
 class HybridUnifiedServiceTests(unittest.TestCase):
+    def test_final_render_rechecks_input_observation_after_native_context_loss(self):
+        from test_client_live_runtime import LiveRuntimeContracts
+        for lose_context in (False, True):
+            with self.subTest(lose_context=lose_context):
+                case = LiveRuntimeContracts("test_ui_snapshot_does_not_copy_solver_evidence_or_change_candidate_identity")
+                case.setUp()
+                try:
+                    self.assertTrue(case.dispatch("start_round")["success"])
+                    session = RuntimeSession.__new__(RuntimeSession)
+                    session._closed = False
+                    session._runtime = case.runtime
+                    result = session.dispatch("map", dict(inputSequence=1, openIntent=True))
+                    observation = result["mapInputObservation"]
+                    self.assertTrue(case.runtime.snapshot()["render"])
+                    if lose_context:
+                        # Only this extra seam changes: dispatch completed with
+                        # a current real pose, then its capture context expired.
+                        case.capture.is_current = lambda context, generation=None: False
+                    finalize_runtime_result(session, result)
+                    if lose_context:
+                        self.assertIsNone(result["render"])
+                        self.assertGreater(result["snapshot"]["epoch"], observation["epoch"])
+                        self.assertNotIn("mapInputObservation", result)
+                    else:
+                        self.assertIsNotNone(result["render"])
+                        self.assertEqual(result["mapInputObservation"], observation)
+                finally:
+                    case.doCleanups()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -159,7 +188,16 @@ class HybridUnifiedServiceTests(unittest.TestCase):
         self.assertTrue(hello["ok"], hello)
         self.assertTrue({"contexts", "python", "operations"}.issubset(hello["result"]))
         self.assertEqual(hello["result"]["operations"], [
-            "hello", "catalog", "preview", "prepare", "set_frame", "dispatch", "snapshot"])
+            "hello", "catalog", "preview", "prepare", "set_frame", "dispatch", "snapshot", "input_preferences"])
+
+        preferences = process.request(4, "input_preferences")
+        self.assertTrue(preferences["ok"], preferences)
+        self.assertTrue(preferences["result"]["available"])
+        bindings = {row["action"]: row for row in preferences["result"]["bindings"]}
+        self.assertEqual(bindings["map"]["name"], "G")
+        self.assertEqual(bindings["toggle-panel"]["name"], "F9")
+        self.assertEqual(bindings["escape"]["vk"], 27)
+        self.assertFalse((process.data / "ui-settings.json").exists())
 
         catalog = process.request(2, "catalog", season="s0", mode="nightmare")
         self.assertTrue(catalog["ok"], catalog)
@@ -173,6 +211,27 @@ class HybridUnifiedServiceTests(unittest.TestCase):
             self.assertEqual(decoded.size, (24, 16))
         self.assertIsNone(preview["render"])
         self.assertNotIn("render", result)
+
+    def test_input_preferences_and_outside_round_map_do_not_prepare_or_change_runtime(self):
+        process = self.start_process()
+        outside = process.request(1, "dispatch", action="map",
+            payload=dict(inputSequence=1, openIntent=True, inputSource="hotkey"))
+        self.assertTrue(outside["ok"], outside)
+        self.assertEqual(outside["result"]["receipt"]["reason"], "round-not-started")
+        self.assertFalse(outside["result"]["snapshot"]["roundActive"])
+        self.assertFalse(outside["result"]["snapshot"]["roundPreparing"])
+        self.assertEqual(outside["gridCalls"], [])
+        self.assertFalse((process.installation / "work/map-packages/import.lock").exists())
+        before = process.request(2, "snapshot")["result"]["snapshot"]
+        source = b'{"hotkey":"bad-key"}'
+        path = process.data / "ui-settings.json"
+        path.write_bytes(source)
+        preferences = process.request(3, "input_preferences")
+        self.assertTrue(preferences["ok"], preferences)
+        self.assertFalse(preferences["result"]["available"])
+        self.assertEqual(path.read_bytes(), source)
+        after = process.request(4, "snapshot")["result"]["snapshot"]
+        self.assertEqual(after, before)
 
     def test_catalog_reuses_runtime_lease_and_does_not_change_prepared_context(self):
         process = self.start_process(explicit_installation_root=True)

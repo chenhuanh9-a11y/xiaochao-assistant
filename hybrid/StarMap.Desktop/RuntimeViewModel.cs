@@ -51,6 +51,10 @@ public sealed class RuntimeViewModel : INotifyPropertyChanged
     private ImageSource? nativeMaterial;
     private string? rejectedNativeToken;
     private GameWindowChoice? selectedGameWindow;
+    private string inputStatus = "";
+    private string pendingAction = "";
+    public event Action<long, bool>? MapInputObserved;
+    public string InputStatus { get => inputStatus; set => Set(ref inputStatus, value); }
     public Func<JsonElement, bool>? NativeContextIsCurrent { get; set; }
     public bool IsLive => connection?.EvidenceKind == "live-client-capture";
     private bool HasCaptureInput => IsLive ? BoundHwnd != 0 : HasFrame;
@@ -187,7 +191,7 @@ public sealed class RuntimeViewModel : INotifyPropertyChanged
         finally { if (Current(current, worker)) { Busy = false; NotifyActions(); } }
     }
 
-    public Task StartRoundAsync() => !CanStart ? Task.CompletedTask : ExecuteAsync("dispatch", new { action = "start_round" }, "正在开始本局…");
+    public Task StartRoundAsync() => !CanStart ? Task.CompletedTask : ExecuteDispatchAsync("start_round", null, "正在开始本局…");
     public Task CaptureAsync() => !CanCapture ? Task.CompletedTask : ExecuteFrameActionAsync("capture_now", null, "正在识别与贴合…");
     public Task BindCaptureAsync(nint hwnd) => !IsLive || !CanChangeContext ? Task.CompletedTask :
         ExecuteAsync("dispatch", new { action = "bind_capture", payload = new { hwnd = hwnd.ToInt64() } }, "正在绑定游戏窗口…");
@@ -197,8 +201,8 @@ public sealed class RuntimeViewModel : INotifyPropertyChanged
         GameWindows = windows; Changed(nameof(GameWindows));
         SelectedGameWindow = windows.FirstOrDefault(row => row.Hwnd == selected) ?? windows.FirstOrDefault();
     }
-    public Task EndRoundAsync() => !CanEnd ? Task.CompletedTask : ExecuteAsync("dispatch", new { action = "end_round" }, "正在结束本局…");
-    public Task CancelAsync() => ExecuteAsync("dispatch", new { action = "close_map" }, "正在取消识别…");
+    public Task EndRoundAsync() => !CanEnd ? Task.CompletedTask : ExecuteDispatchAsync("end_round", null, "正在结束本局…");
+    public Task CancelAsync() => ExecuteDispatchAsync("close_map", null, "正在取消识别…");
     public Task ConfirmAsync() => !CanConfirm ? Task.CompletedTask : ExecuteFrameActionAsync("confirm_route", null, "正在确认路线…");
     public Task SetFloorAsync()
     {
@@ -221,7 +225,36 @@ public sealed class RuntimeViewModel : INotifyPropertyChanged
     }
 
     private Task ExecuteFrameActionAsync(string action, object? payload, string message) =>
-        ExecuteAsync("dispatch", new { action, payload }, message, IsLive ? 3000 : 0);
+        ExecuteDispatchAsync(action, payload, message, IsLive ? 3000 : 0);
+
+    private Task ExecuteDispatchAsync(string action, object? payload, string message, int delay = 0) =>
+        ExecuteAsync("dispatch", new { action, payload }, message, delay, action);
+
+    public Task HandleMapInputAsync(long sequence, bool opening, long hwnd, double ageSeconds)
+    {
+        if (!IsLive || closing || ServiceUnavailable || hwnd == 0 || hwnd != BoundHwnd) return Task.CompletedTask;
+        // Rejected business work still leaves the independently observed physical
+        // G/ESC phase intact. In particular it must not cancel explicit start/end.
+        if (!HasRound || Busy && (pendingAction is "start_round" or "end_round" or "prepare")) return Task.CompletedTask;
+        return ExecuteDispatchAsync(opening ? "map" : "close_map",
+            new { inputSequence = sequence, openIntent = opening, inputAgeSeconds = ageSeconds,
+                inputSource = opening ? "hotkey" : "map-key" },
+            opening ? "正在读取游戏地图…" : "游戏地图已关闭。");
+    }
+
+    public Task HandleShortcutAsync(string action)
+    {
+        if (closing || !IsLive || ServiceUnavailable) return Task.CompletedTask;
+        if (action == "toggle-round") return HasRound ? EndRoundAsync() : StartRoundAsync();
+        if (action == "start-round") return StartRoundAsync();
+        if (action == "end-round") return EndRoundAsync();
+        var command = action switch
+        { "candidate-prev" => "previous_candidate", "candidate-next" => "next_candidate",
+            "confirm-round" => "confirm_route", "cycle-floor" => "cycle_floor",
+            "toggle-sheet-visibility" => "toggle_sheet_visibility", _ => "" };
+        if (Busy || command.Length == 0 || !Command(command)) return Task.CompletedTask;
+        return ExecuteDispatchAsync(command, null, "正在处理快捷键…");
+    }
 
     public async Task WithdrawNativeDisplayAsync(string? presentationFailure = null)
     {
@@ -236,11 +269,12 @@ public sealed class RuntimeViewModel : INotifyPropertyChanged
         { Status = "贴合窗口未能显示。"; Detail = presentationFailure; }
     }
 
-    private async Task ExecuteAsync(string operation, object arguments, string message, int returnToGameDelay = 0)
+    private async Task ExecuteAsync(string operation, object arguments, string message, int returnToGameDelay = 0, string? action = null)
     {
         if (connection is null || !connection.SupportsRuntime || closing) return;
         var worker = connection;
         var current = Begin(message);
+        pendingAction = action ?? operation;
         try
         {
             if (returnToGameDelay > 0)
@@ -261,6 +295,10 @@ public sealed class RuntimeViewModel : INotifyPropertyChanged
                 return;
             }
             ApplySnapshot(result);
+            if (result.TryGetProperty("mapInputObservation", out var observation)
+                && observation.TryGetProperty("inputSequence", out var sequence) && sequence.TryGetInt64(out var number)
+                && observation.TryGetProperty("mapOpen", out var open) && open.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                MapInputObserved?.Invoke(number, open.GetBoolean());
             if (result.TryGetProperty("capability", out var capability))
             {
                 prepared = Flag(capability, "available");
@@ -464,7 +502,7 @@ public sealed class RuntimeViewModel : INotifyPropertyChanged
     }
     internal static string String(JsonElement value, string key, string fallback = "") => value.ValueKind == JsonValueKind.Object
         && value.TryGetProperty(key, out var item) && item.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(item.GetString()) ? item.GetString()! : fallback;
-    private static bool Flag(JsonElement value, string key) => value.ValueKind == JsonValueKind.Object
+    internal static bool Flag(JsonElement value, string key) => value.ValueKind == JsonValueKind.Object
         && value.TryGetProperty(key, out var item) && item.ValueKind == JsonValueKind.True;
     private static string FloorName(string floor) => floor switch { "" => "尚未确认", "B1" => "B1 地下室", _ => floor + " 层" };
     private static string Message(string reason, bool success) => reason switch

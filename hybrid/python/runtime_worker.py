@@ -33,7 +33,8 @@ from worker import create_browse_worker
 
 
 BROWSE_OPERATIONS = frozenset(("hello", "catalog", "preview"))
-RUNTIME_OPERATIONS = ("hello", "catalog", "preview", "prepare", "set_frame", "dispatch", "snapshot")
+READ_ONLY_OPERATIONS = BROWSE_OPERATIONS | {"input_preferences"}
+RUNTIME_OPERATIONS = ("hello", "catalog", "preview", "prepare", "set_frame", "dispatch", "snapshot", "input_preferences")
 
 
 def native(value):
@@ -82,6 +83,15 @@ def render_result(runtime):
     metadata.update(width=int(pixels.shape[1]), height=int(pixels.shape[0]),
                     pngBase64=base64.b64encode(output.getvalue()).decode("ascii"))
     return metadata
+
+
+def finalize_runtime_result(runtime, result):
+    # Rendering rechecks the native capture and may invalidate the epoch.
+    # Phase evidence must survive that same final check, just like pixels.
+    result["render"] = render_result(runtime)
+    result["snapshot"] = runtime.snapshot()
+    if not runtime.input_observation_is_current(result.get("mapInputObservation")):
+        result.pop("mapInputObservation", None)
 
 
 def browse_terminal(browse, request, *, cancelled=None):
@@ -147,7 +157,13 @@ def run(args):
 
         try:
             send(dict(event="started", session=context.session, id=context.id))
-            if request.get("operation") in BROWSE_OPERATIONS:
+            if request.get("operation") == "input_preferences":
+                from input_preferences import read_input_preferences
+                context.check()
+                terminal = dict(event="result", session=context.session, id=context.id, ok=True,
+                    result=read_input_preferences(args.data_root))
+                context.check()
+            elif request.get("operation") in BROWSE_OPERATIONS:
                 context.check()
                 terminal = browse_terminal(browse, request, cancelled=context.cancelled)
                 if native_capture and request.get("operation") == "hello" and terminal.get("ok"):
@@ -173,9 +189,7 @@ def run(args):
                     else:
                         raise ValueError("unknown-runtime-operation")
                     context.check()
-                    result["render"] = render_result(runtime)
-                    # render_payload can revoke a pose after native context recheck.
-                    result["snapshot"] = runtime.snapshot()
+                    finalize_runtime_result(runtime, result)
                     context.check()
                 terminal = dict(event="result", session=context.session, id=context.id, ok=True,
                     result=result, gridBackend=args.grid_backend, gridCalls=list(backend.calls) if backend else python_calls,
@@ -184,7 +198,7 @@ def run(args):
             terminal["computeMs"] = (time.monotonic()-started)*1000
         except Exception as error:
             traceback.print_exc(file=sys.stderr)
-            is_browse = request.get("operation") in BROWSE_OPERATIONS
+            is_browse = request.get("operation") in READ_ONLY_OPERATIONS
             if not is_browse:
                 runtime.invalidate(context.reason or "runtime-request-failed")
             terminal = dict(event="result", session=context.session, id=context.id, ok=False,
@@ -197,11 +211,11 @@ def run(args):
             try:
                 context.check()
             except InterruptedError:
-                if request.get("operation") not in BROWSE_OPERATIONS:
+                if request.get("operation") not in READ_ONLY_OPERATIONS:
                     runtime.invalidate(context.reason or "cancelled")
                 terminal = dict(event="result", session=context.session, id=context.id, ok=False,
                     error=dict(code=context.reason, message=context.reason), render=None)
-                if request.get("operation") not in BROWSE_OPERATIONS:
+                if request.get("operation") not in READ_ONLY_OPERATIONS:
                     terminal["snapshot"] = runtime.snapshot()
             try:
                 send(terminal)
@@ -241,15 +255,15 @@ def run(args):
                         matched = active is not None and (active.session, active.id) == (session, rid)
                         if matched:
                             active.cancel("cancelled")
-                            if active.value.get("operation") not in BROWSE_OPERATIONS:
+                            if active.value.get("operation") not in READ_ONLY_OPERATIONS:
                                 runtime.invalidate("cancelled")
                         send(dict(event="cancel-ack", session=session, id=rid, matched=matched))
                     elif active is not None:
-                        if request.get("operation") in BROWSE_OPERATIONS:
+                        if request.get("operation") in READ_ONLY_OPERATIONS:
                             code, message = "busy-retry", "Wait for the current request before retrying."
                         else:
                             active.cancel("superseded")
-                            if active.value.get("operation") not in BROWSE_OPERATIONS:
+                            if active.value.get("operation") not in READ_ONLY_OPERATIONS:
                                 runtime.invalidate("superseded")
                             code, message = "busy-retry", "Wait for the current cancelled request before retrying."
                         send(dict(event="result", session=session, id=rid, ok=False,
@@ -265,7 +279,7 @@ def run(args):
         with state_lock:
             if active is not None:
                 active.cancel("closed")
-                if active.value.get("operation") not in BROWSE_OPERATIONS:
+                if active.value.get("operation") not in READ_ONLY_OPERATIONS:
                     runtime.invalidate("closed")
         if computation is not None:
             computation.join(timeout=10)

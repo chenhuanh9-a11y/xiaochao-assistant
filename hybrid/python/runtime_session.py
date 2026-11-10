@@ -270,10 +270,17 @@ class RuntimeSession:
                 liveAuthorization=False)
         else:
             receipt = self._runtime.dispatch(str(action), payload or {}, cancelled)
-        return dict(receipt=receipt, snapshot=self.snapshot())
+        result = dict(receipt=receipt, snapshot=self.snapshot())
+        observation = receipt.get("mapInputObservation")
+        if isinstance(observation, dict) and self._runtime.map_input_observation_is_current(observation):
+            result["mapInputObservation"] = copy.deepcopy(observation)
+        return result
 
     def snapshot(self):
         return self._runtime.snapshot()
+
+    def input_observation_is_current(self, observation):
+        return self._runtime.map_input_observation_is_current(observation)
 
     def invalidate(self, reason="cancelled"):
         """Immediately fence in-flight production work without queueing a command."""

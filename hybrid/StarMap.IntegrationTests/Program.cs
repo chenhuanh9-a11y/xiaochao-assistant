@@ -42,6 +42,9 @@ internal static class Program
                     if (args.Length >= 4) await RuntimeWorkspaceChecks.RunAsync(args[0], args[1], args[2], args[3]);
                 }
                 await NativePresentationChecks.RunAsync();
+                await NativeInputChecks.RunAsync();
+                if (!nativePresentationOnly && args.Length != 5)
+                    await NativeInputChecks.RunLiveHostAsync(args[0], args[1], args[2]);
                 exitCode = 0;
             }
             catch (Exception error) { Console.Error.WriteLine(error); }

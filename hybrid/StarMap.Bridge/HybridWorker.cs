@@ -175,7 +175,7 @@ public sealed class HybridWorker : IWorkerConnection
 
             using var timeout = new CancellationTokenSource(requestTimeout);
             using var nativeCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellation, timeout.Token, stopWriting.Token);
-            using var nativeRequest = operation is "hello" or "catalog" or "preview" ? null
+            using var nativeRequest = operation is "hello" or "catalog" or "preview" or "input_preferences" ? null
                 : captureService?.BeginRequest(session, id, operation, nativeCancellation.Token);
             var cancelSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             using var registration = cancellation.Register(static state =>

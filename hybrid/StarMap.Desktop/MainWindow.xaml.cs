@@ -16,6 +16,7 @@ public partial class MainWindow : Window
     private readonly CaptureExclusionOwner exclusion;
     private readonly AlignedOverlayWindow overlay;
     private NativeCaptureService? nativeCapture;
+    private NativeInputController? nativeInput;
     private string? selectedRoot;
     private bool initialized;
     private bool connecting, closing, closeReady;
@@ -83,6 +84,13 @@ public partial class MainWindow : Window
         RefreshButton.IsEnabled = false;
         try
         {
+            if (nativeInput is not null)
+            {
+                var previousInput = nativeInput;
+                try { await previousInput.DisposeAsync(); }
+                catch (IOException) when (previousInput.Stopped) { /* A stopped failed listener permits explicit reconnect. */ }
+            }
+            nativeInput = null;
             Gallery.Detach();
             Runtime.Detach();
             if (worker is not null)
@@ -108,6 +116,12 @@ public partial class MainWindow : Window
             await Gallery.AttachAsync(worker);
             if (!closing) await Runtime.AttachAsync(worker, frameRoot);
             if (!closing && Runtime.IsLive) Runtime.SetGameWindows(GameWindowCatalog.Read());
+            if (!closing && Runtime.IsLive)
+            {
+                nativeInput = new(this, Runtime, () => nativeCapture?.CurrentTarget());
+                try { await nativeInput.StartAsync(worker); }
+                catch (Exception error) { Runtime.InputStatus = "全局快捷键未连接：" + error.Message; }
+            }
         }
         catch (Exception error)
         {
@@ -192,7 +206,11 @@ public partial class MainWindow : Window
         Runtime.BeginClose();
         try
         {
-            try { if (worker is not null) await worker.DisposeAsync(); }
+            try
+            {
+                try { if (nativeInput is not null) await nativeInput.DisposeAsync(); }
+                finally { if (worker is not null) await worker.DisposeAsync(); }
+            }
             finally
             {
                 try { if (connectionTask is not null) await connectionTask; }

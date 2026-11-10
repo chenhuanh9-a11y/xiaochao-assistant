@@ -18,9 +18,11 @@ dotnet run --project hybrid/StarMap.Desktop -c Release -- --source-root "$PWD" -
 
 选择的 PNG 复制到独立 data root 的 `frames`；默认数据根为源码 `work/hybrid-desktop/<本次运行ID>`，也可显式指定 `--data-root '绝对路径'`，不得放进资源根或帧根之内。准备与本局期间锁定本局模式；取消识别只撤销当前图，结束本局才清除本局。操作失败后同步实际状态，无法同步时可显式重新连接资源目录（会结束旧服务里的本局）。关闭会撤销迟到显示并排空自有 worker。
 
-可勾选“连接游戏窗口”，或加 `--live-capture` 使用 C# 原生捕获。选择窗口并明确绑定后开始本局；实时识别、选图、确认和换层在三秒后请求当前客户区，请先切回游戏。没有全局输入监听，局外地图键也不会启动采集。原生回调通过自有命名管道接到原 Python provider，保留窗口/前台/代次/空白与最终接受拒绝。屏幕 DC fallback 只在自身 WPF 窗口排除成功后执行；失败报告能力缺口。
+可勾选“连接游戏窗口”，或加 `--live-capture` 使用 C# 原生捕获与穿透式全局键盘监听。选择窗口并明确绑定后开始本局，再在游戏中按地图键；局外地图键只更新物理开关意图，不启动本局。实时 UI 识别、选图、确认和换层在三秒后请求当前客户区，请先切回游戏。原生回调通过自有命名管道接到原 Python provider，保留窗口/前台/代次/空白与最终接受拒绝。屏幕 DC fallback 只在自身 WPF 窗口排除成功后执行；失败报告能力缺口。
 
-原生仿射贴合层已接入，但完整实时取像到正确可见浮层尚未验收。自有窗口 GDI 和模拟前台的 IPC 检查不能代替该项。全局热键、定点/提示、托盘/后台/单实例、完整页面与资源写操作仍待迁移。投影矩阵明确拒绝显示；保存帧暂存长期清理与跨启动数据根也待迁移。这里的 `asInvoker` 清单用于无输入监听的开发入口，不能代替未来正式主入口的管理员权限要求。后续完整 Setup 单独构建和验收。
+快捷键读取当前独立 data root 的 `ui-settings.json`，使用原设置值和冲突校验，不读取或修改旧安装。fresh 默认地图 G、面板 F9、本局切换 F10；现有设置文件沿用原旧版槽位迁移。读取失败时停止快捷键，鼠标键、单独修饰键与手动选图尚未接入并显示具体缺口。设置编辑页面仍待迁移；F9 可隐藏/恢复本窗口，X 暂仍直接退出。
+
+原生仿射贴合层已接入，但真实全局按键到正确可见浮层尚未验收。自有窗口 GDI、hook安装/停止与模拟事件不能代替该项。完整输入/鼠标、定点/提示、托盘/后台/单实例、完整页面与资源写操作仍待迁移。投影矩阵明确拒绝显示；保存帧暂存长期清理与跨启动数据根也待迁移。这里的 `asInvoker` 清单是隔离开发入口，正式主入口仍须满足管理员权限要求并单独验收。后续完整 Setup 单独构建和验收。
 
 Python 协议回归和 .NET 消费链检查：
 
@@ -36,6 +38,9 @@ dotnet hybrid/StarMap.TransportTests/bin/Release/net10.0/StarMap.TransportTests.
 dotnet build hybrid/StarMap.NativeTests/StarMap.NativeTests.csproj -c Release
 dotnet hybrid/StarMap.NativeTests/bin/Release/net10.0-windows/StarMap.NativeTests.dll "$PWD" 'C:\path\to\python.exe' 'REAL_RESOURCE_COPY'
 # --native-only 仅检查自有Win32窗口；--simulate-foreground 只供明确模拟前台的受控IPC组合检查
+dotnet build hybrid/StarMap.KeyboardTests/StarMap.KeyboardTests.csproj -c Release
+dotnet hybrid/StarMap.KeyboardTests/bin/Release/net10.0-windows/StarMap.KeyboardTests.dll
+# 上行仅验证事件原语及实际hook安装/停止，不注入按键
 ```
 
 IntegrationTests 运行真实 Python 子进程、现有 loader、管道传输与 WPF UI 线程图片消费者；输入是测试图片时不能称为真实地图、桌面可见像素或游戏验收。
