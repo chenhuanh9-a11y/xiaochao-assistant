@@ -173,7 +173,9 @@ class ImportedS1ActivationTests(unittest.TestCase):
 
             with self.assertRaises(ResourceCatalogError) as caught:
                 self.activate(season='s1', mode='nightmare')
-            self.assertEqual(caught.exception.code, 'native-base-context-unsupported')
+            # S1 nightmare is implemented, but this S1 difficult package must
+            # not be admitted as a different supported context.
+            self.assertEqual(caught.exception.code, 'resource-component-context-mismatch')
             self.assertEqual(catalog_path.read_bytes(), original_bytes)
 
 

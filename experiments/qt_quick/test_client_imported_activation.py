@@ -237,7 +237,7 @@ class ClientImportedActivationTests(unittest.TestCase):
 
     def test_unimplemented_context_is_explicitly_unsupported(self):
         with self.assertRaises(ResourceCatalogError) as caught:
-            self.activate(season='s1', mode='nightmare')
+            self.activate(season='s0', mode='difficult')
         self.assertEqual(caught.exception.code, 'native-base-context-unsupported')
         self.assertFalse((self.root / 'catalog.json').exists())
 
