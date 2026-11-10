@@ -14,31 +14,33 @@ public sealed partial class LiveRuntime
         CapturedClientFrame captured, BoundResources bound, string floor, FloorObservationResult read, JsonElement preparation)
     {
         RuntimeRenderPacket previous; CanonicalGrant canonical; CapturedClientFrame previousFrame;
-        GeometryGroup group; RuntimeDisplayState display;
+        GeometryGroup? group; RuntimeDisplayState display;bool s1Manual;
         lock (_sync)
         {
             RequireCurrent(epoch, token, captured, bound);
-            // S1's candidate/full-frame observer is a separate producer. A
-            // provisional display must never enter S0's geometry cache lane.
-            if (_selection.Season != "s0" || !RenderCurrent() || _canonical?.Group is not { } currentGroup
-                || !ReferenceEquals(currentGroup, _geometryGroup) || SteadyEnabled && SteadyMaterialReady
+            // Selected S1 identities share renewal/Core commit, but measure
+            // full-client geometry and never enter S0's group/scale cache lane.
+            s1Manual=request.Action=="observe_manual_floor" && S1ManualIdentity && S1FloorObserverAvailable;
+            if ((!s1Manual && _selection.Season != "s0") || !RenderCurrent() || _canonical is null
+                || !s1Manual && (_canonical.Group is null || !ReferenceEquals(_canonical.Group,_geometryGroup) || SteadyEnabled && SteadyMaterialReady)
                 || _floor != floor || read.FloorId is { } observed && observed != floor
                 || _render!.Client != captured.Context || _render.Stamp.WindowIdentity != captured.Stamp.WindowIdentity
                 || _render.Stamp.Generation != captured.Stamp.Generation) return null;
-            previous = _render; canonical = _canonical; previousFrame = _frame!; group = currentGroup; display = _display;
+            previous = _render; canonical = _canonical; previousFrame = _frame!; group = _geometryGroup; display = _display;
         }
         var entry = bound.Catalog.Find(bound.Passports.Mode, bound.Passports.Season,
             bound.Passports.MapProfiles[previous.MapId], previous.MapId, floor);
         if (entry is null) return null;
-        if (!ReferenceEquals(_currentResidualResources, bound) || _currentResidualHost is null)
+        if (!s1Manual && (!ReferenceEquals(_currentResidualResources, bound) || _currentResidualHost is null))
         {
             _currentResidualHost?.Dispose();
             _currentResidualHost = new(bound.Catalog, bound.Passports, loadReference: bound.LoadReference);
             _currentResidualResources = bound;
         }
         using var pixels = ToBgr(captured);
-        var measured = _currentResidualHost.EvaluateCanonicalResidual(pixels, entry, canonical.NativeToClient.ToArray(),
-            () => Obsolete(epoch, token, captured, bound));
+        var measured = s1Manual
+            ? GetStructureFits(bound).EvaluateCanonicalResidual(pixels,entry,canonical.NativeToClient.ToArray(),()=>Obsolete(epoch,token,captured,bound))
+            : _currentResidualHost!.EvaluateCanonicalResidual(pixels, entry, canonical.NativeToClient.ToArray(),()=>Obsolete(epoch,token,captured,bound));
         var residual = ReadResidualEvidence(measured);
         lock (_sync)
         {

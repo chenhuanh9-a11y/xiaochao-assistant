@@ -50,6 +50,24 @@ public sealed class SharedStructureFitPipeline : IDisposable
             prepareSharedFit: preparation => PrepareScan(catalog,preparation));
     }
 
+    /// <summary>Remeasures a selected S1 pose on fresh full-client geometry;
+    /// it neither solves a new pose nor contributes identity evidence.</summary>
+    public JsonObject EvaluateCanonicalResidual(Mat frame,ResourceCatalogEntry target,double[][] nativeToClient,Func<bool>? cancelled=null)
+    {
+        ObjectDisposedException.ThrowIf(_disposed,this);
+        if(frame.Empty() || frame.Type()!=MatType.CV_8UC3)throw new ArgumentException("s1-structure-frame-invalid");
+        if(cancelled?.Invoke()==true)return new(){["verified"]=false,["reason"]="current-residual-obsolete"};
+        var reference=Reference(null,target,target.MapId,target.Floor,out string reason);
+        if(reference is null)return new(){["verified"]=false,["reason"]=reason};
+        using var visible=Geometry.Current(frame,new Rect(0,0,frame.Cols,frame.Rows));
+        if(visible is null)return new(){["verified"]=false,["reason"]="manual-current-geometry-unavailable"};
+        var residual=FrameResidual.Evaluate(frame,visible,reference.Geometry.Validation,nativeToClient);
+        var evidence=AlignmentObservationEvidence.CanonicalResidualEvidence(new Dictionary<string,object?>{["verified"]=Flag(residual,"verified")},
+            "game-rendered-shared-structure",reference.CoordinatePackId);
+        foreach(var field in evidence)residual[field.Key]=JsonSerializer.SerializeToNode(field.Value);
+        return cancelled?.Invoke()==true?new(){["verified"]=false,["reason"]="current-residual-obsolete"}:residual;
+    }
+
     private IStructureScanFit PrepareScan(StructureCatalog catalog,StructureFramePreparation preparation)
     {
         ObjectDisposedException.ThrowIf(_disposed,this);RequireCatalog(catalog);

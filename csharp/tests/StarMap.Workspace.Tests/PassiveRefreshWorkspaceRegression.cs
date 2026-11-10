@@ -83,10 +83,40 @@ internal static class PassiveRefreshWorkspaceRegression
             check(await page.Configure(resources, new SettingsDocument(new JsonObject { ["gameSeason"] = "s1", ["gameMode"] = "nightmare" })),
                 "passive-workspace-switches-to-actual-S1-resource-context");
             page.Dispatch("start_round"); await page.DrainAsync();
-            capture.Select("batch02-event-000319", false); page.Dispatch("capture_now"); await page.DrainAsync();
-            before = capture.Calls; capture.Foreground = true; await Task.Delay(450); capture.Foreground = false;
-            check(page.State!.Context.Season == "s1" && page.State.MapOpen && capture.Calls == before,
-                "S0-passive-refresh-does-not-substitute-for-the-separate-S1-floor-observer-route");
+            capture.Select("batch02-event-000319", false); page.HandleShortcut("map"); await page.DrainAsync();
+            var candidate=page.ReadRender();before=capture.Calls;var candidateHold=capture.HoldNext();capture.Foreground=true;
+            try
+            {
+                await candidateHold.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                page.ObserveOpenMap();page.ObserveOpenMap();
+                check(page.SessionView is {WorkerActive:true,QueuedCount:0,PendingAction:"observe_candidate_floor"}
+                    && capture.Calls==before+1 && ReferenceEquals(candidate,page.ReadRender()),
+                    "hidden-S1-timer-dispatches-dedicated-candidate-probe-and-coalesces-busy-ticks");
+            }
+            finally{capture.Foreground=false;candidateHold.Release.TrySetResult();}
+            await page.DrainAsync();
+            check(page.State is {MapOpen:true,Reason:"candidate-floor-current"} && ReferenceEquals(candidate,page.ReadRender()),
+                "hidden-S1-same-floor-probe-retains-exact-material-without-S0-refresh-or-pose-renewal");
+            page.Dispatch("confirm_route",new {mapId="107012"});await page.DrainAsync();
+            var manualHold=capture.HoldNext();before=capture.Calls;capture.Foreground=true;
+            try
+            {
+                await manualHold.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                check(page.SessionView?.PendingAction=="observe_manual_floor" && capture.Calls==before+1,
+                    "hidden-S1-timer-switches-to-manual-floor-observer-after-explicit-map-choice");
+            }
+            finally{capture.Foreground=false;manualHold.Release.TrySetResult();}
+            await page.DrainAsync();
+            check(page.ReadRender() is { } manual && manual.Stamp!=candidate!.Stamp && page.State?.Context.MapId=="107012",
+                "manual-S1-observer-current-pixels-reach-real-WPF-workspace-consumer");
+            capture.Select("batch02-event-000401",false);capture.Foreground=true;
+            try{await Until(()=>page.State?.MapOpen==false);}finally{capture.Foreground=false;}
+            await page.DrainAsync();
+            check(page.State is {Reason:"s1-map-closed",Context.MapId:"107012"} && !input.OpenIntent && page.ReadRender() is null,
+                "single-S1-negative-reconciles-the-physical-G-edge-and-retains-manual-identity");
+            capture.Select("batch02-event-000319",false);page.HandleShortcut("map");await page.DrainAsync();
+            check(input.OpenIntent && page.State?.MapOpen==true && page.ReadRender() is not null,
+                "G-after-S1-passive-close-opens-and-fits-a-fresh-cycle");
             await page.CloseAsync(); before = capture.Calls; capture.Foreground = true; await Task.Delay(250);
             check(capture.Calls == before && page.State is null, "closed-background-observation-timer-does-not-acquire-another-frame");
         }

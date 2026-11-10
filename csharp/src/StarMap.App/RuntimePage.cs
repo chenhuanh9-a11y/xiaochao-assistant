@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Diagnostics;
 using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
@@ -32,6 +33,7 @@ internal sealed class RuntimePage : UserControl
     readonly ComboBox floor = new() { MinWidth = 130, HorizontalAlignment = HorizontalAlignment.Left, DisplayMemberPath = "Label", SelectedValuePath = "Id" };
     readonly Button start, end, acquire, cancel, previous, next, confirm, pick, applyFloor, toggleVisibility;
     readonly DispatcherTimer renderTimer, observationTimer;
+    long lastS1FloorObservation;
     SessionService? session;
     LiveRuntime? runtime;
     CancellationTokenSource? pendingCapture;
@@ -288,7 +290,7 @@ internal sealed class RuntimePage : UserControl
         var result = session.Dispatch(action, payload is null ? null : JsonSerializer.SerializeToElement(payload));
         if (result.Disposition is SessionDispatchDisposition.Enqueued or SessionDispatchDisposition.Coalesced)
         {
-            if (action is "capture_now" or "map" or "recover_map_open" or "refresh_map")
+            if (action is "capture_now" or "map" or "recover_map_open" or "refresh_map" or "observe_manual_floor" or "observe_candidate_floor")
                 mapRead = (session.Read().Sequence.LastIssuedSequence, mapInput.Sequence, previousFrame);
             if (action is "end_round" or "stop_round" or "reset_round") { mapInput.Reset(); mapRead = null; }
         }
@@ -339,6 +341,8 @@ internal sealed class RuntimePage : UserControl
         if (observed is { MapOpen: false, Reason: "map-not-observed" }
             && (completion.Action != "refresh_map" || observed.ProbeMisses >= 2))
             mapInput.Reconcile(false, read.Input);
+        else if(observed is {MapOpen:false,Reason:"s1-map-closed" or "candidate-map-closed"})
+            mapInput.Reconcile(false,read.Input);
         else if (observed is { MapOpen: true, Context.FrameId: { } frame } && frame != read.PreviousFrame)
             mapInput.Reconcile(true, read.Input);
     }
@@ -376,22 +380,28 @@ internal sealed class RuntimePage : UserControl
         if (ObserveDisplayContext()) return;
         var state = runtime.ReadState();
         if (!state.RoundActive || !state.ResourcesBound || state.WorkActive || !capture.IsBound || !capture.IsForeground) return;
+        bool s1=state.Context.Season=="s1";
+        if(s1 && lastS1FloorObservation!=0 && Stopwatch.GetElapsedTime(lastS1FloorObservation)<TimeSpan.FromMilliseconds(500))return;
+        var commands=runtime.ReadSnapshot().AvailableCommands;
         string action; object payload;
         if (state.MapOpenRecovery is { Pending: true } recovery)
         {
             if (!recovery.Due || recovery.Id is null) return;
-            action = "recover_map_open"; payload = new { recoveryId = recovery.Id };
+            action = s1 && commands.Contains("observe_manual_floor")?"observe_manual_floor":"recover_map_open";
+            payload = new { recoveryId = recovery.Id };
         }
         else
         {
-            // The original S1 host has separate candidate/manual-floor observer
-            // loops. Its public refresh action is not the S1 timer route.
-            if (!state.MapOpen || state.Context.Season != "s0" || state.GroupChoice.PendingMapId is not null) return;
-            action = "refresh_map"; payload = new { };
+            if (!state.MapOpen || state.GroupChoice.PendingMapId is not null) return;
+            action = s1 ? commands.Contains("observe_manual_floor")?"observe_manual_floor":"observe_candidate_floor" : "refresh_map";
+            if(!commands.Contains(action))return;
+            payload = new { };
         }
         // Refresh is safe here: there is no in-flight producer to invalidate.
         session.RefreshRuntime();
-        Dispatch(action, payload);
+        var admitted=Dispatch(action, payload);
+        if(s1 && admitted?.Disposition is SessionDispatchDisposition.Enqueued or SessionDispatchDisposition.Coalesced)
+            lastS1FloorObservation=Stopwatch.GetTimestamp();
     }
     void CancelWork()
     {

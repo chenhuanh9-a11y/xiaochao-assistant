@@ -17,7 +17,7 @@
 | 楼层/开图准备 | client_live_runtime.py / map_open_preparation.py / floor_contract.py | 37 项真实/合成边界及全部 S0 251 张原始客户区的观察结果与原 Python 严格一致；S1 当前真实输入由全 154 张组件回放及连续 Runtime 样本覆盖。map/foreground-return 准备沿原 1.05s/50ms/最多 21 probe；普通 capture_now 单次观察。超时未知楼层的正地图帧仍供人工修正，晚到可用楼层不绕过期限；有原 Runtime 真实晚采集对照及 C# 修前失败/修后回归。不是实机准备延迟验收 |
 | 身份与入口竞争 | map_identity_engine.py / difficult_entry_identity.py / difficult_side_entry_identity.py / front_door_recognition.py | S0 完整 passport/main/side/source-advisory/native/登记组/最终行消费者已接，全部 251 张当前原图严格零差异；S1 正支持候选始终不充当唯一身份。组内成员选择已接独立目标贴合、WPF 素材回执与同锁提交，手选跨层保留。实际调用已按原 Runtime 纠正：有选中参考时不额外重排；无地图且有实际条件先验时以完整 cohort 竞争。强冲突观测及配置 source store 时的 SIFT producer 仍缺 |
 | prepare/grid/refine/propose/验证 | fast_structure_alignment.py / single_map_structure.py / nightmare_candidate.py / idvb0059_steady.py | 共用数值内核与 S0 Host 冷流程/拒绝顺序、S1 目标楼层 Fit 已接；S0 当前 285 次候选 Fit 与原程序零差异，另有禁用 fast 的 6 次真实原 Host 对照。0059 数值流程和 coverage refresh、S0 established 几何组局部/全局/native recall 与 entry producer 已接；S1 原 explicit-full-frame 路径继续跳过0059及 established 几何恢复。准备/观察数组有逐位对照，标量有严格差异报告。pose-index、tracking 与强冲突 producer 尚缺 |
-| 会话/取消/缓存/恢复 | client_session.py / client_coordinator.py / client_live_runtime.py | SessionService 单写者/单 worker/取消/资源 lease/真实回调重入与 Python 纯状态 43 项通过；Runtime 原图回放覆盖显隐、组内选择、canonical/material 与恢复。几何组复用现有 Core RoundLayerGroup，由同一提交包发布；无关系新层成功建新根，失败保留旧组。S0 的0059仅在实际 WPF 素材就绪、Session 已收取结果后记录实际组 owner 的目标层尺度/coverage；新 owner ACK 清旧层缓存，作者重投影保留 owner 且不新建学习回执。S1 素材不请求0059学习。开图准备失败后已接原 8 次/200ms 间隔/2s 有界恢复，每次单帧复用同一求解链；票据绑定本局、输入、资源、作者代际和稳定窗口绑定。隐藏页面的独立 timer/Session 已接默认 S0 被动刷新及两次负帧关图，并同步同一物理输入相位；窗口/几何上下文有效期与最新采集帧分开，求解仍验证最新帧。S0 当前姿态直接续期已接，稳定素材与当前帧记忆 proposal 分开；S1 专用楼层观察、点击意图策略、保留观测的组内拟合及人工确认重新采集仍缺；Recorded 始终不授予 LiveAuthorization |
+| 会话/取消/缓存/恢复 | client_session.py / client_coordinator.py / client_live_runtime.py | SessionService 单写者/单 worker/取消/资源 lease/真实回调重入与 Python 纯状态 43 项通过；Runtime 原图回放覆盖显隐、组内选择、canonical/material 与恢复。几何组复用现有 Core RoundLayerGroup，由同一提交包发布；无关系新层成功建新根，失败保留旧组。S0 的0059仅在实际 WPF 素材就绪、Session 已收取结果后记录实际组 owner 的目标层尺度/coverage；新 owner ACK 清旧层缓存，作者重投影保留 owner 且不新建学习回执。S1 素材不请求0059学习。开图准备失败后已接原 8 次/200ms 间隔/2s 有界恢复，每次单帧复用同一求解链；票据绑定本局、输入、资源、作者代际和稳定窗口绑定。隐藏页面的独立 timer/Session 已接默认 S0 被动刷新及两次负帧关图，以及 S1 专用候选/手选地图楼层观察；确认关图同步同一物理输入相位。窗口/几何上下文有效期与最新采集帧分开，求解仍验证最新帧。S0 当前姿态与 S1 手选地图的同层新帧残差续期已接，稳定素材与当前帧记忆 proposal 分开；点击意图策略、保留观测的组内拟合及人工确认重新采集仍缺；Recorded 始终不授予 LiveAuthorization |
 | 结构/作者/浮窗/穿透/DPI | client_windows.py / ClientAligned.qml / ClientReference.qml / author_display_policy.py / nightmare_author_coordinate_adapter.py | 显示桥当前 391 adapters/391 bridges/5 native corners/1 非单位校准零差异，完整选择 233 项和素材 261 项通过。Runtime 已接 canonical/material 提交、偏好替换与撤销；浮层已有真实 WPF 主机和离屏几何/票据回归。完整作者交互、参考窗及实机穿透/多屏 DPI 仍缺；素材不授权身份或结构位姿 |
 | 账号/路线广场/投稿 | account_service.py / client_route_plaza.py / ClientAccount.qml | 待迁；不以演示数据或按钮提示冒称接入 |
 | 教程/公告/帮助/诊断/更新 | client_info.py / update_service.py / ClientHelp.qml 等 | 待迁；关闭/后台恢复、状态与错误路径需覆盖 |
@@ -58,6 +58,14 @@ S0 默认尚无已记忆0059素材、或公开关闭0059时，`refresh_map` 会�
 共享路径与原Python全部154张S1原图对照通过：129张完整扫描、25张开图或楼层未决；107条原索引报告及原预算反例通过。实际Runtime全62张困难序列仍是359项通过。四种主组件选择控制与原路径逐像素/逐链对照，六张原图的成对索引/完整catalog扫描比较保留全部非计时字段；未注入预期地图或矩阵。配对耗时不是生产首材质早停、WPF或游戏延迟；没有500/300ms结论。
 
 索引拒绝的低链观测可保留到该次操作结束，最多沿用现有32区域准备范围；复用不表示峰值内存降低，RSS/原生句柄尚未测量。诊断的ComponentCacheEntries含null缓存，ChainCacheEntries表示已有链缓存的组件数。后台复核/算法并行尚未由这次串行共享实现。
+
+### S1 专用被动楼层观察
+
+隐藏页面的既有 timer 按原 0.5 秒间隔，经 Session 调度 `observe_candidate_floor` / `observe_manual_floor`。候选同层探测保留原 packet/帧/图片，不借新截图续期旧姿态；变层或无可显示姿态时再采一次并走原求解。手选身份的观察用一次当前截图，未知楼层撤销姿态但保留地图身份；有效高亮立即清理旧手动楼层，不套用 S0 的两秒 hold。显式负帧立即关图，并同步既有 G 输入相位。
+
+手选地图同层复用现有 Core 续期提交，S1 以完整客户区 `Geometry.Current` 和对应参考 validation mask 复核原矩阵，保留源图片；失败回到真实目标层独立贴合。该路径不进入 S0 几何组/尺度学习，也不改变跨层候选池。候选探测、手选观察和 S0 刷新共用 worker 的非排队合并；取消、过期输入、窗口/资源失效和迟到结果仍由 Runtime owner 校验。
+
+原 Python 专用操作已使用相同录制 PNG、真实 detector/资源/solver 重算；仅替换 OS 捕获及 memory 写入位置。候选 oracle 使用原 native-preview 组合契约搭配录制捕获替身，不代表实机。原版无累计池的稀疏层临时候选与当前共筛结果可能不同，矩阵只比较同一帧、同一地图资源独立求解的结果。未知 event400、闭图和目标层323均进入真实消费者。S1 两分支的 `controlGeometryVerified=False` 保留，未据此虚构可点击控件几何；一般点击意图迁移、自然 -4 层与实机观察仍待完成。
 
 ### S1 索引投影复用
 
