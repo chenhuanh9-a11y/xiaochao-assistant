@@ -27,6 +27,7 @@ from season_context import CONTEXTS, SEASONS, RUNTIME_MODES, modes_for_season, k
 class ProviderResourceBinding:
     context: SeasonContext
     root: Path
+    resource_revision: int | None = None
 
 
 class ProviderUnavailable(RuntimeError):
@@ -137,6 +138,7 @@ class EngineFactories(dict):
     caller's worker. Until then modes report resource-validation-pending.
     """
     MODES = ("nightmare", "difficult")  # Legacy S0 dict facade remains unchanged.
+    cache_preparation_failures = True
 
     def __init__(self, resource_root, *, context_roots=None, nightmare_interfaces=None,
                  memory_root_provider=None, optional_displays=True, controls_profile=None):
@@ -254,20 +256,29 @@ class EngineFactories(dict):
             return ProviderResourceBinding(context=context, root=root)
         return ProviderResourceBinding(context=context, root=self.context_roots.get(context.key, self.root))
 
+    def _resource_failure_fields(self, error):
+        return {}
+
     def _get(self, mode, season="s0"):
         season = normalize_season(season)
         try:
             binding = self._resource_binding(mode, season)
         except ProviderUnavailable as error:
             with self._lock:
-                self._reports[context_key(mode, season)].update(available=False, prepared=True, reason=str(error))
+                if getattr(error, 'resource_revision', self._revision) == self._revision:
+                    key = context_key(mode, season)
+                    self._reports[key].update(available=False, prepared=True,
+                        reason=str(error), **self._resource_failure_fields(error))
             raise
         key = binding.context.key
         with self._build_locks[key]:
             with self._lock:
+                if binding.resource_revision is not None and binding.resource_revision != self._revision:
+                    raise ProviderUnavailable('resource-context-superseded')
                 if key in self._engines:
+                    self._reports[key].update(available=True, prepared=True, reason='saved-frame-rank-ready')
                     return self._engines[key]
-                if self._reports[key]["prepared"]:
+                if self._reports[key]["prepared"] and self.cache_preparation_failures:
                     raise ProviderUnavailable(self._reports[key]["reason"])
                 revision = self._revision
             try:
@@ -276,7 +287,10 @@ class EngineFactories(dict):
                 reason = f"{mode}:{type(error).__name__}:{error}"
                 with self._lock:
                     if revision == self._revision:
-                        self._reports[key] = dict(available=False, prepared=True, reason=reason, season=season, mode=mode, contextKey=key)
+                        self._reports[key] = dict(available=False, prepared=True, reason=reason,
+                            season=season, mode=mode, contextKey=key, **self._resource_failure_fields(error))
+                    else:
+                        reason = 'resource-context-superseded'
                 raise ProviderUnavailable(reason) from error
             with self._lock:
                 if revision != self._revision:

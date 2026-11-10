@@ -91,6 +91,18 @@ class ClientProviderTests(unittest.TestCase):
         self.assertNotIn("rank_saved_frame", engine.snapshot()["availableCommands"])
         self.assertTrue(engine.snapshot()["savedFrameCapabilities"]["nightmare"]["available"])
 
+    def test_legacy_preparation_failures_remain_cached_until_invalidation(self):
+        factories = build_engine_factories(self.root)
+        with patch.object(factories, '_build', side_effect=ValueError('controlled invalid resources')) as build:
+            for _ in range(2):
+                with self.assertRaisesRegex(ProviderUnavailable, 'controlled invalid resources'):
+                    factories.get_engine('nightmare')
+            self.assertEqual(build.call_count, 1)
+            factories.invalidate()
+            with self.assertRaises(ProviderUnavailable):
+                factories.get_engine('nightmare')
+            self.assertEqual(build.call_count, 2)
+
     def test_resource_invalidation_discards_late_build_without_blocking(self):
         factories = build_engine_factories(self.root)
         entered, release = threading.Event(), threading.Event()

@@ -1,4 +1,4 @@
-"""Default catalog boundary while the external-data decoders are connected.
+"""Default catalog factories with explicit external-data admission.
 
 An empty store is ordinary unavailable data. In particular, a component root
 must not enter a legacy loader that assumes trusted IDs and nested paths.
@@ -6,50 +6,173 @@ Presence is reported separately from algorithm readiness.
 """
 import re
 
-from season_context import context_key, is_retired_mode
-from client_providers import EngineFactories, ProviderUnavailable
+from season_context import SeasonContext, context_key, is_retired_mode
+from client_providers import EngineFactories, ProviderResourceBinding, ProviderUnavailable
 
 
 # Capabilities are granted by completed program decoders, never package claims.
-SUPPORTED_CAPABILITIES = frozenset()
+SUPPORTED_CAPABILITIES = frozenset({'native-s0-nightmare-base-v1', 's0-signed-templates-v1'})
 
 
 class ImportedProviderUnavailable(ProviderUnavailable):
-    def __init__(self, reason, gaps):
+    def __init__(self, reason, gaps, *, resource_revision=None):
         super().__init__(reason)
         self.resource_gaps = tuple(gaps)
+        if resource_revision is not None:
+            self.resource_revision = resource_revision
+
+
+def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='nightmare'):
+    """Use the same decoded views for prospective and active construction.
+
+    Callers own their operation/catalog lifetime. This function never resolves
+    another catalog, publishes selection or writes personal learning data.
+    """
+    from difficult_native_identity import NativeDifficultCandidateEngine
+    from imported_controls_profile import S0ControlsProfile
+    from imported_native_base import decode_native_base
+    from nightmare_candidate import NightmareMemoryStore
+    from s0_vertical_controls import observe_s0_map
+    from client_providers import SharedReferenceProvider
+
+    bundle = decode_native_base(base_view, season=season, mode=mode)
+    if not bundle.ready:
+        raise ImportedProviderUnavailable('native-base-incomplete', bundle.gaps)
+    if controls_view.component['dependencies']:
+        raise ImportedProviderUnavailable('controls-dependencies-unsupported', ('controls-dependencies-unsupported',))
+    controls = S0ControlsProfile(controls_view)
+    context = controls.for_context(season, mode)
+    pack, root, interfaces = bundle.pack, base_view.root, bundle.interfaces
+    if context is None or set(context.contract.floor_ids) != set(pack.floors):
+        raise ImportedProviderUnavailable('controls-base-floors-mismatch', ('controls-base-floors-mismatch',))
+
+    def check_current():
+        bundle.assert_current()
+        controls_view.root  # Check the controls manifest as well as its catalog.
+
+    def entry_current():
+        try:
+            check_current()
+            return True
+        except (OSError, ValueError):
+            return False
+
+    memory = NightmareMemoryStore(pack, paths.memory_root(mode, season), portable_seed_path=None,
+        sample_validator=lambda frame: observe_s0_map(frame, mode, season=season, controls=controls)[0].get('detected') is True)
+    provider = SharedReferenceProvider(root, bundle.resources, bundle.versions, check_current=check_current)
+    engine = NativeDifficultCandidateEngine(pack, identity_root=root / interfaces['identityEntries'],
+        identity_profile_id=interfaces['identityProfile'], identity_floors=pack.floors,
+        exit_icon_path=base_view.path(interfaces['exitIcon']),
+        entry_structure_store=bundle.resources, entry_shared_reference_provider=provider,
+        entry_read_resource=bundle.reader, entry_typed_index_path=base_view.path(interfaces['typedIndex']),
+        shared_reference_loader=provider, entry_context_is_current=entry_current,
+        memory_store=memory, native_similarity_root=None,
+        structure_profile_provider=lambda: 'shared-structure',
+        structure_cache_context_provider=lambda: str(base_view.component_ref))
+    local = engine.side_entry_identity
+    if (engine.entry_identity.error is not None or local is None
+            or any(error is not None for error in
+                   (local.side_door_error, local.side_search_error, local.passport_error))):
+        raise ImportedProviderUnavailable('native-entry-construction-failed', ('native-entry-construction-failed',))
+    engine.qt_native_base = bundle
+    engine.qt_assert_resource_current = check_current
+    engine.qt_shared_provider = provider
+    engine.qt_adapters = bundle.adapters
+    engine.qt_controls_profile = controls
+    engine.qt_resource_root = root
+    engine.qt_catalog = engine.qt_native_context = engine.qt_optional_displays = None
+    engine.qt_logical_group_registry = None
+    engine.qt_live_gaps = ()
+    engine.qt_live_ready = True
+    engine.qt_season = season
+    engine.qt_resource_inventory = dict(typedLayers=len(bundle.versions),
+        mainEntries=len(engine.entry_identity.entries), sideEntries=len(engine.side_entry_identity.entries))
+    check_current()
+    return engine
 
 
 class ImportedEngineFactories(EngineFactories):
+    # Failed reports stop automatic Qt preparation loops. An explicit new
+    # request retries actual data, including I/O errors wrapped by decoders.
+    cache_preparation_failures = False
+
     def __init__(self, resolver, paths):
         super().__init__(resolver.root)
         self.resolver, self.paths = resolver, paths
+        self._catalog_seen, self._catalog_stamp = False, None
 
-    def _resource_binding(self, mode, season='s0'):
+    def _context_resources(self, mode, season):
         if is_retired_mode(mode, season):
             raise ImportedProviderUnavailable('retired-mode', ('retired-mode',))
+        with self._lock:
+            revision = self._revision
         try:
-            resources = self.resolver.snapshot().resolve_context(season, mode)
+            snapshot = self.resolver.snapshot()
+            with self._lock:
+                snapshot.assert_current()
+                stamp = snapshot.catalog_stamp
+                if self._catalog_seen and stamp != self._catalog_stamp:
+                    self.invalidate()
+                self._catalog_seen, self._catalog_stamp = True, stamp
+                revision = self._revision
+            resources = snapshot.resolve_context(season, mode)
         except (OSError, ValueError, TypeError, KeyError) as error:
             code = getattr(error, 'code', None)
             if not isinstance(code, str) or not re.fullmatch('[a-z0-9-]{1,120}', code):
                 code = 'resource-context-unavailable'
-            raise ImportedProviderUnavailable(code, ('resource-context-unavailable',)) from error
+            raise ImportedProviderUnavailable(code, ('resource-context-unavailable',),
+                resource_revision=revision) from error
         if resources.gaps:
-            raise ImportedProviderUnavailable(';'.join(resources.gaps), resources.gaps)
-        raise ImportedProviderUnavailable('recognition-decoder-unavailable', ('recognition-decoder-unavailable',))
+            raise ImportedProviderUnavailable(';'.join(resources.gaps), resources.gaps, resource_revision=revision)
+        if (season, mode) != ('s0', 'nightmare'):
+            raise ImportedProviderUnavailable('recognition-decoder-unavailable',
+                ('recognition-decoder-unavailable',), resource_revision=revision)
+        return resources, revision
+
+    def _resource_binding(self, mode, season='s0'):
+        resources, revision = self._context_resources(mode, season)
+        try:
+            return ProviderResourceBinding(SeasonContext(season=season, mode=mode), resources.base.root, revision)
+        except (OSError, ValueError) as error:
+            raise ImportedProviderUnavailable('resource-component-unavailable',
+                ('resource-component-unavailable',), resource_revision=revision) from error
+
+    def _resource_failure_fields(self, error):
+        gaps = getattr(error, 'resource_gaps', None)
+        code = getattr(error, 'code', None)
+        if gaps is None and isinstance(code, str) and re.fullmatch('[a-z0-9-]{1,120}', code):
+            gaps = (code,)
+        return dict(resourceGaps=list(gaps or ('resource-validation-failed',)))
 
     def _get(self, mode, season='s0'):
-        try:
-            return super()._get(mode, season)
-        except ProviderUnavailable as error:
-            with self._lock:
-                self._reports[context_key(mode, season)]['resourceGaps'] = list(
-                    getattr(error, 'resource_gaps', ('resource-validation-failed',)))
-            raise
+        key = context_key(mode, season)
+        engine = super()._get(mode, season)
+        check = getattr(engine, 'qt_assert_resource_current', None)
+        if check is not None:
+            try:
+                check()
+            except (OSError, ValueError) as error:
+                with self._lock:
+                    if self._engines.get(key) is engine:
+                        self._engines.pop(key)
+                        self._reports[key].update(available=False, prepared=True,
+                            reason='resource-context-superseded', resourceGaps=['resource-context-superseded'])
+                raise ImportedProviderUnavailable('resource-context-superseded',
+                                                   ('resource-context-superseded',)) from error
+        with self._lock:
+            if self._engines.get(key) is not engine:
+                raise ImportedProviderUnavailable('resource-context-superseded', ('resource-context-superseded',))
+            self._reports[key].update(available=True, prepared=True,
+                reason='saved-frame-rank-ready', resourceGaps=[])
+        return engine
 
     def _build(self, mode, *, season='s0'):
-        raise ImportedProviderUnavailable('recognition-decoder-unavailable', ('recognition-decoder-unavailable',))
+        resources, _ = self._context_resources(mode, season)
+        engine = build_native_engine(resources.base, resources.controls, self.paths, season=season, mode=mode)
+        engine.qt_resource_inventory['optionalResourceGaps'] = list(resources.optional_gaps) + (
+            ['display-decoder-unavailable'] if resources.displays else []) + (
+            ['reviewed-groups-decoder-unavailable'] if resources.groups is not None else [])
+        return engine
 
 
 def build_imported_engine_factories(resolver, paths):

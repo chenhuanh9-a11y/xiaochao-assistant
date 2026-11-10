@@ -430,7 +430,7 @@ def _decode(view, season, mode):
     pack = NativeDifficultPack(view.root, paths['identityPack'], expected_mode=mode,
                                expected_season=season, read_resource=reader)
     resources = SharedStructureResourceStore(view.path(paths['typedIndex']), view.root, read_resource=reader)
-    if resources.error:
+    if resources.error is not None:
         _reject('typed-store-invalid')
     adapters = AuthorCoordinateAdapters(view.path(paths['coordinatePack']), read_resource=reader)
     for mid, floor in expected:
@@ -444,7 +444,8 @@ def _decode(view, season, mode):
         exit_icon_path=view.path(paths['exitIcon']), structure_store=resources,
         profile_for_map=pack.identity_profiles.__getitem__, read_resource=reader,
         typed_index_path=view.path(paths['typedIndex']))
-    if any((main.error, local.side_door_error, local.side_search_error, local.passport_error)):
+    if any(error is not None for error in
+           (main.error, local.side_door_error, local.side_search_error, local.passport_error)):
         _reject('entry-loader-invalid')
     for item, points, rays, pairs in local.entries:
         if str(item['floor']) != '2':

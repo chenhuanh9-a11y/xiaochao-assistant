@@ -218,7 +218,7 @@ jobs:
                 'test_shared_structure_package_io', 'test_shared_version_package_io',
                 'test_entry_resource_io', 'test_export_native_base_package',
                 'test_imported_native_base', 'test_client_shared_reference_context',
-                'test_client_imported_providers', 'test_client_imported_controls',
+                'test_client_imported_providers', 'test_client_native_base_provider', 'test_client_imported_controls',
                 'test_client_imported_resources', 'test_client_imported_resource_startup'
               )
             }

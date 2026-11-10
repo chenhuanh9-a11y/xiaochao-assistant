@@ -34,7 +34,7 @@ class ImportedProviderBoundaryTests(unittest.TestCase):
                 self.assertEqual(set(report['resourceGaps']), {'recognition-base-missing', 'controls-profile-missing'})
         self.assertFalse(self.resolver.root.exists())
 
-    def test_selected_complete_metadata_cannot_enable_unconnected_decoder_or_legacy_io(self):
+    def test_selected_complete_metadata_cannot_bypass_semantic_admission_or_enter_legacy_io(self):
         contexts = [dict(season=season, mode=mode) for season in ('s0', 's1') for mode in ('nightmare', 'difficult')]
         payloads = {'base': b'{"maps":[{"id":"../../escaped","resourcePath":"../outside.png"}]}', 'controls': b'{}'}
         manifest = dict(schema='xingtu-resource-package', formatVersion=1, packageId='external', resourceVersion='v1',
@@ -64,7 +64,8 @@ class ImportedProviderBoundaryTests(unittest.TestCase):
                     self.factories.prepare_context(mode, season=season)
                     report = self.factories.capabilities(season)[mode]
                     self.assertFalse(report['available'])
-                    self.assertEqual(report['resourceGaps'], ['recognition-decoder-unavailable'])
+                    self.assertEqual(report['resourceGaps'], ['native-base-schema-unsupported']
+                        if (season, mode) == ('s0', 'nightmare') else ['recognition-decoder-unavailable'])
         self.assertFalse((self.root / 'escaped').exists())
 
 

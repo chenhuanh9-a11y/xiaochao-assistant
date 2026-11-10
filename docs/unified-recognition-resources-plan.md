@@ -1,6 +1,6 @@
 # 四模式识别、贴合与资源导入统一方案
 
-核查日期：2026-11-10。状态：**P0 调查/设计完成；P1 空资源默认入口与 P2 保存基础已接线，外部识别 decoder、语义激活与四模式回放尚未接通**。本文件同时作为现状清单、设计和实施台账，不另建重复任务说明。第 2–4 节现状引用绑定原核查 commit，后续实施状态另见第 8 节。
+核查日期：2026-11-11。状态：**P0 调查/设计完成；P1 空资源默认入口与 P2 保存基础已接线，S0 噩梦默认工厂已消费新基础组件；资源页启用与四模式回放尚未完成**。本文件同时作为现状清单、设计和实施台账，不另建重复任务说明。第 2–4 节现状引用绑定原核查 commit，后续实施状态另见第 8 节。
 
 ## 1. 范围与基线
 
@@ -331,14 +331,14 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 - 新格式 ZIP 流式检查及不可变保存已提交 `3b1507e`，版本清单已提交 `fcd2240`。快速清单不扫描 payload，完整检查显式执行；返回前重核 catalog 和已观察 manifest 的身份/摘要。合法 2000 文件包与读取期间实际替换的回归通过，行数据不包含完整 file inventory。
 - 默认 `main → QtClient` 取消旧资源自动修复/复制；ProgramRoot 生命周期锁仍保护运行代码。识别 factory、两个图库 Backend、主页预览、资源服务共用一个 ResourceResolver，旧安装资源不作回退；个人数据路径保留。新版资源页用稳定 ID 的模型列出独立版本，导入只保存、不改 catalog。旧格式明确拒绝并保留原件。旧安装 pending 记录保留，Setup/reset 中断仍阻止越过程序保护边界。
 - 默认入口离屏集成覆盖实际 QtClient/QML/worker：空根打开 → 旧格式失败反馈 → 新 ZIP 保存 → 列表实际出现一行 → 正常关闭/排空。替身限原生输入、采集、单实例 IPC 和网络；不是冻结安装版、物理可见像素或游戏验收。650×470、1000×720 渲染核对只证明该源代码资源页布局；不证明文件选择器真实选包。
-- **外部识别 decoder 尚未启用**。初版把 component root 传给旧可信资源 loader 的桥接已撤回：真实临时样本证明嵌套 `resourcePath` 可越过 component，地图 ID 可进入个人样本写入路径。完整文件库存不足以校验 JSON 内引用。四组合遇到完整角色声明仍返回 `recognition-decoder-unavailable`，不授予程序能力；图库/主页也不读取未接通的 display。后续 P2 必须由实际 decoder 核对引用、写入 ID 和延迟读取，再接语义激活和真实包回放。
+- 初版把 component root 传给旧可信资源 loader 的桥接已撤回：真实临时样本证明嵌套 `resourcePath` 可越过 component，地图 ID 可进入个人样本写入路径。完整文件库存不足以校验 JSON 内引用。该撤回版本的四组合均报告 decoder 缺口；后续 S0 噩梦改由下述实际语义解码器接入，另外三组合仍明确不可用。图库/主页不读取未接通的 display。
 - S0 controls 的程序内消费接缝已通过 LiveRuntime 实际观察测试：外置模板、重排控件、独立像素、楼层 ID 映射与点击结果；identity/ranking 使用明确 fixture，不是新包完整识别。默认新包 factory 不因这项局部通过而宣称可用。P2、P3–P5 和统一架构 Setup 尚未验收。
 
 ### P2 读取接缝与分配边界
 
 - typed pack、坐标元数据、结构 store 与版本元数据的 reader 接缝已提交 `88335e3`；后续实际 `MapIdentityEngine` 继续传到正门、侧门、显式 typed index、侧门搜索及延迟出口读取。reader 模式缺 route loader 不退回磁盘，旧可信调用的 `None` 分支保留。实际组件文件/NPZ/图片测试及旧入口定向 38 项通过并独立复核；pack DTO、未使用的个人 memory 及专门到达 route 读取分支的几何替身已在测试注明。
 - 组件 reader 每次读取核 PackageView 的库存、字节和当前代际，JSON 按字节/深度/节点限界并拒绝重复键及非有限值；NPZ 在 NumPy 分配前核真实 ZIP 目录和 NPY 声明。外层 ZIP 同样在 `ZipFile` 前限制真实成员/目录；可变源的目录解析绑定已核实的有界元数据快照，正文继续用原 descriptor 的完整性及事务校验。校验后原地改写 4096 成员的回归不再先创建全部 ZipInfo。
-- 上述 ZIP/NPZ/reader 定向 58 项通过并独立复核。当前授权源库存 855 项的既有 bytes/SHA 全匹配，其中 511 NPZ、133 JSON、2314 数组声明通过通用预检。这不代表 typed 角色、canvas/图结构、嵌套引用、可写 ID、真实帧求解或新包语义激活通过；默认外部识别 factory 仍不可用。JSON 深度/节点检查发生在 JSON 解析之后，NPZ 头预检不代替后续正文 CRC 与有限值检查。
+- 上述 ZIP/NPZ/reader 定向 58 项通过并独立复核。当前授权源库存 855 项的既有 bytes/SHA 全匹配，其中 511 NPZ、133 JSON、2314 数组声明通过通用预检。这不代表 typed 角色、canvas/图结构、嵌套引用、可写 ID、真实帧求解或新包语义激活通过；当时默认外部识别 factory 尚不可用。JSON 深度/节点检查发生在 JSON 解析之后，NPZ 头预检不代替后续正文 CRC 与有限值检查。
 - native identity DTO 的导入读取分支另核 pack/map/floor/route-profile ID 的单 Windows 路径段、大小写碰撞、maps/floors 数量、声明楼层及规范相对资源路径；旧可信路径分支保留。缺失图层仍保留为竞争者，不因尚无 typed 产品而删图。真实 PackageView 正反例及原 provider 共 17 项通过并独立复核；授权源 S0 困难和 S1 两模式的现有 native 元数据兼容。此项只完成 ID/声明边界，不替代完整 base decoder 的 typed 语义和资源依赖闭包。
 - 共享结构的导入读取分支在现有像素解码前核实际 NPZ 角色声明：有界 Unicode metadata、uint8 掩码尺寸/同形、显式 canvas、known/unknown 成对、墙段数量和数值 dtype。header 按 NumPy 的原始成员优先规则对应实际载荷，不能用 `mask.npy`/`mask.npy.npy` 别名检查另一张小图；有效 unsigned 墙数据保留，非法 Unicode 码点仅在 metadata 转换边界归一为数据失败。相关 47 项通过；授权源四组合 252 个 typed 图层经真实 reader 分支完成二值解码，另有两层 S0 困难 legacy 结构尚不在此 typed 范围。正文 CRC、二值与墙坐标仍由原 loader 检查，既有坏 CRC 异常策略保留；不把这些结果称为新包识别或实帧贴合通过。
 - 首条 S0 噩梦 exporter 输出同一 ZIP 内的 base 与 controls，保留 26 图、78 typed 层及入口预处理，旧 identity schema 2 明确转为 native DTO schema 1；作者图片、相似组和额外候选索引不进入此基础包。真实 89 个源文件核对既有库存，测试产物为 4,347,661 字节、92 data files；实际 inspect→不可变保存→PackageView/reader→typed/entry/exit/controls 往返核对 26 图、78 层、26 main/78 local entries、720 模板与完整 12 类。仅为后续语义接入的测试输入，未激活 catalog 或默认 factory。
@@ -350,4 +350,11 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 - `decode_native_base(PackageView)` 只处理当前 S0 噩梦自包含基础组件，返回带实际视图代际检查的 pack/store/adapters/versions/入口对象；不拥有候选算法、catalog、个人数据或显示授权。真实测试包得到 26 图、78 typed 层、26 main/78 local entries。显式 unavailable 图层保留在完整竞争池中，返回具体 gap；其它尚未支持的语义合同明确报告，不能借接口声称四组合完成。
 - 引用按实际字段和文档锚点核对，包含合法的 entry 相对 `../sourceIndex`；作者/renderer provenance 不作为运行路径。调用实际解码器前核入口数组、必需文本与 gates、矩阵/search header/网格；逐层实际读取二值图、canvas、binding 和版本。搜索预处理的全部消费字段按现有 `prepare_arrays` 从实际入口/门几何重建并严格比较，重建前限制 orientation 和网格规模；未用 hash/baseline 替代数学关系。
 - 独立复核实际复现并修复了派生搜索数据不符仍可用、必需 DTO 字段遗漏及内部 NPZ 错误未归一三类问题；16 项回归及不同 fresh Reviewer 复核通过。真实原包在 OpenCV 4.12.0/NumPy 2.2.6 下的 26 个 F2 预处理重建无数值差异，并经实际 side-door pool 保留 26 图。该证据不是 rank/fit、完整候选调度、真实帧或游戏验收。
-- 新资源测试加入既有 Windows joint 工作流的 packaging 组，沿用逐模块独立进程及全失败汇总，不执行 Setup 或游戏。本地按同一模块列表独立执行 26 个模块，237 项全通过、无跳过，测试用时合计 177.226 秒；不是远端该提交的 CI 结论。默认 factory、语义启用与资源页仍待接入；未将此 decoder 局部通过称为 P2 完成。
+- 新资源测试加入既有 Windows joint 工作流的 packaging 组，沿用逐模块独立进程及全失败汇总，不执行 Setup 或游戏。本地按同一模块列表独立执行 26 个模块，237 项全通过、无跳过，测试用时合计 177.226 秒。远端 `ed298aa` 四条工作流成功，joint 的 packaging 组失败，暴露 Windows 临时目录短路径/长路径不一致；不将本机通过替代该 CI 结论。
+
+### S0 噩梦默认工厂与目录激活构建
+
+- 默认 imported 工厂已使用同一 `build_native_engine` 构建真实 typed-native engine、外置 controls、入口读取及共享结构底图。个人 memory 保持原独立路径，构造不写个人数据；不读取旧内置包、portable seeds、作者图片或未登记相似组。此为 P2 数据接线，P3 仍须向实际 S1 候选/调度链迁移。
+- Imported 工厂仅缓存构建成功的 engine，失败报告仍为 `prepared=True`，防止页面自动重试循环；再次显式请求会重新校验真实资源，包含被 decoder 包装的瞬时读取失败。语义拒绝也在显式请求时重验，不放宽校验。共享旧工厂继续缓存失败，目录代际变化、旧构建和缓存命中仍核对当前资源。
+- 真实测试 ZIP（4,347,661 字节，SHA256 `9680e52108beb2b7e1010be8cce0dbf9e82002b115f160086b69e47debc0e997`）经保存、prospective views 两次语义构建、实际 catalog 发布、默认 factory 重新构建，保留 26 图、78 typed 层、26 main/78 local entries，controls 为 B1/F1/F2。实际同层结构回退输出 1620×1920 RGBA。隔离构造未写个人 memory；完整命令与回执在本地任务目录。
+- 该轮保存 6.413 秒、catalog 操作 40.715 秒（其中两次 prospective 构造 20.132/20.510 秒）、active 构造 29.706 秒；这是一次资源校验/构建测量，不是识别计算或首次可见像素耗时。尚未验证 rank/fit、资源页启用、实际采集、Setup 或游戏。
