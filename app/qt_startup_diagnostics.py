@@ -14,7 +14,7 @@ import tempfile
 
 LOG_NAME = "qt-client-startup-error.txt"
 MAX_REPORT_BYTES = 16 * 1024
-_STAGES = {"validate-profile", "import-client", "run-client", "create-client"}
+_STAGES = {"validate-profile", "import-client", "run-client", "instance-check", "create-client"}
 _RESOURCE_ACTIONS = {
     "installer-upgrade-recovery-required": "上次安装升级尚未完成核验，暂时无法启动。请保留现有安装目录和诊断记录，重新运行安装程序核验；记录缺失或文件状态变化时，不会自动回退。",
     "resource-reset-recovery-required": "上次资源重置尚未完成核验，暂时无法启动。请保留现有安装目录和诊断记录，重新运行安装程序核验；记录缺失或文件状态变化时，不会自动回退。",
@@ -296,7 +296,7 @@ def _record_location(path):
             + "。反馈时请附上此文件。")
 
 
-def report_startup_failure(error, *, stage="run-client"):
+def report_startup_failure(error, *, stage="run-client", show_dialog=True):
     """Return the saved path if any; report failures must not mask the cause."""
     code, report = _details(error, stage)
     try:
@@ -318,7 +318,7 @@ def report_startup_failure(error, *, stage="run-client"):
             sys.stderr.write(report + message + "\n")
     except Exception:
         pass
-    if getattr(sys, "frozen", False) or sys.stderr is None:
+    if show_dialog and (getattr(sys, "frozen", False) or sys.stderr is None):
         try:
             _show_native_error(message)
         except Exception:

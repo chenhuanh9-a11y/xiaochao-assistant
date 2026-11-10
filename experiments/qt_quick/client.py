@@ -716,7 +716,10 @@ def main():
         close_startup_splash()
         message = str(error) if isinstance(error, SingleInstanceError) else f"无法确认当前用户会话的启动锁，未启动第二个实例：{error}"
         print(message, file=sys.stderr)
-        if os.name == "nt":
+        if args.probe_output:
+            from qt_startup_diagnostics import report_startup_failure
+            report_startup_failure(error, stage="instance-check", show_dialog=False)
+        elif os.name == "nt":
             import ctypes
             ctypes.windll.user32.MessageBoxW(None, message, "星图启动提示", 0x10)
         if guard is not None:
@@ -730,6 +733,8 @@ def main():
     from client_resource_startup_recovery import offer_startup_recovery
     def recover_startup(error):
         close_startup_splash()
+        if args.probe_output:
+            return None
         return offer_startup_recovery(resource_root, error)
     try:
         resource_root = owned_sandbox(args.sandbox.resolve()) if PRODUCTION else args.sandbox.resolve()
@@ -840,7 +845,8 @@ def _run_primary_client(app, args, guard):
                 app.aboutToQuit.disconnect(holder["quit_journal"])
     if "startup_error" in holder:
         from qt_startup_diagnostics import report_startup_failure
-        report_startup_failure(holder["startup_error"], stage="create-client")
+        report_startup_failure(holder["startup_error"], stage="create-client",
+                               show_dialog=not bool(args.probe_output))
         return 1
     return exit_code
 

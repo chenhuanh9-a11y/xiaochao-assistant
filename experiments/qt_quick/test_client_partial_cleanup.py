@@ -18,6 +18,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 import client
 import client_paths
 import backend
+import qt_startup_diagnostics as diagnostics
 from client_input import NativeShortcutBackend
 from resource_transaction import resource_runtime_lease
 
@@ -57,6 +58,7 @@ class PartialClientCleanupTests(unittest.TestCase):
         self.enterContext(patch.object(backend, "load_browse_context", side_effect=blocked))
         self.args = SimpleNamespace(sandbox=self.root, probe_output=self.root / "probe")
         self.guard = Mock()
+        self.real_report_startup_failure = diagnostics.report_startup_failure
         self.report = self.enterContext(patch("qt_startup_diagnostics.report_startup_failure"))
 
     def external_lease_probe(self):
@@ -237,6 +239,7 @@ class PartialClientCleanupTests(unittest.TestCase):
         self.run_complete_client_exit(evidence_mode="busy", shutdown_error=True)
 
     def test_actual_constructor_import_failure_keeps_original_error_before_lifecycle_exists(self):
+        self.args.probe_output = None
         original = builtins.__import__
         failure = ImportError("fixture early import", name="owned_fixture_dependency")
         def importing(name, *args, **kwargs):
@@ -247,7 +250,7 @@ class PartialClientCleanupTests(unittest.TestCase):
             self.assertEqual(client._run_primary_client(self.app, self.args, self.guard), 1)
         self.assertEqual(len(self.instances), 1)
         self.assertFalse(hasattr(self.instances[0], "lifecycle"))
-        self.report.assert_called_once_with(failure, stage="create-client")
+        self.report.assert_called_once_with(failure, stage="create-client", show_dialog=True)
 
     def test_qml_failure_keeps_lease_until_actual_partial_backend_workers_finish(self):
         original_load = QQmlApplicationEngine.load
@@ -269,8 +272,16 @@ class PartialClientCleanupTests(unittest.TestCase):
                 self.release.set()
         thread = threading.Thread(target=observer)
         thread.start()
+        diagnostic_work = self.root.parent / "startup-diagnostics"
+        report_startup_failure = self.real_report_startup_failure
+        def report_without_stderr(*args, **kwargs):
+            with patch.object(sys, "stderr", None):
+                return report_startup_failure(*args, **kwargs)
         try:
-            with patch("qt_startup_diagnostics.report_startup_failure") as report:
+            with patch("qt_startup_diagnostics.report_startup_failure",
+                       side_effect=report_without_stderr) as report, \
+                    patch.object(diagnostics, "_candidate_directories", return_value=[diagnostic_work]), \
+                    patch.object(diagnostics, "_show_native_error") as show:
                 with resource_runtime_lease(self.root):
                     result = client._run_primary_client(self.app, self.args, self.guard)
                     observed["activeAtReturn"] = sum(getattr(self.instances[0], name).pool.activeThreadCount()
@@ -282,6 +293,12 @@ class PartialClientCleanupTests(unittest.TestCase):
             self.assertEqual(observed["leaseWhileWorkerBlocked"], "busy")
             self.assertEqual(observed["activeAtReturn"], 0)
             report.assert_called_once()
+            self.assertEqual(report.call_args.kwargs,
+                             dict(stage="create-client", show_dialog=False))
+            record = diagnostic_work / diagnostics.LOG_NAME
+            self.assertTrue(record.is_file())
+            self.assertIn("stage=create-client", record.read_text("utf-8"))
+            show.assert_not_called()
             self.assertEqual(self.external_lease_probe(), "acquired")
         finally:
             self.release.set()

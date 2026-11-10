@@ -172,12 +172,21 @@ class StartupSplash:
 _splash = StartupSplash()
 
 
-def show_startup_splash(argv):
+def is_quiet_startup_args(argv):
     # CLI validation/help remain genuinely window-free, including packaged probes.
     # argparse also accepts unambiguous long-option abbreviations.
     quiet = ("--self-check", "--help", "--probe-output")
-    if not any(arg == "-h" or (arg.startswith("--")
-               and any(option.startswith(arg.split("=", 1)[0]) for option in quiet)) for arg in argv):
+    for arg in argv:
+        if arg == "--":
+            break
+        if arg == "-h" or (arg.startswith("--")
+                and any(option.startswith(arg.split("=", 1)[0]) for option in quiet)):
+            return True
+    return False
+
+
+def show_startup_splash(argv):
+    if not is_quiet_startup_args(argv):
         _splash.show()
 
 
