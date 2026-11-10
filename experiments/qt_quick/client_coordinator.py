@@ -550,11 +550,14 @@ class ClientCoordinator(QObject):
             else:
                 summary = f"{label}地图识别资源未通过校验或无法读取，请到地图资源页检查并重新导入"
             return ((mode, reason), summary)
-        if (season != "s0" and not report.get("liveReady", False)
+        if (not report.get("liveReady", season == "s0")
                 and not (allow_manual_floor and self._manual_floor_observation_ready(state))
                 and not self._native_candidate_preview_ready(state)):
             gaps = ";".join(report.get("liveGaps", ())) or "season-live-contract-unavailable"
-            return ((season, mode, gaps), f"{season_label(season)} 生产结构资源可离线读取，楼层控件尚未完成验证，暂不能开始实机识别")
+            summary = (f"{season_label(season)} 地图数据可读取，实时识别尚未完成验证，暂不能开始识别"
+                       if season == "s0" else
+                       f"{season_label(season)} 生产结构资源可离线读取，楼层控件尚未完成验证，暂不能开始实机识别")
+            return ((season, mode, gaps), summary)
         return None
 
     def _show_map_resource_problem(self, problem):

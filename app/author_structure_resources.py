@@ -6,7 +6,9 @@ import json
 import os
 import sys
 import zipfile
+import zlib
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
@@ -44,15 +46,40 @@ class AuthorStructureResourceStore:
         self,
         index_path: Path | None = None,
         resource_root: Path | None = None,
+        *,
+        read_resource=None,
+        check_current=None,
     ) -> None:
+        if read_resource is not None and (index_path is None or resource_root is None):
+            raise ValueError("external author resources require explicit index_path and resource_root")
         configured_index = os.environ.get("IDENTITYV_AUTHOR_STRUCTURE_INDEX")
         configured_root = os.environ.get("IDENTITYV_AUTHOR_STRUCTURE_ROOT")
-        self.index_path = Path(index_path or configured_index or DEFAULT_INDEX)
-        self.resource_root = Path(resource_root or configured_root or DEFAULT_RESOURCE_ROOT)
+        if read_resource is None:
+            self.index_path = Path(index_path or configured_index or DEFAULT_INDEX)
+            self.resource_root = Path(resource_root or configured_root or DEFAULT_RESOURCE_ROOT)
+        else:
+            self.index_path = Path(index_path)
+            self.resource_root = Path(resource_root)
+        self.read_resource = read_resource
+        self.check_current = check_current
         self.entries: dict[tuple[str, str, str, str], dict] = {}
         self.error: str | None = None
         self._cache: dict[tuple[str, str, str, str], AuthorStructureProduct] = {}
-        self._load_index()
+        self._assert_current()
+        try:
+            self._load_index()
+        finally:
+            self._assert_current()
+
+    def _assert_current(self) -> None:
+        if self.check_current is None:
+            return
+        try:
+            self.check_current()
+        except Exception:
+            # A stale view must never leave a prior successful product usable.
+            self._cache.clear()
+            raise
 
     @staticmethod
     def _key(profile_id: str, map_id: str, floor: str, variant_id: str | None) -> tuple[str, str, str, str]:
@@ -60,7 +87,11 @@ class AuthorStructureResourceStore:
 
     def _load_index(self) -> None:
         try:
-            payload = json.loads(self.index_path.read_text(encoding="utf-8"))
+            if self.read_resource is None:
+                payload = json.loads(self.index_path.read_text(encoding="utf-8"))
+            else:
+                from imported_resource_reader import decode_resource_json
+                payload = decode_resource_json(self.read_resource(self.index_path))
             if int(payload.get("schemaVersion", 0)) != SUPPORTED_SCHEMA_VERSION:
                 raise ValueError("unsupported author structure resource schema")
             if payload.get("validationMaskContract") != "author_route_structure_mask":
@@ -70,15 +101,44 @@ class AuthorStructureResourceStore:
                     entry["profileId"], entry["mapId"],
                     entry["floor"], entry.get("variantId"),
                 )
+                if self.read_resource is not None and key in self.entries:
+                    raise ValueError("duplicate author structure resource entry")
                 self.entries[key] = dict(entry)
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
             self.error = str(error)
             self.entries = {}
 
     def _path_for(self, entry: dict) -> Path:
-        return self.resource_root / Path(str(entry["resourcePath"]))
+        raw_relative = entry["resourcePath"]
+        relative = Path(str(raw_relative))
+        if self.read_resource is None:
+            return self.resource_root / relative
+        if (not isinstance(raw_relative, str) or not raw_relative
+                or relative.is_absolute() or ".." in relative.parts):
+            raise ValueError("invalid author structure resource path")
+        # Keep the lexical path so the component reader can reject links
+        # instead of receiving a resolved target with the link erased.
+        return self.resource_root / relative
 
     def load(
+        self,
+        profile_id: str,
+        map_id: str,
+        floor: str,
+        *,
+        variant_id: str | None = None,
+        route_shape: tuple[int, int] | None = None,
+    ) -> AuthorStructureProduct | None:
+        self._assert_current()
+        try:
+            return self._load_current(
+                profile_id, map_id, floor,
+                variant_id=variant_id, route_shape=route_shape,
+            )
+        finally:
+            self._assert_current()
+
+    def _load_current(
         self,
         profile_id: str,
         map_id: str,
@@ -101,7 +161,15 @@ class AuthorStructureResourceStore:
         try:
             if route_shape is not None and tuple(entry.get("sourceShape", ())) != tuple(route_shape):
                 return None
-            with np.load(self._path_for(entry), allow_pickle=False) as payload:
+            path = self._path_for(entry)
+            if self.read_resource is None:
+                source = path
+            else:
+                from imported_structure_declarations import validate_legacy_structure_declarations
+                raw = self.read_resource(path)
+                validate_legacy_structure_declarations(raw, expected_shape=route_shape)
+                source = BytesIO(raw)
+            with np.load(source, allow_pickle=False) as payload:
                 if "validation_mask" not in payload.files:
                     return None
                 validation_mask = np.asarray(payload["validation_mask"])
@@ -155,6 +223,14 @@ class AuthorStructureResourceStore:
                 dict(entry),
                 known_boundary,unknown_mask,native_walls,
             )
+        except zlib.error:
+            # Imported/package bytes can pass bounded-header inspection while
+            # failing later when NumPy inflates a member. Keep trusted legacy
+            # path behavior unchanged; stale-view errors are checked outside
+            # this decoder block and continue to propagate.
+            if self.read_resource is None:
+                raise
+            return None
         except (OSError, KeyError, ValueError, TypeError, zipfile.BadZipFile):
             return None
         self._cache[key] = product
@@ -171,13 +247,17 @@ class AuthorStructureResourceStore:
         *,
         variant_id: str | None = None,
     ) -> AuthorStructureProduct | None:
-        if not isinstance(route, np.ndarray) or route.ndim < 2 or map_id is None or floor is None:
-            return None
-        return self.load(
-            profile_id, map_id, floor,
-            variant_id=variant_id,
-            route_shape=tuple(route.shape[:2]),
-        )
+        self._assert_current()
+        try:
+            if not isinstance(route, np.ndarray) or route.ndim < 2 or map_id is None or floor is None:
+                return None
+            return self.load(
+                profile_id, map_id, floor,
+                variant_id=variant_id,
+                route_shape=tuple(route.shape[:2]),
+            )
+        finally:
+            self._assert_current()
 
     def load_shared_reference(
         self,
@@ -195,6 +275,24 @@ class AuthorStructureResourceStore:
         ``sharedResourcePath`` (or ``sharedMaskResourcePath``); absent keys
         remain a hard failure.
         """
+        self._assert_current()
+        try:
+            return self._load_shared_reference(
+                profile_id, map_id, floor,
+                variant_id=variant_id, expected_binding=expected_binding,
+            )
+        finally:
+            self._assert_current()
+
+    def _load_shared_reference(
+        self,
+        profile_id: str,
+        map_id: str,
+        floor: str,
+        *,
+        variant_id: str | None = None,
+        expected_binding: dict | None = None,
+    ):
         from shared_structure_reference import load_shared_structure
 
         entry = self.entries.get(self._key(profile_id, map_id, floor, variant_id))
@@ -203,9 +301,11 @@ class AuthorStructureResourceStore:
         relative = entry.get("sharedResourcePath", entry.get("sharedMaskResourcePath"))
         if not isinstance(relative, str) or not relative or Path(relative).is_absolute() or ".." in Path(relative).parts:
             return None
-        path = (self.resource_root / Path(relative)).resolve()
+        candidate = self.resource_root / Path(relative)
+        path = candidate if self.read_resource is not None else candidate.resolve()
         try:
-            if not path.is_relative_to(self.resource_root.resolve()):
+            if not path.is_relative_to(self.resource_root if self.read_resource is not None
+                                       else self.resource_root.resolve()):
                 return None
         except ValueError:
             return None
@@ -213,7 +313,15 @@ class AuthorStructureResourceStore:
             profile=str(profile_id), mapId=str(map_id), floor=str(floor),
             variant=str(variant_id or "variant-01"),
         )
-        return load_shared_structure(path, expected_binding=binding)
+        kwargs = {}
+        if self.read_resource is not None:
+            kwargs.update(resource_root=self.resource_root, read_resource=self.read_resource)
+        try:
+            return load_shared_structure(path, expected_binding=binding, **kwargs)
+        except (zlib.error, zipfile.BadZipFile):
+            if self.read_resource is None:
+                raise
+            return None
 
 
 def decode_native_wall_segments(rows, shape):

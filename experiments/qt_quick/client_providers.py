@@ -369,7 +369,7 @@ class EngineFactories(dict):
                                        inventory=getattr(engine, "qt_resource_inventory", {}),
                                        candidateObservation=dict(getattr(getattr(engine, "qt_native_context", None), "structure_candidate_capability", {})),
                                        liveGaps=list(getattr(engine, "qt_live_gaps", ())),
-                                       liveReady=season == "s0" or bool(getattr(engine, "qt_live_ready", False)))
+                                       liveReady=bool(getattr(engine, "qt_live_ready", season == "s0")))
             return engine
 
     def _build(self, mode, *, season="s0"):

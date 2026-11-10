@@ -71,6 +71,26 @@ class ResourceFeedbackTests(unittest.TestCase):
     def resource_notices(self, notices):
         return [n for n in notices if n[0] == "地图资源未就绪"]
 
+    def test_explicit_s0_live_false_rejects_start_before_input_and_controls(self):
+        for mode in ('nightmare', 'difficult'):
+            with self.subTest(mode=mode), self.chain(mode) as (o,c,s,r,f,k,n,a,root):
+                engine = runtime_fixture.fixture_engine(mode)
+                engine.qt_live_ready = False
+                engine.qt_live_gaps = ('data-only-floor-observation-unvalidated',)
+                f._build = lambda mode, *, season='s0': engine
+                f.prepare(); s.refreshRuntime()
+                with patch.object(c, '_apply_controls_visibility', wraps=c._apply_controls_visibility) as visibility, \
+                     patch.object(c, 'setInputEnabled', wraps=c.setInputEnabled) as input_enabled:
+                    c.startRound(); c.startRound()
+                    input_enabled.assert_not_called()
+                    visibility.assert_not_called()
+                self.assertFalse(k.enabled)
+                self.assertFalse(any(action == 'start_round' for action, _ in a))
+                self.assertEqual(len(self.resource_notices(n)), 1)
+                self.assertIn('尚未', c.runtimeStatus)
+                self.assertEqual(r._capture.enable_count, 0)
+                self.assertEqual(engine.rank_count, 0)
+
     def test_real_lease_rejects_start_once_and_explicit_round_opens_after_ready(self):
         for mode in ("nightmare", "difficult"):
             with self.subTest(mode=mode), self.chain(mode) as (o,c,s,r,f,k,n,a,root):

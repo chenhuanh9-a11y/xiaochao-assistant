@@ -3054,7 +3054,8 @@ class LiveRuntime:
             report = capabilities[self._mode]
             saved_ready = report["available"]
             live_gaps = tuple(report.get("liveGaps", ()))
-            if self._season != "s0" and not report.get("liveReady", False) and not live_gaps:
+            live_ready = report.get("liveReady", self._season == "s0") is True
+            if not live_ready and not live_gaps:
                 live_gaps = (f"season-live-contract-unavailable:{self._season}",)
             candidate_ready = self._s1_candidate_available(report)
             ready = saved_ready and (not live_gaps or candidate_ready)
@@ -3139,7 +3140,7 @@ class LiveRuntime:
                 displayFallback=metadata.get("fallback", False), fallbackReason=metadata.get("fallbackReason", ""),
                 engineConnected=True,
                 liveEngineAvailable=bool(ready and guarded and self._capture is not None
-                    and (self._season == "s0" or report.get("liveReady") is True)),
+                    and live_ready),
                 recordedStructureCandidateAvailable=candidate_ready and self._evidence_kind == "recorded",
                 recordedProvisionalDisplayEnabled=self._s1_provisional_enabled() and self._evidence_kind == "recorded",
                 recordedStreamingEnabled=bool(self._recorded_s1_streaming and self._s1_provisional_enabled()),
@@ -4288,11 +4289,11 @@ class LiveRuntime:
         if action == "observe_candidate_floor":
             return self._probe_s1_candidate_floor(action, payload, cancelled,
                 expected_epoch=capture_request_epoch, request_id=request_id)
-        if self._season == "s1" and action in ("start_round", "toggle_round", "capture_now", "map", "refresh_map", "recover_map_open", "probe_map_after_drag"):
+        if action in ("start_round", "toggle_round", "capture_now", "map", "refresh_map", "recover_map_open", "probe_map_after_drag"):
             report = self._offline.snapshot()["savedFrameCapabilities"][self._mode]
-            if not report.get("liveReady", False) and not self._s1_candidate_available(report):
+            if not report.get("liveReady", self._season == "s0") and not self._s1_candidate_available(report):
                 return self._receipt(action, payload, success=False,
-                    reason=";".join(report.get("liveGaps", ())) or "s1-live-contract-unavailable",
+                    reason=";".join(report.get("liveGaps", ())) or f"{self._season}-live-contract-unavailable",
                     unavailable=True)
         if action == "resume_group_automatic":
             return self._receipt(action, payload, success=False, reason="unsupported-action")
@@ -4547,8 +4548,8 @@ class LiveRuntime:
             from client_providers import ProviderUnavailable
             raise ProviderUnavailable(f"season-resources-unavailable:{season}")
         engine = getter(mode, season) if callable(getter) else self._factories[mode]()
-        if (require_live and season != "s0" and not getattr(engine, "qt_live_ready", False)
-                and not self._s1_candidate_available(engine=engine)):
+        if (require_live and not getattr(engine, "qt_live_ready", season == "s0")
+                and not (season == "s1" and self._s1_candidate_available(engine=engine))):
             from client_providers import ProviderUnavailable
             raise ProviderUnavailable(";".join(getattr(engine, "qt_live_gaps", ())) or f"season-live-contract-unavailable:{season}")
         return engine
