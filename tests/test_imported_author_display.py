@@ -34,6 +34,9 @@ def image_bytes(format='PNG'):
 
 
 class _AuthorDisplayFixture(unittest.TestCase):
+    def resource_root(self):
+        return self.root/'resources'
+
     @classmethod
     def setUpClass(cls):
         temporary = tempfile.TemporaryDirectory(prefix='display-base-source-')
@@ -45,7 +48,7 @@ class _AuthorDisplayFixture(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix='independent-display-')
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
-        self.resources = self.root/'resources'
+        self.resources = self.resource_root()
         saved = save_archive(self.source.output, self.resources)
         self.refs = {ref.component_id:ref for ref in saved.component_refs}
         ref = next(ref for ref in saved.component_refs if ref.component_id == 'base')

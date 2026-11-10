@@ -8,6 +8,9 @@ import uuid
 from unittest.mock import patch
 import zipfile
 
+import cv2
+import numpy as np
+
 import client_imported_activation as imported_activation
 from client_imported_providers import (ImportedProviderUnavailable, SUPPORTED_CAPABILITIES,
                                        build_imported_engine_factories)
@@ -121,9 +124,45 @@ class ClientImportedActivationTests(unittest.TestCase):
             return activate_catalog_locked(
                 self.root, document, expected_catalog_stamp=None, validate=validate)
 
+    def _valid_display_component(self):
+        from client_providers import SharedReferenceProvider
+        from imported_author_display import SCHEMA as DISPLAY_SCHEMA
+        from imported_native_base import decode_native_base
+        from imported_resource_packages import PackageView
+        view = PackageView(self.root, self.refs['base'])
+        base = decode_native_base(view)
+        provider = SharedReferenceProvider(view.root, base.resources, base.versions,
+                                           check_current=base.assert_current)
+        mid, floor = next(iter(base.pack.by_id)), base.pack.floors[0]
+        reference = provider('shared-structure', mid, floor)
+        row = dict(mapId=mid, floor=floor, displayPath='route.png', displayShapeHW=[3,5],
+            matrixDisplayToReference=np.eye(3).tolist(), referenceShapeHW=list(reference.shape),
+            referenceResource=reference.path.relative_to(view.root).as_posix(),
+            coordinateSpace=reference.metadata['canvas']['coordinateSpace'],
+            **{key:reference.metadata[key] for key in ('structureVersionKey','sourceVersion','baseSnapshot')})
+        document = dict(schema=DISPLAY_SCHEMA, profileId='author-activation-fixture', authorName='fixture',
+            displayName='fixture', season='s0', mode='nightmare', baseDependency='base', layers=[row],
+            identityAuthority=False, structureValidationAuthority=False, crossFloorProjectionAllowed=False,
+            currentFrameGeometryFitRequired=True)
+        members = {'entry.json':_encoded(document),
+            'route.png':cv2.imencode('.png', np.full((3,5,4),(40,30,60,255),np.uint8))[1].tobytes()}
+        manifest = dict(schema='xingtu-resource-package', formatVersion=1, packageId='fixture-valid-display',
+            resourceVersion='1', clientCompatibility=dict(resourceProtocol=1, requiredCapabilities=[]),
+            components=[dict(componentId='display', type='display', schemaVersion=1,
+                contexts=[dict(season='s0',mode='nightmare')], entrypoint='entry.json',
+                dependencies={'base':_wire(self.refs['base'])})],
+            files=[dict(componentId='display', path=path, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+                for path,raw in members.items()])
+        path = self.install_root/'valid-display.zip'
+        with zipfile.ZipFile(path, 'x', compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr('manifest.json', _encoded(manifest))
+            for name,raw in members.items():
+                archive.writestr('data/display/'+name, raw)
+        return save_archive(path, self.root).component_refs[0]
+
     def test_activation_updates_only_target_roles_and_preserves_other_selection(self):
         groups = self._inert_component('reviewed', 'reviewed-group-registry')
-        display = self._inert_component('display', 'display')
+        display = self._valid_display_component()
         self.resolver = ResourceResolver(
             self.root, supported_capabilities=SUPPORTED_CAPABILITIES,
             project_registry_refs=(groups,))
@@ -141,6 +180,15 @@ class ClientImportedActivationTests(unittest.TestCase):
         self.assertEqual(after.contexts['s1:difficult'], before.contexts['s1:difficult'])
         self.assertEqual(after.displays, (display,))
         self.assertNotEqual(after.generation, before.generation)
+
+    def test_metadata_only_display_cannot_become_active_with_its_context(self):
+        display = self._inert_component('display', 'display')
+        self.seed_catalog(displays=(display,))
+        before = (self.root/'catalog.json').read_bytes()
+        with resource_runtime_lease(self.root):
+            with self.assertRaisesRegex(files.ImportRejected, 'schema-invalid'):
+                self.activate()
+        self.assertEqual((self.root/'catalog.json').read_bytes(), before)
 
     def test_identical_selection_is_semantically_checked_without_catalog_or_engine_invalidation(self):
         with resource_runtime_lease(self.root):

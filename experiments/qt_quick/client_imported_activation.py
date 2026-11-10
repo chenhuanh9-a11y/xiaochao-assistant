@@ -63,6 +63,20 @@ def _validate_proposal(root, paths, resolver, base_ref, controls_ref, *, season,
             raise catalog.ResourceCatalogError('resource-component-not-selected')
         engine = build_native_engine(base_view, controls_view, paths, season=season, mode=mode, require_rank=False)
         try:
+            from imported_author_display import decode_author_display
+            profiles = set()
+            for display_ref in inspected.displays:
+                operation_current()
+                view = inspected.views[display_ref]
+                if {'season': season, 'mode': mode} not in view.component['contexts']:
+                    continue
+                display = decode_author_display(view, engine.qt_native_base, engine.qt_shared_provider)
+                profile = display.profile_id
+                if profile in profiles:
+                    raise catalog.ResourceCatalogError('resource-display-profile-conflict')
+                profiles.add(profile)
+                if not display.layers:
+                    raise catalog.ResourceCatalogError('resource-display-no-usable-layers')
             operation_current()
             engine.qt_assert_resource_current()
         finally:

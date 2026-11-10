@@ -194,4 +194,3 @@ class ImportedAuthorDisplaysTests(_AuthorDisplayFixture):
         optional._lock = CatalogChangingLock()
         with self.assertRaises(ResourceCatalogError):
             optional.pixels(path, 'full-reference')
-
