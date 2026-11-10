@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [features, core, diagnostics, packaging, tutorials, map-defaults, season-ui, next-version-contracts, author-snapshots, installer-reset, fit-simulation, main-baseline, released-baseline]
+        group: [features, core, diagnostics, packaging, packaging-imported-data, packaging-imported-runtime, tutorials, map-defaults, season-ui, next-version-contracts, author-snapshots, installer-reset, fit-simulation, main-baseline, released-baseline]
     env:
       PYTHONPATH: 'app;tests;tools;experiments/qt_quick'
       QT_QPA_PLATFORM: offscreen
@@ -206,9 +206,11 @@ jobs:
             'diagnostics' { $modules = @('test_map_attempt_correlation', 'test_diagnostic_log_budget', 'test_client_problems', 'test_client_problem_history', 'test_client_info', 'test_client_season_failure_export', 'test_client_diagnostic_integration', 'test_client_joint_diagnostic_schema', 'test_field_failure_samples', 'test_async_event_log', 'test_automatic_failure_samples', 'test_storage_retention', 'test_memory_retention_links', 'test_runtime_environment_diagnostics'); $modules += @(Get-ChildItem tests/test_diagnostic*.py | ForEach-Object { $_.BaseName }) }
             'packaging' {
               $modules = @('test_runtime_exclusions', 'test_s1_private_packaging', 'test_preview_windows_notice', 'test_qt_installer_directory', 'test_live_author_import', 'test_legacy_import_recovery', 'test_package_dependency_upgrade', 'test_receipt_dependency_contract', 'test_map_package_removal', 'test_client_resources')
-              # New imported resources use the same independent-process runner.
-              # These are parser/store/Qt regressions, never Setup or game acceptance.
-              $modules += @(
+            }
+            # Separate parser/store and package-admission work from runtime tests
+            # to avoid the former combined group's 25-minute cancellations.
+            'packaging-imported-data' {
+              $modules = @(
                 'test_s0_predecessor_closure', 'test_s0_staged_closure',
                 'test_resource_zip_io', 'test_imported_resource_archive',
                 'test_imported_resource_packages', 'test_imported_resource_catalog',
@@ -226,7 +228,13 @@ jobs:
                 'test_imported_native_base',
                 'test_imported_s1_native_base', 'test_imported_s1_controls_profile',
                 'test_entry_semantic_capability', 'test_imported_s1_native_context',
-                'test_imported_difficult_native_context',
+                'test_imported_difficult_native_context'
+              )
+            }
+            # Provider/startup/activation tests retain the independent-process
+            # runner and job cap; new shard completion still needs remote CI.
+            'packaging-imported-runtime' {
+              $modules = @(
                 'test_s1_floor_observation', 'test_s1_map_ui_geometry',
                 'test_client_shared_reference_context',
                 'test_client_imported_providers', 'test_client_native_base_provider',
