@@ -78,10 +78,10 @@ def activate_context(resolver, paths, base_ref, controls_ref, *, season='s0', mo
 
     The caller must already hold its Session idle resource lease. The catalog
     write lock here serializes this operation with package/catalog writers.
-    Only the implemented native S0 nightmare base/control pair is admitted;
-    no legacy factory or builtin fallback is consulted.
+    Only the implemented native S0 nightmare and S1 difficult base/control
+    pairs are admitted; no legacy factory or builtin fallback is consulted.
     """
-    if (season, mode) != ('s0', 'nightmare'):
+    if (season, mode) not in {('s0', 'nightmare'), ('s1', 'difficult')}:
         raise catalog.ResourceCatalogError('native-base-context-unsupported')
     if not isinstance(base_ref, ComponentRef) or not isinstance(controls_ref, ComponentRef):
         raise catalog.ResourceCatalogError('resource-catalog-reference-invalid')

@@ -60,6 +60,7 @@ Item {
                 model: resourceService.packageModel
                 ScrollBar.vertical: ScrollBar {}
                 delegate: Item {
+                    id: packageDelegate
                     required property var modelData
                     required property int index
                     width: packages.width; height: details.implicitHeight + 24
@@ -70,12 +71,28 @@ Item {
                         Label { Layout.fillWidth: true; text: modelData.title; elide: Text.ElideRight; font.pixelSize: 15; font.bold: true; color: "#142b4b"; textFormat: Text.PlainText }
                         Label { Layout.fillWidth: true; text: "版本 " + modelData.resourceVersion; elide: Text.ElideRight; color: "#354f75"; textFormat: Text.PlainText }
                         Label { objectName: "packageStatusLabel-" + modelData.key; Layout.fillWidth: true; text: panel.statusText(modelData); wrapMode: Text.Wrap; color: modelData.status === "damaged" ? "#b8364a" : modelData.status === "selected" ? "#17775a" : "#526785" }
-                        AppButton {
-                            objectName: "activatePackageButton-" + modelData.key
-                            visible: modelData.canActivate === true
-                            enabled: panel.refreshAllowed && !panel.operationPending && !panel.recoveryPending
-                            text: "启用 S0 噩梦"
-                            onClicked: resourceService.activatePackage(modelData.key, "s0", "nightmare")
+                        Repeater {
+                            model: resourceService.activationOptions
+                            delegate: ColumnLayout {
+                                required property var modelData
+                                visible: packageDelegate.modelData.activatableContexts.indexOf(modelData.context) >= 0
+                                Layout.fillWidth: true
+                                spacing: 5
+                                AppButton {
+                                    objectName: "activatePackageButton-" + packageDelegate.modelData.key + modelData.objectSuffix
+                                    enabled: panel.refreshAllowed && !panel.operationPending && !panel.recoveryPending
+                                    text: modelData.label
+                                    onClicked: resourceService.activatePackage(packageDelegate.modelData.key, modelData.season, modelData.mode)
+                                }
+                                Label {
+                                    objectName: "activationNotice-" + packageDelegate.modelData.key + modelData.objectSuffix
+                                    visible: modelData.notice.length > 0
+                                    Layout.fillWidth: true
+                                    text: modelData.notice
+                                    wrapMode: Text.Wrap
+                                    color: "#526785"
+                                }
+                            }
                         }
                     }
                     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#edf1f7"; visible: index < packages.count - 1 }

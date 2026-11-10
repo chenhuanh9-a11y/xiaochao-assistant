@@ -12,6 +12,13 @@ from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, Qt, QUrl, 
 from backend import ResourceRows
 
 
+_ACTIVATION_CONTEXTS = {
+    ('s0', 'nightmare'): dict(label='启用 S0 噩梦', objectSuffix='', notice=''),
+    ('s1', 'difficult'): dict(label='启用 S1 困难数据', objectSuffix='-s1-difficult',
+        notice='自动楼层识别尚未验证，启用后仍不可用。'),
+}
+
+
 class PackageRows(ResourceRows):
     fields = ('modelData',)
 
@@ -33,7 +40,7 @@ def _failure(error):
 def _activation_refs(row, season, mode):
     from imported_resource_packages import ComponentRef
     context = f'{season}:{mode}'
-    if context != 's0:nightmare' or row.get('status') == 'damaged':
+    if (season, mode) not in _ACTIVATION_CONTEXTS or row.get('status') == 'damaged':
         return None
     refs = []
     for role in ('recognition-base', 'controls-profile'):
@@ -83,6 +90,9 @@ class ImportedResourceService(QObject):
 
     packageModel = Property(QObject, lambda s: s.model, constant=True)
     packageRows = Property('QVariantList', lambda s: deepcopy(s._rows), notify=inventoryChanged)
+    activationOptions = Property('QVariantList', lambda s: [
+        dict(context=f'{season}:{mode}', season=season, mode=mode, **metadata)
+        for (season, mode), metadata in _ACTIVATION_CONTEXTS.items()], constant=True)
     busy = Property(bool, lambda s: s._busy, notify=changed)
     pendingKind = Property(str, lambda s: '', notify=changed)
     operationStage = Property(str, lambda s: 'cancelling' if s._busy and s._cancel.is_set() else s._kind, notify=changed)
@@ -205,7 +215,8 @@ class ImportedResourceService(QObject):
                 inventory = list_saved_versions(self.resolver)
             except (OSError, ValueError, RuntimeError):
                 inventory = None
-            return dict(activated=outcome, operationError=failure, inventory=inventory)
+            return dict(activated=outcome, activatedContext=f'{season}:{mode}',
+                        operationError=failure, inventory=inventory)
 
         if self._begin('activate', activate):
             return True
@@ -272,7 +283,11 @@ class ImportedResourceService(QObject):
             if kind == 'activate':
                 outcome = value['activated']
                 duplicate = outcome['status'] == 'already-active'
-                self._message = '此版本已经启用，资源选择未改变。' if duplicate else 'S0 噩梦基础结构与楼层控件已启用。'
+                s1_data = value['activatedContext'] == 's1:difficult'
+                self._message = ('此版本已经启用，资源选择未改变。' if duplicate else
+                    'S1 困难基础数据已启用。' if s1_data else 'S0 噩梦基础结构与楼层控件已启用。')
+                if s1_data:
+                    self._message += ' 自动楼层识别尚未验证，暂不可用。'
                 if inventory is None:
                     self._message += ' 列表暂时无法读取，请重新核对。'
                 elif inventory.generation != outcome['generation']:
@@ -282,8 +297,12 @@ class ImportedResourceService(QObject):
         self.changed.emit()
 
     def _set_rows(self, rows):
-        rows = [dict(row, canActivate=_activation_refs(row, 's0', 'nightmare') is not None)
-                for row in rows]
+        decorated = []
+        for row in rows:
+            contexts = [f'{season}:{mode}' for season, mode in _ACTIVATION_CONTEXTS
+                       if _activation_refs(row, season, mode) is not None]
+            decorated.append(dict(row, canActivate=bool(contexts), activatableContexts=contexts))
+        rows = decorated
         if rows != self._rows:
             self._rows = deepcopy(rows)
             self.model.reconcile(rows)
