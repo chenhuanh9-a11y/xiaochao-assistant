@@ -841,6 +841,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         public AuthorCoordinateAdapter Coordinates => coordinates.Value;
         public string Id { get; } = Guid.NewGuid().ToString("N");
         public ResourceCatalog Catalog { get; } = catalog;
+        public DisplayMaterialPreparer DisplayMaterials { get; } = new();
         public EntryPassportCatalog Passports { get; } = passports;
         public S0IdentityRankPipeline? Identity { get; } = identity;
         public StructureCatalog? StructureCatalog { get; } = structureCatalog;

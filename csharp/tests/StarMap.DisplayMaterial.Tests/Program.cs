@@ -15,6 +15,7 @@ internal static class Program
     static readonly List<object> Failures = [];
     static string Output = "";
     static int Count;
+    static readonly HashSet<string> ReuseKinds = [];
 
     static int Main(string[] args)
     {
@@ -173,6 +174,22 @@ internal static class Program
         }
         pixels![0] ^= 255;
         Require(Hash(layer.CopyPixels()) == digest, "returned pixel copy leaked writable owned storage");
+        if (ReuseKinds.Add(source.DisplayKind ?? "")) Check("moving-source-reuse/" + source.DisplayKind, () =>
+        {
+            var move = new DisplayAffine(1.125, 0, 3, 0, 1.125, -4);
+            var input = source with { DisplayToClient = move * source.DisplayToClient!.Value,
+                CanonicalToClient = move * source.CanonicalToClient!.Value };
+            var moved = Preparer.Prepare(input, source.Reference);
+            Require(moved.Prepared && !ReferenceEquals(layer, moved.Layer) && ReferenceEquals(layer.Pixels, moved.Layer!.Pixels),
+                "new transform recreated source pixels or reused the old layer");
+            Require(moved.Layer!.Bridge.DisplayToClient!.Value.AlmostEquals(move * layer.Bridge.DisplayToClient!.Value)
+                && Hash(moved.Layer.CopyPixels()) == digest, "fresh bridge or unchanged pixel content lost");
+            // Changing declared source semantics cannot inherit an earlier payload.
+            var changed = Preparer.Prepare(input with { Profile = input.Profile + "-source-control" }, source.Reference);
+            Require(changed.Prepared && !ReferenceEquals(changed.Layer!.Pixels, moved.Layer.Pixels), "source change reused previous pixels");
+            WriteCase(new { label = "moving-source-reuse/" + source.DisplayKind, first = layer.Bridge,
+                next = moved.Layer.Bridge, samePixels = ReferenceEquals(layer.Pixels, moved.Layer.Pixels), pixelSha256 = digest });
+        });
     });
 
     static void Mutation(JsonElement row, string kind) => Check("same-length-replacement/" + kind, () =>

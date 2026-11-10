@@ -41,20 +41,22 @@ internal static class CurrentPoseWorkspaceRegression
             page.Dispatch("refresh_map"); await page.DrainAsync(); await Consumed();
             check(ReferenceEquals(prepared, Field<object>(host, "preparedMaterial")) && ready.IsFrozen,
                 "real-overlay-material-cache-reuses-the-bitmap-while-consuming-each-fresh-proposal");
-            var layer = page.ReadRender()!.Material; var projection = new WpfDisplayProjectionCache();
+            var layer = page.ReadRender()!.Material;
+            var source = WpfDisplayMaterialConsumer.PrepareMaterialReady(layer);
             using var surface = new WpfAlignedOverlaySurface();
             var client = new WpfOverlayClientGeometry(-20, 30, 8, 8, 96);
             var matrix = WpfOverlayHomography.Identity; var ticket = surface.Reserve(new object());
-            var pixels = await projection.PrepareAsync(ticket, layer, matrix, client, 1);
+            var pixels = WpfAlignedOverlaySurface.PrepareAffine(ticket, source, matrix, client, 1);
             surface.Withdraw(); var fresh = surface.Reserve(new object());
-            var reused = await projection.PrepareAsync(fresh, layer, matrix, client, .5);
-            check(ReferenceEquals(pixels.Image, reused.Image) && ReferenceEquals(pixels.ClientPixels, reused.ClientPixels)
+            var reused = WpfAlignedOverlaySurface.PrepareAffine(fresh, source, matrix, client, .5);
+            check(ReferenceEquals(pixels.Image, reused.Image) && reused.ClientPixels is null
                 && ReferenceEquals(reused.Ticket, fresh) && reused.Opacity == .5 && !surface.TryApply(ticket, pixels),
-                "production-projection-cache-reuses-pixels-with-new-ticket-and-opacity-without-reviving-old-permission");
-            var moved = await projection.PrepareAsync(fresh, layer, matrix with { M02 = 1 }, client, .5);
-            var dpi = await projection.PrepareAsync(fresh, layer, matrix with { M02 = 1 }, client with { Dpi = 144 }, .5);
-            check(!ReferenceEquals(reused.Image, moved.Image) && !ReferenceEquals(moved.Image, dpi.Image),
-                "changed-transform-or-complete-client-context-requires-a-new-projection");
+                "production-source-frame-reuses-pixels-with-new-ticket-and-opacity-without-reviving-old-permission");
+            var moved = WpfAlignedOverlaySurface.PrepareAffine(fresh, source, matrix with { M02 = 1 }, client, .5);
+            var dpi = WpfAlignedOverlaySurface.PrepareAffine(fresh, source, matrix with { M02 = 1 }, client with { Dpi = 144 }, .5);
+            check(ReferenceEquals(reused.Image, moved.Image) && ReferenceEquals(moved.Image, dpi.Image)
+                && moved.ImageToClient.M02 == 1 && dpi.Client.Dpi == 144,
+                "changed-transform-and-client-DPI-reuse-source-with-fresh-frame-geometry");
             page.Dispatch("close_map"); await page.DrainAsync();
             check(!page.RememberMaterialReady(first) && reports.Count == 0 && native.Binding is null
                 && Field<WpfAlignedOverlaySurface>(host, "surface").NativeHandle == 0,

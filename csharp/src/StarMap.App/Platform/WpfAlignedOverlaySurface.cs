@@ -23,11 +23,6 @@ public sealed class WpfAlignedOverlayTicket
 
 public sealed class WpfAlignedOverlayPreparedFrame
 {
-    internal WpfAlignedOverlayPreparedFrame(WpfAlignedOverlayTicket ticket, WpfAlignedOverlayPreparedFrame pixels, double opacity)
-    {
-        Ticket = ticket; ClientPixels = pixels.ClientPixels; Client = pixels.Client;
-        DisplayToClient = pixels.DisplayToClient; Opacity = opacity; Image = pixels.Image;
-    }
     internal WpfAlignedOverlayPreparedFrame(WpfAlignedOverlayTicket ticket, WpfOverlayBgra32 clientPixels,
         WpfOverlayClientGeometry client, WpfOverlayHomography displayToClient, double opacity)
     {
@@ -36,10 +31,15 @@ public sealed class WpfAlignedOverlayPreparedFrame
             clientPixels.CopyPixels(), clientPixels.Stride);
         Image.Freeze();
     }
+    internal WpfAlignedOverlayPreparedFrame(WpfAlignedOverlayTicket ticket, BitmapSource source,
+        WpfOverlayClientGeometry client, WpfOverlayHomography matrix, double opacity)
+    { Ticket = ticket; Image = source; Client = client; DisplayToClient = matrix; ImageToClient = matrix; Opacity = opacity; }
     public WpfAlignedOverlayTicket Ticket { get; }
-    public WpfOverlayBgra32 ClientPixels { get; }
+    /// <summary>Present only for a CPU-projected frame; reading never projects or allocates pixels.</summary>
+    public WpfOverlayBgra32? ClientPixels { get; }
     public WpfOverlayClientGeometry Client { get; }
     public WpfOverlayHomography DisplayToClient { get; }
+    public WpfOverlayHomography ImageToClient { get; } = WpfOverlayHomography.Identity;
     public double Opacity { get; }
     public BitmapSource Image { get; }
 }
@@ -124,14 +124,25 @@ public sealed class WpfAlignedOverlaySurface : IDisposable
         return new(ticket, pixels, client, displayToClient, opacity);
     }
 
-    /// <summary>Reuses immutable projected pixels with a NEW presentation ticket. Never renews runtime authority.</summary>
-    internal static WpfAlignedOverlayPreparedFrame ReuseProjection(WpfAlignedOverlayTicket ticket,
-        WpfAlignedOverlayPreparedFrame previous, double opacity)
+    /// <summary>Retains one immutable source bitmap; no resampling, pixel copy or window access.</summary>
+    internal static WpfAlignedOverlayPreparedFrame PrepareAffine(WpfAlignedOverlayTicket ticket, BitmapSource source,
+        WpfOverlayHomography matrix, WpfOverlayClientGeometry client, double opacity = 1,
+        CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(ticket); ArgumentNullException.ThrowIfNull(previous);
+        ArgumentNullException.ThrowIfNull(ticket); ArgumentNullException.ThrowIfNull(source);
+        if (!source.IsFrozen || source.Format != PixelFormats.Bgra32 || source.DpiX != 96 || source.DpiY != 96
+            || source.PixelWidth <= 0 || source.PixelHeight <= 0
+            || (long)source.PixelWidth * source.PixelHeight > WpfOverlayClientGeometry.MaximumPixelBytes / 4)
+            throw new ArgumentException("A frozen 96-DPI BGRA source within the frame budget is required.", nameof(source));
         if (!double.IsFinite(opacity) || opacity is < 0 or > 1) throw new ArgumentOutOfRangeException(nameof(opacity));
-        ticket.PreparationCancellation.ThrowIfCancellationRequested();
-        return new(ticket, previous, opacity);
+        if (matrix.M20 != 0 || matrix.M21 != 0 || matrix.M22 == 0) throw new ArgumentException("Source image requires an affine matrix.", nameof(matrix));
+        client.Validate(); cancellationToken.ThrowIfCancellationRequested(); ticket.PreparationCancellation.ThrowIfCancellationRequested();
+        _ = matrix.Inverse(); _ = matrix.Corners(source.PixelWidth, source.PixelHeight);
+        var h = new WpfOverlayHomography(matrix.M00/matrix.M22, matrix.M01/matrix.M22, matrix.M02/matrix.M22,
+            matrix.M10/matrix.M22, matrix.M11/matrix.M22, matrix.M12/matrix.M22, 0, 0, 1);
+        _ = h.Inverse(); _ = h.Corners(source.PixelWidth, source.PixelHeight);
+        cancellationToken.ThrowIfCancellationRequested(); ticket.PreparationCancellation.ThrowIfCancellationRequested();
+        return new(ticket, source, client, h, opacity);
     }
 
     public bool IsCurrent(WpfAlignedOverlayTicket ticket)
@@ -330,19 +341,36 @@ public sealed class WpfAlignedOverlaySurface : IDisposable
 /// <summary>The same pixel→DIP viewport is used by the native surface and offscreen WPF verification.</summary>
 internal sealed class WpfAlignedOverlayVisual : Grid
 {
-    readonly Image image = new() { Stretch = Stretch.Fill, IsHitTestVisible = false, Focusable = false, SnapsToDevicePixels = true };
+    readonly Image image = new() { Stretch = Stretch.Fill, IsHitTestVisible = false, Focusable = false,
+        HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, RenderTransformOrigin = new(0, 0) };
+    readonly MatrixTransform transform = new();
     internal WpfAlignedOverlayVisual()
     {
         Background = Brushes.Transparent; ClipToBounds = true; IsHitTestVisible = false; Focusable = false;
-        RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.NearestNeighbor); Children.Add(image);
+        // Canvas gives the source its full pixel extent before RenderTransform.
+        // Grid's constrained child slot can otherwise clip it BEFORE scaling.
+        image.RenderTransform = transform;
+        var canvas = new Canvas(); canvas.Children.Add(image); Children.Add(canvas);
     }
     internal bool HasMaterial => image.Source is not null;
     internal void Apply(WpfAlignedOverlayPreparedFrame prepared, double actualDpiX, double actualDpiY)
     {
         var size = prepared.Client.DipSize(actualDpiX, actualDpiY);
-        image.Source = prepared.Image; image.Opacity = prepared.Opacity;
+        bool sourceAffine = prepared.ClientPixels is null;
+        double imageWidth = sourceAffine ? prepared.Image.PixelWidth : size.Width;
+        double imageHeight = sourceAffine ? prepared.Image.PixelHeight : size.Height;
+        bool layoutChanged = !ReferenceEquals(image.Source, prepared.Image) || Width != size.Width || Height != size.Height
+            || image.Width != imageWidth || image.Height != imageHeight;
+        if (!ReferenceEquals(image.Source, prepared.Image)) image.Source = prepared.Image;
+        image.Width = imageWidth; image.Height = imageHeight; image.Opacity = prepared.Opacity;
+        var h = prepared.ImageToClient; double sx = 96 / actualDpiX, sy = 96 / actualDpiY;
+        transform.Matrix = sourceAffine ? new(h.M00*sx, h.M10*sy, h.M01*sx, h.M11*sy, h.M02*sx, h.M12*sy) : Matrix.Identity;
+        image.SnapsToDevicePixels = !sourceAffine;
+        RenderOptions.SetBitmapScalingMode(image, sourceAffine ? BitmapScalingMode.Linear : BitmapScalingMode.NearestNeighbor);
+        RenderOptions.SetEdgeMode(image, sourceAffine ? EdgeMode.Aliased : EdgeMode.Unspecified);
         Width = size.Width; Height = size.Height;
-        Measure(new Size(size.Width, size.Height)); Arrange(new Rect(0, 0, size.Width, size.Height)); UpdateLayout();
+        if (layoutChanged)
+        { Measure(new Size(size.Width, size.Height)); Arrange(new Rect(0, 0, size.Width, size.Height)); UpdateLayout(); }
     }
     internal void ClearMaterial() { image.Source = null; image.Opacity = 0; Width = 0; Height = 0; }
 }

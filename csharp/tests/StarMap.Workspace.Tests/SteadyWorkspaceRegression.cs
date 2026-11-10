@@ -42,6 +42,8 @@ internal static class SteadyWorkspaceRegression
             foreach (var step in sequence["steps"]!.AsArray())
             {
                 string id = step!["id"]!.GetValue<string>();
+                var oldMaterial = page.ReadRender()!.Material;
+                var oldBitmap = Field<object>(host!, "preparedMaterial");
                 await Capture(id);
                 // These expectations are read only after production Solve has
                 // consumed this raw frame and its own material-committed prior.
@@ -62,6 +64,10 @@ internal static class SteadyWorkspaceRegression
                     id + "-steady-rejection-runs-real-cold-fallback-without-relaxing-admission");
                 evidence.Add(new { id, state = actual });
                 await Remembered();
+                check(!ReferenceEquals(oldMaterial, page.ReadRender()!.Material)
+                    && ReferenceEquals(oldMaterial.Pixels, page.ReadRender()!.Material.Pixels)
+                    && ReferenceEquals(oldBitmap, Field<object>(host!, "preparedMaterial")),
+                    id + "-new-pose-reuses-source-pixels-and-WPF-bitmap-with-fresh-material-proposal");
             }
             await Capture("batch02-event-000018");
             check(page.State!.Context.FloorId == "2" && !Attempted(),

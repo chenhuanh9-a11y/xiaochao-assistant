@@ -8,17 +8,35 @@ using StarMap.Vision;
 
 namespace StarMap.Runtime;
 
-/// <summary>Owned producer pixels and their exact static bridge. This is material, never live authority.</summary>
-public sealed class PreparedDisplayLayer
+/// <summary>Owned immutable pixels, independent of a frame's display transform or authorization.</summary>
+public sealed class PreparedDisplayPixels
 {
     readonly byte[] pixels;
-    internal PreparedDisplayLayer(DisplayBridgeResult bridge, byte[] ownedPixels)
-    { Bridge = bridge; pixels = ownedPixels; }
-    public DisplayBridgeResult Bridge { get; }
-    public int Width => Bridge.Width;
-    public int Height => Bridge.Height;
+    internal PreparedDisplayPixels(int width, int height, byte[] ownedPixels)
+    {
+        if (ownedPixels.Length != DisplayMaterialPreparer.PixelLength(width, height)) throw new ArgumentException("Display pixels disagree with canvas.");
+        Width = width; Height = height; pixels = ownedPixels;
+    }
+    public int Width { get; }
+    public int Height { get; }
     public int Stride => checked(Width * 4);
     public byte[] CopyPixels() => (byte[])pixels.Clone();
+}
+
+/// <summary>Fresh display bridge over immutable producer pixels. Never live authority.</summary>
+public sealed class PreparedDisplayLayer
+{
+    internal PreparedDisplayLayer(DisplayBridgeResult bridge, PreparedDisplayPixels pixels)
+    {
+        if (bridge.Width != pixels.Width || bridge.Height != pixels.Height) throw new ArgumentException("Display bridge disagrees with pixel canvas.");
+        Bridge = bridge; Pixels = pixels;
+    }
+    public DisplayBridgeResult Bridge { get; }
+    public PreparedDisplayPixels Pixels { get; }
+    public int Width => Pixels.Width;
+    public int Height => Pixels.Height;
+    public int Stride => Pixels.Stride;
+    public byte[] CopyPixels() => Pixels.CopyPixels();
     public bool IsCurrent() => Bridge.IsCurrent();
 }
 
@@ -32,6 +50,9 @@ public sealed class DisplayMaterialPreparer
 {
     internal const int MaximumPixelBytes = 128 * 1024 * 1024;
     readonly DisplayBridgeResolver resolver = new(new OpenCvDisplayRasterValidator());
+    readonly object pixelSync = new();
+    DisplayBridgeResult? previousSource;
+    PreparedDisplayPixels? previousPixels;
 
     public DisplayMaterialResult Prepare(DisplaySelectionResult selection, SharedStructureData? fittedReference = null,
         CancellationToken cancellation = default)
@@ -55,6 +76,10 @@ public sealed class DisplayMaterialPreparer
 
     public DisplayMaterialResult Prepare(DisplayBridgeResult bridge, SharedStructureData? fittedReference = null,
         CancellationToken cancellation = default)
+    { lock (pixelSync) return PreparePixels(bridge, fittedReference, cancellation); }
+
+    private DisplayMaterialResult PreparePixels(DisplayBridgeResult bridge, SharedStructureData? fittedReference,
+        CancellationToken cancellation)
     {
         ArgumentNullException.ThrowIfNull(bridge);
         cancellation.ThrowIfCancellationRequested();
@@ -69,6 +94,13 @@ public sealed class DisplayMaterialPreparer
             if (fittedReference is not null && !SameReference(reference, fittedReference))
                 return new(null, "display-reference-differs-from-fit-reference");
             int length = PixelLength(bridge.Width, bridge.Height);
+            var input = bridge;
+            if (previousPixels is { } cached && previousSource is { } cachedSource && SamePixelSource(cachedSource, input))
+            {
+                cancellation.ThrowIfCancellationRequested();
+                return bridge.IsCurrent() ? new(new(OutputBridge(bridge), cached), "prepared")
+                    : new(null, "display-resource-changed-during-material-preparation");
+            }
             byte[] pixels;
             if (bridge.DisplayKind == "neutral-structure")
             {
@@ -113,29 +145,51 @@ public sealed class DisplayMaterialPreparer
                     return new(null, "display-converted-canvas-or-format-changed");
                 if (bridge.BaseAtlas is { } recipe)
                 {
-                    if (bridge.NativeToCanonical is not { } nativeToCanonical || bridge.CanonicalToClient is not { } canonicalToClient)
+                    if (bridge.NativeToCanonical is null || bridge.CanonicalToClient is null)
                         return new(null, "display-native-basis-unavailable");
                     pixels = DisplayAtlasRenderer.Render(bgra, recipe, bridge, cancellation);
                     // The producer has consumed ImageToNative exactly once. All
                     // downstream consumers now see pixels on that native canvas.
-                    bridge = bridge with
-                    {
-                        Width = recipe.NativeWidth, Height = recipe.NativeHeight,
-                        DisplayKind = "base-map", ImageChannels = 4,
-                        DisplayToCanonical = nativeToCanonical,
-                        DisplayToReference = bridge.ReferenceToCanonical.Value.Inverse() * nativeToCanonical,
-                        DisplayToClient = canonicalToClient * nativeToCanonical,
-                        BaseAtlas = null
-                    };
+                    bridge = OutputBridge(bridge);
                 }
                 else pixels = CopyBgra(bgra, cancellation);
             }
             cancellation.ThrowIfCancellationRequested();
-            return bridge.IsCurrent() ? new(new(bridge, pixels), "prepared") : new(null, "display-resource-changed-during-material-preparation");
+            if (!bridge.IsCurrent()) return new(null, "display-resource-changed-during-material-preparation");
+            var payload = new PreparedDisplayPixels(bridge.Width, bridge.Height, pixels);
+            // Snapshot caller-supplied collection membership; subsequent list
+            // edits must not retroactively change the stored pixel recipe.
+            previousSource = input with { Resources = input.Resources?.ToArray(),
+                BaseAtlas = input.BaseAtlas is { } atlas ? atlas with { Entrances = atlas.Entrances.ToArray() } : null };
+            previousPixels = payload;
+            return new(new(bridge, payload), "prepared");
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException
             or ArgumentException or OverflowException or OpenCVException)
         { return new(null, "display-material-unavailable:" + error.Message); }
+    }
+
+    static DisplayBridgeResult OutputBridge(DisplayBridgeResult bridge)
+    {
+        if (bridge.BaseAtlas is not { } atlas) return bridge;
+        if (bridge.NativeToCanonical is not { } native || bridge.CanonicalToClient is not { } client
+            || bridge.ReferenceToCanonical is not { } reference) throw new InvalidDataException("display-native-basis-unavailable");
+        return bridge with { Width = atlas.NativeWidth, Height = atlas.NativeHeight, DisplayKind = "base-map", ImageChannels = 4,
+            DisplayToCanonical = native, DisplayToReference = reference.Inverse() * native, DisplayToClient = client * native, BaseAtlas = null };
+    }
+
+    static bool SamePixelSource(DisplayBridgeResult a, DisplayBridgeResult b)
+    {
+        // Only client transforms are dynamic. Actual source kind, dimensions,
+        // static bridges, resource bytes, atlas placements and masks still agree.
+        static DisplayBridgeResult Static(DisplayBridgeResult value) => value with {
+            DisplayToClient = null, CanonicalToClient = null, Reference = null, Resources = null, BaseAtlas = null, Reason = "" };
+        if (Static(a) != Static(b) || a.Resources is null || b.Resources is null || !a.Resources.SequenceEqual(b.Resources)) return false;
+        if (a.DisplayKind == "neutral-structure" && (a.Reference is null || b.Reference is null || !SameReference(a.Reference, b.Reference))) return false;
+        var x = a.BaseAtlas; var y = b.BaseAtlas;
+        return x is null ? y is null : y is not null && x.ImageToNative == y.ImageToNative && x.NativeWidth == y.NativeWidth
+            && x.NativeHeight == y.NativeHeight && x.ArtIncludesExits == y.ArtIncludesExits && x.ExitIconPath == y.ExitIconPath
+            && x.ExitIconSize == y.ExitIconSize && x.Entrances.SequenceEqual(y.Entrances);
     }
 
     internal static byte[] ReadImage(DisplayBridgeResult bridge, string path)

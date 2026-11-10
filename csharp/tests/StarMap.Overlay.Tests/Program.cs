@@ -18,6 +18,9 @@ internal static class Program
         string output = Path.GetFullPath(args[option + 1]);
         if (Directory.Exists(output) || File.Exists(output)) throw new IOException("Preserve existing evidence; use a new output directory.");
         Directory.CreateDirectory(output);
+        int qtOracle = Array.IndexOf(args, "--qt-oracle");
+        if (qtOracle >= 0) return SourceAffineRegression.CompareQt(args[qtOracle + 1], output);
+        if (args.Contains("--source-affine")) return SourceAffineRegression.Run(output);
         if (args.Contains("--geometry-boundary")) return OverlayGeometryBoundaryRegression.Run(output);
         var checks = new List<object>(); int exit = 0;
         void Check(bool passed, string name)

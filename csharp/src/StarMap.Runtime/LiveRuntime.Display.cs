@@ -76,7 +76,7 @@ public sealed partial class LiveRuntime
             throw new InvalidDataException("display-fit-affine-unavailable");
         var validator = new OpenCvDisplayRasterValidator();
         var selection = new DisplayLayerSelector(validator).Select(bound.Catalog, entry, preferred, referenceToClient);
-        var preparer = new DisplayMaterialPreparer();
+        var preparer = bound.DisplayMaterials;
         var material = preparer.Prepare(selection, fittedReference, token);
         // Missing custom/author pixels cannot erase a successful geometric fit.
         // Validate its exact fitted reference independently of display preference.
