@@ -127,7 +127,7 @@ internal static class SharedPreparationRegression
         static void Visit(JsonNode? node)
         {
             if(node is JsonObject obj)
-            {foreach(string key in new[]{"elapsedMs","totalMs","observationMs","resourceMs","gateMs","elapsedSeconds","firstVerifiedPoseElapsedSeconds"})obj.Remove(key);
+            {foreach(string key in new[]{"elapsedMs","totalMs","observationMs","resourceMs","gateMs","elapsedSeconds","firstVerifiedPoseElapsedSeconds","distanceComparisonMs"})obj.Remove(key);
                 foreach(var p in obj)Visit(p.Value);}
             else if(node is JsonArray arr)foreach(var p in arr)Visit(p);
         }

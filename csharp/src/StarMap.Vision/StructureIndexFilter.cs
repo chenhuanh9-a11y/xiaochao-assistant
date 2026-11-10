@@ -46,7 +46,7 @@ public sealed partial class StructureIndexFilter
         Func<bool> cancelled,Stopwatch total,double gateMs,StructureFramePreparation? preparation=null)
     {
         string[] ids = candidateIds.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
-        double observationMs = 0,resourceMs = 0;
+        double observationMs = 0,resourceMs = 0,distanceComparisonMs = 0;
         var compare = Stopwatch.StartNew();
         JsonObject Result(string reason,JsonObject? extra = null)
         {
@@ -57,7 +57,8 @@ public sealed partial class StructureIndexFilter
                 ["unknownMapIds"] = JsonSerializer.SerializeToNode(ids), ["coordinateVerified"] = false, ["identityAuthorized"] = false,
                 ["reason"] = reason, ["elapsedMs"] = compare.Elapsed.TotalMilliseconds,
                 ["gateStatus"] = anchor.Status, ["gateReason"] = anchor.Reason, ["gateMs"] = gateMs,
-                ["observationMs"] = observationMs, ["resourceMs"] = resourceMs, ["totalMs"] = total.Elapsed.TotalMilliseconds
+                ["observationMs"] = observationMs, ["resourceMs"] = resourceMs, ["distanceComparisonMs"] = distanceComparisonMs,
+                ["totalMs"] = total.Elapsed.TotalMilliseconds
             };
             if (extra is not null) foreach (var pair in extra) result[pair.Key] = pair.Value?.DeepClone();
             return result;
@@ -142,26 +143,14 @@ public sealed partial class StructureIndexFilter
             }
             var points = FastAlignment.SampleEdges(edge,500);
             if (points.Length < 40) return Result("current-structure-insufficient");
+            var distances=Stopwatch.StartNew();
+            var minima=CandidateMinima(points,hypotheses,data.Width,data.Height,data.Fields,cancelled);
+            distanceComparisonMs=distances.Elapsed.TotalMilliseconds;
+            if(minima is null)return Result("coordinate-work-obsolete");
             var checks = new JsonArray(); var contradicted = new List<string>();
             for (int map = 0; map < data.Ids.Length; map++)
             {
-                var minimum = Enumerable.Repeat(double.PositiveInfinity,points.Length).ToArray();
-                var field = data.Fields[map];
-                for (int start = 0; start < hypotheses.Length; start += 512)
-                {
-                    if (cancelled()) return Result("coordinate-work-obsolete");
-                    int stop = Math.Min(hypotheses.Length,start+512);
-                    for (int h = start; h < stop; h++)
-                    {
-                        var hypothesis = hypotheses[h];
-                        for (int p = 0; p < points.Length; p++)
-                        {
-                            int x = Numerics.Rint((points[p][0]-hypothesis.X)/hypothesis.Scale),y = Numerics.Rint((points[p][1]-hypothesis.Y)/hypothesis.Scale);
-                            double distance = x < 0 || y < 0 || x >= data.Width || y >= data.Height ? 10000 : field[y*data.Width+x]*hypothesis.Scale;
-                            minimum[p] = Math.Min(minimum[p],distance);
-                        }
-                    }
-                }
+                var minimum=minima[map];
                 var bad = points.Where((_,p) => minimum[p] > 8).ToArray();
                 double width = bad.Length == 0 ? 0 : bad.Max(p => p[0])-bad.Min(p => p[0]);
                 double height = bad.Length == 0 ? 0 : bad.Max(p => p[1])-bad.Min(p => p[1]);
@@ -185,7 +174,8 @@ public sealed partial class StructureIndexFilter
                 ["selectedContextIndex"] = first.ContextIndex, ["coordinateEvidence"] = evidence, ["candidateChecks"] = checks,
                 ["identityAuthorized"] = false, ["reason"] = "same-coordinate-positive-contradictions-only", ["elapsedMs"] = compare.Elapsed.TotalMilliseconds,
                 ["gateStatus"] = anchor.Status, ["gateReason"] = anchor.Reason, ["gateMs"] = gateMs,
-                ["observationMs"] = observationMs, ["resourceMs"] = resourceMs, ["totalMs"] = total.Elapsed.TotalMilliseconds
+                ["observationMs"] = observationMs, ["resourceMs"] = resourceMs, ["distanceComparisonMs"] = distanceComparisonMs,
+                ["totalMs"] = total.Elapsed.TotalMilliseconds
             };
         }
         finally { if(preparation is null)foreach (var context in contexts) context.Dispose(); }
