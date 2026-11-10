@@ -25,3 +25,13 @@ dotnet hybrid/StarMap.IntegrationTests/bin/Release/net10.0-windows/StarMap.Integ
 ```
 
 IntegrationTests 运行真实 Python 子进程、现有 loader、管道传输与 WPF UI 线程图片消费者；输入是测试图片时不能称为真实地图、桌面可见像素或游戏验收。
+
+另有保存帧生产会话入口，当前还未连到 WPF 本局页面。它复用当前 Python `LiveRuntime`，默认把网格候选交给延迟启动的持久 C# 服务；其余求解和接受/拒绝保持 Python。先按仓库 `requirements.txt` 准备完全匹配的隔离 Python，不能用系统中任意 OpenCV 版本代替（S1 会校验实际版本）。
+
+```powershell
+dotnet build hybrid/StarMap.Grid/StarMap.Grid.csproj -c Release
+python hybrid/python/runtime_worker.py --resource-root 'RESOURCE_ROOT' --data-root 'ISOLATED_DATA_ROOT' --frame-root 'SAVED_FRAME_ROOT'
+python -m unittest tests.test_hybrid_grid_service tests.test_hybrid_grid_backend tests.test_hybrid_runtime_session tests.test_hybrid_runtime_worker -v
+```
+
+三个根目录参数必须为绝对路径，data root 在资源和帧根之外；不指定的 grid 可执行文件使用当前工程 Release 输出。`--grid-backend python` 走同一外层协议的原 Python grid，用于对照。服务通过 UTF-8 JSONL 接受 `prepare`、`set_frame`、`dispatch`、`snapshot`；请求有 `session/id`，取消严格匹配当前计算。录制证据不会获得 live 权限。数值错误或进程故障会拒绝该次计算，不自动替换 Python 后端。

@@ -12,6 +12,8 @@ import threading
 import time
 from collections import OrderedDict
 from collections import Counter
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,6 +35,22 @@ class PreparedStructure:
 _prepared = OrderedDict()
 _prepared_lock = threading.Lock()
 PREPARED_CACHE_MAX_BYTES = 512 * 1024 * 1024
+
+# A composition root may replace only Cartesian candidate search for this work
+# scope. Refine and all downstream geometry/authorization remain Python-owned.
+# ContextVar prevents one worker's backend from changing another worker or Qt.
+_grid_backend = ContextVar("structure_grid_backend", default=None)
+
+
+@contextmanager
+def using_grid_backend(backend):
+    if not callable(backend):
+        raise TypeError("grid backend must be callable")
+    token = _grid_backend.set(backend)
+    try:
+        yield
+    finally:
+        _grid_backend.reset(token)
 
 
 def _prepared_arrays(entry):
@@ -335,7 +353,8 @@ def propose(frame, reference, prepared, *, prior=None, cancelled=None, context=N
     searches = []
     def grid(scale, seed):
         began = time.perf_counter()
-        found = _grid(coarse, prepared, scale, seed, cancelled)
+        backend = _grid_backend.get()
+        found = (backend if backend is not None else _grid)(coarse, prepared, scale, seed, cancelled)
         searches.append(dict(scope='local' if seed is not None else 'global',
             elapsedMs=(time.perf_counter()-began)*1000,
             bestScore=found[0][0] if found else None))

@@ -123,8 +123,14 @@ class EngineFactories(dict):
     """
     MODES = ("nightmare", "difficult")  # Legacy S0 dict facade remains unchanged.
 
-    def __init__(self, resource_root, *, context_roots=None):
+    def __init__(self, resource_root, *, context_roots=None, memory_root=None, resource_guard=None):
         self.root = Path(resource_root).resolve()
+        # An explicit data plane is used by the hybrid recorded-frame session.
+        # Leave the legacy production/Qt default untouched when omitted.
+        self.memory_root = Path(memory_root).resolve() if memory_root is not None else None
+        if resource_guard is not None and not callable(resource_guard):
+            raise TypeError("resource guard must be callable")
+        self._resource_guard = resource_guard
         roots = dict(context_roots or {})
         if not set(roots) <= set(CONTEXTS):
             raise ValueError("unknown explicit provider root context")
@@ -234,6 +240,8 @@ class EngineFactories(dict):
 
     def _get(self, mode, season="s0"):
         season = normalize_season(season)
+        if self._resource_guard is not None:
+            self._resource_guard()
         try:
             binding = self._resource_binding(mode, season)
         except ProviderUnavailable as error:
@@ -359,9 +367,7 @@ class EngineFactories(dict):
         # Constructor performs no IO; ranking submits no human-label writes.
         # Explicit live manual confirmation reuses this store on its worker.
         # Source/test diagnostics retain isolated memory.
-        memory_root = (runtime_paths().memory_root(mode, season) if PRODUCTION else
-                       root / ".qt-saved-frame-memory" / mode if season == "s0" else
-                       root / ".qt-saved-frame-memory" / season / mode)
+        memory_root = self._memory_store_root(mode, season, resource_root=root)
         memory = _build_memory_store(pack, memory_root, root, season=season)
         provider = SharedReferenceProvider(root, resources, {}, native=native)
         engine = engine_type(pack, identity_root=entry_root, identity_profile_id=profile,
@@ -498,6 +504,16 @@ class EngineFactories(dict):
         engine.qt_optional_displays = optional
         engine.qt_adapters, engine.qt_catalog = optional.adapters, optional.catalog
         return engine
+
+    def _memory_store_root(self, mode, season, *, resource_root=None):
+        """Return a context-scoped store path without changing legacy defaults."""
+        season = normalize_season(season)
+        if self.memory_root is not None:
+            return self.memory_root / season / f"{mode}-memory"
+        root = self.root if resource_root is None else Path(resource_root)
+        return (runtime_paths().memory_root(mode, season) if PRODUCTION else
+                root / ".qt-saved-frame-memory" / mode if season == "s0" else
+                root / ".qt-saved-frame-memory" / season / mode)
 
 
 def build_engine_factories(resource_root, *, context_roots=None):

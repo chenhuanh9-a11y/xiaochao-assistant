@@ -15,8 +15,8 @@ Python 服务采用自有子进程和本地标准输入/输出 JSONL；不监听
 | 范围 | 当前 Qt 入口与实际状态写者 | 混合路线当前状态 | 必须验收的使用流程 |
 | --- | --- | --- | --- |
 | 启动、错误边界、单实例、后台和退出 | `tools/qt_client_entry.py` → `client.main/QtClient`；`client_single_instance`、`client_startup_cleanup` | 图库测试入口及自有 worker EOF/重连/退出已实现并有窗口主机回归；完整产品生命周期未迁 | 重启恢复窗口，启动失败可诊断；X 的后台/取消/退出；所有自有任务、监听和子进程排空 |
-| 主页面与本局、候选及人工选择 | `ClientHome/Controls/MapPicker.qml`；`SessionService` → `LiveRuntime` | 未迁 | 显式开始→捕获→身份/楼层→首贴→后续开图；手选、取消、迟到、结束及重开 |
-| C# grid 热点与 Python 后续消费 | `fast_structure_alignment._grid` → `propose/refine`；历史 protocol 2 的 `GridBridge` | 已只读核对签名与调用兼容；当前正式链尚未接入 | 同输入候选、实际 Python refine/最终接受拒绝轨迹；延迟启动、取消/超时/崩溃和重启；原图与合成分开 |
+| 主页面与本局、候选及人工选择 | `ClientHome/Controls/MapPicker.qml`；`SessionService` → `LiveRuntime` | 已接 Qt-free 保存帧生产 session/RPC 的 prepare→start_round→capture_now；WPF 本局页面、完整操作/实时采集未迁 | 显式开始→捕获→身份/楼层→首贴→后续开图；手选、取消、迟到、结束及重开 |
+| C# grid 热点与 Python 后续消费 | `fast_structure_alignment._grid` → `propose/refine`；历史 protocol 2 的 `GridBridge` | 已携入持久服务，作用域注入当前生产链；当前原帧确实执行 grid，合成已知目标 Host 接受对照通过；完整 Runtime 自动 grid 接受/原生显示仍缺 | 同输入候选、实际 Python refine/最终接受拒绝轨迹；延迟启动、取消/超时/崩溃和重启；原图与合成分开 |
 | Windows 窗口、捕获、全局输入 | `client_game_focus/capture/input/native_keys/map_input`；coordinator | 未迁 | 严格绑定及游戏重启，完整客户区、前台失效、按键穿透；局外按键不开始对局 |
 | 参考/贴合/提示窗口、作者显示桥 | `client_windows`、`LiveImages`、`ClientAligned/Reference/Toast.qml`；runtime/core | 未迁 | 作者切换保持身份/结构位姿；定点和贴合分别显隐；DPI、捕获排除及旧帧撤回 |
 | 地图与楼层图库 | `ClientGallery.qml` → `Backend` → `load_browse_context` | WPF 选择/筛选/实际图片与 Qt-free worker 已实现；合成/静态资源与窗口主机检查通过，桌面输入/捕获受限，原 UI 全量等价未验 | 两模式、两赛季、变体、缺图、坏图、刷新、快速换层/模式、真实桌面像素 |
@@ -54,5 +54,34 @@ Python 服务采用自有子进程和本地标准输入/输出 JSONL；不监听
 本轮先复现并修复异步管道写入与关闭竞态，保留失败输出；独立审查指出的重连期间退出漏等旧 worker、`_internal` 错用资源锁根及旧 worker 非零退出阻断首次重连均已修复，并通过实际 MainWindow/资源服务回归。当前只读图库请求保持串行，不构成后续本局取消协议或 C# grid 接入证据。当前正常/测试退出后核对自有 WPF/Python 测试进程，未见残留。S1 当前真实帧、全产品 UI、完整输入/捕获/浮层、性能及内存长期运行、安装/升级/回退仍未验。
 
 历史算法来源已核对 [同轮三路线报告（164d63b）](https://github.com/chenhuanh9-a11y/xiaochao-assistant/blob/164d63bc8c1ee3c3c25c07f884b2a93a17389506/docs/python-csharp-same-round-20261109.md) 和 [最终 Release 报告（306b3d3）](https://github.com/chenhuanh9-a11y/xiaochao-assistant/blob/306b3d394506bb8680c17808fd550cb484672024/docs/python-csharp-release-validation-20261109.md)，并只读查看原实验 `hybrid-runtime/grid_client.py`、`worker.py`、`csharp/GridService.csproj`。旧实验算法归档是 `e78d4ee`；本路线必须重新绑定 `cc5100c` 及后续正式源码，历史结果不是本路线通过证据。旧实验只替换模块 `_grid`，C# 回传候选后 Python 继续求解；没有实现 C# 崩溃自动回退 Python。新楼层/当前产品验收只用 2026-11-05 及之后有采集来源的原始截图，不恢复已停止采样，不向游戏发送按键。
+
+### 2026-11-10：C# grid 与保存帧生产会话
+
+`StarMap.Grid` 携入原 protocol 2 数值服务，移除 benchmark 写文件入口，不依赖旧实验路径或纯 C# 分支。`using_grid_backend` 只在当前 Python 计算作用域替换 `_grid`，其他线程和默认 Qt 保持原实现。候选仍经过原 Python `propose/refine`、几何/残差验证和 Core 状态消费者。服务失败会使整个请求失败，候选循环即使捕获异常也不能把它变成成功；没有自动切换 Python 后端。下一次显式请求可以重启 C# 子进程。
+
+`RecordedRuntimeSession` 复用真实 `EngineFactories/LiveRuntime`。帧只从显式目录读取，PNG 尺寸在解码前检查，坏帧撤销旧帧/显示。原采集坐标元数据按尺寸核对，缺失时标为未知；固定 `recorded`，不授予 live 权限。资源租约/恢复检查放在实际 factory 获取边界，省略或失败 prepare 后也不能绕过。显式 memory root 留在独立 data root，未传时保留原 Qt 路径/seed 行为。`runtime_worker.py` 是可取消、单计算、无无界请求队列的独立开发入口；还没有 WPF 本局消费者。
+
+独立数值复核发现并修复原实验内核的偶数中位数差异：96 个唯一像素点的可达 coarse 输入中，原 C# 的 `(a+b)*.5f` 与 NumPy 2.2.6 `_lerp` 顺序不同，能改变最高分和 5 像素搜索峰。C# 现按 `b-(b-a)*.5f` 计算；原 Python 不改。回归保留原坐标反例与有效分数/排序反例，由原 Python 计算预期，未放宽断言；独立 reviewer 的额外 300 组逐候选对照严格相等。不能把旧实验已测过当成所有输入逐值一致。
+
+本轮先在系统 Python 上发现依赖漂移：OpenCV 5.0.0 / NumPy 2.2.5 / Pillow 11.2.1。S1 生产校验拒绝 OpenCV 版本，没有修改或绕过校验。正式本轮证据改用已存在的只读隔离 Python 3.13.3 / OpenCV 4.12.0 / NumPy 2.2.6 / Pillow 12.3.0；其依赖目录不含归档算法，实际模块从当前 checkout 导入。旧实验源码和依赖均未修改。
+
+| 输入/检查 | 实际结果与范围 |
+| --- | --- |
+| Release `dotnet build hybrid/StarMap.Grid/StarMap.Grid.csproj -c Release --nologo -p:UseSharedCompilation=false` | .NET 10，0 警告/0 错误，无额外 NuGet；没有 Setup |
+| 最终针对性 unittest 联合检查 | 精确依赖下 93/93 通过：新 service/backend/session/worker、原 season/provider/pose/cache/residual 相关回归及图库 worker。包含最终 Median 反例、资源 guard 与数据根保护；不是全库或实机测试 |
+| grid service/backend 定向回归 | 真实 C# 子进程与当前 Python `_grid` 候选严格一致；局部/全局、两条评分路径、float32 边界、无解、错会话取消、真实首评分点取消、运行中杀死自有子进程、显式恢复及拒绝隐式回退 |
+| runtime/session/provider 回归 | 真实生产编排与显式合成替身分开；启动失败不挂输出线程、坏帧撤回、prepare 前置绕过反例、外部进程持锁、32M 像素头前置拒绝、Qt 导入阻断，及被阻塞输出管道的实际 EOF 收尾 |
+| 当前原帧 4 例，同一 runtime_worker 的 python/csharp 两路线 | 均为 2026-11-09 原始采集记录，S0/S1 噩梦/困难各一例。所比较语义与解码 RGBA 4/4 一致：S0 困难产生 render、grid 0；S0 噩梦身份未唯一且不显示、grid 0；S1 困难/噩梦待确认且不显示、grid 分别 3/8。所有 liveAuthorization=false。**不是四例识别/显示成功，也未证明真实 grid 最终显示接受。** |
+| 三个独立合成已知目标 Host 场景，尺度 .4/.5/.6 | 使用真实结构资源生成像素，生成矩阵不传给 grid/refine/验证。每例自然调用 grid 1 次、原 Python refine 8 次、原 Host fast 接受；两路线非时钟语义严格相等。目标地图/楼层是明确给定的单图 fit 输入，不是自动身份或 Runtime render/原生显示验收 |
+| 外层 runtime_worker 的实际原帧恢复检查 | 两后端均在实际 grid 路径中拒绝 foreign cancel，精确取消拒绝终态和图片，1ms 期限拒绝后能重新执行实际 grid，EOF 正常结束。C# PID 在终止前保留原生进程 handle，EOF 后核对已退出。另有真实 16MiB 管道背压的输出边界检查；它不是完整 Runtime 大图输出验收 |
+| 全后代资源快照 | 同一原帧恢复后的 OS 进程树含 Python/conhost（2 个）与 Python/C#/各自 conhost（4 个）。最终源码 WS 求和分别 147435520 / 232112128 字节，PrivateBytes 求和 800841728 / 856813568 字节。只是各一次时点快照，WS 可重复计算共享页，不是峰值、泄漏结论、公平性能比较或内存收益 |
+
+原帧证据位于本地忽略目录 `work/hybrid-current-final-20261110-01`。初次对照因未归一每进程新生成的 attempt/render token 判为不等，原件保留；仅排除实例 ID 与时钟字段后比较，地图身份、楼层、候选、姿态和接受/拒绝仍严格比较。系统错误环境下的 S1 拒绝也保留。组合命令在合成检查入口因导入顺序失败后，修正并单独重跑 `check_synthetic_fit`，三个正例及原始输出已完整落盘；未覆盖或替换前面的失败输出。
+
+Median 修正后的最终同树复验完整落在 `work/hybrid-median-final-20261110-01`：同一组合命令从四原帧到 controls、三个 synthetic Host 均正常结束，进程树快照也绑定这轮；检查后未见本轮自有 Python/Grid 残留。独立最终审查没有未关闭的实质问题，审查者另在匹配依赖下执行了 23 项消费者回归与 300 组候选对照；并不代表其独立重跑了全部 93 项或真实游戏。
+
+复现入口为 `hybrid/python/replay_check.py --resource-root <explicit-root> --frame-root <explicit-frame-root> --sample-index <capture-index> --case <id> ... --check-controls --check-synthetic-fit --output <new-output>`。它不接受地图/位姿答案用于自动识别，只以采集元数据提供模式和坐标；输出保留实际调用成功/拒绝原因。输出泵沿用原实验机制，按 [Microsoft CancelSynchronousIo](https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-cancelsynchronousio) 只取消本输出线程的同步 I/O，不终止线程或其他程序。
+
+待继续：WPF 原主页/本局与该服务的真实交互、原生捕获/输入/显示、完整作者/设置/资源操作与所有页面。接 UI 时图库与本局须在同一资源所有者下组合，不能让两个独立 Python 服务互相争用安装独占租约。RPC 的 `ok` 只表示请求处理，业务成功仍读 receipt/capability/候选与当前 render；取消和页面代次由 C# UI 消费者再次核对。真实帧的自动 grid→最终显示接受正例、长期全进程资源及同条件端到端延迟、安装/升级/回退仍未证明。本轮不宣称全量迁移、完整 UI 或实机通过。
 
 参考：进程重定向和并发排空遵循 [Microsoft ProcessStartInfo 文档](https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.processstartinfo) 与 [标准输出重定向说明](https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.processstartinfo.redirectstandardoutput)；WPF 呈现/UI 所有权参照 [WPF 概述](https://learn.microsoft.com/en-us/dotnet/desktop/wpf/overview/)。外观沿用现有 Qt 图库的蓝色、字体及左右列表/预览关系，不在本次迁移中重新设计产品。
