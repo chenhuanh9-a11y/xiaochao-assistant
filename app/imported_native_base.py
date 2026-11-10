@@ -1,4 +1,4 @@
-"""Semantic admission of the S0 nightmare native recognition base.
+"""Semantic admission of declared native recognition bases.
 
 Only the declared component tree is read. This module decodes resources, not
 candidate/session policy, catalog activation, author displays or personal data.
@@ -178,15 +178,16 @@ def _entry_reference(view, directory, relative):
     return _reference(view, posixpath.normpath(directory + '/' + relative))
 
 
-def _entry_rows(payload, expected, canvases, typed, view, directory, index, *, main):
-    if (payload.get('schemaVersion'), payload.get('mode'), payload.get('profileId')) != (1, 'nightmare', PROFILE):
+def _entry_rows(payload, expected, canvases, typed, view, directory, index, *, main,
+                mode='nightmare', profile=PROFILE, proposal_only=False):
+    if (payload.get('schemaVersion'), payload.get('mode'), payload.get('profileId')) != (1, mode, profile):
         _reject('entry-context-invalid')
     rows = _rows(payload.get('entries'), expected, 'main-entry' if main else 'local-entry')
     total = 0
     for key, row in rows.items():
         _text(row.get('material') if main else row.get('region'))
         width, height = _canvas(canvases[key])
-        if (row.get('canvas') != canvases[key] or row.get('profileId') != PROFILE
+        if (row.get('canvas') != canvases[key] or row.get('profileId') != profile
                 or row.get('variantId') != 'variant-01'
                 or _entry_reference(view, directory, row.get('structureResource')) != typed[key]['resourcePath']
                 or row.get('sourceProduct') != Path(typed[key]['resourcePath']).name):
@@ -198,6 +199,19 @@ def _entry_rows(payload, expected, canvases, typed, view, directory, index, *, m
             _reject('entry-version-binding-invalid')
         if 'routeResource' in row:
             raise NativeBaseUnavailable('native-base-author-entry-unsupported')
+        if proposal_only:
+            if row.get('gates') != [] or row.get('knownWallSupportUnavailable') is not True:
+                _reject('proposal-entry-semantics-invalid')
+            if main:
+                if (row.get('kind') != 'main' or row.get('proposalOnly') is not True
+                        or row.get('authorizesPose') is not False or row.get('authorizesIdentity') is not False):
+                    _reject('proposal-entry-authority-invalid')
+            else:
+                import cv2
+                if row.get('featureRole') != 'local-contour-proposals-not-semantic-side-exits':
+                    _reject('proposal-local-role-invalid')
+                if row.get('extractorEnvironment', {}).get('opencv') != cv2.__version__:
+                    raise NativeBaseUnavailable('native-base-extractor-runtime-mismatch')
         _number(row.get('unit'), 1e-6, MAX_CANVAS_AXIS)
         if main:
             _points([row.get('center')], 1, width, height, exact=1)
@@ -282,8 +296,11 @@ def _search_declarations(raw, local_rows, typed):
 
 
 def _decode(view, season, mode):
-    if (season, mode) != ('s0', 'nightmare'):
+    if (season, mode) not in {('s0', 'nightmare'), ('s1', 'difficult')}:
         raise NativeBaseUnavailable('native-base-context-unsupported')
+    proposal_only = season == 's1'
+    floors = frozenset(('-1', '-2', '-3', '-4')) if proposal_only else FLOORS
+    profile = 'shared-structure' if proposal_only else PROFILE
     if not isinstance(view, PackageView):
         _reject('package-view-required')
     component = view.component
@@ -300,30 +317,40 @@ def _decode(view, season, mode):
     if (context.get('season'), context.get('mode')) != (season, mode):
         raise NativeBaseUnavailable('native-base-context-unsupported')
     interfaces = context.get('runtimeInterfaces')
+    interface_fields = (_INTERFACES - {'exitIcon'}) | {'entryEvidenceRole'} if proposal_only else _INTERFACES
     if (set(context) != {'schema', 'season', 'mode', 'runtimeInterfaces'}
-            or not isinstance(interfaces, dict) or set(interfaces) != _INTERFACES
-            or interfaces.get('identityProfile') != PROFILE):
+            or not isinstance(interfaces, dict) or set(interfaces) != interface_fields
+            or interfaces.get('identityProfile') != profile
+            or proposal_only and interfaces.get('entryEvidenceRole') != 'proposal-only'):
         _reject('interfaces-invalid')
     paths = {name: _reference(view, interfaces[name], '.json') for name in
-             ('identityPack', 'typedIndex', 'coordinatePack', 'neutralDisplay', 'exitIcon')}
+             ('identityPack', 'typedIndex', 'coordinatePack', 'neutralDisplay')}
+    if not proposal_only:
+        paths['exitIcon'] = _reference(view, interfaces['exitIcon'], '.json')
     directory = interfaces['identityEntries']
     if not isinstance(directory, str) or files._relative(directory) != directory:
         _reject('entry-directory-invalid')
+    entry_files = ('entries.json', 'side-entries.json', 'entry-passports.json') + (
+        () if proposal_only else ('side-door-anchors.json', 'side-entry-search.npz'))
     entries = {name: _reference(view, directory + '/' + name, '.npz' if name.endswith('.npz') else '.json')
-               for name in ('entries.json', 'side-entries.json', 'entry-passports.json',
-                            'side-door-anchors.json', 'side-entry-search.npz')}
+               for name in entry_files}
     identity = reader.json(paths['identityPack'])
     _validate_imported_identity_ids(identity)
     if ((identity.get('schemaVersion'), identity.get('season'), identity.get('mode')) != (1, season, mode)
-            or set(identity['floors']) != FLOORS or type(identity.get('defaultEntryFloor')) is not int
-            or str(identity['defaultEntryFloor']) not in FLOORS):
+            or set(identity['floors']) != floors or type(identity.get('defaultEntryFloor')) is not int
+            or str(identity['defaultEntryFloor']) not in floors):
         _reject('identity-context-invalid')
+    if proposal_only:
+        from s1_native_resources import MODE_LAYOUTS
+        if (identity['floors'] != ['-1', '-2', '-3', '-4'] or identity['defaultEntryFloor'] != -1
+                or {row['id'] for row in identity['maps']} != MODE_LAYOUTS[mode]):
+            _reject('identity-context-inventory-invalid')
     gaps = []
-    expected = {(row['id'], floor) for row in identity['maps'] for floor in FLOORS}
+    expected = {(row['id'], floor) for row in identity['maps'] for floor in floors}
     for row in identity['maps']:
         for name in ('name', 'direction', 'shape'):
             _text(row.get(name))
-        if (set(row['layers']) != FLOORS or row.get('identityProfileId') != PROFILE
+        if (set(row['layers']) != floors or row.get('identityProfileId') != profile
                 or row.get('routeProfileId') != 'shared-structure' or row.get('oneFlow') is not None):
             _reject('identity-layer-contract-invalid')
         _number(row.get('doorCount', 0), 0, 65536)
@@ -344,7 +371,7 @@ def _decode(view, season, mode):
     selected = set()
     for key, row in typed.items():
         relative = _reference(view, row.get('resourcePath'), '.npz')
-        if row.get('profile') != PROFILE or row.get('variant') != 'variant-01' or relative.casefold() in selected:
+        if row.get('profile') != profile or row.get('variant') != 'variant-01' or relative.casefold() in selected:
             _reject('typed-binding-invalid')
         selected.add(relative.casefold())
     for row in identity['maps']:
@@ -383,7 +410,7 @@ def _decode(view, season, mode):
     if _reference(view, provider.get('indexPath'), '.json') != paths['typedIndex']:
         _reject('coordinate-index-invalid')
     lookups = _rows(provider.get('lookupBindings'), expected, 'coordinate-lookup')
-    if any(row.get('profile') != PROFILE or row.get('variant') != 'variant-01' for row in lookups.values()):
+    if any(row.get('profile') != profile or row.get('variant') != 'variant-01' for row in lookups.values()):
         _reject('coordinate-lookup-invalid')
     if provider.get('resourceRoot', '.') != '.' or neutral.get('resourceRoot', '.') != '.':
         _reject('resource-root-invalid')
@@ -395,38 +422,43 @@ def _decode(view, season, mode):
     if set(maps) != ids or set(shared) != ids:
         _reject('coordinate-map-inventory-invalid')
     for mid in ids:
-        if set(maps[mid].get('floors', {})) != FLOORS or set(shared[mid].get('floors', {})) != FLOORS:
+        if set(maps[mid].get('floors', {})) != floors or set(shared[mid].get('floors', {})) != floors:
             _reject('coordinate-floor-inventory-invalid')
-        for floor in FLOORS:
+        for floor in floors:
             row, bridge = maps[mid]['floors'][floor], shared[mid]['floors'][floor]
             width, height = _canvas(canvases[mid, floor])
             if (_reference(view, row.get('referenceResource'), '.npz') != typed[mid, floor]['resourcePath']
                     or row.get('coordinateWidth', width) != width or row.get('coordinateHeight', height) != height):
                 _reject('coordinate-canvas-invalid')
             if 'matrixCanonicalToLegacyRecognition' in row:
-                raise NativeBaseUnavailable('native-base-legacy-coordinates-unsupported')
+                if not proposal_only:
+                    raise NativeBaseUnavailable('native-base-legacy-coordinates-unsupported')
+                _identity_matrix(row['matrixCanonicalToLegacyRecognition'])
             _identity_matrix(bridge.get('matrixProfileToCanonical'))
     main_raw, local_raw = reader.json(entries['entries.json']), reader.json(entries['side-entries.json'])
-    _entry_rows(main_raw, {(mid, '1') for mid in ids}, canvases, typed, view, directory, paths['typedIndex'], main=True)
-    local_rows = _entry_rows(local_raw, expected, canvases, typed, view, directory, paths['typedIndex'], main=False)
+    _entry_rows(main_raw, {(mid, '-1' if proposal_only else '1') for mid in ids}, canvases, typed,
+        view, directory, paths['typedIndex'], main=True, mode=mode, profile=profile, proposal_only=proposal_only)
+    local_rows = _entry_rows(local_raw, expected, canvases, typed, view, directory, paths['typedIndex'],
+        main=False, mode=mode, profile=profile, proposal_only=proposal_only)
     passports = reader.json(entries['entry-passports.json'])
     if passports.get('entries') != [] or passports.get('coverage') != []:
         raise NativeBaseUnavailable('native-base-semantic-passports-unsupported')
-    doors = reader.json(entries['side-door-anchors.json'])
-    door_rows = _rows(doors.get('entries'), {(mid, '2') for mid in ids}, 'side-door')
-    for key, row in door_rows.items():
-        _points([row.get('boundaryCenter')], 1, *_canvas(canvases[key]), exact=1)
-    _search_declarations(reader(view.path(entries['side-entry-search.npz'])), local_rows, typed)
-    exit_data = reader.json(paths['exitIcon'])
-    if exit_data.get('role') != 'exit-template-only' or exit_data.get('sideDoors') != []:
-        raise NativeBaseUnavailable('native-base-exit-contract-unsupported')
-    icon = exit_data.get('exitIcon', {})
-    width, height = icon.get('width'), icon.get('height')
-    if (type(width) is not int or type(height) is not int or not 1 <= width <= 256
-            or not 1 <= height <= 256 or not isinstance(icon.get('pixels'), str)
-            or len(icon['pixels']) > 4 * math.ceil(width * height / 3)
-            or len(base64.b64decode(icon['pixels'], validate=True)) != width * height):
-        _reject('exit-template-invalid')
+    if not proposal_only:
+        doors = reader.json(entries['side-door-anchors.json'])
+        door_rows = _rows(doors.get('entries'), {(mid, '2') for mid in ids}, 'side-door')
+        for key, row in door_rows.items():
+            _points([row.get('boundaryCenter')], 1, *_canvas(canvases[key]), exact=1)
+        _search_declarations(reader(view.path(entries['side-entry-search.npz'])), local_rows, typed)
+        exit_data = reader.json(paths['exitIcon'])
+        if exit_data.get('role') != 'exit-template-only' or exit_data.get('sideDoors') != []:
+            raise NativeBaseUnavailable('native-base-exit-contract-unsupported')
+        icon = exit_data.get('exitIcon', {})
+        width, height = icon.get('width'), icon.get('height')
+        if (type(width) is not int or type(height) is not int or not 1 <= width <= 256
+                or not 1 <= height <= 256 or not isinstance(icon.get('pixels'), str)
+                or len(icon['pixels']) > 4 * math.ceil(width * height / 3)
+                or len(base64.b64decode(icon['pixels'], validate=True)) != width * height):
+            _reject('exit-template-invalid')
     pack = NativeDifficultPack(view.root, paths['identityPack'], expected_mode=mode,
                                expected_season=season, read_resource=reader)
     resources = SharedStructureResourceStore(view.path(paths['typedIndex']), view.root, read_resource=reader)
@@ -438,17 +470,22 @@ def _decode(view, season, mode):
         if matrix is None or not np.array_equal(matrix, np.eye(3)):
             _reject('shared-canvas-adapter-invalid')
     entry_root = view.root / directory
-    main = MapEntryGeometryIdentity(entry_root, structure_store=resources, profile_id=PROFILE,
+    main = MapEntryGeometryIdentity(entry_root, structure_store=resources, profile_id=profile,
         profile_for_map=pack.identity_profiles.__getitem__, read_resource=reader)
-    local = MapLocalEntryIdentity(entry_root, mode=mode, profile_id=PROFILE, floors=pack.floors,
-        exit_icon_path=view.path(paths['exitIcon']), structure_store=resources,
+    local = MapLocalEntryIdentity(entry_root, mode=mode, profile_id=profile, floors=pack.floors,
+        exit_icon_path=None if proposal_only else view.path(paths['exitIcon']), structure_store=resources,
         profile_for_map=pack.identity_profiles.__getitem__, read_resource=reader,
         typed_index_path=view.path(paths['typedIndex']))
-    if any(error is not None for error in
-           (main.error, local.side_door_error, local.side_search_error, local.passport_error)):
+    if any(error is not None for error in (main.error, local.passport_error)):
+        _reject('entry-loader-invalid')
+    if proposal_only:
+        if (local.side_doors or local.side_search or local.side_door_error != 'not-nightmare'
+                or local.side_search_error != 'side-door-source-unavailable'):
+            _reject('proposal-side-evidence-invalid')
+    elif any(error is not None for error in (local.side_door_error, local.side_search_error)):
         _reject('entry-loader-invalid')
     for item, points, rays, pairs in local.entries:
-        if str(item['floor']) != '2':
+        if proposal_only or str(item['floor']) != '2':
             continue
         arrays = local.side_search[item['mapId'], item['floor']]
         if any(not np.isfinite(value).all() for value in arrays.values()):
@@ -488,13 +525,14 @@ def _decode(view, season, mode):
         versions=MappingProxyType(versions), interfaces=MappingProxyType(dict(interfaces)), reader=reader,
         season=season, mode=mode, component_ref=view.component_ref,
         entry_identity=main, side_entry_identity=local,
-        exit_recognizer=SideDoorRecognizer(view.path(paths['exitIcon']), read_resource=reader), gaps=tuple(gaps))
+        exit_recognizer=None if proposal_only else SideDoorRecognizer(view.path(paths['exitIcon']), read_resource=reader),
+        gaps=tuple(gaps))
     result.assert_current()
     return result
 
 
 def decode_native_base(view, *, season='s0', mode='nightmare'):
-    """Decode a declared S0N base without authorizing activation or identity."""
+    """Decode supported base data without authorizing activation or identity."""
     try:
         return _decode(view, season, mode)
     except (files.ImportRejected, NativeBaseUnavailable):

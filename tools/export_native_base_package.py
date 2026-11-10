@@ -1,8 +1,9 @@
-"""Export an explicit S0 nightmare source into an inert native base ZIP.
+"""Export a declared S0 nightmare or S1 difficult source into an inert native base ZIP.
 
-The retained structure/entry products are copied byte for byte. Only the
-identity DTO, reference-only coordinate view and exit-template declaration are
-adapted. This producer neither activates a catalog nor grants runtime ability.
+S0 keeps its existing byte-preserving structure/entry flow. S1D copies the
+registered map, typed, neutral and proposal products as declared, enriching
+only version/coordinate references and controls metadata. This producer does
+not activate a catalog or grant proposal pose/identity authority.
 """
 from __future__ import annotations
 
@@ -47,6 +48,21 @@ INTERFACES = dict(identityPack=PACK, typedIndex=INDEX, coordinatePack=COORDINATE
 _SOURCE_FILES = (PACK, INDEX, VERSIONS, COORDINATES, NEUTRAL, EXIT,
                  *(ENTRIES + '/' + name for name in ('entries.json', 'side-entries.json',
                    'entry-passports.json', 'side-door-anchors.json', 'side-entry-search.npz')))
+
+S1_PREFIX = 'seasons/s1/difficult'
+S1_MANIFEST = S1_PREFIX + '/native-map-manifest.json'
+S1_PACK = 'references/map-pack.json'
+S1_INDEX = 'references/shared-structure-index.json'
+S1_COORDINATES = 'references/coordinate-pack.json'
+S1_NEUTRAL = 'references/structure-display.json'
+S1_ENTRIES = 'references/entries'
+S1_ENTRY_FILES = ('entries.json', 'side-entries.json', 'entry-passports.json')
+S1_FLOORS = ('-1', '-2', '-3', '-4')
+S1_PROFILE = 'shared-structure'
+S1_INTERFACES = dict(identityPack=S1_PACK, typedIndex=S1_INDEX,
+    coordinatePack=S1_COORDINATES, neutralDisplay=S1_NEUTRAL,
+    identityEntries=S1_ENTRIES, identityProfile=S1_PROFILE,
+    entryEvidenceRole='proposal-only')
 
 
 def _reject(reason):
@@ -235,8 +251,290 @@ def _base_payloads(source):
     return payloads, len(ids)
 
 
-def _round_trip(path, destination):
+def _s1_local(value, label):
+    if (not isinstance(value, str) or not value or value.startswith('/')
+            or '\\' in value or ':' in value or value != posixpath.normpath(value)
+            or '..' in value.split('/') or value == '.'):
+        _reject('s1-' + label + '-path')
+    return _relative(value)
+
+
+def _s1_read(source, relative, label):
+    return source.read(S1_PREFIX + '/' + _s1_local(relative, label))
+
+
+def _s1_entry_resource(relative):
+    if (not isinstance(relative, str) or not relative or relative.startswith('/')
+            or '\\' in relative or ':' in relative):
+        _reject('s1-entry-resource-path')
+    resolved = posixpath.normpath(S1_ENTRIES + '/' + relative)
+    if resolved == '..' or resolved.startswith('../'):
+        _reject('s1-entry-resource-path')
+    return _relative(resolved)
+
+
+def _s1_source_manifest(source):
+    manifest = source.json(S1_MANIFEST)
+    from s1_native_resources import SOURCE_VERSION
+    required_interfaces = {'identityPack', 'typedIndex', 'versionBindings', 'coordinatePack',
+                           'neutralDisplay', 'identityEntries', 'authorCatalog'}
+    if ((manifest.get('schemaVersion'), manifest.get('season'), manifest.get('mode'),
+         manifest.get('sourceVersion')) != (1, 's1', 'difficult', SOURCE_VERSION)):
+        _reject('s1-source-manifest-context')
+    interfaces = manifest.get('runtimeInterfaces')
+    if not isinstance(interfaces, dict) or not required_interfaces <= set(interfaces):
+        _reject('s1-source-manifest-interfaces')
+    paths = {key: _s1_local(interfaces[key], 'interface-' + key) for key in required_interfaces}
+    capabilities = manifest.get('capabilities')
+    if not isinstance(capabilities, dict) or capabilities.get('sideEntries') is not False:
+        _reject('s1-side-entry-capability-unsupported')
+    declared = manifest.get('files')
+    if not isinstance(declared, list) or not declared:
+        _reject('s1-source-file-inventory-missing')
+    by_path = {}
+    for row in declared:
+        if not isinstance(row, dict):
+            _reject('s1-source-file-inventory-invalid')
+        relative = _s1_local(row.get('path'), 'source-inventory')
+        size, digest = row.get('bytes'), row.get('sha256')
+        if (type(size) is not int or size < 0 or not isinstance(digest, str)
+                or len(digest) != 64 or any(ch not in '0123456789abcdef' for ch in digest)):
+            _reject('s1-source-file-inventory-invalid')
+        if relative.casefold() in by_path:
+            _reject('s1-source-file-inventory-duplicate')
+        by_path[relative.casefold()] = (relative, size, digest)
+    return paths, by_path
+
+
+def _s1_checked_read(source, relative, manifest_files, label):
+    local = _s1_local(relative, label)
+    try:
+        raw = _s1_read(source, local, label)
+    except OSError:
+        _reject('s1-required-source-unavailable:' + local)
+    stamp = manifest_files.get(local.casefold())
+    if stamp is None or stamp[0] != local or stamp[1] != len(raw) or stamp[2] != hashlib.sha256(raw).hexdigest():
+        _reject('s1-manifest-file-mismatch:' + local)
+    return raw
+
+
+def _s1_version_payload(source, relative, expected, typed, pack_path, coordinate_path, neutral_path,
+                        manifest_files):
+    raw = decode_resource_json(_s1_checked_read(source, relative, manifest_files, 'version-bindings'))
+    if (raw.get('schemaVersion'), raw.get('resourceKind')) != (1, 'native-structure-version-bindings'):
+        _reject('s1-version-bindings-contract')
+    rows = _rows(raw.get('entries'), expected, 's1-version')
+    for key, row in rows.items():
+        for field, wanted in (('packReference', pack_path), ('adapterReference', coordinate_path)):
+            if field in row and row[field] != wanted:
+                _reject('s1-version-reference-conflict')
+            row[field] = wanted
+        neutral = row.get('neutralDisplay')
+        if neutral is None:
+            neutral = {}
+        if not isinstance(neutral, dict) or ('index' in neutral and neutral['index'] != neutral_path):
+            _reject('s1-version-neutral-reference-conflict')
+        neutral['index'] = neutral_path
+        row['neutralDisplay'] = neutral
+        if row.get('typedReference') != typed[key]['resourcePath']:
+            _reject('s1-version-typed-reference')
+        lookup = row.get('sharedLookup')
+        if not isinstance(lookup, dict) or lookup.get('resourcePath') != typed[key]['resourcePath']:
+            _reject('s1-version-shared-lookup')
+    return _encoded(raw)
+
+
+def _s1_coordinate_payload(source, relative, expected, typed, index_path, manifest_files):
+    coordinates = decode_resource_json(_s1_checked_read(source, relative, manifest_files, 'coordinate-pack'))
+    from nightmare_author_coordinate_adapter import CANONICAL_SCHEMA
+    if (coordinates.get('schema') != CANONICAL_SCHEMA
+            or coordinates.get('coordinateReferenceProfileId') != S1_PROFILE
+            or set(coordinates.get('maps', {})) != {mid for mid, _ in expected}
+            or set(coordinates.get('profiles', {})) != {S1_PROFILE}):
+        _reject('s1-coordinate-inventory')
+    lookup = [{key: row[key] for key in ('profile', 'mapId', 'floor', 'variant')}
+              for _, row in sorted(typed.items())]
+    provider = dict(indexPath=index_path, resourceRoot='.', lookupBindings=lookup)
+    if 'referenceProvider' in coordinates and coordinates['referenceProvider'] != provider:
+        _reject('s1-coordinate-reference-provider-conflict')
+    coordinates['referenceProvider'] = provider
+    # Keep every shared identity matrix, including the canonical-to-legacy
+    # recognition projection, unchanged as source identity evidence.
+    shared = coordinates['profiles'][S1_PROFILE].get('maps', {})
+    if set(shared) != {mid for mid, _ in expected}:
+        _reject('s1-shared-coordinate-inventory')
+    for mid, floor in expected:
+        if (set(coordinates['maps'][mid].get('floors', {})) != set(S1_FLOORS)
+                or set(shared[mid].get('floors', {})) != set(S1_FLOORS)
+                or coordinates['maps'][mid]['floors'][floor].get('referenceResource') != typed[mid, floor]['resourcePath']):
+            _reject('s1-coordinate-floor-incomplete')
+    return _encoded(coordinates)
+
+
+def _s1_base_payloads(source):
+    interfaces, manifest_files = _s1_source_manifest(source)
+    from s1_native_resources import MODE_LAYOUTS, SOURCE_VERSION
+    ids_expected = set(MODE_LAYOUTS['difficult'])
+    if len(ids_expected) != 14:
+        _reject('s1-registered-map-pool-invalid')
+    pack_source_path = interfaces['identityPack']
+    index_source_path = interfaces['typedIndex']
+    coordinate_source_path = interfaces['coordinatePack']
+    neutral_source_path = interfaces['neutralDisplay']
+    entries_source_path = interfaces['identityEntries']
+    version_source_path = interfaces['versionBindings']
+    pack_raw = _s1_checked_read(source, pack_source_path, manifest_files, 'identity-pack')
+    index_raw = _s1_checked_read(source, index_source_path, manifest_files, 'typed-index')
+    neutral_raw = _s1_checked_read(source, neutral_source_path, manifest_files, 'neutral-display')
+    pack = decode_resource_json(pack_raw)
+    if ((pack.get('schemaVersion'), pack.get('season'), pack.get('mode'), pack.get('floors'),
+         pack.get('defaultEntryFloor')) != (1, 's1', 'difficult', list(S1_FLOORS), -1)
+            or not isinstance(pack.get('maps'), list) or len(pack['maps']) != len(ids_expected)):
+        _reject('s1-identity-pack-contract')
+    ids = {row.get('id') for row in pack['maps'] if isinstance(row, dict)}
+    if ids != ids_expected or len(ids) != len(pack['maps']):
+        _reject('s1-map-inventory')
+    expected = {(mid, floor) for mid in ids for floor in S1_FLOORS}
+    index = decode_resource_json(index_raw)
+    if ((index.get('schemaVersion'), index.get('resourceKind'), index.get('structureVersionBindings'))
+            != (1, 'shared-structure', version_source_path)):
+        _reject('s1-typed-index-contract')
+    typed = _rows(index.get('entries'), expected, 's1-typed')
+    seen_paths = set()
+    for key, row in typed.items():
+        path = _s1_local(row.get('resourcePath'), 'typed-resource')
+        if (row.get('profile') != S1_PROFILE or row.get('variant', 'variant-01') != 'variant-01'
+                or not path.endswith('.npz') or path.casefold() in seen_paths):
+            _reject('s1-typed-resource-binding')
+        seen_paths.add(path.casefold())
+        _s1_checked_read(source, path, manifest_files, 'typed-product')
+    for row in pack['maps']:
+        mid = row['id']
+        if (row.get('sourceLayout') != mid or row.get('sourceVersion') != SOURCE_VERSION
+                or row.get('identityProfileId') != S1_PROFILE
+                or set(row.get('layers', {})) != set(S1_FLOORS)):
+            _reject('s1-map-layer-or-profile-incomplete:' + mid)
+        for floor in S1_FLOORS:
+            path = _s1_local(row['layers'][floor], 'map-layer')
+            if path != typed[mid, floor]['resourcePath']:
+                _reject('s1-map-typed-reference-mismatch')
+    versions = _s1_version_payload(source, version_source_path, expected, typed,
+                                   S1_PACK, S1_COORDINATES, S1_NEUTRAL, manifest_files)
+    neutral = decode_resource_json(neutral_raw)
+    if ((neutral.get('schemaVersion'), neutral.get('resourceKind'), neutral.get('indexPath'))
+            != (1, 'typed-shared-structure-display', index_source_path)):
+        _reject('s1-neutral-index-binding')
+    neutral_rows = _rows(neutral.get('entries'), expected, 's1-neutral')
+    for key, row in neutral_rows.items():
+        if row.get('referenceResource') != typed[key]['resourcePath']:
+            _reject('s1-neutral-typed-binding')
+    coordinate_raw = _s1_coordinate_payload(source, coordinate_source_path, expected, typed,
+                                              S1_INDEX, manifest_files)
+    entry_raw = {}
+    for name in S1_ENTRY_FILES:
+        relative = entries_source_path + '/' + name
+        entry_raw[name] = _s1_checked_read(source, relative, manifest_files, 'entry-' + name)
+    main = decode_resource_json(entry_raw['entries.json'])
+    local = decode_resource_json(entry_raw['side-entries.json'])
+    passports = decode_resource_json(entry_raw['entry-passports.json'])
+    if ((main.get('schemaVersion'), main.get('season'), main.get('mode'), main.get('profileId'))
+            not in ((1, 's1', 'difficult', S1_PROFILE), (1, None, 'difficult', S1_PROFILE))):
+        _reject('s1-main-entry-contract')
+    if ((local.get('schemaVersion'), local.get('season'), local.get('mode'), local.get('profileId'))
+            not in ((1, 's1', 'difficult', S1_PROFILE), (1, None, 'difficult', S1_PROFILE))):
+        _reject('s1-local-entry-contract')
+    main_rows = _rows(main.get('entries'), {(mid, '-1') for mid in ids}, 's1-main-entry')
+    local_rows = _rows(local.get('entries'), expected, 's1-local-entry')
+    for rows, role in ((main_rows, 'main'), (local_rows, 'local')):
+        for key, row in rows.items():
+            if (row.get('profileId') != S1_PROFILE or row.get('variantId', 'variant-01') != 'variant-01'
+                    or row.get('knownWallSupportUnavailable') is not True
+                    or row.get('gates') != []
+                    or _s1_entry_resource(row.get('structureResource')) != typed[key]['resourcePath']
+                    or row.get('sourceProduct') != Path(typed[key]['resourcePath']).name):
+                _reject('s1-' + role + '-entry-typed-binding')
+            if role == 'main' and (row.get('kind') != 'main' or row.get('proposalOnly') is not True
+                    or row.get('authorizesPose') is not False or row.get('authorizesIdentity') is not False):
+                _reject('s1-main-entry-authority')
+            if role == 'local' and (row.get('featureRole') != 'local-contour-proposals-not-semantic-side-exits'
+                    or row.get('sourceKind') != 'game-rendered-shared-structure'
+                    or row.get('extractorEnvironment', {}).get('opencv') != __import__('cv2').__version__):
+                _reject('s1-local-entry-role-or-extractor')
+    if ((passports.get('schemaVersion'), passports.get('mode'), passports.get('profileId'))
+            != (1, 'difficult', S1_PROFILE) or passports.get('entries') != []
+            or passports.get('coverage') != []):
+        _reject('s1-passports-must-remain-unavailable')
+    for name, row in neutral_rows.items():
+        if not isinstance(row.get('canvas'), dict):
+            _reject('s1-neutral-canvas-missing')
+    payloads = {S1_PACK: pack_raw, S1_INDEX: index_raw, S1_NEUTRAL: neutral_raw,
+                S1_COORDINATES: coordinate_raw, version_source_path: versions}
+    for name, raw in entry_raw.items():
+        payloads[S1_ENTRIES + '/' + name] = raw
+    for path in seen_paths:
+        # Resolve case-insensitively back to the canonical source path already validated above.
+        original = next(row['resourcePath'] for row in typed.values()
+                        if row['resourcePath'].casefold() == path)
+        payloads[original] = _s1_checked_read(source, original, manifest_files, 'typed-product')
+    payloads['resource-context.json'] = _encoded(dict(schema='xingtu-native-recognition-base-v1',
+        season='s1', mode='difficult', runtimeInterfaces=S1_INTERFACES))
+    return payloads, len(ids)
+
+
+def _s1_controls_payloads():
+    from floor_contract import floor_contract
+    from imported_s1_controls_profile import DETECTOR_ID, SCHEMA
+    from s1_floor_observation import EXPANDED_SEARCH_BOUNDS, ORDER, SEARCH_BOUNDS
+    from s1_map_ui_geometry import MIN_CORRELATION, SEARCH, SIZES
+
+    def xyxy_to_xywh(region):
+        x0, y0, x1, y1 = region
+        return [x0, y0, x1 - x0, y1 - y0]
+
+    contract = floor_contract('difficult', season='s1')
+    if contract is None or tuple(contract.observed_values) != tuple(ORDER):
+        _reject('s1-control-floor-contract')
+    profile = dict(schema=SCHEMA, detectorId=DETECTOR_ID,
+        contexts={'s1:difficult': dict(
+            floors=[dict(observedValue=f.observed_value, floorId=f.floor_id) for f in contract.floors],
+            visualOrder=list(ORDER))},
+        fixedSearchRegion=xyxy_to_xywh(SEARCH_BOUNDS),
+        expandedSearchRegion=xyxy_to_xywh(EXPANDED_SEARCH_BOUNDS),
+        mapUi=dict(searchRegions={key: xyxy_to_xywh(value) for key, value in SEARCH.items()},
+                   sizes=list(SIZES), minimumCorrelation=dict(MIN_CORRELATION)))
+    return {'profile.json': _encoded(profile)}
+
+
+def _round_trip_s1(path, destination):
+    """Exercise the S1 difficult decoder and its imported controls view."""
+    from imported_native_base import decode_native_base
+    from imported_s1_controls_profile import S1ControlsProfile
+    inspected = archives.inspect_archive(path)
+    saved = archives.save_archive(path, destination,
+                                  expected_archive_sha256=inspected.archive_sha256)
+    refs = {ref.component_id: ref for ref in saved.component_refs}
+    base = PackageView(destination, refs['base'])
+    bundle = decode_native_base(base, season='s1', mode='difficult')
+    controls_view = PackageView(destination, refs['controls'])
+    controls = S1ControlsProfile(controls_view)
+    context = controls.for_context('s1', 'difficult')
+    if (context is None or set(context.contract.floor_ids) != set(bundle.pack.floors)
+            or {(key[1], key[3]) for key in bundle.resources.entries}
+            != {(row.id, floor) for row in bundle.pack.maps for floor in bundle.pack.floors}):
+        _reject('roundtrip-s1-controls-or-typed-inventory')
+    bundle.assert_current()
+    return dict(mapCount=len(bundle.pack.maps), typedLayerCount=len(bundle.resources.entries),
+        mainEntries=len(bundle.entry_identity.entries), localEntries=len(bundle.side_entry_identity.entries),
+        controlsDetector=controls.detector_id, controlsFloors=list(context.contract.floor_ids),
+        proposalOnly=True)
+
+
+def _round_trip(path, destination, *, season='s0', mode='nightmare'):
     """Exercise the real container, installed views and current data consumers."""
+    if (season, mode) == ('s1', 'difficult'):
+        return _round_trip_s1(path, destination)
+    if (season, mode) != ('s0', 'nightmare'):
+        _reject('context-unsupported')
     from difficult_entry_identity import MapEntryGeometryIdentity
     from difficult_native_identity import NativeDifficultPack
     from difficult_side_entry_identity import MapLocalEntryIdentity
@@ -254,7 +552,7 @@ def _round_trip(path, destination):
     pack = NativeDifficultPack(base.root, PACK, expected_mode='nightmare', expected_season='s0',
                                read_resource=reader)
     resources = SharedStructureResourceStore(base.path(INDEX), base.root, read_resource=reader)
-    if resources.error:
+    if resources.error is not None:
         _reject('roundtrip-typed-index:' + resources.error)
     adapters = AuthorCoordinateAdapters(base.path(COORDINATES), read_resource=reader)
     entry_root = base.root / ENTRIES
@@ -265,7 +563,7 @@ def _round_trip(path, destination):
         profile_for_map=pack.identity_profiles.__getitem__, read_resource=reader,
         typed_index_path=base.path(INDEX))
     errors = [main.error, local.side_door_error, local.side_search_error, local.passport_error]
-    if any(errors):
+    if any(error is not None for error in errors):
         _reject('roundtrip-entry:' + ';'.join(str(error) for error in errors if error))
     SideDoorRecognizer(base.path(EXIT), read_resource=reader)
     versions = load_shared_version_context(base.root, pack, resources, adapters, None, local.entries,
@@ -329,7 +627,8 @@ def _publish_output(staged, output, digest):
         raise
 
 
-def export_package(source_root, output, *, package_id, resource_version, source_inventory=None):
+def export_package(source_root, output, *, package_id, resource_version, source_inventory=None,
+                   season='s0', mode='nightmare'):
     """Validate and exclusively create the requested ZIP; never alter source."""
     output = Path(output).absolute()
     files._no_links(output)
@@ -338,12 +637,18 @@ def export_package(source_root, output, *, package_id, resource_version, source_
     source = _Source(source_root, source_inventory)
     if output.resolve().is_relative_to(source.root.resolve()):
         _reject('output-inside-source')
+    if (season, mode) not in (('s0', 'nightmare'), ('s1', 'difficult')):
+        _reject('context-unsupported')
     # Reuse the installed protocol's identity validation, not a new ID policy.
     ComponentRef(package_id, resource_version, 'base', '0' * 64)
-    base, map_count = _base_payloads(source)
-    controls = _controls_payloads()
+    if (season, mode) == ('s0', 'nightmare'):
+        base, map_count = _base_payloads(source)
+        controls = _controls_payloads()
+    else:
+        base, map_count = _s1_base_payloads(source)
+        controls = _s1_controls_payloads()
     payloads = {'base': base, 'controls': controls}
-    context = [dict(season='s0', mode='nightmare')]
+    context = [dict(season=season, mode=mode)]
     manifest = dict(schema='xingtu-resource-package', formatVersion=1,
         packageId=package_id, resourceVersion=resource_version,
         clientCompatibility=dict(resourceProtocol=1, requiredCapabilities=[]),
@@ -364,16 +669,21 @@ def export_package(source_root, output, *, package_id, resource_version, source_
             for component, members in payloads.items():
                 for path, raw in sorted(members.items()):
                     archive.writestr(f'data/{component}/{path}', raw)
-        checked = _round_trip(staged, Path(temporary) / 'roundtrip-resources')
+        checked = _round_trip(staged, Path(temporary) / 'roundtrip-resources',
+                              season=season, mode=mode)
         if checked['mapCount'] != map_count:
             _reject('roundtrip-map-inventory')
         with staged.open('rb') as handle:
             digest = hashlib.file_digest(handle, 'sha256').hexdigest()
         _publish_output(staged, output, digest)
-        return dict(output=str(output), bytes=output.stat().st_size, sha256=digest,
+        result = dict(output=str(output), bytes=output.stat().st_size, sha256=digest,
             packageId=package_id, resourceVersion=resource_version,
             sourceFiles=len(source.raw), sourceInventoryChecked=source.inventory is not None,
             files=len(manifest['files']), catalogActivated=False, **checked)
+        if season == 's1':
+            result.update(season=season, mode=mode,
+                          sourceInventoryFiles=len(source.inventory) if source.inventory is not None else None)
+        return result
 
 
 def main():
@@ -383,9 +693,12 @@ def main():
     parser.add_argument('--package-id', default='s0-nightmare-native')
     parser.add_argument('--resource-version', required=True)
     parser.add_argument('--source-inventory', type=Path)
+    parser.add_argument('--season', choices=('s0', 's1'), default='s0')
+    parser.add_argument('--mode', choices=('nightmare', 'difficult'), default='nightmare')
     args = parser.parse_args()
     print(json.dumps(export_package(args.source_root, args.output, package_id=args.package_id,
-        resource_version=args.resource_version, source_inventory=args.source_inventory),
+        resource_version=args.resource_version, source_inventory=args.source_inventory,
+        season=args.season, mode=args.mode),
         ensure_ascii=False, sort_keys=True))
 
 

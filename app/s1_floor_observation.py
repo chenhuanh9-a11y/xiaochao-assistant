@@ -22,6 +22,7 @@ from s1_map_ui_geometry import observe_s1_map_ui_geometry
 CAPABILITY = "s1-floor-only-manual-map-use"
 ORDER = (-1, -2, -3, -4)
 SEARCH_BOUNDS = (.80, .12, .92, .56)
+EXPANDED_SEARCH_BOUNDS = (.55, .04, .985, .93)
 SOURCE_REPLAY_FLOORS = (-1, -2, -3, -4)
 
 
@@ -102,7 +103,39 @@ def _fill(gray, label, width):
 
 
 def detect_s1_floor(frame, *, season, mode, frame_id=None, expected_frame_id=None,
-                    frame_current=True):
+                    frame_current=True, controls=None):
+    """Observe with trusted defaults or one current, validated S1 profile.
+
+    An external profile supplies the whole parameter set. Unsupported contexts
+    and expired views raise instead of falling back to the built-in detector.
+    """
+    kwargs = dict(season=season, mode=mode, frame_id=frame_id,
+                  expected_frame_id=expected_frame_id, frame_current=frame_current)
+    if controls is None:
+        return _detect_s1_floor(frame, **kwargs)
+    from imported_s1_controls_profile import S1ControlsProfile
+    if not isinstance(controls, S1ControlsProfile):
+        raise ValueError('s1-controls-profile-required')
+    context = controls.for_context(season, mode)
+    if context is None:
+        raise ValueError('s1-controls-context-unsupported')
+    def bounds(region):
+        x, y, width, height = region
+        return x, y, x + width, y + height
+    result = _detect_s1_floor(frame, **kwargs, floor_context=context,
+        fixed_search_bounds=bounds(controls.fixed_search_region),
+        expanded_search_bounds=bounds(controls.expanded_search_region), map_ui=controls.map_ui)
+    controls.assert_current()
+    # The external parameter path has not had source-image replay, including
+    # profiles numerically equal to the defaults. Payload declarations cannot
+    # inherit the trusted default observer's static evidence qualification.
+    return dict(result, automaticFloorEligible=False, observedFloorValidated=False,
+                validationScope="external-controls-unreviewed")
+
+
+def _detect_s1_floor(frame, *, season, mode, frame_id=None, expected_frame_id=None,
+                     frame_current=True, floor_context=None, fixed_search_bounds=None,
+                     expanded_search_bounds=None, map_ui=None):
     """Return current pixel evidence, failing closed on any incomplete column.
 
     Optional IDs reject a known stale frame. Omitting them permits pure image
@@ -112,7 +145,7 @@ def detect_s1_floor(frame, *, season, mode, frame_id=None, expected_frame_id=Non
     out = _result(season, mode, "s1-floor-context-unsupported")
     if not isinstance(season, str) or not isinstance(mode, str):
         return out
-    contract = floor_contract(mode, season=season)
+    contract = floor_contract(mode, season=season) if floor_context is None else floor_context.contract
     if season != "s1" or contract is None or contract.observed_values != ORDER:
         return out
     if frame_current is not True:
@@ -130,6 +163,12 @@ def detect_s1_floor(frame, *, season, mode, frame_id=None, expected_frame_id=Non
     height, width = frame.shape[:2]
     if width < 1000 or height < 600:
         return dict(out, reason="s1-floor-frame-size")
+    order = ORDER if floor_context is None else floor_context.visual_order
+    external_parameters = floor_context is not None
+    column_parameters = dict(search_bounds=fixed_search_bounds,
+                             expanded_search_bounds=expanded_search_bounds, order=order)
+    map_parameters = dict(search_bounds=fixed_search_bounds, map_ui=map_ui,
+                          full_client_search=external_parameters)
     # Keep the S0 detector unchanged and prevent its implicit default floor read.
     # A raw S1 column is measured separately, before any map-open conclusion.
     map_observation = detect_map_interface(frame, floor_read={})
@@ -139,15 +178,16 @@ def detect_s1_floor(frame, *, season, mode, frame_id=None, expected_frame_id=Non
     if out["mapOpen"] is not True:
         # Preserve the cheap closed-frame exit. This is only a precheck; a
         # discovered column is masked and corroborated again below.
-        independent = _s1_independent_map_evidence(frame, map_observation)
+        independent = _s1_independent_map_evidence(frame, map_observation, **map_parameters)
         if independent is None:
             return dict(out, reason="s1-floor-map-not-open")
-    column = _observe_signed_column(frame, width, height)
+    column = _observe_signed_column(frame, width, height, **column_parameters)
     localized = column.get("localization") == "signed-column-position-scale"
-    if out["mapOpen"] is not True or localized:
+    if out["mapOpen"] is not True or localized or external_parameters:
         independent = _s1_independent_map_evidence(frame, map_observation,
             floor_bounds=column.get("controlBounds"),
-            floor_scale=column.get("controlLocalScale") if localized else None)
+            floor_scale=(column.get("controlLocalScale") if localized else
+                         width if external_parameters else None), **map_parameters)
         if independent is None:
             return dict(out, reason="s1-floor-localization-ui-unverified" if localized
                         and out["mapOpen"] is True else "s1-floor-map-not-open")
@@ -171,7 +211,8 @@ def detect_s1_floor(frame, *, season, mode, frame_id=None, expected_frame_id=Non
                 floorSource="s1-signed-pixel-column")
 
 
-def _s1_independent_map_evidence(frame, observation, *, floor_bounds=None, floor_scale=None):
+def _s1_independent_map_evidence(frame, observation, *, floor_bounds=None, floor_scale=None,
+                                 search_bounds=None, map_ui=None, full_client_search=False):
     """Additional map evidence only, excluding the signed column's ROI.
 
     Large revealed S1 structures can violate the old whole-canvas texture
@@ -202,13 +243,25 @@ def _s1_independent_map_evidence(frame, observation, *, floor_bounds=None, floor
     # Keep the original anchor denominator and thresholds (zero is not neutral).
     height, width = frame.shape[:2]
     viewport = centered_safe_viewport((width, height))
-    x0, y0, x1, y1 = (round(viewport.left + viewport.width * SEARCH_BOUNDS[0]),
-                      round(viewport.top + viewport.height * SEARCH_BOUNDS[1]),
-                      round(viewport.left + viewport.width * SEARCH_BOUNDS[2]),
-                      round(viewport.top + viewport.height * SEARCH_BOUNDS[3]))
+    bounds = SEARCH_BOUNDS if search_bounds is None else search_bounds
+    if full_client_search:
+        # External signed-column ROIs use full-client pixels. Mask exactly
+        # those pixels, including preprocessing, rather than a viewport-shifted
+        # approximation. Independent shape searches retain their HUD viewport.
+        x0, y0, x1, y1 = (round(width * bounds[0]), round(height * bounds[1]),
+                          round(width * bounds[2]), round(height * bounds[3]))
+        floor_search_right = (width * bounds[2] - viewport.left) / viewport.width
+    else:
+        x0, y0, x1, y1 = (round(viewport.left + viewport.width * bounds[0]),
+                          round(viewport.top + viewport.height * bounds[1]),
+                          round(viewport.left + viewport.width * bounds[2]),
+                          round(viewport.top + viewport.height * bounds[3]))
+        floor_search_right = bounds[2]
     anchor_frame = frame.copy()
     anchor_frame[y0:y1, x0:x1] = 0
-    geometry_frame = frame
+    geometry_frame = frame.copy() if full_client_search else frame
+    if full_client_search:
+        geometry_frame[y0:y1, x0:x1] = 0
     if floor_bounds is not None:
         if (not isinstance(floor_bounds, (list, tuple)) or len(floor_bounds) != 4
                 or any(type(value) is not int for value in floor_bounds)):
@@ -217,11 +270,13 @@ def _s1_independent_map_evidence(frame, observation, *, floor_bounds=None, floor
         if not (0 <= fx0 < fx1 <= width and 0 <= fy0 < fy1 <= height):
             return None
         anchor_frame[fy0:fy1, fx0:fx1] = 0
-        geometry_frame = frame.copy()
+        if not full_client_search:
+            geometry_frame = frame.copy()
         geometry_frame[fy0:fy1, fx0:fx1] = 0
     ratios = {name: neutral_ratio(anchor_frame, MAP_REGIONS[name]) for name in independent}
     if all(ratios.get(name, 0.0) >= MAP_REGIONS[name][4] for name in independent):
-        geometry = observe_s1_map_ui_geometry(geometry_frame, floor_search_right=SEARCH_BOUNDS[2])
+        geometry = observe_s1_map_ui_geometry(geometry_frame, floor_search_right=floor_search_right,
+                                              parameters=map_ui)
         if geometry.get("verified") is True:
             if floor_scale is not None:
                 # New search-domain columns must sit beside the independent
@@ -238,17 +293,19 @@ def _s1_independent_map_evidence(frame, observation, *, floor_bounds=None, floor
     return None
 
 
-def _observe_signed_column(frame, width, height):
+def _observe_signed_column(frame, width, height, *, search_bounds=None,
+                             expanded_search_bounds=None, order=None):
     """Uninterpreted current pixel proof, without map-open or runtime authority."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    original = _signed_column_from_gray(gray, width, height)
+    original = _signed_column_from_gray(gray, width, height, search_bounds=search_bounds, order=order)
     # Keep every accepted original observation and never resolve two valid
     # columns by making one disappear during exposure normalization.
     if (original.get("selectedFloor") is not None
             or original["reason"] == "s1-floor-column-ambiguous"):
         return original
-    x0, y0, x1, y1 = (round(width * SEARCH_BOUNDS[0]), round(height * SEARCH_BOUNDS[1]),
-                      round(width * SEARCH_BOUNDS[2]), round(height * SEARCH_BOUNDS[3]))
+    bounds = SEARCH_BOUNDS if search_bounds is None else search_bounds
+    x0, y0, x1, y1 = (round(width * bounds[0]), round(height * bounds[1]),
+                      round(width * bounds[2]), round(height * bounds[3]))
     roi = gray[y0:y1, x0:x1]
     if not roi.size:
         return original
@@ -261,19 +318,20 @@ def _observe_signed_column(frame, width, height):
     reference = float(np.percentile(roi, 99.8))
     if 75 <= reference < 150:
         exposed = cv2.convertScaleAbs(gray, alpha=150 / reference)
-        result = _signed_column_from_gray(exposed, width, height)
+        result = _signed_column_from_gray(exposed, width, height, search_bounds=search_bounds, order=order)
         if result.get("selectedFloor") is not None or result["reason"] == "s1-floor-column-ambiguous":
             return result
-    localized = _joint_signed_column(gray, width, height)
+    localized = _joint_signed_column(gray, width, height, search_bounds=expanded_search_bounds, order=order)
     if localized is not None:
         return localized
     return original
 
 
-def _signed_column_from_gray(gray, width, height):
+def _signed_column_from_gray(gray, width, height, *, search_bounds=None, order=None):
     """One exposure must independently prove the entire signed column."""
-    x0, y0, x1, y1 = (round(width * SEARCH_BOUNDS[0]), round(height * SEARCH_BOUNDS[1]),
-                      round(width * SEARCH_BOUNDS[2]), round(height * SEARCH_BOUNDS[3]))
+    bounds = SEARCH_BOUNDS if search_bounds is None else search_bounds
+    x0, y0, x1, y1 = (round(width * bounds[0]), round(height * bounds[1]),
+                      round(width * bounds[2]), round(height * bounds[3]))
     roi = gray[y0:y1, x0:x1]
     if not roi.size:
         return dict(reason="s1-floor-empty-roi")
@@ -299,16 +357,17 @@ def _signed_column_from_gray(gray, width, height):
     if len(columns) != 1:
         return dict(reason="s1-floor-column-ambiguous" if columns else "s1-floor-column-unverified")
     rows, fills = columns[0]
-    return _column_evidence(rows, fills, width, height)
+    return _column_evidence(rows, fills, width, height, order=order)
 
 
-def _column_evidence(rows, fills, width, height):
-    selected = ORDER[next(i for i, value in enumerate(fills) if value >= .65)]
+def _column_evidence(rows, fills, width, height, *, order=None):
+    order = ORDER if order is None else order
+    selected = order[next(i for i, value in enumerate(fills) if value >= .65)]
     points = [[row["centerX"] / width, row["y"] / height] for row in rows]
     evidence = [dict(floor=floor, negative=True, digitAspect=row["glyphAspect"],
                      polarity=row["polarity"], highlightFill=fill,
                      signBounds=row["signBounds"], digitBounds=row["digitBounds"])
-                for floor, row, fill in zip(ORDER, rows, fills)]
+                for floor, row, fill in zip(order, rows, fills)]
     bounds = [max(0, round(min(row["centerX"] for row in rows) - .025 * width)),
               max(0, round(rows[0]["y"] - .025 * width)),
               min(width, round(max(row["centerX"] for row in rows) + .025 * width)),
@@ -317,7 +376,7 @@ def _column_evidence(rows, fills, width, height):
                 centerPoints=points, centers=points, labelEvidence=evidence, controlBounds=bounds)
 
 
-def _joint_signed_column(gray, width, height):
+def _joint_signed_column(gray, width, height, *, search_bounds=None, order=None):
     """Fallback position/scale hypotheses, each proving one whole column.
 
     The right-side domain is only a search prior. Local row pitch supplies the
@@ -326,7 +385,9 @@ def _joint_signed_column(gray, width, height):
     are rejected rather than ranked. No map-open or click authority is granted.
     """
     viewport = centered_safe_viewport((width, height))
-    x0, y0, x1, y1 = round(.55 * width), round(.04 * height), round(.985 * width), round(.93 * height)
+    bounds = EXPANDED_SEARCH_BOUNDS if search_bounds is None else search_bounds
+    x0, y0, x1, y1 = (round(width * bounds[0]), round(height * bounds[1]),
+                      round(width * bounds[2]), round(height * bounds[3]))
     reference_width = viewport.width
     scales = sorted({round(reference_width * factor) for factor in (.5, .65, .8, 1., 1.25, 1.6, 2.)})
     accepted = []
@@ -394,7 +455,7 @@ def _joint_signed_column(gray, width, height):
                 if (any(value is None or .20 < value < .65 for value in fills)
                         or sum(value >= .65 for value in fills if value is not None) != 1):
                     continue
-                result = _column_evidence(rows, fills, width, height)
+                result = _column_evidence(rows, fills, width, height, order=order)
                 result.update(localization="signed-column-position-scale", controlLocalScale=float(local_width),
                               controlBounds=[left, top, right, bottom],
                               controlSearchBounds=[x0, y0, x1, y1],

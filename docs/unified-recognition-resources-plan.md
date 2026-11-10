@@ -365,3 +365,12 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 - 两次语义校验调用同一个实际 engine 构造函数，每次语义校验结束即丢弃临时 engine；实际默认工厂从新目录重新构建。重复启用会重新校验内容，但保持 generation 和成功缓存，不重复发资源通知。本局或后台任务运行时不允许切换；取消、失败、残留 pending 恢复、退出排空及迟到 UI 回调沿既有状态负责人处理。失败后的清单读取可暴露恢复入口，提交后的清单失败不会把已经完成的切换说成失败。
 - 独立复核运行 helper 与 UI 共 15 项通过；主任务的 UI/旧资源管理/默认 main 入口共 16 项通过。真实 QML delegate 的 `clicked` 信号经过实际服务和目录事务，最终默认工厂可用；650×470、1000×720 离屏像素可读。输入材料为合成导出 ZIP，不证明物理鼠标或文件选择器实选。
 - 真实 4,347,661 字节 ZIP 也通过同一离屏组件按钮启用：26 图、78 typed 层、26 main/78 local entries，选用上下文为 `s0:nightmare`，生成 1620×1920 RGBA 结构底图，资源变更通知 1 次、错误 0 次、个人学习目录未创建。最终回执保存 5.700 秒、启用 34.429 秒、active 构造 24.971 秒；这是资源操作测量，不能作为识别、贴合或首个可见像素耗时。尚未验证完整 QtClient 的激活旅程、rank/fit、真实采集、Setup 或游戏；其余三组合与 display decoder 仍待实施。
+- Windows 路径修复 `0b7ae5f`、S0 噩梦工厂 `569edb8`、资源页 `97b65e9` 的五条远端工作流均已成功。另一次合成 S0 像素经实际 imported engine → LiveRuntime → capture/rank 的负向探针，实际 rank 调用一次，无唯一身份确认或异常；不把这一无关像素反例算作真实帧正向识别/贴合通过。
+
+### S1 困难基础数据与控件参数
+
+- 同一 native decoder 复用 typed/canvas/坐标/版本及有界入口校验，新增 S1 困难的精确 14 图、四层 `-1/-2/-3/-4`、shared profile 合同。14 条正门只提出候选、不授权身份或位姿，56 条局部轮廓不冒充语义侧门；不补造 anchors/search/exit。原 S0 噩梦的 F1 正门与侧门搜索语义保留。S1 若提供 canonical→legacy 矩阵只接受精确单位矩阵，不填造缺省 bridge。
+- exporter 扩展现有 `--season/--mode`，默认 S0 噩梦保持，新增 S1 困难，S1 噩梦仍明确不支持。实际 identity、typed NPZ、neutral 和三份 entry JSON 保留源字节，版本/坐标只补真实组件引用与 reference-only lookup；作者显示不进入基础包。S1 正门的 `game-entry-room-proposal` 来源与局部结构来源保留区别。源库存及现有无覆盖发布/失败恢复继续执行。
+- S1 controls 为同 ZIP 的独立组件，外置负四层合同、固定/扩大搜索域和 X、加减按钮及 rail 的实际形状参数。外置固定列也需独立 UI 与邻接证明，屏蔽按实际 full-client ROI；无效边界和空带返回未验证。程序默认 `controls=None` 保持原 S0/S1 行为及资格。所有外置 profile（含默认数值）当前只返回观察候选，`automaticFloorEligible=False`、`observedFloorValidated=False`、`validationScope=external-controls-unreviewed`；没有以包声明继承源码默认探测器的回放资格。
+- 新 decoder 7 项和原 S0 decoder/工厂 28 项通过；独立 decoder 复核 10 项及额外 4 个反例通过。producer 新 5 项与原 10 项通过，外置控件 14 项及受影响默认路径回归通过并独立复核。真实截图回放因 `S1_FLOOR_FIXTURE_ROOT` 缺失跳过；数学像素不代替真实源图、实机或游戏。
+- 真实 S1 困难测试 ZIP 为 1,156,554 字节，SHA256 `b8232ab84df718fbbee2070b40d9060d5f362b690397c4a0a5935af5722307f2`；65 个实际源文件与 855 项库存绑定。主任务实际 inspect→保存→decoder/controls 得到 14 图、56 typed 层、14 main/56 local entries；同包参数在合成像素上读出 `-1`，仍保持外置未复核资格。该次资源/合成观察往返 12.575 秒，未激活 catalog，不是 rank/fit 或可见像素耗时。默认 S1 工厂、LiveRuntime 接线、真实控制截图、GUI 和 Setup 尚未验证，不能称 S1 可用或 P2 完成。
