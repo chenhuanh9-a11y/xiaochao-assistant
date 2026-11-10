@@ -41,6 +41,8 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
     bundle = decode_native_base(base_view, season=season, mode=mode)
     if not bundle.ready:
         raise ImportedProviderUnavailable('native-base-incomplete', bundle.gaps)
+    if not bundle.rank_ready:
+        raise ImportedProviderUnavailable('native-base-rank-unavailable', ('native-base-rank-unavailable',))
     if controls_view.component['dependencies']:
         raise ImportedProviderUnavailable('controls-dependencies-unsupported', ('controls-dependencies-unsupported',))
     controls = S1ControlsProfile(controls_view) if season == 's1' else S0ControlsProfile(controls_view)

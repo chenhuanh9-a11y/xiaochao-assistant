@@ -22,7 +22,7 @@ class EntrySemanticCapabilityTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name).resolve()
 
-    def package(self, mode='difficult'):
+    def package(self, mode='difficult', *, include_passports=True):
         """Build a real PackageView inventory from the S1 source fixture."""
         source = S1NativeBaseSourceFixture(self.root / ('source-' + mode))
         package_root = self.root / ('resources-' + mode) / 'packages/s1-entry-fixture/v1'
@@ -33,6 +33,8 @@ class EntrySemanticCapabilityTests(unittest.TestCase):
             if not source_path.is_file():
                 continue
             relative = source_path.relative_to(source.prefixRoot).as_posix()
+            if not include_passports and relative == source.entries_path + '/entry-passports.json':
+                continue
             raw = source_path.read_bytes()
             # The nightmare subtest is a declaration-only seam fixture. Its
             # local contour/passport payload remains the actual nonempty S1
@@ -128,14 +130,18 @@ class EntrySemanticCapabilityTests(unittest.TestCase):
         engine = MapIdentityEngine(pack, identity_root=entry_root,
             identity_profile_id='shared-structure', identity_floors=source.floors,
             entry_structure_store=store, entry_read_resource=read_resource,
-            entry_typed_index_path=typed_index, entry_semantic_side_entries=False)
+            entry_typed_index_path=typed_index, entry_semantic_side_entries=False,
+            entry_passport_source_available=False)
         self.assertIsNone(engine.side_entry_error)
         self.assertFalse(engine.side_entry_identity.semantic_side_entries)
+        self.assertFalse(engine.side_entry_identity.passport_source_available)
+        self.assertEqual(engine.side_entry_identity.passport_error, 'entry-passports-source-unavailable')
         self.assertEqual(engine.side_entry_identity.entries[0][0]['featureRole'],
                          'local-contour-proposals-not-semantic-side-exits')
         self.assertEqual(engine.side_entry_identity._entry_observations(None), [])
         self.assertFalse(any(('side-door-anchors.json' in path or
                               'side-entry-search.npz' in path or
+                              path.endswith('entry-passports.json') or
                               'exit-icon' in path or 'exitIcon' in path)
                              for path in reads))
 
@@ -147,6 +153,35 @@ class EntrySemanticCapabilityTests(unittest.TestCase):
                     floors=('-1', '-2', '-3', '-4'), structure_store=store,
                     read_resource=read_resource, typed_index_path=typed_index,
                     semantic_side_entries=value)
+
+    def test_declared_missing_passport_source_keeps_gap_without_reading_an_empty_file(self):
+        source, view, reader, read_resource, reads, store, typed_index, entry_root = self.package(
+            include_passports=False)
+        local = MapLocalEntryIdentity(entry_root, mode='difficult', profile_id='shared-structure',
+            floors=source.floors, structure_store=store, read_resource=read_resource,
+            typed_index_path=typed_index, semantic_side_entries=False, passport_source_available=False)
+        self.assertEqual(len(local.entries), len(source.ids) * len(source.floors))
+        self.assertEqual(local.passport_error, 'entry-passports-source-unavailable')
+        self.assertEqual(local.passports, [])
+        self.assertEqual(local.entry_coverage, [])
+        self.assertFalse(any(path.endswith('entry-passports.json') for path in reads))
+        self.assertFalse((entry_root / 'entry-passports.json').exists())
+        # The old default still tries its actual declared path and reports
+        # unavailable data. No synthetic coverage or replacement file is made.
+        MapLocalEntryIdentity(entry_root, mode='difficult', profile_id='shared-structure',
+            floors=source.floors, structure_store=store, read_resource=read_resource,
+            typed_index_path=typed_index, semantic_side_entries=False)
+        self.assertTrue(any(path.endswith('entry-passports.json') for path in reads))
+
+    def test_passport_source_availability_requires_a_bool_before_io(self):
+        source, _, _, read_resource, reads, store, typed_index, entry_root = self.package()
+        reads.clear()
+        for value in (None, 0, 1, 'false'):
+            with self.subTest(value=value), self.assertRaisesRegex(TypeError, 'passport_source_available-must-be-bool'):
+                MapLocalEntryIdentity(entry_root, mode='difficult', profile_id='shared-structure',
+                    floors=source.floors, structure_store=store, read_resource=read_resource,
+                    typed_index_path=typed_index, passport_source_available=value)
+        self.assertEqual(reads, [])
 
 
 if __name__ == '__main__':

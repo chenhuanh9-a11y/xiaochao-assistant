@@ -15,15 +15,19 @@ class MapLocalEntryIdentity:
     def __init__(self, root, *, route_loader=None, shared_reference_provider=None, geometry_provider=None, author_visible_provider=None,
                  mode='difficult', profile_id='zhan10-speed', floors=('1','2'),
                  exit_icon_path=None, structure_store=None, profile_for_map=None,
-                 read_resource=None, typed_index_path=None, semantic_side_entries=True):
+                 read_resource=None, typed_index_path=None, semantic_side_entries=True,
+                 passport_source_available=True):
         if type(semantic_side_entries) is not bool:
             raise TypeError('semantic_side_entries-must-be-bool')
+        if type(passport_source_available) is not bool:
+            raise TypeError('passport_source_available-must-be-bool')
         self.root = Path(root)
         self.mode = mode
         self.profile_id = profile_id
         self.profile_for_map = profile_for_map or (lambda map_id: self.profile_id)
         self.floors = tuple(floors)
         self.semantic_side_entries = semantic_side_entries
+        self.passport_source_available = passport_source_available
         self.exit_icon_path = (Path(exit_icon_path) if exit_icon_path is not None else
                                self.root.parent / 'difficult-exit-icon.json') if semantic_side_entries else None
         self.route_loader = route_loader
@@ -80,17 +84,20 @@ class MapLocalEntryIdentity:
         self.passports = []
         self.entry_coverage = []
         self.passport_error = None
-        try:
-            path = self.root / 'entry-passports.json'
-            passport = json.loads(path.read_text(encoding='utf8') if read_resource is None else read_resource(path))
-            if (passport.get('schemaVersion'), passport.get('mode'), passport.get('profileId')) != (1, self.mode, self.profile_id):
-                raise ValueError('entrance passport mode/profile mismatch')
-            if read_resource is not None:
-                self._bound_passports(passport)
-            self.passports = passport['entries']
-            self.entry_coverage = passport['coverage']
-        except (OSError, ValueError, KeyError, TypeError) as error:
-            self.passport_error = str(error)
+        if not passport_source_available:
+            self.passport_error = 'entry-passports-source-unavailable'
+        else:
+            try:
+                path = self.root / 'entry-passports.json'
+                passport = json.loads(path.read_text(encoding='utf8') if read_resource is None else read_resource(path))
+                if (passport.get('schemaVersion'), passport.get('mode'), passport.get('profileId')) != (1, self.mode, self.profile_id):
+                    raise ValueError('entrance passport mode/profile mismatch')
+                if read_resource is not None:
+                    self._bound_passports(passport)
+                self.passports = passport['entries']
+                self.entry_coverage = passport['coverage']
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                self.passport_error = str(error)
         self._exit_recognizer = None
 
     @staticmethod

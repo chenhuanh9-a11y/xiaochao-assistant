@@ -86,6 +86,12 @@ class NativeBaseBundle:
     season = property(lambda self: self._cached('season'))
     mode = property(lambda self: self._cached('mode'))
     component_ref = property(lambda self: self._cached('component_ref'))
+    legacy_references = property(lambda self: self._cached('legacy_references'))
+    legacy_passports = property(lambda self: self._cached('legacy_passports'))
+    native_source = property(lambda self: self._cached('native_source'))
+    semantic_side_entries = property(lambda self: self._cached('semantic_side_entries'))
+    passport_source_available = property(lambda self: self._cached('passport_source_available'))
+    rank_ready = property(lambda self: self._cached('rank_ready'))
     gaps = property(lambda self: self._cached('gaps'))
     ready = property(lambda self: not self.gaps)
 
@@ -119,10 +125,18 @@ def _points(value, maximum, width, height, *, exact=None, rays=False):
     return rows
 
 
-def _canvas(value):
+def _canvas(value, *, shape_only=False):
     if not isinstance(value, dict):
         _reject('canvas-invalid')
     height, width = value.get('height'), value.get('width')
+    if shape_only:
+        shape = value.get('shapeHW')
+        if not isinstance(shape, list) or len(shape) != 2:
+            _reject('canvas-invalid')
+        height, width = shape
+        if any(name in value and (type(value[name]) is not int or value[name] != size)
+               for name, size in (('height', height), ('width', width))):
+            _reject('canvas-invalid')
     if (type(height) is not int or type(width) is not int
             or not 1 <= height <= MAX_CANVAS_AXIS or not 1 <= width <= MAX_CANVAS_AXIS
             or height * width > MAX_CANVAS_PIXELS or value.get('shapeHW') != [height, width]):
@@ -175,26 +189,32 @@ def _entry_reference(view, directory, relative):
     if (not isinstance(relative, str) or not relative or relative.startswith('/')
             or '\\' in relative or ':' in relative or posixpath.normpath(relative) != relative):
         _reject('entry-reference-invalid')
-    return _reference(view, posixpath.normpath(directory + '/' + relative))
+    return _reference(view, posixpath.normpath(posixpath.join(directory, relative)))
 
 
-def _entry_rows(payload, expected, canvases, typed, view, directory, index, *, main,
-                mode='nightmare', profile=PROFILE, proposal_only=False):
+def _entry_rows(payload, expected, canvases, products, view, directory, index, *, main,
+                mode='nightmare', profile=PROFILE, proposal_only=False, profile_for_map=None,
+                reference_anchor='document-relative', legacy_keys=(), validate_semantics=None):
     if (payload.get('schemaVersion'), payload.get('mode'), payload.get('profileId')) != (1, mode, profile):
         _reject('entry-context-invalid')
     rows = _rows(payload.get('entries'), expected, 'main-entry' if main else 'local-entry')
+    if reference_anchor not in ('document-relative', 'component-root'):
+        _reject('entry-reference-anchor-invalid')
+    anchor = directory if reference_anchor == 'document-relative' else ''
     total = 0
     for key, row in rows.items():
         _text(row.get('material') if main else row.get('region'))
-        width, height = _canvas(canvases[key])
-        if (row.get('canvas') != canvases[key] or row.get('profileId') != profile
+        width, height = _canvas(canvases[key], shape_only=key in legacy_keys)
+        row_profile = profile_for_map(key[0]) if profile_for_map is not None else profile
+        if (row.get('canvas') != canvases[key] or row.get('profileId') != row_profile
                 or row.get('variantId') != 'variant-01'
-                or _entry_reference(view, directory, row.get('structureResource')) != typed[key]['resourcePath']
-                or row.get('sourceProduct') != Path(typed[key]['resourcePath']).name):
+                or _entry_reference(view, anchor, row.get('structureResource')) != products[key]['resourcePath']
+                or row.get('sourceProduct') != (products[key]['resourcePath'] if reference_anchor == 'component-root'
+                                                else Path(products[key]['resourcePath']).name)):
             _reject('entry-typed-binding-invalid')
-        if 'sourceIndex' in row and _entry_reference(view, directory, row['sourceIndex']) != index:
+        if 'sourceIndex' in row and _entry_reference(view, anchor, row['sourceIndex']) != index:
             _reject('entry-index-binding-invalid')
-        if any(name in row and row[name] != typed[key].get(name)
+        if any(name in row and row[name] != products[key].get(name)
                for name in ('sourceVersion', 'structureVersionKey', 'baseSnapshot')):
             _reject('entry-version-binding-invalid')
         if 'routeResource' in row:
@@ -212,6 +232,8 @@ def _entry_rows(payload, expected, canvases, typed, view, directory, index, *, m
                     _reject('proposal-local-role-invalid')
                 if row.get('extractorEnvironment', {}).get('opencv') != cv2.__version__:
                     raise NativeBaseUnavailable('native-base-extractor-runtime-mismatch')
+        if validate_semantics is not None:
+            validate_semantics(key, row, main)
         _number(row.get('unit'), 1e-6, MAX_CANVAS_AXIS)
         if main:
             _points([row.get('center')], 1, width, height, exact=1)
@@ -295,7 +317,69 @@ def _search_declarations(raw, local_rows, typed):
                 _reject('search-field-invalid')
 
 
+def _typed_declarations(view, reader, paths, expected, profile, identity_rows):
+    """Read the shared typed/index/version/neutral contract for its exact pool."""
+    index = reader.json(paths['typedIndex'])
+    if (index.get('schemaVersion'), index.get('resourceKind')) != (1, 'shared-structure'):
+        _reject('typed-index-invalid')
+    typed = _rows(index.get('entries'), expected, 'typed')
+    selected = set()
+    for key, row in typed.items():
+        relative = _reference(view, row.get('resourcePath'), '.npz')
+        if row.get('profile') != profile or row.get('variant') != 'variant-01' or relative.casefold() in selected:
+            _reject('typed-binding-invalid')
+        selected.add(relative.casefold())
+    for row in identity_rows:
+        for floor, relative in row['layers'].items():
+            if relative is not None and relative != typed[row['id'], floor]['resourcePath']:
+                _reject('identity-typed-reference-mismatch')
+    registry_path = _reference(view, index.get('structureVersionBindings'), '.json')
+    versions_raw = reader.json(registry_path)
+    versions_rows = _rows(versions_raw.get('entries'), expected, 'version')
+    neutral = reader.json(paths['neutralDisplay'])
+    if (neutral.get('schemaVersion'), neutral.get('resourceKind'), neutral.get('indexPath')) != (
+            1, 'typed-shared-structure-display', paths['typedIndex']):
+        _reject('neutral-index-invalid')
+    neutral_rows = _rows(neutral.get('entries'), expected, 'neutral')
+    canvases = {key: row.get('canvas') for key, row in neutral_rows.items()}
+    for key, row in neutral_rows.items():
+        _canvas(canvases[key])
+        if _reference(view, row.get('referenceResource'), '.npz') != typed[key]['resourcePath']:
+            _reject('neutral-reference-invalid')
+        version = versions_rows[key]
+        for value, wanted in ((version.get('typedReference'), typed[key]['resourcePath']),
+                              (version.get('packReference'), paths['identityPack']),
+                              (version.get('adapterReference'), paths['coordinatePack']),
+                              (version.get('neutralDisplay', {}).get('index'), paths['neutralDisplay']),
+                              (version.get('sharedLookup', {}).get('resourcePath'), typed[key]['resourcePath'])):
+            if _reference(view, value) != wanted:
+                _reject('version-reference-invalid')
+    return typed, registry_path, neutral, canvases
+
+
+def _verify_typed_products(view, reader, resources, versions):
+    for key, row in resources.entries.items():
+        raw = reader(view.path(row['resourcePath']))
+        metadata = validate_structure_declarations(raw,
+            expected_binding=versions[key]['binding'], expected_shape=versions[key]['canvas']['shapeHW'])
+        if metadata.get('sourceKind') != 'game-rendered-shared-structure':
+            _reject('typed-source-kind-invalid')
+        calibration = metadata.get('calibration')
+        if calibration is not None:
+            _identity_matrix(calibration.get('matrixCurrentReferenceToNative'))
+        product = resources.load(key[0], key[1], key[3], variant=key[2])
+        if (product is None or not np.any(product.clean_mask)
+                or list(product.shape) != versions[key]['canvas']['shapeHW']
+                or product.metadata.get('canvas') != versions[key]['canvas']
+                or any(product.metadata.get(name) != value for name, value in versions[key]['expected'].items())):
+            _reject('typed-product-invalid')
+        del product, raw
+
+
 def _decode(view, season, mode):
+    if (season, mode) == ('s0', 'difficult'):
+        from imported_difficult_native_base import decode_s0_difficult
+        return decode_s0_difficult(view)
     if (season, mode) not in {('s0', 'nightmare'), ('s1', 'difficult'), ('s1', 'nightmare')}:
         raise NativeBaseUnavailable('native-base-context-unsupported')
     proposal_only = season == 's1'
@@ -364,41 +448,8 @@ def _decode(view, season, mode):
                 gaps.append('native-layer-unavailable:' + row['id'] + '/' + floor)
             else:
                 _reference(view, relative, '.npz')
-    index = reader.json(paths['typedIndex'])
-    if (index.get('schemaVersion'), index.get('resourceKind')) != (1, 'shared-structure'):
-        _reject('typed-index-invalid')
-    typed = _rows(index.get('entries'), expected, 'typed')
-    selected = set()
-    for key, row in typed.items():
-        relative = _reference(view, row.get('resourcePath'), '.npz')
-        if row.get('profile') != profile or row.get('variant') != 'variant-01' or relative.casefold() in selected:
-            _reject('typed-binding-invalid')
-        selected.add(relative.casefold())
-    for row in identity['maps']:
-        for floor, relative in row['layers'].items():
-            if relative is not None and relative != typed[row['id'], floor]['resourcePath']:
-                _reject('identity-typed-reference-mismatch')
-    registry_path = _reference(view, index.get('structureVersionBindings'), '.json')
-    versions_raw = reader.json(registry_path)
-    versions_rows = _rows(versions_raw.get('entries'), expected, 'version')
-    neutral = reader.json(paths['neutralDisplay'])
-    if (neutral.get('schemaVersion'), neutral.get('resourceKind'), neutral.get('indexPath')) != (
-            1, 'typed-shared-structure-display', paths['typedIndex']):
-        _reject('neutral-index-invalid')
-    neutral_rows = _rows(neutral.get('entries'), expected, 'neutral')
-    canvases = {key: row.get('canvas') for key, row in neutral_rows.items()}
-    for key, row in neutral_rows.items():
-        _canvas(canvases[key])
-        if _reference(view, row.get('referenceResource'), '.npz') != typed[key]['resourcePath']:
-            _reject('neutral-reference-invalid')
-        version = versions_rows[key]
-        for value, wanted in ((version.get('typedReference'), typed[key]['resourcePath']),
-                              (version.get('packReference'), paths['identityPack']),
-                              (version.get('adapterReference'), paths['coordinatePack']),
-                              (version.get('neutralDisplay', {}).get('index'), paths['neutralDisplay']),
-                              (version.get('sharedLookup', {}).get('resourcePath'), typed[key]['resourcePath'])):
-            if _reference(view, value) != wanted:
-                _reject('version-reference-invalid')
+    typed, registry_path, neutral, canvases = _typed_declarations(
+        view, reader, paths, expected, profile, identity['maps'])
     coordinates = reader.json(paths['coordinatePack'])
     ids = {mid for mid, _ in expected}
     if (coordinates.get('schema') != CANONICAL_SCHEMA
@@ -502,27 +553,14 @@ def _decode(view, season, mode):
         neutral_relative=paths['neutralDisplay'], entry_root_relative=directory, read_resource=reader)
     if set(versions) != set(resources.entries) or any(row['sharedError'] for row in versions.values()):
         _reject('version-binding-invalid')
-    for key, row in resources.entries.items():
-        raw = reader(view.path(row['resourcePath']))
-        metadata = validate_structure_declarations(raw,
-            expected_binding=versions[key]['binding'], expected_shape=versions[key]['canvas']['shapeHW'])
-        if metadata.get('sourceKind') != 'game-rendered-shared-structure':
-            _reject('typed-source-kind-invalid')
-        calibration = metadata.get('calibration')
-        if calibration is not None:
-            _identity_matrix(calibration.get('matrixCurrentReferenceToNative'))
-        product = resources.load(key[0], key[1], key[3], variant=key[2])
-        if (product is None or not np.any(product.clean_mask)
-                or list(product.shape) != versions[key]['canvas']['shapeHW']
-                or product.metadata.get('canvas') != versions[key]['canvas']
-                or any(product.metadata.get(name) != value for name, value in versions[key]['expected'].items())):
-            _reject('typed-product-invalid')
-        del product, raw
+    _verify_typed_products(view, reader, resources, versions)
     result = NativeBaseBundle(view, pack=pack, resources=resources, adapters=adapters,
         versions=MappingProxyType(versions), interfaces=MappingProxyType(dict(interfaces)), reader=reader,
         season=season, mode=mode, component_ref=view.component_ref,
         entry_identity=main, side_entry_identity=local,
         exit_recognizer=None if proposal_only else SideDoorRecognizer(view.path(paths['exitIcon']), read_resource=reader),
+        legacy_references=None, legacy_passports=None, native_source=pack,
+        semantic_side_entries=not proposal_only, passport_source_available=True, rank_ready=True,
         gaps=tuple(gaps))
     result.assert_current()
     return result

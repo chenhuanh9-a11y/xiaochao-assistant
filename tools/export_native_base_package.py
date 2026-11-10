@@ -1,6 +1,7 @@
-"""Export a declared S0 nightmare or S1 native source into an inert base ZIP.
+"""Export declared S0/S1 source data into an inert recognition-base ZIP.
 
-S0 keeps its existing byte-preserving structure/entry flow. S1 difficult and
+S0 nightmare keeps its byte-preserving structure/entry flow. S0 difficult keeps
+native and legacy working-draft inventories separate. S1 difficult and
 nightmare share the declared map, typed, neutral and proposal flow, enriching
 only version/coordinate references and controls metadata. This producer does
 not activate a catalog or grant proposal pose/identity authority.
@@ -135,17 +136,19 @@ def _entry_resource(relative):
     return _relative(posixpath.normpath(ENTRIES + '/' + relative))
 
 
-def _controls_payloads():
+def _controls_payloads(mode='nightmare'):
     from floor_contract import floor_contract
     from floor_control_region import AUTO_VERTICAL_SEARCH_AREA, VERTICAL_SEARCH_AREA
     from imported_controls_profile import DETECTOR_ID, SCHEMA
     from s0_floor_templates import _bank, DIGIT_HEIGHT, HEIGHT, TEMPLATE_FAMILY, WIDTH
-    contract = floor_contract('nightmare', season='s0')
+    contract = floor_contract(mode, season='s0')
+    if contract is None:
+        _reject('s0-control-floor-contract')
     vectors, labels = _bank()
     target = BytesIO()
     np.save(target, vectors, allow_pickle=False)
     profile = dict(schema=SCHEMA, detectorId=DETECTOR_ID,
-        contexts={'s0:nightmare': dict(
+        contexts={f's0:{mode}': dict(
             floors=[dict(observedValue=f.observed_value, floorId=f.floor_id) for f in contract.floors],
             visualOrder=list(reversed(contract.observed_values)))},
         fixedSearchRegion=list(VERTICAL_SEARCH_AREA), expandedSearchRegion=list(AUTO_VERTICAL_SEARCH_AREA),
@@ -249,6 +252,127 @@ def _base_payloads(source):
     payloads[EXIT] = _encoded(exit_template)
     payloads['resource-context.json'] = _encoded(dict(schema='xingtu-native-recognition-base-v1',
         season='s0', mode='nightmare', runtimeInterfaces=INTERFACES))
+    return payloads, len(ids)
+
+
+def _s0_difficult_base_payloads(source):
+    """Retain the full mixed native/legacy pool, without display-only assets."""
+    from imported_difficult_native_base import ENTRY_ROLE, FLOORS as difficult_floors
+    manifest = source.json('difficult-native-manifest.json')
+    interfaces = manifest.get('runtimeInterfaces')
+    required = {'identityPack', 'sourceManifest', 'typedIndex', 'versionBindings',
+                'coordinatePack', 'neutralDisplay', 'identityEntries', 'legacyClean'}
+    if not isinstance(interfaces, dict) or not required <= set(interfaces):
+        _reject('difficult-source-interfaces')
+    declared = manifest.get('files')
+    if not isinstance(declared, list) or not declared:
+        _reject('difficult-source-file-inventory-missing')
+    stamps = {}
+    for row in declared:
+        if not isinstance(row, dict):
+            _reject('difficult-source-file-inventory-invalid')
+        path = _relative(row.get('path'))
+        size, digest = row.get('bytes'), row.get('sha256')
+        if (path.casefold() in stamps or type(size) is not int or size < 0
+                or not isinstance(digest, str) or len(digest) != 64
+                or any(ch not in '0123456789abcdef' for ch in digest)):
+            _reject('difficult-source-file-inventory-invalid')
+        stamps[path.casefold()] = (path, size, digest)
+    payloads = {}
+
+    def read(path):
+        path = _relative(path)
+        raw = source.read(path)
+        if stamps.get(path.casefold()) != (path, len(raw), hashlib.sha256(raw).hexdigest()):
+            _reject('difficult-source-file-mismatch:' + path)
+        payloads[path] = raw
+        return raw
+
+    def document(name):
+        return decode_resource_json(read(interfaces[name]))
+
+    identity, native = document('identityPack'), document('sourceManifest')
+    if (identity.get('schemaVersion') != 1 or identity.get('mode') != 'difficult'
+            or identity.get('floors') != list(difficult_floors)
+            or not isinstance(identity.get('maps'), list) or len(identity['maps']) != 30):
+        _reject('difficult-identity-inventory')
+    ids = [row['id'] for row in identity['maps']]
+    native_ids = {row['id'] for row in native.get('maps', [])}
+    if len(set(ids)) != len(ids) or not native_ids <= set(ids):
+        _reject('difficult-native-source-inventory')
+    legacy_ids = set(ids) - native_ids
+    legacy = interfaces['legacyClean']
+    if legacy_ids:
+        if (not isinstance(legacy, dict) or legacy.get('mapIds') != sorted(legacy_ids)
+                or legacy.get('profileId') != 'zhan10-speed'):
+            _reject('difficult-legacy-inventory')
+        # Entries are already merged into recognition/native. Keep the source
+        # index, binaries and passports, without duplicating merged entries or
+        # carrying old author coordinate/display declarations into the base.
+        legacy = deepcopy({key: legacy[key] for key in
+            ('index', 'resourceRoot', 'mapIds', 'profileId', 'referenceCanvas', 'passports')})
+        read(legacy['index'])
+        read(legacy['passports'])
+        for canvas in legacy['referenceCanvas'].values():
+            read(canvas['resourcePath'])
+    elif legacy is not None:
+        _reject('difficult-legacy-declaration-unexpected')
+    expected = {(mid, floor) for mid in native_ids for floor in difficult_floors}
+    index = document('typedIndex')
+    typed = _rows(index.get('entries'), expected, 'difficult-typed')
+    for row in typed.values():
+        read(row['resourcePath'])
+    versions = document('versionBindings')
+    for key, row in _rows(versions.get('entries'), expected, 'difficult-version').items():
+        for field, wanted in (('packReference', interfaces['identityPack']),
+                              ('adapterReference', interfaces['coordinatePack'])):
+            if field in row and row[field] != wanted:
+                _reject('difficult-version-reference-conflict')
+            row[field] = wanted
+        neutral = row.get('neutralDisplay')
+        if not isinstance(neutral, dict) or neutral.get('index', interfaces['neutralDisplay']) != interfaces['neutralDisplay']:
+            _reject('difficult-version-neutral-conflict')
+        neutral['index'] = interfaces['neutralDisplay']
+        if row.get('typedReference') != typed[key]['resourcePath']:
+            _reject('difficult-version-typed-reference')
+    document('neutralDisplay')
+    coordinates = document('coordinatePack')
+    profiles = coordinates.get('profiles', {})
+    if set(profiles) != {'shared-structure', 'zhan10-speed'}:
+        _reject('difficult-coordinate-profiles')
+    profiles['zhan10-speed']['maps'] = {mid: profiles['zhan10-speed']['maps'][mid] for mid in legacy_ids}
+    if not legacy_ids:
+        del profiles['zhan10-speed']
+    lookup = _rows(coordinates.get('referenceProvider', {}).get('lookupBindings'), expected, 'difficult-coordinate-lookup')
+    for key, row in lookup.items():
+        if row.get('resourcePath', typed[key]['resourcePath']) != typed[key]['resourcePath']:
+            _reject('difficult-coordinate-lookup-reference')
+        row['resourcePath'] = typed[key]['resourcePath']
+    identity['season'] = 's0'
+    entry_floor = identity.get('defaultEntryFloor')
+    if type(entry_floor) not in (int, str) or str(entry_floor) not in difficult_floors:
+        _reject('difficult-default-entry-floor')
+    identity['defaultEntryFloor'] = int(entry_floor)
+    for row in identity['maps']:
+        mid = row['id']
+        row.update(oneFlow=None, routeProfileId='shared-structure',
+            layers={floor: typed[mid, floor]['resourcePath'] if mid in native_ids
+                    else legacy['referenceCanvas'][floor]['resourcePath'] for floor in difficult_floors})
+        # Preview crops from old author images do not describe these binaries.
+        if mid in legacy_ids:
+            height, width = legacy['referenceCanvas']['1']['shapeHW']
+            row['sideDoorCrop'] = [0, 0, width, height]
+    directory = _relative(interfaces['identityEntries'])
+    for name in ('entries.json', 'side-entries.json'):
+        read(directory + '/' + name)
+    for name, value in (('identityPack', identity), ('versionBindings', versions), ('coordinatePack', coordinates)):
+        payloads[interfaces[name]] = _encoded(value)
+    runtime = {key: interfaces[key] for key in
+        ('identityPack', 'sourceManifest', 'typedIndex', 'coordinatePack', 'neutralDisplay', 'identityEntries')}
+    runtime.update(identityProfile='shared-structure', entryEvidenceRole=ENTRY_ROLE,
+                   entryResourceAnchor='component-root', nativePassports='unavailable', legacyClean=legacy)
+    payloads['resource-context.json'] = _encoded(dict(schema='xingtu-native-recognition-base-v1',
+        season='s0', mode='difficult', runtimeInterfaces=runtime))
     return payloads, len(ids)
 
 
@@ -545,6 +669,24 @@ def _round_trip(path, destination, *, season='s0', mode='nightmare'):
     """Exercise the real container, installed views and current data consumers."""
     if season == 's1' and mode in {'difficult', 'nightmare'}:
         return _round_trip_s1(path, destination, mode)
+    if (season, mode) == ('s0', 'difficult'):
+        from imported_native_base import decode_native_base
+        from imported_controls_profile import S0ControlsProfile
+        inspected = archives.inspect_archive(path)
+        saved = archives.save_archive(path, destination, expected_archive_sha256=inspected.archive_sha256)
+        refs = {ref.component_id: ref for ref in saved.component_refs}
+        bundle = decode_native_base(PackageView(destination, refs['base']), season='s0', mode='difficult')
+        controls = S0ControlsProfile(PackageView(destination, refs['controls']))
+        context = controls.for_context('s0', 'difficult')
+        if context is None or set(context.contract.floor_ids) != set(bundle.pack.floors):
+            _reject('roundtrip-controls-floors')
+        bundle.assert_current()
+        return dict(mapCount=len(bundle.pack.maps), typedLayerCount=len(bundle.resources.entries),
+            legacyLayerCount=len(bundle.legacy_references.bindings) if bundle.legacy_references else 0,
+            mainEntries=len(bundle.entry_identity.entries), localEntries=len(bundle.side_entry_identity.entries),
+            controlsTemplates=len(controls.templates.labels), controlsLabels=list(controls.templates.label_values),
+            rankReady=bundle.rank_ready, nativePassportsAvailable=bundle.passport_source_available,
+            semanticSideEntries=bundle.semantic_side_entries)
     if (season, mode) != ('s0', 'nightmare'):
         _reject('context-unsupported')
     from difficult_entry_identity import MapEntryGeometryIdentity
@@ -649,13 +791,16 @@ def export_package(source_root, output, *, package_id, resource_version, source_
     source = _Source(source_root, source_inventory)
     if output.resolve().is_relative_to(source.root.resolve()):
         _reject('output-inside-source')
-    if (season, mode) not in (('s0', 'nightmare'), ('s1', 'difficult'), ('s1', 'nightmare')):
+    if season not in ('s0', 's1') or mode not in ('nightmare', 'difficult'):
         _reject('context-unsupported')
     # Reuse the installed protocol's identity validation, not a new ID policy.
     ComponentRef(package_id, resource_version, 'base', '0' * 64)
     if (season, mode) == ('s0', 'nightmare'):
         base, map_count = _base_payloads(source)
         controls = _controls_payloads()
+    elif (season, mode) == ('s0', 'difficult'):
+        base, map_count = _s0_difficult_base_payloads(source)
+        controls = _controls_payloads(mode)
     else:
         base, map_count = _s1_base_payloads(source, mode=mode)
         controls = _s1_controls_payloads(mode=mode)
