@@ -9,7 +9,7 @@ namespace StarMap.Runtime;
 public sealed record GameFloorClickContext(string RuntimeInstance,long Epoch,SessionSelection Selection,string Round,
     string Resource,long Cycle,CaptureStamp Stamp,CapturedClientGeometry Geometry,long ObservationOrdinal,double ObservationCreatedAtSeconds)
     :IGlobalInputPointerIntentContext;
-public sealed record GameFloorClickResult(bool Success,string Reason,string? ClickedFloorId=null,long IntentRevision=0);
+public sealed record GameFloorClickResult(bool Success,string Reason,string? ClickedFloorId=null,long IntentRevision=0,bool CloseControlHit=false);
 public sealed record GameFloorIntent(string FloorId,long Cycle,double ExpiresAt,long Revision);
 
 public sealed partial class LiveRuntime
@@ -25,14 +25,14 @@ public sealed partial class LiveRuntime
     string pointerScopeId="";
     string floorPolicyReason="";
     bool floorClickRequired;
-    sealed record PointerObservation(CapturedClientFrame Frame,JsonElement Read,long Ordinal,double CreatedAt);
+    sealed record PointerObservation(CapturedClientFrame Frame,JsonElement Read,long Ordinal,double CreatedAt,MapCloseControlObservation? CloseControl);
     sealed record PointerScope(long Epoch,SessionSelection Selection,string Round,string Resource,long Cycle,
         string WindowIdentity,long CaptureGeneration,CapturedClientGeometry Geometry);
     public GlobalInputPointerContextSlot PointerContextSlot=>pointerSlot;
     double PointerNowSeconds=>_options.TimeProvider.GetTimestamp()/(double)_options.TimeProvider.TimestampFrequency;
 
     void RememberPointerObservation(CapturedClientFrame frame,FloorObservationResult read)
-        =>pointerObservation=new(frame,JsonSerializer.SerializeToElement(read.FloorRead),++pointerObservationOrdinal,PointerNowSeconds);
+        =>pointerObservation=new(frame,JsonSerializer.SerializeToElement(read.FloorRead),++pointerObservationOrdinal,PointerNowSeconds,read.CloseControl);
     void ClearFloorClickIntent(bool preservePolicy=false)
     {gameFloorIntent=null;floorClickEpochSpan=null;if(!preservePolicy)floorPolicyReason="";floorClickRequired=false;}
     void ClearPointerObservation(){ClearFloorClickIntent();pointerObservation=null;pointerSlot.Publish(null);}
@@ -42,14 +42,16 @@ public sealed partial class LiveRuntime
 
     GameFloorClickContext? CurrentPointerContext()
     {
-        if(_closed || !_roundActive || !_mapOpen || _roundId is null || _resources is null || _frame is null
-            || pointerObservation is not { } observation || !ReferenceEquals(observation.Frame,_frame) || _frame.Context is null)return null;
-        return new(pointerInstance,_epoch,_selection,_roundId,_resources.Id,_mapCycle,_frame.Stamp,_frame.Context.Geometry,observation.Ordinal,observation.CreatedAt);
+        if(_closed || !_roundActive || !_mapOpen || _roundId is null || _resources is null
+            || pointerObservation is not {Frame.Context: { } captureContext} observation)return null;
+        // The last accepted raw observation owns input evidence independently
+        // of the numeric frame, which confirmation retires until fresh capture.
+        return new(pointerInstance,_epoch,_selection,_roundId,_resources.Id,_mapCycle,observation.Frame.Stamp,captureContext.Geometry,observation.Ordinal,observation.CreatedAt);
     }
     void PublishPointerObservation()
     {
         var context=CurrentPointerContext();
-        if(context is null){if(_frame is null)pointerObservation=null;pointerSlot.Publish(null);return;}
+        if(context is null){pointerSlot.Publish(null);return;}
         long boundary=floorClickEpochSpan is { } span && span.End==_epoch?span.Start:_epoch;
         var scope=new PointerScope(boundary,context.Selection,context.Round,context.Resource,context.Cycle,
             context.Stamp.WindowIdentity,context.Stamp.Generation,context.Geometry);
@@ -81,10 +83,11 @@ public sealed partial class LiveRuntime
             if(!double.IsFinite(age) || age<0 || age>2 || press.CreatedAtSeconds<supplied.ObservationCreatedAtSeconds)return new(false,"floor-click-expired");
             if(!_capture.IsBound || !_capture.IsObservationContextCurrent(pointerObservation!.Frame))return new(false,"capture-context-changed");
             var geometry=current.Geometry;
-            int? clicked=GameFloorControl.Hit(press.X,press.Y,[geometry.Left,geometry.Top,(double)geometry.Left+geometry.Width,(double)geometry.Top+geometry.Height],pointerObservation!.Read);
-            if(clicked is null)return new(false,"not-floor-control");
-            string floor=FloorContract.Find(_selection.Season,_selection.Mode)!.IdFor(clicked)!;
             if(issuedThrough.Closed || string.IsNullOrEmpty(issuedThrough.SessionId) || issuedThrough.LastIssuedSequence<0)return new(false,"floor-click-session-unavailable");
+            double[] bounds=[geometry.Left,geometry.Top,(double)geometry.Left+geometry.Width,(double)geometry.Top+geometry.Height];
+            int? clicked=GameFloorControl.Hit(press.X,press.Y,bounds,pointerObservation!.Read);
+            if(clicked is null)return new(false,"not-floor-control",CloseControlHit:MapCloseControl.Hit(pointerObservation.CloseControl,press.X,press.Y,bounds));
+            string floor=FloorContract.Find(_selection.Season,_selection.Mode)!.IdFor(clicked)!;
             pointerRetiredThrough[issuedThrough.SessionId]=Math.Max(pointerRetiredThrough.GetValueOrDefault(issuedThrough.SessionId),issuedThrough.LastIssuedSequence);
             long first=floorClickEpochSpan is { } existing && existing.End==_epoch?existing.Start:_epoch;
             _epoch++;_progressRequest=null;floorClickEpochSpan=(first,_epoch);_mapRecovery=null;

@@ -3,7 +3,7 @@ using System.Text.Json.Nodes;
 using StarMap.Core.Session;
 using StarMap.Runtime;
 
-if (args.Length == 5 && args[0] is "--identity-prior-only" or "--unselected-floor-only" or "--map-recovery-only" or "--map-recovery-late-only" or "--passive-refresh-only" or "--passive-context-only" or "--s1-rich-sequence-only" or "--current-pose-only" or "--s1-floor-observer-only" or "--manual-confirm-only" or "--manual-learning-only" or "--manual-storage-safety-only" or "--floor-click-only" or "--floor-click-session-only")
+if (args.Length == 5 && args[0] is "--identity-prior-only" or "--unselected-floor-only" or "--map-recovery-only" or "--map-recovery-late-only" or "--passive-refresh-only" or "--passive-context-only" or "--s1-rich-sequence-only" or "--current-pose-only" or "--s1-floor-observer-only" or "--manual-confirm-only" or "--manual-learning-only" or "--manual-storage-safety-only" or "--floor-click-only" or "--floor-click-session-only" or "--map-close-detector-only" or "--map-close-busy-only" or "--map-close-failure-only")
 {
     string priorOnlyOutput = Path.GetFullPath(args[4]);
     if (Directory.Exists(priorOnlyOutput)) throw new IOException("Preserve previous evidence; use a new output.");
@@ -15,7 +15,13 @@ if (args.Length == 5 && args[0] is "--identity-prior-only" or "--unselected-floo
             priorOnlyChecks.Add(new { name, passed });
             if (!passed) { priorOnlyFailures.Add(name); throw new InvalidOperationException(name); }
         };
-        if (args[0] == "--floor-click-session-only")
+        if (args[0] == "--map-close-failure-only")
+            await MapCloseFailureRegression.Run(args[1],args[2],args[3],priorOnlyOutput,priorOnlyCheck);
+        else if (args[0] == "--map-close-busy-only")
+            await MapCloseBusyRegression.Run(args[1],args[2],args[3],priorOnlyOutput,priorOnlyCheck);
+        else if (args[0] == "--map-close-detector-only")
+            await MapCloseControlRegression.Run(args[3],priorOnlyOutput,priorOnlyCheck);
+        else if (args[0] == "--floor-click-session-only")
             await FloorClickSessionRegression.Run(args[1],args[2],args[3],priorOnlyOutput,priorOnlyCheck);
         else if (args[0] == "--floor-click-only")
             await FloorClickRegression.Run(args[1],args[2],args[3],priorOnlyOutput,priorOnlyCheck);

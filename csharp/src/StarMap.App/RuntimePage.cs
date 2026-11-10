@@ -326,6 +326,15 @@ internal sealed class RuntimePage : UserControl
         if(press.Sequence<=pointerSequence)return new(false,"floor-click-sequence-stale");
         pointerSequence=press.Sequence;
         var accepted=runtime.ObserveGameFloorClick(press,view!.Sequence);
+        if(accepted is {Success:false,Reason:"not-floor-control",CloseControlHit:true})
+        {
+            CancelDelay();mapInput.Reset();mapRead=null;
+            // Revoke the observed opening before cancelling old work, then
+            // queue its close receipt. The next physical G starts an opening.
+            runtime.InvalidateCapture("map-closed");session.CancelPending("map-closed");session.RefreshRuntime();
+            Dispatch("close_map",new {openIntent=false,inputSource="mouse-close-control",pointerSequence=press.Sequence});
+            Render();return accepted with {Success=true,Reason="mouse-close-control"};
+        }
         if(!accepted.Success)return accepted;
         CancelDelay();
         // Do not CancelPending/SuspendInput: their recovery cancellation is a

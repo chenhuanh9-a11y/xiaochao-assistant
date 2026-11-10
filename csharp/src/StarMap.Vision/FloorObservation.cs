@@ -9,6 +9,8 @@ public enum S1FloorUse { Unavailable, ManualMap, StructureCandidate }
 
 public sealed record FloorObservationResult(JsonObject MapObservation,JsonObject FloorRead,string? FloorId)
 {
+    [System.Text.Json.Serialization.JsonIgnore]
+    public MapCloseControlObservation? CloseControl {get;init;}
     public bool? MapOpen => MapObservation["mapOpen"]?.GetValue<bool>();
     public int? SelectedFloor => FloorRead["selectedFloor"]?.GetValue<int>();
     public double? Confidence => FloorRead["confidence"] is {} c ? Numerics.Scalar(c):null;
@@ -53,7 +55,7 @@ public static class FloorObservation
             var map=read["mapObservation"]?.DeepClone().AsObject()??new();
             map["detected"]=Flag(read,"mapOpen");map["mapOpen"]=s1Use==S1FloorUse.ManualMap?read["mapOpen"]?.DeepClone():JsonValue.Create(Flag(read,"mapOpen"));
             map["floor"]=floor;map["layoutFamily"]="s1-vertical";if(s1Use==S1FloorUse.StructureCandidate)map["controlAxis"]="vertical";
-            return new(map,read,floor);
+            return new(map,read,floor){CloseControl=frameCurrent?MapCloseControl.Observe(frame):null};
         }
         if(frame.Empty()||frame.Type()!=MatType.CV_8UC3)throw new ArgumentException("Expected a complete BGR8 client frame.",nameof(frame));
         if(!frameCurrent)return Missing("stale-client-frame");
@@ -63,7 +65,7 @@ public static class FloorObservation
         var bound=Bind(current,contract,frame.Size(),Flag(observed,"detected"));
         string? id=contract.IdFor(bound["selectedFloor"]?.GetValue<int>());
         observed["mapOpen"]=Flag(observed,"detected");observed["floor"]=id;observed["layoutFamily"]="s0-vertical";observed["controlAxis"]="vertical";
-        return new(observed,bound,id);
+        return new(observed,bound,id){CloseControl=MapCloseControl.Observe(frame)};
 
         FloorObservationResult Missing(string reason, double? confidence=0d)
         {

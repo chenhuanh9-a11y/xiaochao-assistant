@@ -25,6 +25,7 @@ public sealed partial class LiveRuntime
             if(explicitMap && _floor is null && !_manualAlignmentSession)_floor=_resources.Passports.DefaultEntryFloor;
             _mapRecovery=null;_structureSession?.RevokeCurrent();_structureTicket=null;
             RevokeDisplay("identity-confirmed-pose-pending");_pose=null;
+            if(_manualAlignmentSession && S1FloorObserverAvailable)_floor=_observedFloor=null;
             // An open cycle was established by a real observation, even if
             // its current floor is unknown or a previous capture failed.
             recapture=_manualAlignmentSession || _mapOpen;
@@ -39,7 +40,10 @@ public sealed partial class LiveRuntime
         var learning=PersistConfirmationLabel(labelOwner,token);
         lock(_sync)
         {
-            if(_epoch==epoch && _roundId==labelOwner.Round && _mapId==labelOwner.Map)
+            // An owned acquisition failure advances its raw-input scope. Its
+            // learning diagnostic still belongs to this request; external
+            // invalidation or a later producer must never receive the write.
+            if(ReadSnapshotFor(request.Context).OwnedByRequest && _roundId==labelOwner.Round && _mapId==labelOwner.Map)
             {_manualLearning=learning;Publish();result=result with {Snapshot=ReadSnapshot()};}
         }
         if(learning.Status=="error")result=result with {Receipt=result.Receipt with {

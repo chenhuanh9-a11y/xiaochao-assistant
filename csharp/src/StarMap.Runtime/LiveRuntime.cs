@@ -25,7 +25,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         "locked-canvas-floor-reuse-unavailable", "native-identity-strong-conflict-producer-unavailable",
         "pose-index-candidate-provider-unavailable",
         "retained-group-fit-context-unavailable",
-        "game-map-close-pointer-policy-unavailable", "game-map-drag-policy-unavailable", "foreground-loss-return-plan-unavailable"];
+        "game-map-drag-policy-unavailable", "foreground-loss-return-plan-unavailable"];
     private readonly object _sync = new();
     private readonly SemaphoreSlim _worker = new(1, 1);
     private readonly ICapturePort _capture;
@@ -379,18 +379,35 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 // A failed current capture is not a map-close observation.
                 // End the click lifetime and revoke pose, keeping the actual
                 // observed opening just as the original runtime-error path.
-                _epoch++;_progressRequest=null;ClearFloorClickIntent(preservePolicy:true);
+                AdvanceOwnedEpoch(preserveFloorPolicy:true);
                 _mapRecovery=null;_structureSession?.RevokeCurrent();_structureTicket=null;_entryCandidates.Clear();
                 return FailCurrent(request,_epoch,reason,diagnostic);
             }
-            // The capture adapter can report a null frame or throw. Neither
-            // supplies map-close evidence; both retire the manual observation.
+            // Observation/fit errors after acquisition still revoke manual
+            // numeric authority without declaring a physical map close.
             if (_epoch == epoch && _manualAlignmentSession)
             {
                 _floor = _observedFloor = null; _frame = null; _mapRecovery = null;
+                AdvanceOwnedEpoch(preserveFloorPolicy:true);
                 _structureSession?.RevokeCurrent(); _structureTicket = null;
+                return FailCurrent(request,_epoch,reason,diagnostic);
             }
             return FailCurrent(request, epoch, reason, diagnostic);
+        }
+    }
+
+    private RuntimeOperationResult FailCaptureAcquisition(SessionRuntimeRequest request,long epoch,string reason,object? diagnostic=null)
+    {
+        lock(_sync)
+        {
+            if(_epoch!=epoch)return Receipt(request,false,"cancelled-or-obsolete");
+            // No fresh pixels arrived. Keep the observed opening/raw control
+            // evidence, retire numeric/pose authority, and reject older presses.
+            AdvanceOwnedEpoch(preserveFloorPolicy:true);
+            _frame=null;_mapRecovery=null;
+            if(_manualAlignmentSession && S1FloorObserverAvailable)_floor=_observedFloor=null;
+            _structureSession?.RevokeCurrent();_structureTicket=null;_entryCandidates.Clear();
+            return FailCurrent(request,_epoch,reason,diagnostic);
         }
     }
 
@@ -420,7 +437,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             if (_manualAlignmentSession || request.Action is "refresh_map" or "observe_manual_floor" or "confirm_route" || _mapOpen && request.Action=="capture_now")
             {
                 if(_manualAlignmentSession && request.Action!="observe_manual_floor")
-                {RevokeDisplay("s1-current-floor-fit");_frame=null;}
+                {RevokeDisplay("s1-current-floor-fit");_frame=null;_pose=null;}
                 _reason = "map-refreshing";
             }
             else RevokeFrame("map-open-preparing", retainRecovery: recovery is not null);
@@ -495,7 +512,16 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             var probeStarted = elapsed;
             probes++;
             var stageStarted = Stopwatch.GetTimestamp();
-            var acquisition = await _capture.CaptureAsync(token).ConfigureAwait(false);
+            ClientCaptureResult acquisition;
+            try{acquisition=await _capture.CaptureAsync(token).ConfigureAwait(false);}
+            catch(Exception error) when(error is not OperationCanceledException)
+            {
+                lock(_sync)
+                {
+                    RequireCurrent(epoch,token);
+                    return FailCaptureAcquisition(request,epoch,"runtime-error:"+error.GetType().Name+":"+error.Message,Preparation("capture-unavailable"));
+                }
+            }
             captureMs = Stopwatch.GetElapsedTime(stageStarted).TotalMilliseconds;
             capturedFrameId = acquisition.Frame?.Stamp.FrameId;
             CheckCurrent(epoch, token);
@@ -505,7 +531,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             if (!preparing && _options.TimeProvider.GetElapsedTime(started) >= limit)
                 return Unprepared("capture-finished-after-deadline");
             if (acquisition.Frame is null) return recovery is not null ? Unprepared("capture-unavailable")
-                : FailCaptureObservation(request, epoch, acquisition.Reason.Length > 0 ? acquisition.Reason : "capture-unavailable", Preparation("capture-unavailable"));
+                : FailCaptureAcquisition(request, epoch, acquisition.Reason.Length > 0 ? acquisition.Reason : "capture-unavailable", Preparation("capture-unavailable"));
             captured = acquisition.Frame;
             if (_capture.BindingScope != captureBinding || !_capture.IsCurrent(captured.Stamp))
                 return FailCurrent(request, epoch, "capture-context-obsolete", Preparation("capture-obsolete"));
@@ -768,7 +794,8 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     { ResetSteady(); _geometryGroup = null; ClearGroupChoice(); _mapId = null; _s1ProvisionalMapId = null; _identitySource = ""; _nativeIdentity = null; _structureSession?.EndRound(); _structureSession = null; _structureTicket = null; _alignment = null; _roundFitOwner = new(); _manualLearning=null; }
     private void ClearFloor()
     { _floor = _manualFloor = _observedFloor = null; _manualFloorStarted = null; _manualAlignmentSession=false; }
-    private void AdvanceOwnedEpoch() { _epoch++; _progressEpoch = _epoch; ClearFloorClickIntent(); }
+    private void AdvanceOwnedEpoch(bool preserveFloorPolicy=false)
+    { _epoch++; _progressEpoch = _epoch; ClearFloorClickIntent(preservePolicy:preserveFloorPolicy); }
 
     // Called under _sync. An observation may share the last physical edge;
     // MapInput separately requires new inputSequence edges to increase.
@@ -800,6 +827,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     }
     private void RevokeFrame(string reason, bool retainRecovery = false)
     { _frame = null; _pose = null; _mapOpen = false; _workActive = false; _candidates = []; _selected = -1; _reason = reason;
+        if(_manualAlignmentSession && S1FloorObserverAvailable)_floor=_observedFloor=null;
         ClearPointerObservation();
         if (!retainRecovery) _mapRecovery = null;
         RevokeDisplay(reason);
