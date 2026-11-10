@@ -107,6 +107,40 @@ Run("immediate-feedback-coalesces-and-returns-on-owner", () =>
         "successful receipt never creates round or identity authority");
 });
 
+foreach (var action in new[] { "capture_now", "set_context" })
+Run("worker-cancellation-completion-retires-intent-" + action, () =>
+{
+    using var h = new Harness();
+    var selection = h.Service.Read().AppliedSelection;
+    var finished = new List<SessionSelection>();
+    h.Service.ContextFinished += finished.Add;
+    void Submit()
+    {
+        if (action == "set_context")
+            Check(h.Service.Reconfigure(selection.Mode, selection.ProfileId, selection.Season, refreshDisplay: true), "display refresh submitted");
+        else Check(h.Service.Dispatch(action).Disposition == SessionDispatchDisposition.Enqueued, "capture submitted");
+    }
+    Submit();
+    var first = h.Call(0);
+    // Controlled host cancellation, matching the real WPF material-preparation
+    // regression. Session completion must retire its intent even when no owner
+    // CancelPending/Expire callback ran first. The runtime alone is substituted.
+    var active = typeof(SessionService).GetField("_active", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(h.Service)!;
+    ((CancellationTokenSource)active.GetType().GetProperty("Cancellation")!.GetValue(active)!).Cancel();
+    first.Complete(); h.Drain();
+    var view = h.Service.Read();
+    Check(!view.WorkerActive && !view.Busy && view.LastReceipt is null
+        && view.Actions.Single(a => a.Token.Action == action).Phase == UiActionPhase.Cancelled,
+        "cancelled completion cannot leave an orphan pending intent");
+    Check(finished.Count == (action == "set_context" ? 1 : 0), "context completion notified once");
+    Submit();
+    var retry = h.Call(1);
+    retry.Complete(); h.Drain();
+    Check(h.Runtime.Calls.Count == 2 && h.Runtime.MaxConcurrent == 1 && h.Service.Read().LastReceipt?.Success == true,
+        "identical retry dispatches fresh work after cancellation");
+    Check(finished.Count == (action == "set_context" ? 2 : 0), "retry context completion notified once");
+});
+
 Run("latest-queued-intent-replaces-cancelled-work-without-concurrency", () =>
 {
     using var h = new Harness();

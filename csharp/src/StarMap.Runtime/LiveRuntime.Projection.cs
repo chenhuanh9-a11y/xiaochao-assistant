@@ -1,5 +1,6 @@
 using StarMap.Core.Alignment;
 using StarMap.Core.Display;
+using StarMap.Core.Resources;
 using StarMap.Core.Session;
 using StarMap.Vision;
 
@@ -7,7 +8,8 @@ namespace StarMap.Runtime;
 
 public sealed partial class LiveRuntime
 {
-    private sealed record ProjectionDisplayGrant(AlignmentCoreV2 Core,RuntimeRenderPacket Render,CapturedClientFrame Frame,
+    private sealed record ProjectionDisplayGrant(AlignmentCoreV2 Core,RuntimeRenderPacket Render,
+        SharedStructureData NativeReference,DisplayAffine NativeToClient,CapturedClientFrame Frame,
         BoundResources Resources,GeometryGroup Group,string Round,long Cycle,long Generation,long Epoch,
         SessionSelection Selection,SharedProjectionSource Provenance,RuntimeDisplayState Display);
     private sealed record PendingProjectionMaterial(ProjectionDisplayGrant Grant,MapDragCycle Cycle,
@@ -15,11 +17,25 @@ public sealed partial class LiveRuntime
     { public CancellationTokenRegistration Registration {get;set;} }
     private ProjectionDisplayGrant? _projection;
     private PendingProjectionMaterial? _pendingProjection;
+    private sealed record ProjectionPreferenceSource(ProjectionDisplayGrant Grant,RuntimeRenderPacket Render,MapDragCycle Cycle);
 
-    private bool ProjectionGrantCurrent(ProjectionDisplayGrant grant) => !_closed && _mapOpen && _frame is not null
+    private ProjectionPreferenceSource? ProjectionPreferenceCurrentSource()
+    {
+        // Saved author changes may hide the old token while its accepted geometric binding stays valid.
+        // Only this display-preparation path ignores author preference; public reads remain selection-bound.
+        if(_projection is not { } grant || _render is not { } render || !DragCycleCurrent
+            || _dragCycle!.Current!=grant.Provenance || !ProjectionBindingCurrent(grant)
+            || grant.Selection.Season!=_selection.Season || grant.Selection.Mode!=_selection.Mode
+            || render.Epoch!=_epoch || render.Stamp!=grant.Frame.Stamp
+            || !ReferenceEquals(render.Authorization,grant.Render.Authorization))return null;
+        return new(grant,render,_dragCycle);
+    }
+
+    private bool ProjectionGrantCurrent(ProjectionDisplayGrant grant) => grant.Selection==_selection && ProjectionBindingCurrent(grant);
+    private bool ProjectionBindingCurrent(ProjectionDisplayGrant grant) => !_closed && _mapOpen && _frame is not null
         && ReferenceEquals(_frame,grant.Frame) && ReferenceEquals(_resources,grant.Resources) && ReferenceEquals(_geometryGroup,grant.Group)
         && grant.Round==_roundId && grant.Cycle==_mapCycle && grant.Generation==_frameGeneration && grant.Epoch==_epoch
-        && grant.Selection==_selection && grant.Render.MapId==_mapId && grant.Render.Authorization.Floor==_floor
+        && grant.Render.MapId==_mapId && grant.Render.Authorization.Floor==_floor
         && _capture.IsObservationContextCurrent(grant.Frame) && grant.Core.ActiveObservation is { } observation
         && grant.Render.Authorization.Current(observation.ObservationId,new(_roundId!),_mapId!,_floor!,_frameGeneration);
 
@@ -105,7 +121,8 @@ public sealed partial class LiveRuntime
                 var display=new RuntimeDisplayState(true,false,packet.IsLive,"shared-root-provisional",selection.ProfileId,
                     prepared.Selection.EffectiveProfileId,prepared.Selection.DisplayKind,prepared.Scene?.Floors.Count??0,
                     prepared.Scene is null?"common-space-source-unavailable":prepared.Scene.Unavailable.Count==0?"common-scene-ready":"common-scene-partial");
-                var grant=new ProjectionDisplayGrant(displayCore,packet,captured,bound,group,_roundId!,_mapCycle,generation,epoch,selection,provenance,display);
+                var grant=new ProjectionDisplayGrant(displayCore,packet,prepared.NativeReference,prepared.NativeToClient,
+                    captured,bound,group,_roundId!,_mapCycle,generation,epoch,selection,provenance,display);
                 var pending=new PendingProjectionMaterial(grant,cycle,cycle.Current,trusted,intent,token);
                 _pendingProjection=pending;
                 pending.Registration=token.Register(()=>

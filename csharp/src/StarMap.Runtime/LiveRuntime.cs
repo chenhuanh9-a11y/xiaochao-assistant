@@ -172,13 +172,13 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             else await _worker.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { return Receipt(request, false, "cancelled"); }
-        long operation, epoch;
+        long operation, epoch;SessionSelection selectionAtStart;
         lock (_sync)
         {
             if(PointerRetired(request)){ReleaseRuntimeWorker();return Receipt(request,false,"request-retired-by-floor-intent");}
             if(_activeDrag is not null && PassiveObservation(request.Action))
             {ReleaseRuntimeWorker();return Receipt(request,true,"drag-probe-coalesced");}
-            operation = ++_operation; epoch = _epoch;
+            operation = ++_operation; epoch = _epoch;selectionAtStart=_selection;
             _executingRequest=request;
             _progressRequest = null;
         }
@@ -189,6 +189,17 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                     && _progressRequest == request.Context && _progressEpoch==_epoch && !PublicationRetired(request))
                 {
                     if (GroupChoiceOwnsCancellation(request.Context)) DiscardGroupMaterial("group-choice-cancelled");
+                    else if(request.Action=="set_context")
+                    {
+                        // Saving a display preference never cancels the accepted observation.
+                        // Before publication the previous selection/material is still current.
+                        if(_selection!=selectionAtStart)
+                        {
+                            DiscardGroupMaterial("display-preference-cancelled");_materialProposal=null;
+                            _display=new(false,CanonicalCurrent(),false,"display-preference-cancelled",_selection.ProfileId);
+                            _reason="display-preference-cancelled";
+                        }
+                    }
                     else if(request.Action!="select_group_member" && _dragProbeWorkOwner!=request.Context) { _epoch++; RevokeFrame("cancelled"); }
                     Publish();
                 }
@@ -292,7 +303,8 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             Text(request.Payload, "profileId") ?? request.Context.Runtime.ProfileId);
         string root;
         bool reload;
-        bool projectionPreferenceChanged=false;
+        bool refreshDisplay=false;
+        ProjectionPreferenceSource? projectionSource=null;
         lock (_sync)
         {
             if (_roundActive && (desired.Mode != _selection.Mode || desired.Season != _selection.Season))
@@ -312,22 +324,34 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 AdvanceOwnedEpoch(); RevokeFrame("context-bound"); ClearIdentity(); ClearFloor();
                 _resources = bound; _resourceRoot = root;
             }
-            if (desired.ProfileId != _selection.ProfileId)
+            bool profileChanged=desired.ProfileId!=_selection.ProfileId;
+            refreshDisplay=profileChanged || Flag(request.Payload,"refreshDisplay");
+            if(!reload && !refreshDisplay)return Receipt(request,true,"context-bound");
+            if (refreshDisplay)
             {
                 bool hadProjection=_projection is not null || _pendingProjection is not null;
-                _displayGeneration++;DiscardGroupMaterial("group-author-preference-changed");
+                bool hadMaterial=_render is not null || hadProjection;
+                _displayGeneration++;DiscardGroupMaterial(profileChanged?"group-author-preference-changed":"display-preference-refreshed");
+                if(!reload)projectionSource=ProjectionPreferenceCurrentSource();
                 if(hadProjection)
                 {
-                    projectionPreferenceChanged=true;
-                    ClearProjectionDisplay("projection-author-preference-changed");
-                    _render=null;_canonical=null;_pose=null;_materialProposal=null;
-                    _display=new(false,false,false,"projection-author-preference-changed");
+                    if(projectionSource is null){ClearProjectionDisplay("projection-author-preference-changed");_render=null;}
+                    _canonical=null;_pose=null;_materialProposal=null;
                 }
+                _materialProposal=null;
+                if(profileChanged && hadMaterial)_display=new(false,CanonicalCurrent(),false,"display-preference-pending",desired.ProfileId);
             }
-            _selection = desired; _reason = projectionPreferenceChanged?"projection-author-preference-changed":"context-bound"; Publish();
+            _selection=desired;
+            _reason=!reload && refreshDisplay && _roundActive && EffectiveMapId is not null && _floor is not null
+                ?"display-preference-pending":"context-bound";
+            Publish();
         }
-        bool reprojected = !reload && RefreshDisplayPreference(epoch, token, desired.ProfileId);
-        return Receipt(request, true, reprojected ? "route-display-reprojected" : projectionPreferenceChanged?"projection-author-preference-changed":"context-bound");
+        if(!reload && refreshDisplay)
+        {
+            var display=RefreshDisplayPreference(epoch,token,desired.ProfileId,projectionSource);
+            return Receipt(request,display.Success,display.Reason);
+        }
+        return Receipt(request,true,"context-bound");
     }
 
     private RuntimeOperationResult StartRound(SessionRuntimeRequest request, long epoch, CancellationToken token,bool manualAlignment=false)

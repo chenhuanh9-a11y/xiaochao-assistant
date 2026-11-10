@@ -85,7 +85,7 @@ Raw Input 的严格有序 pointer 通道已接 Workspace → RuntimePage → Ses
 
 定向证据包括四模式真实结构资源及 11/05 后录制帧、旧 capture 的取消/异常、down 前后取消边界，以及实际 WPF 有界通道/Dispatcher/Workspace/Session 与 96/120/144/192 DPI 软件渲染。原版外部 fixture 修正只接受并转发新增参数、替换实际 sensor 接缝，不修改原生产代码或放宽原断言；原83例失败、修前取消/显式重读失败均保留。软件像素、录制输入和构建不代表原生鼠标、游戏或首像素延迟验收。
 
-跨层临时投影与拖动后组内换图见下节；当前原生资源的关系缺口、临时投影后的作者重投影、完整失焦/返回、稳态跟踪、UI 与隔离 Setup 验证仍在总迁移范围内，不能据本节宣称完整拖动旅程已迁完。
+跨层临时投影与拖动后组内换图见下节；当前原生资源的关系缺口、完整失焦/返回、稳态跟踪、UI 与隔离 Setup 验证仍在总迁移范围内，不能据本节宣称完整拖动旅程已迁完。
 
 ### 拖动后的组内换图
 
@@ -107,7 +107,15 @@ Raw Input 的严格有序 pointer 通道已接 Workspace → RuntimePage → Ses
 
 投影使用独立显示 Core/授权及素材暂存，与组内换图共用 pending 消费入口但分别提交。素材 ACK 只安装 provisional 显示与来源状态，保留可信 Core 的位姿/锚点/候选池、几何组根及验证池和原有楼层缓存；不创建目标 NativeGeometryPose、canonical 证明或学习 proposal。再次拖动只改呈现偏移。每次查询实际 source→target provider，限 1F/2F；search-only 资格来自 seed 自身，不能由模式、历史目标验证池或临时投影反推已接受来源。
 
-当前 raw native 两包无可用 seed，因此真实资源回放应明确拒绝投影而保留观察。成功事务使用明确标注的受控关系 provider；原版实际 Host/资源/录制帧提供独立 canonical/显示矩阵对照，不宣称该关系已经真实审阅。源图/多层场景与 WPF 素材消费者沿现有路径复用。投影期间切换作者会撤销失效投影，自动作者重投影仍待补齐；完整前台恢复、真实游戏/GPU 首像素及端到端耗时尚未验证。
+当前 raw native 两包无可用 seed，因此真实资源回放应明确拒绝投影而保留观察。成功事务使用明确标注的受控关系 provider；原版实际 Host/资源/录制帧提供独立 canonical/显示矩阵对照，不宣称该关系已经真实审阅。源图/多层场景与 WPF 素材消费者沿现有路径复用。完整前台恢复、真实游戏/GPU 首像素及端到端耗时尚未验证。
+
+已有当前投影切换作者时，显示准备复用接受过的目标层 reference-to-client 与原授权，不截图、拟合或重新查询跨层 seed；新素材仍是不可学习的 provisional，偏移仅在呈现时加一次。换作者先隐藏旧偏好对应的公共显示，准备完成后核对同一实际 render、帧、资源、组、cycle、选择与 intent。取消保留当前观察、已保存选择和内部接受源，后续显式显示重试可复用；真实素材失败清掉接受源，单靠恢复偏好不能复活它，须重新取得观察。pending/rejected/closed 只准备静态图层，不能借组根或待确认 Core 补显示权。同作者且未要求刷新时保持 token；显式刷新可更换素材 token。组显示重基只转运作者坐标跟踪并清作者渲染证明与旧 overlay，不移动 displayed floor、根或 native 证明。
+
+可信 canonical 与作者素材独立：neutral canonical basis 仍一致时，所选图层缺失只撤下像素，保留已验证位姿，可在同一观察切回可用图层。这不能用于给 provisional 补 native 证明。每次显式显示刷新统一退休依赖旧素材的 pending，保留 desired/held 身份。页面“保存并应用”经 Session 显式发送 refreshDisplay，并核对 set_context 实际回执，不能只凭选择已保存报告应用成功；普通同上下文 Reconfigure 默认仍幂等。
+
+Session 收到已取消 worker 的完成消息时，也会结束仍归该 token 所有的动作；已由取消、超时或后继请求退休的 token 不重复通知。实际页面的素材准备受控取消回归覆盖“后台排空后再次应用同一设置”，避免已退出的工作遗留 pending，使新请求被错误合并；它是录制帧/软件像素验证，不包含游戏操作。
+
+两模式原版真实 Host/资源/录制帧在这些作者操作的 capture/fit 增量均为零，但实际作者层不可用而回退 shared-structure；这批回放不能证明真实作者像素。非恒等/投影跟踪矩阵、点、JSON null 与不可用旧/新桥另由执行原 helper 的受控元数据对照，不是实机跟踪；当前 Runtime 尚无非空 tracking producer。失败回放中原版替换显示准备为 OSError，C# 只改变并还原内存 display declaration，以真实桥校验拒绝素材；不替换识别/拟合或写原生资源。WPF 仍沿页面配置、Session 与原素材消费者使用当前 packet。
 
 ### 人工确认与新截图
 

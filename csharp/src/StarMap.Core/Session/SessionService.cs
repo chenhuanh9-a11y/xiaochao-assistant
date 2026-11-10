@@ -183,17 +183,17 @@ public sealed class SessionService
         return new(SessionDispatchDisposition.Enqueued, decision.Token);
     }
 
-    public bool Reconfigure(string mode, string profileId, string season = "s0", TimeSpan? timeout = null)
+    public bool Reconfigure(string mode, string profileId, string season = "s0", TimeSpan? timeout = null,bool refreshDisplay=false)
     {
         VerifyOwner();
         bool accepted;
-        using (BeginMutation()) accepted = ReconfigureCore(mode, profileId, season, timeout);
+        using (BeginMutation()) accepted = ReconfigureCore(mode, profileId, season, timeout,refreshDisplay);
         var target = new SessionSelection(season, mode, profileId);
         return accepted && !Closed && _desired == target && (_state.Context.Selection == target
             || _foreground is { Action: "set_context" } && _foreground.Lifetime.Selection == target);
     }
 
-    private bool ReconfigureCore(string mode, string profileId, string season, TimeSpan? timeout)
+    private bool ReconfigureCore(string mode, string profileId, string season, TimeSpan? timeout,bool refreshDisplay)
     {
         if (Closed) return false;
         if (_lease is not null) { Reject(SessionDispatchDisposition.ResourceLocked, "Resource operation is in progress."); return false; }
@@ -210,13 +210,13 @@ public sealed class SessionService
             Reject(SessionDispatchDisposition.Unavailable, "请先结束本局，再切换游戏模式");
             return false;
         }
-        if (selection == _desired && (actual.Context.Selection == selection
+        if (!refreshDisplay && selection == _desired && (actual.Context.Selection == selection
             || _foreground is { Action: "set_context" } && !_foreground.Cancellation.IsCancellationRequested)) return true;
         if (!_state.AvailableCommands.Contains("set_context"))
         { Reject(SessionDispatchDisposition.Unavailable, "Unavailable command: set_context"); return false; }
         Invalidate("context-reconfigured");
         _desired = selection;
-        return DispatchCore("set_context", JsonSerializer.SerializeToElement(new { season, mode, profileId }), timeout)
+        return DispatchCore("set_context", JsonSerializer.SerializeToElement(new { season, mode, profileId,refreshDisplay }), timeout)
             .Disposition is SessionDispatchDisposition.Enqueued or SessionDispatchDisposition.Coalesced;
     }
 
@@ -431,6 +431,16 @@ public sealed class SessionService
                     _message = "Request timed out: " + work.Action;
                     SignalCancellation(work);
                     if (work.Action == "set_context") RestoreAppliedContext();
+                    FinishContext(work);
+                }
+                else if (_actions.Cancel(work.Token!.Value, reason: work.Cancellation.IsCancellationRequested
+                    ? "cancelled" : "runtime-context-changed").Accepted)
+                {
+                    // A worker can observe cancellation before an owner-side
+                    // invalidation. Its slot is now drained, so its intent must
+                    // also finish; otherwise an identical retry coalesces into
+                    // work that no longer exists. Cancel rejects retired tokens,
+                    // preventing duplicate context-finished notifications.
                     FinishContext(work);
                 }
                 Defer(() => ResultConsumed?.Invoke(new(work.Action, ticket, disposition.ToString())));

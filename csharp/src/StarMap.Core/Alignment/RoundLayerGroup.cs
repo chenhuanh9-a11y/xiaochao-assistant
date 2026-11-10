@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Text.Json;
 
 namespace StarMap.Core.Alignment;
 
@@ -75,15 +76,71 @@ public sealed class RoundLayerGroup
             if(sourceStructureVerified)sourceVerified.Add(floor);else sourceVerified.Remove(floor);
         }
     }
-    /// <summary>Display-owned replacement. Root, geometry proofs and group identity stay unchanged.</summary>
-    public void RebaseDisplayProfile(string profile,string floor,Array pixels)
+    /// <summary>Rebase only author-space tracking; native geometry and displayed floor stay unchanged.</summary>
+    public void RebaseDisplayProfile(string profile,IReadOnlyDictionary<string,Matrix3?> previousBridges,
+        IReadOnlyDictionary<string,Matrix3?> nextBridges)
     {
         lock(sync)
         {
-            if(!Floors.Contains(floor))throw new ArgumentException("unsupported floor",nameof(floor));
-            RouteProfileId=profile;DisplayedFloor=floor;overlay=(Array)AlignmentData.Copy(pixels)!;
-            renderVerified.Clear();
+            foreach(var (floor,existing) in trackingByFloor)
+            {
+                var rebased=AlignmentData.CopyMap(existing);
+                var old=DisplayValue(existing,"routeDisplayBridge") is { } cached?DisplayMatrix(cached):previousBridges.GetValueOrDefault(floor);
+                var next=nextBridges.GetValueOrDefault(floor);
+                var transport=old?.Inverse() is { } inverse && next is not null?Matrix3.Multiply(inverse,next):null;
+                bool valid=transport is not null;
+                if(valid)
+                {
+                    rebased["routeDisplayBridge"]=next!.ToArray();
+                    foreach(string key in new[]{"translationMaskMatrix","layoutAnchorMatrix"})
+                    {
+                        if(DisplayValue(rebased,key) is not { } value)continue;
+                        var matrix=DisplayMatrix(value);var mapped=matrix is null?null:Matrix3.Multiply(matrix,transport!);
+                        if(mapped is null){valid=false;break;}
+                        rebased[key]=mapped.ToArray();
+                    }
+                    if(valid && DisplayValue(rebased,"verifiedPlayerAuthorPoint") is { } point)
+                    {
+                        var p=DisplayPoint(point);var back=transport!.Inverse();
+                        if(p is null || back is null)valid=false;
+                        else
+                        {
+                            double x=back[0,0]*p[0]+back[0,1]*p[1]+back[0,2],y=back[1,0]*p[0]+back[1,1]*p[1]+back[1,2];
+                            double w=back[2,0]*p[0]+back[2,1]*p[1]+back[2,2];
+                            if(!double.IsFinite(x)||!double.IsFinite(y)||!double.IsFinite(w)||Math.Abs(w)<1e-12
+                                || !double.IsFinite(x/w)||!double.IsFinite(y/w))valid=false;
+                            else rebased["verifiedPlayerAuthorPoint"]=new[]{x/w,y/w};
+                        }
+                    }
+                }
+                if(!valid)foreach(string key in new[]{"translationMaskMatrix","layoutAnchorMatrix","verifiedPlayerAuthorPoint","routeDisplayBridge"})rebased.Remove(key);
+                rebased["poseVerifiedAgainstRenderedProfile"]=false;rebased.Remove("renderedProfileResidual");
+                existing.Clear();foreach(var pair in rebased)existing[pair.Key]=pair.Value;
+                if(TrackingFloor==floor)tracking=existing;
+            }
+            RouteProfileId=profile;renderVerified.Clear();overlay=null;
         }
+    }
+    private static object? DisplayValue(IReadOnlyDictionary<string,object?> row,string key)
+    {
+        var value=row.GetValueOrDefault(key);
+        return value is JsonElement {ValueKind:JsonValueKind.Null or JsonValueKind.Undefined}?null:value;
+    }
+    private static Matrix3? DisplayMatrix(object value)
+    {
+        if(value is Matrix3 matrix)return matrix;
+        try{return Matrix3.TryRead(value is JsonElement json?json:JsonSerializer.SerializeToElement(value));}
+        catch(Exception e) when(e is ArgumentException or JsonException or NotSupportedException){return null;}
+    }
+    private static double[]? DisplayPoint(object value)
+    {
+        try
+        {
+            var json=value is JsonElement element?element:JsonSerializer.SerializeToElement(value);
+            var point=json.EnumerateArray().Select(v=>v.GetDouble()).ToArray();
+            return point.Length==2 && point.All(double.IsFinite)?point:null;
+        }
+        catch(Exception e) when(e is ArgumentException or JsonException or NotSupportedException or InvalidOperationException or FormatException){return null;}
     }
     public bool SetRelation(string floor,Matrix3 relation,IReadOnlyDictionary<string,object?>? metadata=null)
     {lock(sync){if(!Floors.Contains(floor)||relation is null)return false;var owned=metadata is null?null:AlignmentData.CopyMap(metadata);

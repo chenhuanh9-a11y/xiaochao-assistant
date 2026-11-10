@@ -36,6 +36,13 @@ internal static class Program
         }
         try
         {
+            if(Array.IndexOf(args,"--projection-author-only")>=0)
+            {
+                int resourcesIndex=Array.IndexOf(args,"--resources"),replayIndex=Array.IndexOf(args,"--original-replay");
+                if(resourcesIndex<0 || replayIndex<0)throw new ArgumentException("Projection author entry needs resources and original replay.");
+                Await(TransientProjectionWorkspaceRegression.Run(Path.GetFullPath(args[resourcesIndex+1]),Path.GetFullPath(args[replayIndex+1]),output,Check));
+                return 0;
+            }
             byte[] region = [0,0,0,0,0, 0,1,1,1,0, 0,1,1,1,0, 0,1,1,1,0, 0,0,0,0,0];
             byte[] expectedPreview = [250,250,250,250,250, 250,40,40,40,250, 250,40,225,40,250, 250,40,40,40,250, 250,250,250,250,250];
             Check(ResourcePreview.Outline(region, 5, 5, default).SequenceEqual(expectedPreview), "filled-region-renders-pale-interior-and-actual-boundary");
@@ -412,7 +419,9 @@ internal static class Program
         finally
         {
             shell?.Close();
-            File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new { exit, checks, scope = "Real WPF construction/navigation, Runtime/Session confirmation and settings save/control/serialization/IO race. The picker loads real resources through SetMaps in a shown offscreen nonactivating window; clicks are routed programmatically. Capture/foreground use recorded fixtures, no native input/capture/game or visual acceptance. The existing document serialization semaphore arranges IO interleaving." }, new JsonSerializerOptions { WriteIndented = true }));
+            File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new { exit, checks, scope = Array.IndexOf(args,"--projection-author-only")>=0
+                ?"Targeted actual projection/author RuntimePage, Session, strict fixture input and production WPF material consumer with recorded images and scoped relation/display faults. No native capture/input/game, author accuracy or latency acceptance."
+                :"Real WPF construction/navigation, Runtime/Session confirmation and settings save/control/serialization/IO race. The picker loads real resources through SetMaps in a shown offscreen nonactivating window; clicks are routed programmatically. Capture/foreground use recorded fixtures, no native input/capture/game or visual acceptance. The existing document serialization semaphore arranges IO interleaving." }, new JsonSerializerOptions { WriteIndented = true }));
             app.Shutdown(exit);
         }
         return exit;

@@ -252,9 +252,10 @@ internal sealed partial class RuntimePage : UserControl
                     Idvb0059Enabled = steadyEnabled,ConfirmationMemoryFactory=dataRoot is null?null:catalog=>new StarMap.Vision.ManualConfirmationMemoryStore(dataRoot,catalog) });
                 var nextSession = new SessionService(new SynchronizationContextSessionDispatcher(new DispatcherSynchronizationContext(Dispatcher)), nextRuntime);
                 proposedRuntime = nextRuntime; proposedSession = nextSession;
-                bool proposedAccepted = nextSession.Reconfigure(settings.GameMode, settings.RouteProfileId, settings.GameSeason);
+                bool proposedAccepted = nextSession.Reconfigure(settings.GameMode, settings.RouteProfileId, settings.GameSeason,refreshDisplay:true);
                 await nextSession.DrainAsync();
-                if (closed || !proposedAccepted || !nextRuntime.ReadState().ResourcesBound || nextRuntime.ReadState().Context.Selection != desired)
+                if (closed || !proposedAccepted || !nextRuntime.ReadState().ResourcesBound || nextRuntime.ReadState().Context.Selection != desired
+                    || nextSession.Read().LastReceipt is not {Action:"set_context",Success:true})
                 {
                     string refusal = nextSession.Read().LastReceipt?.Reason ?? nextRuntime.ReadState().Reason;
                     nextSession.Shutdown(); nextRuntime.Shutdown(); await nextSession.DrainAsync();
@@ -271,7 +272,7 @@ internal sealed partial class RuntimePage : UserControl
             }
             else
             {
-                if (!session!.Reconfigure(settings.GameMode, settings.RouteProfileId, settings.GameSeason))
+                if (!session!.Reconfigure(settings.GameMode, settings.RouteProfileId, settings.GameSeason,refreshDisplay:true))
                 {
                     status("设置已保存，但尚未应用到本局：" + session.Read().Message);
                     return false;
@@ -279,6 +280,11 @@ internal sealed partial class RuntimePage : UserControl
                 await session.DrainAsync();
             }
             if (closed) return false;
+            if(session!.Read().LastReceipt is not {Action:"set_context",Success:true})
+            {
+                status("设置已保存，但显示更新尚未完成："+Reason(runtime!.ReadState().Reason));
+                return false;
+            }
             runtime!.SetIdvb0059Enabled(steadyEnabled);
             dragBoundary=settings.Get("dragBoundaryNormalized") is { } boundary?JsonSerializer.SerializeToElement(boundary):null;
             CancelPointerDrag();
@@ -549,6 +555,12 @@ internal sealed partial class RuntimePage : UserControl
     static string FloorLabel(string? value) => value is null ? "楼层待确认" : value == "B1" ? "地下 1 层" : value.StartsWith('-') ? $"地下 {value[1..]} 层" : value + "F";
     static string ModeLabel(string value) => value switch { "nightmare" => "噩梦", "difficult" => "困难", "difficulty2" => "普通（历史）", _ => value };
     static string Reason(string reason) => reason switch {
+        "route-display-reprojected" => "图层已更新。",
+        "display-preference-pending" => "正在准备所选图层。",
+        "display-preference-material-unavailable" => "所选图层暂不可用；定位已保留，可选择其他图层。",
+        "display-preference-canonical-basis-changed" => "图层坐标已变化，请重新读取地图。",
+        "display-preference-cancelled" or "stale-display-settings" => "图层更新已取消，可重新应用设置。",
+        _ when reason.StartsWith("route-display-reprojection-failed:",StringComparison.Ordinal) => "图层准备失败，选择已保存；请重新读取地图。",
         "shared-root-projection-awaiting-material" => "已读取新楼层，正在准备临时地图。",
         "shared-root-provisional" => "当前楼层暂按已有关系显示，仍待结构定位。",
         "projection-relation-unavailable" or "projection-target-relation-unavailable" => "当前图包缺少可用的跨层关系，请重新开图定位。",

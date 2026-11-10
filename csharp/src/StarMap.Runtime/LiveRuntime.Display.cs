@@ -2,6 +2,7 @@ using System.Text.Json;
 using StarMap.Core.Alignment;
 using StarMap.Core.Display;
 using StarMap.Core.Resources;
+using StarMap.Core.Session;
 using StarMap.Vision;
 using StarMap.Vision.Steady;
 
@@ -79,10 +80,13 @@ public sealed partial class LiveRuntime
         && _capture.IsObservationContextCurrent(_frame) && _alignment?.ActiveObservation is { } observation
         && grant.Authorization.Current(observation.ObservationId, new(_roundId!), EffectiveMapId!, _floor!, _frameGeneration);
 
+    private bool CanonicalRenderBindingCurrent() => CanonicalCurrent() && _render is { } render && render.Epoch==_epoch
+        && render.Stamp==_canonical!.Stamp && ReferenceEquals(render.Authorization,_canonical.Authorization);
+
     private bool RenderCurrent()
     {
-        if(_render is not { } render || render.Epoch!=_epoch)return false;
-        if(CanonicalCurrent())return render.Stamp==_canonical!.Stamp && ReferenceEquals(render.Authorization,_canonical.Authorization);
+        if(!_display.Prepared || _render is not { } render || render.Epoch!=_epoch)return false;
+        if(CanonicalRenderBindingCurrent())return true;
         return _projection is { } projection && DragCycleCurrent && _dragCycle!.Current==projection.Provenance
             && ProjectionGrantCurrent(projection) && render.Stamp==projection.Frame.Stamp
             && ReferenceEquals(render.Authorization,projection.Render.Authorization);
@@ -127,51 +131,124 @@ public sealed partial class LiveRuntime
         }, StringComparer.Ordinal);
     }
 
-    private bool RefreshDisplayPreference(long epoch, CancellationToken token, string preferred)
+    private (bool Success,string Reason) RefreshDisplayPreference(long epoch,CancellationToken token,string preferred,
+        ProjectionPreferenceSource? projectionSource)
     {
-        BoundResources bound; CapturedClientFrame frame; NativeGeometryPose pose; CanonicalGrant previous;
-        lock (_sync)
+        BoundResources bound;CapturedClientFrame? frame;GeometryGroup? group;CanonicalGrant? previous;
+        RuntimeRenderPacket? source;MapDragCycle? cycle;SessionSelection selection;long intent;string map,floor;
+        SharedStructureData? reference;DisplayAffine native;
+        lock(_sync)
         {
-            RequireCurrent(epoch, token);
-            if (!CanonicalCurrent()) return false;
-            bound = _resources!; frame = _frame!; pose = _pose!; previous = _canonical!;
+            RequireCurrent(epoch,token);
+            if(!_roundActive || _resources is null || EffectiveMapId is not { } selectedMap || _floor is not { } selectedFloor)
+                return (true,"context-bound");
+            bound=_resources;frame=_frame;group=_geometryGroup;cycle=_dragCycle;selection=_selection;intent=_groupIntent;
+            source=_render;map=selectedMap;floor=selectedFloor;
+            previous=CanonicalCurrent()?_canonical:null;
+            reference=projectionSource?.Grant.NativeReference??previous?.NativeReference;
+            native=projectionSource?.Grant.NativeToClient??previous?.NativeToClient??DisplayAffine.Identity;
         }
-        var entry = bound.Catalog.Find(bound.Passports.Mode, bound.Passports.Season,
-            bound.Passports.MapProfiles[pose.MapId], pose.MapId, pose.FloorId);
-        if (entry is null) return false;
-        var prepared = PrepareDisplay(bound, entry, pose.ToMatrix(), previous.NativeReference, preferred, token);
-        prepared = prepared with { Scene = PrepareMapScene(bound, entry, prepared, token) };
-        lock (_sync)
+        try
         {
-            RequireCurrent(epoch, token, frame, bound);
-            if (!ReferenceEquals(_canonical, previous) || !CanonicalCurrent()) return false;
-            var layer = prepared.Material.Layer;
-            _materialProposal = null;
-            // Preference changes replace pixels, never the canonical pose/token.
-            if (prepared.CanonicalBasis is not { } basis || basis.CanonicalPackId != previous.PackId
-                || basis.CanonicalToClient is not { } canonical || !canonical.AlmostEquals(previous.Matrix))
+            RequireOwner();
+            var entry=bound.Catalog.Find(bound.Passports.Mode,bound.Passports.Season,bound.Passports.MapProfiles[map],map,floor);
+            if(entry is null)return Fail("route-display-reprojection-failed:target-resource-unavailable");
+            reference??=bound.LoadReference(entry).Value;
+            if(reference is null)return Fail("route-display-reprojection-failed:target-reference-unavailable");
+            var prepared=PrepareDisplay(bound,entry,native.ToArray(),reference,preferred,token);
+            bool current=projectionSource is not null || previous is not null;
+            var expected=projectionSource?.Render.Material.Bridge.CanonicalToClient??previous?.Matrix;
+            string? pack=projectionSource?.Render.Material.Bridge.CanonicalPackId??previous?.PackId;
+            bool basisMatches=prepared.CanonicalBasis is { } basis && basis.CanonicalPackId==pack
+                && basis.CanonicalToClient is { } canonical && expected is { } matrix && canonical.AlmostEquals(matrix);
+            if(current && !basisMatches)return Fail("display-preference-canonical-basis-changed");
+            if(prepared.Material.Layer is not { } layer)
             {
-                RevokeDisplay("display-preference-canonical-basis-changed");
+                if(previous is null)return Fail("route-display-reprojection-failed:"+prepared.Material.Reason);
+                lock(_sync)
+                {
+                    RequireOwner();
+                    // A missing display option cannot erase a separately verified native pose.
+                    _render=null;_materialProposal=null;
+                    _display=new(false,true,false,prepared.Material.Reason,preferred,prepared.Selection.EffectiveProfileId,prepared.Selection.DisplayKind);
+                    _reason="display-preference-material-unavailable";Publish();return (true,_reason);
+                }
             }
-            else if (layer is null)
+            if(current)prepared=prepared with {Scene=PrepareMapScene(bound,entry,prepared,token)};
+            var rebase=PrepareDisplayRebase(bound,group,preferred,token);
+            lock(_sync)
             {
-                _render = null;
-                _display = new(false, true, false, prepared.Material.Reason, preferred,
-                    prepared.Selection.EffectiveProfileId, prepared.Selection.DisplayKind);
+                RequireOwner();
+                group?.Model.RebaseDisplayProfile(prepared.Selection.EffectiveProfileId,rebase.Previous,rebase.Next);
+                _materialProposal=null;
+                if(current)
+                {
+                    var authorization=projectionSource?.Render.Authorization??previous!.Authorization;
+                    _render=new(layer,frame!,authorization,_frameGeneration,_epoch,remembersGeometry:false,scene:ProjectMapScene(prepared,floor));
+                    PreserveDragPresentation();
+                    _display=new(true,previous is not null,_render.IsLive,projectionSource is null?"display-prepared":"shared-root-provisional",
+                        preferred,prepared.Selection.EffectiveProfileId,prepared.Selection.DisplayKind,prepared.Scene?.Floors.Count??0,
+                        prepared.Scene is null?"common-space-source-unavailable":prepared.Scene.Unavailable.Count==0?"common-scene-ready":"common-scene-partial");
+                    if(projectionSource is not null)
+                    {
+                        _projection=projectionSource.Grant with {Render=_render,Selection=selection,Display=_display};
+                        _canonical=null;_pose=null;
+                    }
+                }
+                else
+                {
+                    // Static author preparation never borrows a group root or a pending Core for display.
+                    _projection?.Core.Close(reason:"display-preference-source-unavailable");_projection=null;_render=null;
+                    _display=new(false,CanonicalCurrent(),false,"display-preference-static",preferred,
+                        prepared.Selection.EffectiveProfileId,prepared.Selection.DisplayKind);
+                }
+                _reason="route-display-reprojected";Publish();return (true,_reason);
             }
-            else
+        }
+        catch(OperationCanceledException){return (false,"stale-display-settings");}
+        catch(Exception error){return Fail("route-display-reprojection-failed:"+error.Message);}
+
+        bool Owned()
+        {
+            if(_closed || _epoch!=epoch || _selection!=selection || !ReferenceEquals(_resources,bound) || !ReferenceEquals(_frame,frame)
+                || !ReferenceEquals(_geometryGroup,group) || !ReferenceEquals(_dragCycle,cycle) || _groupIntent!=intent || !ReferenceEquals(_render,source))return false;
+            if(projectionSource is not null)return ReferenceEquals(_projection,projectionSource.Grant) && ReferenceEquals(source,projectionSource.Render)
+                && ReferenceEquals(cycle,projectionSource.Cycle) && cycle!.Current==projectionSource.Grant.Provenance && ProjectionBindingCurrent(projectionSource.Grant);
+            return previous is not null?ReferenceEquals(_canonical,previous) && CanonicalCurrent():!RenderCurrent();
+        }
+        void RequireOwner()
+        {lock(_sync){RequireCurrent(epoch,token,bound:bound);if(!Owned())throw new OperationCanceledException("stale-display-settings",token);}}
+        (bool Success,string Reason) Fail(string reason)
+        {
+            lock(_sync)
             {
-                _geometryGroup?.Model.RebaseDisplayProfile(prepared.Selection.EffectiveProfileId, pose.FloorId, GroupPixels(layer));
-                _render = new(layer, frame, previous.Authorization, _frameGeneration, _epoch, remembersGeometry: false,
-                    scene: ProjectMapScene(prepared,pose.FloorId));
-                PreserveDragPresentation();
-                _display = new(true, true, _render.IsLive, "display-prepared", preferred,
-                    prepared.Selection.EffectiveProfileId, prepared.Selection.DisplayKind,
-                    prepared.Scene?.Floors.Count??0, prepared.Scene is null ? "common-space-source-unavailable" : prepared.Scene.Unavailable.Count==0?"common-scene-ready":"common-scene-partial");
+                if(!Owned())return (false,"stale-display-settings");
+                // Display preparation must not revoke the accepted observation or saved preference.
+                WithdrawDisplay(reason);_pose=null;_reason=reason;Publish();return (false,reason);
             }
-            bool reprojected = _render is not null && ReferenceEquals(_render.Authorization, previous.Authorization);
-            if (reprojected) _reason = "route-display-reprojected";
-            Publish(); return reprojected;
+        }
+    }
+
+    private (Dictionary<string,Matrix3?> Previous,Dictionary<string,Matrix3?> Next) PrepareDisplayRebase(
+        BoundResources bound,GeometryGroup? group,string preferred,CancellationToken token)
+    {
+        var previous=new Dictionary<string,Matrix3?>(StringComparer.Ordinal);var next=new Dictionary<string,Matrix3?>(StringComparer.Ordinal);
+        if(group is null)return (previous,next);
+        foreach(string floor in group.Model.TrackingByFloor.Keys)
+        { previous[floor]=Read(group.Model.RouteProfileId,floor);next[floor]=Read(preferred,floor); }
+        return (previous,next);
+        Matrix3? Read(string profile,string floor)
+        {
+            token.ThrowIfCancellationRequested();
+            try
+            {
+                var entry=bound.Catalog.Find(bound.Passports.Mode,bound.Passports.Season,bound.Passports.MapProfiles[group.Model.MapId],group.Model.MapId,floor);
+                var reference=entry is null?null:bound.LoadReference(entry).Value;
+                if(entry is null || reference is null)return null;
+                var selection=new DisplayLayerSelector(new OpenCvDisplayRasterValidator()).Select(bound.Catalog,entry,profile,DisplayAffine.Identity);
+                return bound.DisplayMaterials.Prepare(selection,reference,token).Layer?.Bridge.DisplayToReference is { } bridge?new(bridge.ToArray()):null;
+            }
+            catch(Exception error) when(error is IOException or ArgumentException or InvalidOperationException or KeyNotFoundException){return null;}
         }
     }
 

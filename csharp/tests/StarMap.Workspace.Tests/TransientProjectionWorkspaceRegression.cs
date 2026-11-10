@@ -13,6 +13,7 @@ using StarMap.App.Platform;
 using StarMap.Core.Display;
 using StarMap.Core.Input;
 using StarMap.Core.Settings;
+using StarMap.Core.Session;
 using StarMap.Runtime;
 
 internal static class TransientProjectionWorkspaceRegression
@@ -26,7 +27,7 @@ internal static class TransientProjectionWorkspaceRegression
         var originalClick=JsonNode.Parse(await File.ReadAllBytesAsync(Path.Combine(root,"phase26-original-game-click-projection-01","case.json")))!;
         var capture=new RecordedCapture(index);capture.Select("batch01-event-000006",false);
         var settings=new SettingsDocument(new JsonObject {["gameSeason"]="s0",["gameMode"]="nightmare",["routeProfileId"]="suju"});
-        var page=new RuntimePage(capture,_=>{});var shell=new WorkspaceWindow(Path.Combine(output,"projection-shell"),null);
+        var statuses=new List<string>();var page=new RuntimePage(capture,statuses.Add);var shell=new WorkspaceWindow(Path.Combine(output,"projection-shell"),null);
         await Field<RuntimePage>(shell,"runtimePage").CloseAsync();
         typeof(WorkspaceWindow).GetField("runtimePage",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(shell,page);
         Field<RuntimeOverlayHost>(shell,"runtimeOverlay").Dispose();
@@ -97,11 +98,85 @@ internal static class TransientProjectionWorkspaceRegression
                 && images.Single(i=>ReferenceEquals(i.Source,selected.Image)).Visibility==Visibility.Visible
                 && images.Where(i=>!ReferenceEquals(i.Source,selected.Image)).All(i=>i.Visibility!=Visibility.Visible),
                 "projection keeps all Image/BitmapSource/transform instances resident and changes only target visibility and common matrix");
+            int authorCalls=capture.Calls;var authorBefore=page.State!.Context;
+            check(await page.Configure(resources,new SettingsDocument(new JsonObject {["gameSeason"]="s0",["gameMode"]="nightmare",["routeProfileId"]="shared-structure"})),
+                "projection saved author preference passes through real RuntimePage configuration and Session");
+            await page.DrainAsync();var author=page.ReadRender();
+            check(author is {ProjectionOnly:true,PresentationOffsetX:15,PresentationOffsetY:-6} && author.MaterialToken!=projected.MaterialToken
+                && capture.Calls==authorCalls && page.State!.Context.FrameId==authorBefore.FrameId && page.State.Context.FloorId=="2"
+                && page.State.Context.ProfileId=="shared-structure" && page.State.NativePose is null
+                && !page.State.Display.CanonicalVerified && runtime.ReadMaterialToRemember() is null,
+                "projection author configuration replaces display token without capture, identity/geometry promotion or pan duplication");
+            clock.Restart();
+            while(Field<WpfRuntimeSceneMaterial?>(materialHost,"preparedMaterial") is not { } next || !next.Matches(author!))
+            {if(clock.Elapsed>TimeSpan.FromSeconds(15))throw new TimeoutException("projection author material consumer");await Task.Delay(5);}
+            var authorReady=Field<WpfRuntimeSceneMaterial>(materialHost,"preparedMaterial");
+            var authorOriginal=JsonNode.Parse(await File.ReadAllBytesAsync(Path.Combine(root,"phase27-original-projection-author-nightmare-03","cases.json")))!["cases"]!.AsArray()
+                .First(row=>row!["scenario"]!.GetValue<string>()=="same-profile")!["render"]!;
+            check(DisplayAffine.TryRead(JsonSerializer.SerializeToElement(authorOriginal["matrix"]),out var authorExpected),
+                "projection shared-layer author target uses an independent original current-frame matrix");
+            var authorLayer=authorReady.Layers.Single(layer=>layer.Floor=="2");
+            foreach(int dpi in new[]{96,120,144,192})
+            {
+                var frame=authorReady.Frame(ticket,author!,.7);visual.Apply(frame,dpi,dpi);var reference=new WpfAlignedOverlayVisual();
+                reference.Apply(WpfAlignedOverlaySurface.PrepareAffine(ticket,authorLayer.Image,WpfRuntimeSceneMaterial.Matrix(authorExpected),frame.Client,.7),dpi,dpi);
+                byte[] actual=Render(visual,g.Width,g.Height,dpi),wanted=Render(reference,g.Width,g.Height,dpi);
+                check(actual.AsSpan().SequenceEqual(wanted) && Enumerable.Range(0,actual.Length/4).Any(i=>actual[i*4+3]!=0),
+                    "projection author consumer software pixels preserve original geometry and one offset at DPI "+dpi);
+            }
+            int authorCaptureDelta=capture.Calls-authorCalls;
+            var session=Field<SessionService>(page,"session");var beforeCancel=runtime.ReadState().Context;
+            var reappliedSettings=new SettingsDocument(new JsonObject {["gameSeason"]="s0",["gameMode"]="nightmare",["routeProfileId"]="suju"});
+            Field<DispatcherTimer>(page,"observationTimer").Stop();
+            bool cancelledApplied;
+            using(var held=new ProjectionAuthorMaterialHold(runtime))
+            {
+                var applying=page.Configure(resources,reappliedSettings);clock.Restart();
+                while(runtime.ReadState().Context.ProfileId!="suju" || Field<object?>(session,"_active") is null)
+                {if(clock.Elapsed>TimeSpan.FromSeconds(10))throw new TimeoutException("page author cancellation admission");await Task.Delay(1);}
+                var active=Field<object>(session,"_active");
+                check(!applying.IsCompleted && held.Held && session.Read().PendingAction=="set_context",
+                    "projection page author worker is held at the actual material cache before controlled host cancellation");
+                ((CancellationTokenSource)active.GetType().GetProperty("Cancellation")!.GetValue(active)!).Cancel();
+                held.Release();cancelledApplied=await applying;await page.DrainAsync();
+            }
+            Field<DispatcherTimer>(page,"observationTimer").Stop();session.RefreshRuntime();
+            check(page.ReadRender() is null && runtime.ReadState().MapOpen && runtime.ReadState().Context.FrameId==beforeCancel.FrameId
+                && runtime.ReadState().Context.ProfileId=="suju" && capture.Calls==authorCalls,
+                "projection cancelled page work retains observation and saved selection while public pixels are hidden");
+            var retrySessionBefore=session.Read();
+            bool reapplied=await page.Configure(resources,reappliedSettings);await page.DrainAsync();
+            Field<DispatcherTimer>(page,"observationTimer").Stop();var retryRender=page.ReadRender();
+            await File.WriteAllTextAsync(Path.Combine(output,"projection-author-reapply-ui.json"),JsonSerializer.Serialize(new {cancelledApplied,reapplied,
+                hasRender=retryRender is not null,state=runtime.ReadState(),retrySessionBefore,retrySessionAfter=session.Read(),statuses,captureDelta=capture.Calls-authorCalls,
+                scope="The actual Session work CancellationTokenSource is cancelled while the real material cache is held; retry uses unmodified RuntimePage.Configure/Session. Background observation timer is stopped to isolate display operations; no Runtime state or solver is replaced."},new JsonSerializerOptions{WriteIndented=true}));
+            check(reapplied && retryRender is {ProjectionOnly:true} && retryRender.MaterialToken!=author!.MaterialToken
+                && capture.Calls==authorCalls && runtime.ReadState().Context.FrameId==beforeCancel.FrameId
+                && runtime.ReadState().NativePose is null && runtime.ReadMaterialToRemember() is null,
+                "projection same saved settings reapplication reaches Runtime display retry through the actual Page/Session");
+            check(!cancelledApplied,"projection cancelled settings work is not reported applied merely because selection was saved");
+            var failedSettings=new SettingsDocument(new JsonObject {["gameSeason"]="s0",["gameMode"]="nightmare",["routeProfileId"]="shared-structure"});
+            bool failedApplied;
+            using(var badDeclaration=new ProjectionAuthorCoordinateFault(runtime,"nightmare",runtime.ReadState().Context.MapId!))
+                failedApplied=await page.Configure(resources,failedSettings);
+            await page.DrainAsync();Field<DispatcherTimer>(page,"observationTimer").Stop();
+            check(!failedApplied && page.ReadRender() is null && runtime.ReadState().MapOpen
+                && runtime.ReadState().Context.FrameId==beforeCancel.FrameId && capture.Calls==authorCalls,
+                "projection real display-declaration rejection preserves observation and reports incomplete page application");
+            check(await page.Configure(resources,failedSettings),"projection restored metadata allows saved static preference application");
+            await page.DrainAsync();Field<DispatcherTimer>(page,"observationTimer").Stop();
+            check(page.ReadRender() is null && runtime.ReadState().NativePose is null && capture.Calls==authorCalls,
+                "projection page reapplication after true material failure never revives its retired accepted source");
+            Field<Button>(page,"acquire").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));await page.DrainAsync();clock.Restart();
+            while(page.ReadRender() is not {ProjectionOnly:true})
+            {if(clock.Elapsed>TimeSpan.FromSeconds(15))throw new TimeoutException("projection explicit page recovery");await Task.Delay(5);}
+            check(capture.Calls==authorCalls+1 && page.State!.Context.FrameId!=beforeCancel.FrameId && page.State.NativePose is null
+                && runtime.ReadMaterialToRemember() is null,"projection actual read button obtains the fresh observation required after material failure");
             var nativeSurface=Field<WpfAlignedOverlaySurface>(materialHost,"surface");
             check(nativeSurface.NativeHandle==0 && !nativeSurface.IsVisible && materialCapture.Binding is null && messages.Count==0,
                 "projection recorded fixture and material ACK never authorize a native window or Live game display");
             await File.WriteAllTextAsync(Path.Combine(output,"projection-workspace.json"),JsonSerializer.Serialize(new {observed=observed.Context,
-                after=page.State!.Context,deliveries=deliveries.Count,scope="Actual UI floor button, strict pointer/controller/Workspace/Page/Session/material-ready host and software pixels at four DPIs; actual resources/recorded PNG and independent original matrix. Relation-provider data is explicitly synthetic. No real native relation, game/physical input/GPU-present or latency acceptance."},new JsonSerializerOptions{WriteIndented=true}));
+                after=page.State!.Context,authorCaptureDelta,recoveryCaptureDelta=capture.Calls-authorCalls,deliveries=deliveries.Count,scope="Actual UI floor/read buttons and saved author configuration, strict pointer/controller/Workspace/Page/Session/material-ready host and software pixels at four DPIs; actual resources/recorded PNG and independent original matrices. Relation data, controlled host cancellation and display declaration fault are explicitly scoped fixtures. Actual authors fall back to shared structure. No native relation, author pixels, game/physical input/GPU-present or latency acceptance."},new JsonSerializerOptions{WriteIndented=true}));
             async Task Pointer(string phase,int px,int py,long gesture)
             {
                 inputSource.NowSeconds=Now();var p=new GlobalInputPointerEvent(phase,px,py,inputSource.NowSeconds,42,42,inputSource.Generation,1,
