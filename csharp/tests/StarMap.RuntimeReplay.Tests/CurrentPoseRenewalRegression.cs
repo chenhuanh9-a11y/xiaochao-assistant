@@ -112,9 +112,10 @@ internal static class CurrentPoseRenewalRegression
                 JsonSerializer.SerializeToElement(payload), new(sequence.Issue(), runtime.ReadSnapshot().Context)), default).AsTask();
         }
         await LateAcknowledgementDuringCapture();
-        await RetryPendingGroupChoice();
+        await RetryPendingGroupChoice(true);
+        await RetryPendingGroupChoice(false);
 
-        async Task RetryPendingGroupChoice()
+        async Task RetryPendingGroupChoice(bool rejectBeforeRefresh)
         {
             var capture = new RecordedCapture(index); var runtime = new LiveRuntime(capture, resources); var sequence = new SessionSequencer();
             try
@@ -125,17 +126,34 @@ internal static class CurrentPoseRenewalRegression
                 var choice = await Ask("select_group_member", new { mapId = "nightmare-12", groupId = initial.IdentityGroupId,
                     groupGeneration = scope.Generation, cycleId = scope.CycleId, floor = "1" });
                 var pending = runtime.ReadPendingGroupMaterial();
-                await File.WriteAllTextAsync(Path.Combine(output, "renewal-group-selection.json"), JsonSerializer.Serialize(new {
+                string scenario=rejectBeforeRefresh?"renewal-group":"coalesced-unacknowledged-group";
+                await File.WriteAllTextAsync(Path.Combine(output, scenario+"-selection.json"), JsonSerializer.Serialize(new {
                     result = choice.Receipt, state = runtime.ReadState(), pending = pending?.MapId
                 }, new JsonSerializerOptions { WriteIndented = true }));
-                check(pending is not null && runtime.RejectGroupMaterial(pending, "recorded-material-readiness-failure-control")
-                    && runtime.ReadState().GroupChoice.Status == "awaiting-geometry" && runtime.TryReadRender(out _),
-                    "actual registered-member selection retains old visible material after explicit consumer failure");
+                if(rejectBeforeRefresh)
+                    check(pending is not null && runtime.RejectGroupMaterial(pending, "recorded-material-readiness-failure-control")
+                        && runtime.ReadState().GroupChoice.Status == "awaiting-geometry" && runtime.TryReadRender(out _),
+                        "actual registered-member selection retains old visible material after explicit consumer failure");
+                else
+                    check(pending is not null && runtime.ReadState().GroupChoice.Status=="awaiting-material" && runtime.TryReadRender(out _),
+                        "real registered-member material is still pending without an injected failure or readiness ACK");
+                int calls=capture.Calls;
                 var result = await Ask("refresh_map"); var after = runtime.ReadState();
-                await File.WriteAllTextAsync(Path.Combine(output, "renewal-group-retry.json"), JsonSerializer.Serialize(new {
+                await File.WriteAllTextAsync(Path.Combine(output, scenario+"-retry.json"), JsonSerializer.Serialize(new {
                     result = result.Receipt, after, pending = runtime.ReadPendingGroupMaterial()?.MapId,
-                    scope = "Real current PNG, solver, selection and renewal; only material failure is explicit consumer seam. No pose injection."
+                    rejectBeforeRefresh,scope = "Real current PNG, solver, selection and renewal; optional explicit consumer failure is separately labelled. No pose injection."
                 }, new JsonSerializerOptions { WriteIndented = true }));
+                if(!rejectBeforeRefresh)
+                {
+                    // The original refresh entry coalesces a pending material
+                    // transaction before capture or renewal, preserving its ACK.
+                    check(result.Receipt.Reason=="refresh-coalesced" && capture.Calls==calls && after.Context.FrameId==initial.Context.FrameId
+                        && ReferenceEquals(pending,runtime.ReadPendingGroupMaterial()),
+                        "original pending-transaction guard coalesces refresh before capture and preserves the same current material");
+                    check(runtime.AcceptGroupMaterialReady(pending!) && runtime.ReadState().Context.MapId=="nightmare-12",
+                        "coalescing leaves the actual pending member readiness valid and only its ACK commits the user's choice");
+                    return;
+                }
                 check(result.Receipt.Success && after.GroupChoice.DesiredMapId == "nightmare-12"
                     && runtime.ReadPendingGroupMaterial()?.MapId == "nightmare-12" && after.GroupChoice.Status == "awaiting-material",
                     "successful current-pose renewal still retries the user's waiting registered-member selection");

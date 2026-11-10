@@ -572,7 +572,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         lock (_sync)
         {
             RequireCurrent(epoch, token, captured, bound);
-            if (request.Action is "refresh_map" or "observe_manual_floor" or "confirm_route")
+            if (request.Action is "refresh_map" or "observe_manual_floor" or "confirm_route" || wasOpen && request.Action=="capture_now")
             {
                 RevokeDisplay(floor is null ? "current-floor-unavailable" : "new-capture");
                 _entryCandidates.Clear();
