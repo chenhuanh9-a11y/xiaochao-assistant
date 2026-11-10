@@ -10,13 +10,20 @@ internal sealed class RecordedCapture(Dictionary<string, JsonObject> index) : IC
     JsonObject? selected; CaptureStamp? current; long generation = 1, sequence;
     CapturedClientGeometry? acquiredGeometry;
     Hold? nextHold;
+    int holdAtCall;
     string? nextFailure;
     Exception? nextError;
-    public sealed record Hold(TaskCompletionSource Started, TaskCompletionSource Release);
-    public Hold HoldNext() => nextHold = new(new(TaskCreationOptions.RunContinuationsAsynchronously), new(TaskCreationOptions.RunContinuationsAsynchronously));
+    public sealed record Hold(TaskCompletionSource Started, TaskCompletionSource Release,bool IgnoreCancellation=false);
+    public Hold HoldNext(int capturesUntilHold=1,bool ignoreCancellation=false)
+    {
+        if(capturesUntilHold<1)throw new ArgumentOutOfRangeException(nameof(capturesUntilHold));
+        holdAtCall=Calls+capturesUntilHold;
+        return nextHold=new(new(TaskCreationOptions.RunContinuationsAsynchronously),new(TaskCreationOptions.RunContinuationsAsynchronously),ignoreCancellation);
+    }
     public void FailNext(string reason="recorded-capture-unavailable")=>nextFailure=reason;
     public void ThrowNext(Exception error)=>nextError=error;
     public int Calls { get; private set; }
+    public Action<byte[],int,int,int>? TransformPixels {get;set;}
     public bool IsBound => true;
     // Explicitly changed only by isolated provenance-boundary tests.
     public CaptureEvidenceKind EvidenceKind {get;set;}=CaptureEvidenceKind.RecordedClient;
@@ -35,10 +42,11 @@ internal sealed class RecordedCapture(Dictionary<string, JsonObject> index) : IC
     public async ValueTask<ClientCaptureResult> CaptureAsync(CancellationToken cancellation)
     {
         cancellation.ThrowIfCancellationRequested(); Calls++; current = null;
-        if (nextHold is { } hold)
+        if (nextHold is { } hold && Calls>=holdAtCall)
         {
             nextHold = null; hold.Started.TrySetResult();
-            await hold.Release.Task.WaitAsync(cancellation);
+            if(hold.IgnoreCancellation)await hold.Release.Task;
+            else await hold.Release.Task.WaitAsync(cancellation);
         }
         if(nextError is { } error){nextError=null;throw error;}
         if(nextFailure is { } failure){nextFailure=null;return new(null,failure);}
@@ -50,6 +58,7 @@ internal sealed class RecordedCapture(Dictionary<string, JsonObject> index) : IC
         int width = bgra.Cols, height = bgra.Rows, stride = checked(width * 4);
         var pixels = new byte[checked(stride * height)];
         for (int row = 0; row < height; row++) Marshal.Copy(bgra.Ptr(row), pixels, row * stride, stride);
+        TransformPixels?.Invoke(pixels,width,height,stride);
         var geometry = sample["physicalClient"]!;
         if (geometry["Width"]!.GetValue<int>() != width || geometry["Height"]!.GetValue<int>() != height)
             throw new InvalidDataException("Recorded physical client disagrees with actual PNG.");

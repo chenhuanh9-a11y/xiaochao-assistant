@@ -25,7 +25,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         "locked-canvas-floor-reuse-unavailable", "native-identity-strong-conflict-producer-unavailable",
         "pose-index-candidate-provider-unavailable",
         "retained-group-fit-context-unavailable",
-        "drag-floor-projection-and-fresh-group-choice-unavailable", "foreground-loss-return-plan-unavailable"];
+        "drag-floor-projection-unavailable", "foreground-loss-return-plan-unavailable"];
     private readonly object _sync = new();
     private readonly SemaphoreSlim _worker = new(1, 1);
     private readonly ICapturePort _capture;
@@ -185,10 +185,11 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         using var registration = cancellationToken.Register(() =>
         {
             lock (_sync)
-                if (!_closed && _operation == operation && _progressRequest == request.Context && _progressEpoch==_epoch && !PublicationRetired(request))
+                if (!_closed && _operation == operation && ReferenceEquals(_executingRequest,request)
+                    && _progressRequest == request.Context && _progressEpoch==_epoch && !PublicationRetired(request))
                 {
-                    if (request.Action == "select_group_member") DiscardGroupMaterial("group-choice-cancelled");
-                    else { _epoch++; RevokeFrame("cancelled"); }
+                    if (GroupChoiceOwnsCancellation(request.Context)) DiscardGroupMaterial("group-choice-cancelled");
+                    else if(request.Action!="select_group_member" && _dragProbeWorkOwner!=request.Context) { _epoch++; RevokeFrame("cancelled"); }
                     Publish();
                 }
         });
@@ -213,7 +214,12 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         }
         finally
         {
-            lock(_sync){if(ReferenceEquals(_executingRequest,request))_executingRequest=null;}
+            lock(_sync)
+            {
+                if(ReferenceEquals(_executingRequest,request))_executingRequest=null;
+                if(_groupChoiceWorkOwner==request.Context)_groupChoiceWorkOwner=null;
+                if(_dragProbeWorkOwner==request.Context)_dragProbeWorkOwner=null;
+            }
             ReleaseRuntimeWorker();
         }
     }
@@ -238,6 +244,8 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 if (!RequestMatches(request)) return Receipt(request, false, "request-runtime-context-mismatch");
                 RequireCurrent(epoch, cancellationToken);
                 if(PointerRetired(request))return Receipt(request,false,"request-retired-by-floor-intent");
+                // Establish observation-only ownership before cancellation can publish.
+                if(DragCycleCurrent && PassiveObservation(request.Action))_dragProbeWorkOwner=request.Context;
                 _progressRequest = request.Context; _progressEpoch = epoch; _progressCancellation = cancellationToken;
                 if ((request.Action is "capture_now" or "observe_manual_floor") && !AcceptObservationSequence(request.Payload))
                     return Receipt(request, false, "map-input-sequence-expired");
@@ -260,7 +268,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 "observe_manual_floor" => await ObserveS1Floor(request,epoch,cancellationToken,true).ConfigureAwait(false),
                 "observe_candidate_floor" => await ObserveS1Floor(request,epoch,cancellationToken,false).ConfigureAwait(false),
                 "confirm_route" => await ConfirmMap(request, epoch, cancellationToken).ConfigureAwait(false),
-                "select_group_member" => SelectGroupMember(request, epoch, cancellationToken),
+                "select_group_member" => await SelectGroupMember(request, epoch, cancellationToken).ConfigureAwait(false),
                 "select_candidate" or "previous_candidate" or "next_candidate" => SelectCandidate(request),
                 "set_floor" or "cycle_floor" => await SetFloor(request, epoch, cancellationToken).ConfigureAwait(false),
                 "reselect_map" => ReselectMap(request),
@@ -598,7 +606,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         {
             var renewed = TryRenewCurrentPose(request, epoch, token, captured, bound, floor, floorRead, preparation);
             if (renewed is not null) return renewed.Receipt.Success
-                ? RetryDesiredGroupChoice(request, epoch, token, renewed) : renewed;
+                ? await RetryDesiredGroupChoice(request, epoch, token, renewed).ConfigureAwait(false) : renewed;
         }
         lock (_sync)
         {
@@ -662,7 +670,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             map = RankS0(epoch, token, captured, bound, floor, current, preparation);
         }
         if (map is null) return Receipt(request, false, "candidates-awaiting-confirmation");
-        return RetryDesiredGroupChoice(request, epoch, token, Fit(request, epoch, token, captured, bound, map, floor, current));
+        return await RetryDesiredGroupChoice(request, epoch, token, Fit(request, epoch, token, captured, bound, map, floor, current)).ConfigureAwait(false);
     }
 
     private sealed record PreparedRuntimeFit(ResourceCatalogEntry Entry, JsonObject Result, double[][]? Matrix,
@@ -671,7 +679,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     // Produces a candidate without changing the current identity, pose or pixels.
     // Ordinary fits and a staged group choice consume this same numerical path.
     private PreparedRuntimeFit? PrepareFit(long epoch, CancellationToken token,
-        CapturedClientFrame captured, BoundResources bound, string map, string floor, Mat frame)
+        CapturedClientFrame captured, BoundResources bound, string map, string floor, Mat frame,bool independentObservation=false)
     {
         CheckCurrent(epoch, token, captured, bound);
         var profile = bound.Passports.MapProfiles[map];
@@ -682,7 +690,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         {
             RequireCurrent(epoch, token, captured, bound);
             owner = _roundFitOwner; preferred = _selection.ProfileId;
-            entryCandidate = _entryCandidates.GetValueOrDefault(map)?.DeepClone().AsObject();
+            entryCandidate = independentObservation?null:_entryCandidates.GetValueOrDefault(map)?.DeepClone().AsObject();
         }
         JsonObject fit; SharedStructureData? source; JsonArray? stages = null, events = null;
         PreparedSteadyFit? steady = null;
@@ -698,10 +706,11 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         }
         else
         {
-            var group = GroupForFit(epoch, owner, captured, bound, entry);
+            var group = independentObservation?null:GroupForFit(epoch, owner, captured, bound, entry);
             S0HostFit? targetHost = null;
             var services = new S0HostFitServices(Steady: context =>
             {
+                if(independentObservation)return null;
                 steady = TrySteady(epoch, token, captured, bound, entry, context.Reference, frame, preferred,
                     context.CanonicalPackId, out steadyDiagnostic);
                 return steady?.Fit;
@@ -710,7 +719,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 : targetHost!.EvaluateEstablishedGroup(context).Fit);
             using var host = targetHost = new S0HostFit(bound.Catalog, bound.Passports, services, bound.LoadReference);
             var result = host.Fit(frame, entry, entryCandidate, new() { OwnerScope = owner, Epoch = epoch, Group = group,
-                SteadyRequested = SteadyEnabled },
+                SteadyRequested = !independentObservation && SteadyEnabled },
                 () => Obsolete(epoch, token, captured, bound), token);
             fit = result.Fit; source = result.Reference; stages = result.Stages; events = result.Events;
         }

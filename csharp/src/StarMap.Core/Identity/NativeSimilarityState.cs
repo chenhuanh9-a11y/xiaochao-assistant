@@ -52,6 +52,17 @@ public sealed class NativeSimilarityState
         return new(d,Context);
     }
 
+    /// <summary>A material-accepted human choice retains the registered family and retires earlier choice scopes.</summary>
+    public bool TrySelectRegisteredMember(string mapId,out NativeSimilarityState selected)
+    {
+        selected=this;
+        if(!RegisteredGroup || !MemberIds.Contains(mapId,StringComparer.Ordinal))return false;
+        var d=data.DeepClone().AsObject();
+        d["provisionalMemberId"]=mapId;d["verifiedMemberId"]=null;d["pending"]=false;d["memberReference"]=null;
+        d["generation"]=(int)Number(d["generation"])+1;
+        selected=new(d,Context);return true;
+    }
+
     public NativeSimilarityState Apply(JsonObject proposal,NativeIdentityContext context,string observationId,bool groupOnly=false)
     {
         bool newOwner=Context is not null && (Context.Season!=context.Season || Context.Mode!=context.Mode || Context.RoundId!=context.RoundId || Context.MapId!=context.MapId);

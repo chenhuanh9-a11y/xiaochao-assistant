@@ -166,8 +166,9 @@ public sealed partial class LiveRuntime
 
     private CanonicalDisplayCommit PrepareCanonicalCommit(PreparedRuntimeDisplay prepared,
         IReadOnlyDictionary<string, object?> residual, CapturedClientFrame frame, string map, string floor,
-        AlignmentCoreV2? alignment = null)
+        AlignmentCoreV2? alignment = null,long? observationGeneration=null)
     {
+        long generation=observationGeneration??_frameGeneration;
         var selection = prepared.Selection;
         var layer = prepared.Material.Layer;
         var bridge = prepared.CanonicalBasis;
@@ -186,8 +187,8 @@ public sealed partial class LiveRuntime
         alignment ??= new(floors: _resources!.Passports.Floors);
         var priorGroup = GeometryGroupCurrent(_geometryGroup, frame, _resources!, map) ? _geometryGroup : null;
         SeedGroupCore(alignment, priorGroup);
-        alignment.BeginObservation(new(_roundId!), map, floor, _frameGeneration, [frame.Stamp.FrameId, _resources!.Id]);
-        var candidate = new AlignmentCandidate(map, floor, new(canonical.ToArray()), "initial-structure-v2", _frameGeneration,
+        alignment.BeginObservation(new(_roundId!), map, floor, generation, [frame.Stamp.FrameId, _resources!.Id]);
+        var candidate = new AlignmentCandidate(map, floor, new(canonical.ToArray()), "initial-structure-v2", generation,
             currentFrameVerified: true, residualVerified: true, globalResidualVerified: true,
             metadata: new Dictionary<string, object?> { ["routeProfileId"] = "shared-canonical", ["independentFloorAnchor"] = true });
         var verdict = alignment.Adjudicate(candidate);
@@ -200,7 +201,7 @@ public sealed partial class LiveRuntime
         var grant = new CanonicalGrant(frame.Stamp, _epoch, authorization, bridge.CanonicalPackId, canonical, bridge.Reference!,
             prepared.NativeReference, prepared.NativeToClient, prepared.ProposedCoverage, stagedGroup);
         SeedGroupCore(alignment, stagedGroup);
-        var render = layer is null ? null : new RuntimeRenderPacket(layer, frame, authorization, _frameGeneration, _epoch,
+        var render = layer is null ? null : new RuntimeRenderPacket(layer, frame, authorization, generation, _epoch,
             scene: ProjectMapScene(prepared,floor));
         return new(alignment, grant, render, new(layer is not null, true, render?.IsLive == true,
             layer is not null ? "display-prepared" : prepared.Material.Reason, selection.PreferredProfileId,

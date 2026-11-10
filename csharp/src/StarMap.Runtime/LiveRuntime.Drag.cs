@@ -14,6 +14,7 @@ public sealed partial class LiveRuntime
     MapDragCycle? _dragCycle;
     long _presentationRevision;
     SessionRuntimeRequest? _executingRequest;
+    SessionRequestContext? _dragProbeWorkOwner;
     sealed record MapDragGesture(GlobalInputPointerEvent Press,GameFloorClickContext Context,string Floor,
         double BaseX,double BaseY,long Sequence,double TotalX=0,double TotalY=0,bool Moved=false,long PreparedSequence=0);
     sealed record MapDragCycle(string Round,string Resource,string Map,long Cycle,double X,double Y,long Gesture,long Sequence);
@@ -115,6 +116,7 @@ public sealed partial class LiveRuntime
             cycle=_dragCycle!;owner=_render;bound=_resources!;
             if(request.Action=="probe_map_after_drag" && (GroupNumber(request.Payload,"gestureId")!=cycle.Gesture
                 || GroupNumber(request.Payload,"pointerSequence")!=cycle.Sequence))return Receipt(request,false,"drag-probe-expired");
+            _dragProbeWorkOwner=request.Context;
             _workActive=true;Publish();
         }
         try

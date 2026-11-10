@@ -34,7 +34,7 @@ internal static class GameMapDragWorkspaceRegression
             Field<RuntimeOverlayHost>(shell,"runtimeOverlay").Dispose();
             var consume=typeof(WorkspaceWindow).GetMethod("ConsumeInput",BindingFlags.Instance|BindingFlags.NonPublic)!;
             var bindings=GlobalInputBindings.FromSettings(settings);var source=new FixtureInputSource(bindings){NowSeconds=Now()};
-            var deliveries=new List<WpfGlobalInputDelivery>();long sequence=0;
+            var deliveries=new List<WpfGlobalInputDelivery>();long sequence=0,gesture=1;
             await using var host=new WpfGlobalInputController(Dispatcher.CurrentDispatcher,bindings,
                 ()=>new(new(42,true,42,false,true,true),BindingGeneration:1,PointerTarget:new(42,"runtime-slot",0,page.GamePointerContextSlot),AllowPointerIntentPress:true),
                 delivery=>{deliveries.Add(delivery);consume.Invoke(shell,[delivery]);},source);
@@ -88,15 +88,53 @@ internal static class GameMapDragWorkspaceRegression
                 check(runtime.TryReadRender(out var released) && released!.PresentationOffsetX==15 && released.PresentationOffsetY== -6
                     && page.State!.NativePose==state.NativePose && page.SessionView?.LastReceipt is {Action:"probe_map_after_drag",Success:true},
                     name+" actual release includes final delta and routes only to post-drag observation");
+                object? groupEvidence=null;double[] finalOffset=[15,-6];
+                if(item.Item1=="s0" && item.Item2=="nightmare")
+                {
+                    string sourceFrame=page.State!.Context.FrameId!;int calls=capture.Calls;
+                    page.RefreshGroupControls();var members=Field<ComboBox>(page,"groupMember");var choose=Field<Button>(page,"chooseGroupMember");
+                    check(choose.IsEnabled && members.Items.Cast<RuntimeGroupMember>().Any(member=>member.MapId=="nightmare-12"),
+                        "drag-group real UI offers only the registered target");
+                    members.SelectedValue="nightmare-12";hold=capture.HoldNext();
+                    choose.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));await hold.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                    check(page.State!.Context.FrameId==sourceFrame && page.GamePointerContextSlot.Read()==context
+                        && ReferenceEquals(page.ReadRender(),released),"drag-group actual button captures fresh target while source frame/pixels stay published");
+                    hold.Release.TrySetResult();await page.DrainAsync();var target=page.ReadPendingGroupMaterial();
+                    check(target is {MapId:"nightmare-12"} && capture.Calls==calls+1 && target.Stamp.FrameId!=sourceFrame
+                        && target.Generation==released!.Generation+1 && ReferenceEquals(page.ReadRender(),released)
+                        && page.State!.Context.FrameId==sourceFrame && page.GamePointerContextSlot.Read()==context,
+                        "drag-group Session collects target without publishing staged observation");
+                    page.SetAlignedVisibility(false);using var materialCapture=new WindowsRuntimeCapturePort();
+                    var messages=new List<string>();
+                    using(var materialHost=new RuntimeOverlayHost(Dispatcher.CurrentDispatcher,page.ReadRender,materialCapture,messages.Add,
+                        visible:()=>page.AlignedVisible,readPendingMaterial:page.ReadPendingGroupMaterial,acceptMaterialReady:page.AcceptGroupMaterialReady,
+                        rejectMaterial:page.RejectGroupMaterial,readMaterialToRemember:page.ReadMaterialToRemember,rememberMaterialReady:page.RememberMaterialReady))
+                    {
+                        var clock=Stopwatch.StartNew();while(page.State?.GroupChoice.HeldMapId!="nightmare-12")
+                        {if(clock.Elapsed>TimeSpan.FromSeconds(15))throw new TimeoutException("fresh group material ACK");await Task.Delay(5);}
+                        await page.DrainAsync();
+                        check(ReferenceEquals(page.ReadRender(),target) && page.State!.Context.FrameId==target!.Stamp.FrameId
+                            && page.State.NativePose!.FrameId==target.Stamp.FrameId && !target.IsTransient && target.PresentationOffsetX==0
+                            && page.GamePointerContextSlot.Read()!=context,"drag-group actual WPF readiness callback atomically publishes fresh target frame/context without old offset");
+                        var actualSurface=Field<WpfAlignedOverlaySurface>(materialHost,"surface");
+                        check(actualSurface.NativeHandle==0 && !actualSurface.IsVisible && materialCapture.Binding is null && messages.Count==0,
+                            "drag-group hidden recorded ACK never grants a native window or Live display");
+                        context=page.GamePointerContextSlot.Read()!;gesture=2;
+                        await Pointer("down",x,y);await Pointer("up",x+2,y+3);await page.DrainAsync();
+                        check(page.ReadRender() is {PresentationOffsetX:2,PresentationOffsetY:3} && page.State!.Context.MapId=="nightmare-12",
+                            "drag-group next physical pointer lane starts from new target with no source-offset carryover");
+                        finalOffset=[2,3];groupEvidence=new {sourceFrame,targetFrame=target!.Stamp.FrameId,page.State.GroupChoice};
+                    }
+                }
                 runtime.InvalidateCapture("map-closed");page.SuspendInput("map-closed");
                 check(!runtime.TryReadRender(out _),name+" hard close withdraws translated authorization");
                 await File.WriteAllTextAsync(Path.Combine(output,"drag-workspace-"+name+".json"),JsonSerializer.Serialize(new {
-                    capture.Calls,deliveries=deliveries.Count,offset=new[]{15,-6},scope="Actual hidden Workspace/Page/Session/controller bounded channel and WPF software pixels at four DPIs. Only OS capture/input/foreground replaced. C1 user choice; 106008 simulated choice. No native/game acceptance."
+                    capture.Calls,deliveries=deliveries.Count,offset=finalOffset,groupEvidence,scope="Actual Workspace/Page/Session/controller bounded channel and WPF software pixels at four DPIs; registered-group UI button and production hidden material-ready host/ACK. Only OS capture/input/foreground replaced. C1 user choice; 106008 simulated choice. No native/game acceptance."
                 },new JsonSerializerOptions{WriteIndented=true}));
                 async Task Pointer(string phase,int px,int py)
                 {
                     source.NowSeconds=Now();var pointer=new GlobalInputPointerEvent(phase,px,py,source.NowSeconds,42,42,source.Generation,1,
-                        ContextId:context.ContextId,Sequence:++sequence,GestureId:1,PressContextSnapshot:context);
+                        ContextId:context.ContextId,Sequence:++sequence,GestureId:gesture,PressContextSnapshot:context);
                     source.Post(new(GlobalInputNotificationKind.Pointer,source.Generation,Pointer:pointer));
                     var clock=Stopwatch.StartNew();while(!deliveries.Any(d=>ReferenceEquals(d.Notification.Pointer,pointer)))
                     {if(clock.Elapsed>TimeSpan.FromSeconds(10))throw new TimeoutException("drag pointer delivery");await Task.Delay(5);}

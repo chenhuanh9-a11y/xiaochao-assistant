@@ -197,9 +197,21 @@ internal static class IdentityEntryRuntimeRegression
                             default: await Ask(action, step["payload"]); break;
                         }
                         object? identity = NativeIdentity(runtime);
-                        if (identity is not null && !ReferenceEquals(previous, identity)) published++;
+                        // The original counter observes identity-stage-result, not material ACK.
+                        // Immutable manual selection also replaces the native state, independently.
+                        if (action != "sibling-ack" && identity is not null && !ReferenceEquals(previous, identity)) published++;
                         expectedPublications += step["countDelta"]?["identity-stage-result"]?.GetValue<int>() ?? 0;
                         var state = runtime.ReadState(); var expected = step["after"]!;
+                        if(action=="sibling-ack" && acceptedAck==true)
+                        {
+                            var before=(NativeSimilarityState)previous!;var after=(NativeSimilarityState)identity!;
+                            var expectedNative=before.Snapshot();var originalNative=expected["native"]!;
+                            foreach(var (field,originalField) in new[]{("state","state"),("generation","generation"),
+                                ("provisionalMemberId","provisional_member_id"),("verifiedMemberId","verified_member_id")})
+                                expectedNative[field]=originalNative[originalField]?.DeepClone();
+                            check(JsonNode.DeepEquals(after.Snapshot(),expectedNative) && after.Context==before.Context
+                                && after.MemberIds.SequenceEqual(before.MemberIds),name+"/"+step["index"]+" manual ACK follows original native generation/selection without restaging observations");
+                        }
                         var pendingMaterial = runtime.ReadPendingGroupMaterial(); bool rendered = runtime.TryReadRender(out _);
                         evidence.Add(JsonSerializer.SerializeToNode(new { name, action, state, published, expectedPublications, acceptedAck,
                             pendingMap = pendingMaterial?.MapId, rendered }));
