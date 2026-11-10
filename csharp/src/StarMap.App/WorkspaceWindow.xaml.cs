@@ -60,7 +60,8 @@ public partial class WorkspaceWindow : Window
             () => runtimePage?.AlignedVisible ?? settings?.SheetVisibilityEnabled ?? true,
             () => runtimePage?.ReadPendingGroupMaterial(), packet => runtimePage?.AcceptGroupMaterialReady(packet) == true,
             (packet, reason) => runtimePage?.RejectGroupMaterial(packet, reason),
-            () => runtimePage?.ReadMaterialToRemember(), packet => runtimePage?.RememberMaterialReady(packet) == true);
+            () => runtimePage?.ReadMaterialToRemember(), packet => runtimePage?.RememberMaterialReady(packet) == true,
+            () => { runtimePage?.ObserveDisplayContext(); });
         pages["gallery"] = BuildGallery();
         pages["settings"] = BuildSettings();
         pages["help"] = BuildHelp();

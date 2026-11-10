@@ -18,6 +18,7 @@ internal sealed class RuntimeOverlayHost : IDisposable
     readonly Action<RuntimeRenderPacket, string> rejectMaterial;
     readonly Func<RuntimeRenderPacket?> readMaterialToRemember;
     readonly Func<RuntimeRenderPacket, bool> rememberMaterialReady;
+    readonly Action observeDisplayContext;
     readonly WpfAlignedOverlaySurface surface;
     readonly DispatcherTimer timer;
     RuntimeRenderPacket? requested, applied;
@@ -34,7 +35,8 @@ internal sealed class RuntimeOverlayHost : IDisposable
         WindowsRuntimeCapturePort capture, Action<string> report, Func<double>? opacity = null, Func<bool>? visible = null,
         Func<RuntimeRenderPacket?>? readPendingMaterial = null, Func<RuntimeRenderPacket, bool>? acceptMaterialReady = null,
         Action<RuntimeRenderPacket, string>? rejectMaterial = null,
-        Func<RuntimeRenderPacket?>? readMaterialToRemember = null, Func<RuntimeRenderPacket, bool>? rememberMaterialReady = null)
+        Func<RuntimeRenderPacket?>? readMaterialToRemember = null, Func<RuntimeRenderPacket, bool>? rememberMaterialReady = null,
+        Action? observeDisplayContext = null)
     {
         this.dispatcher = dispatcher; this.read = read; this.capture = capture; this.report = report;
         this.opacity = opacity ?? (() => .55);
@@ -44,6 +46,7 @@ internal sealed class RuntimeOverlayHost : IDisposable
         this.rejectMaterial = rejectMaterial ?? ((_, _) => { });
         this.readMaterialToRemember = readMaterialToRemember ?? (() => null);
         this.rememberMaterialReady = rememberMaterialReady ?? (_ => false);
+        this.observeDisplayContext = observeDisplayContext ?? (() => { });
         surface = new(dispatcher);
         capture.AcquireOverlayCaptureLease = SuspendForCapture;
         timer = new(TimeSpan.FromMilliseconds(50), DispatcherPriority.Background, (_, _) => Pulse(), dispatcher);
@@ -51,7 +54,7 @@ internal sealed class RuntimeOverlayHost : IDisposable
     }
 
     bool Current(RuntimeRenderPacket packet) => !disposed && visible() && captureLeases == 0 && packet.IsLive
-        && ReferenceEquals(read(), packet) && capture.IsForegroundCurrent(packet.Stamp);
+        && ReferenceEquals(read(), packet) && capture.IsForegroundObservationCurrent(packet.Stamp, packet.Client);
 
     void Pulse()
     {
@@ -63,6 +66,7 @@ internal sealed class RuntimeOverlayHost : IDisposable
             && !ReferenceEquals(candidate, rememberedMaterial) && !ReferenceEquals(candidate, failedMaterial))
             preparingGroupMaterial = PrepareGroupMaterial(candidate);
         var packet = read();
+        if (packet is null) observeDisplayContext();
         if (packet is null || !Current(packet)) { Withdraw(); return; }
         if (ReferenceEquals(failed, packet)) return;
         double desiredOpacity = opacity();

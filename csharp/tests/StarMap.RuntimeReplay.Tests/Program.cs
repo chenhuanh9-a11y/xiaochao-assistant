@@ -3,7 +3,7 @@ using System.Text.Json.Nodes;
 using StarMap.Core.Session;
 using StarMap.Runtime;
 
-if (args.Length == 5 && args[0] is "--identity-prior-only" or "--unselected-floor-only" or "--map-recovery-only" or "--map-recovery-late-only")
+if (args.Length == 5 && args[0] is "--identity-prior-only" or "--unselected-floor-only" or "--map-recovery-only" or "--map-recovery-late-only" or "--passive-refresh-only" or "--passive-context-only")
 {
     string priorOnlyOutput = Path.GetFullPath(args[4]);
     if (Directory.Exists(priorOnlyOutput)) throw new IOException("Preserve previous evidence; use a new output.");
@@ -21,6 +21,10 @@ if (args.Length == 5 && args[0] is "--identity-prior-only" or "--unselected-floo
             await MapRecoveryRuntimeRegression.Run(args[1], args[2], args[3], priorOnlyOutput, priorOnlyCheck);
         else if (args[0] == "--map-recovery-late-only")
             await MapRecoveryRuntimeRegression.RunLate(args[1], args[2], priorOnlyOutput, priorOnlyCheck);
+        else if (args[0] == "--passive-refresh-only")
+            await PassiveRefreshRuntimeRegression.Run(args[1], args[2], args[3], priorOnlyOutput, priorOnlyCheck);
+        else if (args[0] == "--passive-context-only")
+            await PassiveRefreshRuntimeRegression.RunContext(args[1], args[2], priorOnlyOutput, priorOnlyCheck);
         else await IdentityEntryRuntimeRegression.RunUnselectedFloor(args[1], args[2], args[3], priorOnlyOutput, priorOnlyCheck);
     }
     catch (Exception error)

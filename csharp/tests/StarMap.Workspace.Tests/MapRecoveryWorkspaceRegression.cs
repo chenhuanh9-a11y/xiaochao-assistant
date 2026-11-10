@@ -13,9 +13,9 @@ internal static class MapRecoveryWorkspaceRegression
     {
         var index = JsonNode.Parse(await File.ReadAllBytesAsync(Path.Combine(originalReplay, "all-samples.json")))!["samples"]!.AsArray()
             .ToDictionary(row => row!["id"]!.GetValue<string>(), row => row!.AsObject());
-        var capture = new RecordedCapture(index); capture.Select("batch01-event-000002");
+        var capture = new RecordedCapture(index) { Foreground = true }; capture.Select("batch01-event-000002");
         var page = new RuntimePage(capture, _ => { });
-        var timer = (DispatcherTimer)typeof(RuntimePage).GetField("recoveryTimer", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(page)!;
+        var timer = (DispatcherTimer)typeof(RuntimePage).GetField("observationTimer", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(page)!;
         try
         {
             check(!timer.IsEnabled && capture.Calls == 0, "recovery-construction-does-not-capture-or-start-a-timer");

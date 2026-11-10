@@ -57,6 +57,11 @@ public interface ICapturePort
     bool IsBound { get; }
     // Ports without a stable binding identity cannot authorize background recovery.
     CaptureBindingScope? BindingScope => null;
+    // Published observations can survive a subsequent passive acquisition.
+    // This verifies the original binding and physical geometry, not that its
+    // pixels are the latest acquired frame. Producers still use IsCurrent.
+    bool IsObservationContextCurrent(CapturedClientFrame frame) => IsCurrent(frame.Stamp);
+    bool IsForeground => false;
     ValueTask<ClientCaptureResult> CaptureAsync(CancellationToken cancellationToken);
     bool IsCurrent(CaptureStamp stamp);
 }

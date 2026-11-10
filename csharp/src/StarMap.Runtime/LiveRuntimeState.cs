@@ -50,6 +50,7 @@ public sealed record LiveRuntimeState(RuntimeContext Context, bool ResourcesBoun
     string Reason, JsonElement Diagnostics, IReadOnlyList<string> CapabilityGaps)
 {
     public MapOpenRecoveryStatus MapOpenRecovery { get; init; } = new(false);
+    public int ProbeMisses { get; init; }
     public bool Closed { get; init; }
     public string? ManualFloor { get; init; }
     public string? ObservedFloor { get; init; }

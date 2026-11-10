@@ -31,7 +31,7 @@ internal sealed class RuntimePage : UserControl
     LiveRuntimeState? renderedGroupState;
     readonly ComboBox floor = new() { MinWidth = 130, HorizontalAlignment = HorizontalAlignment.Left, DisplayMemberPath = "Label", SelectedValuePath = "Id" };
     readonly Button start, end, acquire, cancel, previous, next, confirm, pick, applyFloor, toggleVisibility;
-    readonly DispatcherTimer renderTimer, recoveryTimer;
+    readonly DispatcherTimer renderTimer, observationTimer;
     SessionService? session;
     LiveRuntime? runtime;
     CancellationTokenSource? pendingCapture;
@@ -45,7 +45,7 @@ internal sealed class RuntimePage : UserControl
     bool alignedVisible = true;
     string? resourceLease;
     readonly OrderedMapInput mapInput = new();
-    (long Ticket, long Input)? mapRead;
+    (long Ticket, long Input, string? PreviousFrame)? mapRead;
     internal Func<Task>? PrepareInput { get; set; }
     Func<Task>? toggleVisibilityRequested;
     internal Func<Task>? ToggleVisibilityRequested
@@ -127,8 +127,8 @@ internal sealed class RuntimePage : UserControl
         // treat an in-flight producer's new frame/map as an external invalidation.
         renderTimer = new(TimeSpan.FromMilliseconds(125), DispatcherPriority.Background, (_, _) => Render(), Dispatcher);
         // Runtime work must continue when this page or the main window is hidden.
-        recoveryTimer = new(TimeSpan.FromMilliseconds(200), DispatcherPriority.Background, (_, _) => RecoverMapOpen(), Dispatcher);
-        recoveryTimer.Stop();
+        observationTimer = new(TimeSpan.FromMilliseconds(200), DispatcherPriority.Background, (_, _) => ObserveOpenMap(), Dispatcher);
+        observationTimer.Stop();
         renderTimer.Stop(); Render();
         IsVisibleChanged += (_, _) =>
         {
@@ -266,7 +266,7 @@ internal sealed class RuntimePage : UserControl
                 await session.DrainAsync();
             }
             if (closed) return false;
-            recoveryTimer.Start();
+            observationTimer.Start();
             if (IsVisible) renderTimer.Start();
             var applied = runtime!.ReadState();
             bool succeeded = applied.ResourcesBound && applied.Context.Selection == desired;
@@ -281,10 +281,12 @@ internal sealed class RuntimePage : UserControl
         if (closed || configuring || loadingResources || session is null) return null;
         if (action == "toggle_round") action = runtime?.ReadState().RoundActive == true ? "end_round" : "start_round";
         if (action is "end_round" or "stop_round" or "reset_round") CancelDelay();
+        string? previousFrame = runtime?.ReadState().Context.FrameId;
         var result = session.Dispatch(action, payload is null ? null : JsonSerializer.SerializeToElement(payload));
         if (result.Disposition is SessionDispatchDisposition.Enqueued or SessionDispatchDisposition.Coalesced)
         {
-            if (action is "capture_now" or "map" or "recover_map_open") mapRead = (session.Read().Sequence.LastIssuedSequence, mapInput.Sequence);
+            if (action is "capture_now" or "map" or "recover_map_open" or "refresh_map")
+                mapRead = (session.Read().Sequence.LastIssuedSequence, mapInput.Sequence, previousFrame);
             if (action is "end_round" or "stop_round" or "reset_round") { mapInput.Reset(); mapRead = null; }
         }
         if (result.Disposition is SessionDispatchDisposition.Unavailable or SessionDispatchDisposition.ResourceLocked)
@@ -327,9 +329,15 @@ internal sealed class RuntimePage : UserControl
     {
         if (closed || mapRead is not { } read || completion.Ticket.Sequence != read.Ticket || completion.Disposition != "Accepted") return;
         var observed = runtime?.ReadState();
-        // A timeout/black transition does not prove that the game map closed.
-        // Only current positive visual evidence reconciles this exact input edge.
-        if (observed is { MapOpen: true, Context.FrameId: not null }) mapInput.Reconcile(true, read.Input);
+        // A first passive miss retains its old observation. It supplies neither
+        // a new positive frame nor a confirmed close. Two negatives do confirm
+        // close, and must synchronize the next physical G edge without issuing
+        // a synthetic input sequence. Late results still match this exact edge.
+        if (observed is { MapOpen: false, Reason: "map-not-observed" }
+            && (completion.Action != "refresh_map" || observed.ProbeMisses >= 2))
+            mapInput.Reconcile(false, read.Input);
+        else if (observed is { MapOpen: true, Context.FrameId: { } frame } && frame != read.PreviousFrame)
+            mapInput.Reconcile(true, read.Input);
     }
 
     async Task CaptureAfterDelay()
@@ -351,17 +359,36 @@ internal sealed class RuntimePage : UserControl
     }
 
     void CancelDelay() => pendingCapture?.Cancel();
-    internal void RecoverMapOpen()
+    internal bool ObserveDisplayContext()
+    {
+        if (closed || configuring || loadingResources || session is null || runtime is null
+            || session.Read() is not { Busy: false, WorkerActive: false, ContextPending: false, ResourceLocked: false, QueuedCount: 0 }
+            || !runtime.InvalidateObsoleteDisplay()) return false;
+        session.RefreshRuntime(); status("窗口或显示环境已变化，旧对齐已撤销，请重新开图读取。"); Render(); return true;
+    }
+    internal void ObserveOpenMap()
     {
         if (closed || configuring || loadingResources || pendingCapture is not null || session is null || runtime is null) return;
         if (session.Read() is not { Busy: false, WorkerActive: false, ContextPending: false, ResourceLocked: false, QueuedCount: 0 }) return;
+        if (ObserveDisplayContext()) return;
         var state = runtime.ReadState();
-        if (!state.RoundActive || !state.ResourcesBound || state.WorkActive || !capture.IsBound
-            || state.MapOpenRecovery is not { Pending: true, Due: true, Id: { } id }) return;
-        if (capture is Platform.WindowsRuntimeCapturePort native && !native.IsBindingForeground()) return;
+        if (!state.RoundActive || !state.ResourcesBound || state.WorkActive || !capture.IsBound || !capture.IsForeground) return;
+        string action; object payload;
+        if (state.MapOpenRecovery is { Pending: true } recovery)
+        {
+            if (!recovery.Due || recovery.Id is null) return;
+            action = "recover_map_open"; payload = new { recoveryId = recovery.Id };
+        }
+        else
+        {
+            // The original S1 host has separate candidate/manual-floor observer
+            // loops. Its public refresh action is not the S1 timer route.
+            if (!state.MapOpen || state.Context.Season != "s0" || state.GroupChoice.PendingMapId is not null) return;
+            action = "refresh_map"; payload = new { };
+        }
         // Refresh is safe here: there is no in-flight producer to invalidate.
         session.RefreshRuntime();
-        Dispatch("recover_map_open", new { recoveryId = id });
+        Dispatch(action, payload);
     }
     void CancelWork()
     {
@@ -433,7 +460,7 @@ internal sealed class RuntimePage : UserControl
     internal async Task DrainAsync() { if (session is not null) await session.DrainAsync(); }
     async Task CloseRuntime()
     {
-        recoveryTimer.Stop();
+        observationTimer.Stop();
         if (session is null) return;
         var previousSession = session; var previousRuntime = runtime!;
         session = null; runtime = null;
@@ -443,7 +470,7 @@ internal sealed class RuntimePage : UserControl
     internal async Task CloseAsync()
     {
         if (closed) return;
-        closed = true; renderTimer.Stop(); recoveryTimer.Stop(); CancelDelay();
+        closed = true; renderTimer.Stop(); observationTimer.Stop(); CancelDelay();
         proposedSession?.Shutdown(); proposedRuntime?.Shutdown();
         await CloseRuntime();
         if (configurationCompleted is { } completed) await completed.Task;
@@ -454,6 +481,7 @@ internal sealed class RuntimePage : UserControl
         "context-bound" => "资源已就绪，开始本局不会自动开图或采集。", "round-started" => "请在游戏中打开地图，再读取画面。",
         "entry-neighborhood-candidates" or "candidates-awaiting-confirmation" => "画面尚不能唯一确认地图，可选择候选或手动选图。", "window-binding-changed" => "窗口连接已改变，请重新读取。",
         "map-closed" => "地图已关闭，已确认的地图选择保留。", "cancelled" => "识别已取消。",
+        "capture-context-changed" or "capture-context-obsolete" => "窗口或显示环境已变化，旧对齐已撤销，请重新开图读取。",
         "idvb0059-steady" => "当前楼层结构已对齐。",
         "map-open-preparation-deadline" => "未在准备时间内读到完整地图，请打开地图并重试。", _ => string.IsNullOrEmpty(reason) ? "" : "当前结果：" + reason };
     static Button Add(Panel panel, string title, RoutedEventHandler action)

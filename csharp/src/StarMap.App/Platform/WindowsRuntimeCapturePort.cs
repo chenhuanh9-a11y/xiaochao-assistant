@@ -33,6 +33,7 @@ public sealed class WindowsRuntimeCapturePort : ICapturePort, IDisposable
     public bool IsBound { get { lock (sync) return !disposed && binding is not null; } }
     public CaptureBindingScope? BindingScope { get { lock (sync) return !disposed && binding is { } selected
         ? new(windowIdentity, selected.Generation) : null; } }
+    public bool IsForeground => IsBindingForeground();
     public BoundWindow? Binding { get { lock (sync) return disposed ? null : binding; } }
 
     internal bool IsBindingForeground()
@@ -81,14 +82,22 @@ public sealed class WindowsRuntimeCapturePort : ICapturePort, IDisposable
         lock (sync) return !disposed && binding is not null && currentStamp == stamp;
     }
 
-    internal bool IsForegroundCurrent(CaptureStamp stamp)
+    public bool IsObservationContextCurrent(RuntimeFrame frame)
+        => ObservationContextCurrent(frame.Stamp, frame.Context, requireForeground: false);
+
+    internal bool IsForegroundObservationCurrent(CaptureStamp stamp, ClientFrameContext? context)
+        => ObservationContextCurrent(stamp, context, requireForeground: true);
+
+    bool ObservationContextCurrent(CaptureStamp stamp, ClientFrameContext? context, bool requireForeground)
     {
         BoundWindow? selected;
-        lock (sync) selected = !disposed && currentStamp == stamp ? binding : null;
-        if (selected is null || !IsCurrent(stamp)) return false;
-        try { bindingOwner.ValidateBinding(selected, requireForeground: true); }
+        lock (sync) selected = !disposed && binding is { } candidate && stamp.WindowIdentity == windowIdentity
+            && stamp.Generation == candidate.Generation ? candidate : null;
+        if (selected is null || context is not { EvidenceKind: CaptureEvidenceKind.LiveClient }) return false;
+        var geometry = context.Geometry;
+        try { ValidateGeometry(selected, new(geometry.Left, geometry.Top, geometry.Width, geometry.Height, geometry.Dpi), requireForeground); }
         catch (Exception error) when (CaptureError(error)) { return false; }
-        lock (sync) return !disposed && ReferenceEquals(selected, binding) && currentStamp == stamp;
+        lock (sync) return !disposed && ReferenceEquals(selected, binding) && stamp.WindowIdentity == windowIdentity;
     }
 
     public async ValueTask<ClientCaptureResult> CaptureAsync(CancellationToken cancellationToken)

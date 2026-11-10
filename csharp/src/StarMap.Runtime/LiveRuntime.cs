@@ -23,7 +23,9 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
     private static readonly string[] Gaps = ["steady-tracking-fallback-unavailable",
         "locked-canvas-floor-reuse-unavailable", "native-identity-strong-conflict-producer-unavailable",
-        "pose-index-candidate-provider-unavailable"];
+        "pose-index-candidate-provider-unavailable", "s1-passive-floor-observer-unavailable",
+        "retained-group-fit-context-unavailable", "manual-confirmation-fresh-capture-unavailable",
+        "floor-click-intent-policy-unavailable"];
     private readonly object _sync = new();
     private readonly SemaphoreSlim _worker = new(1, 1);
     private readonly ICapturePort _capture;
@@ -71,7 +73,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     {
         lock (_sync)
         {
-            if (_frame is not null && !_capture.IsCurrent(_frame.Stamp)) return Withhold(_publishedState);
+            if (_frame is not null && !_capture.IsObservationContextCurrent(_frame)) return Withhold(_publishedState);
             var recovery = RecoveryStatus();
             return recovery == _publishedState.MapOpenRecovery ? _publishedState
                 : _publishedState with { MapOpenRecovery = recovery };
@@ -82,7 +84,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     {
         lock (_sync)
         {
-            if (_frame is not null && !_capture.IsCurrent(_frame.Stamp)) return Snapshot(Withhold(_publishedState));
+            if (_frame is not null && !_capture.IsObservationContextCurrent(_frame)) return Snapshot(Withhold(_publishedState));
             return _mapRecovery is null && _capture.IsBound == _publishedBindingState
                 ? _publishedSnapshot : Snapshot(_publishedState with { MapOpenRecovery = RecoveryStatus() });
         }
@@ -104,6 +106,19 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
 
     public void InvalidateCapture(string reason = "capture-invalidated")
     { lock (_sync) { if (_closed) return; if (reason == "window-binding-changed") { ResetSteady(); _geometryGroup = null; } _epoch++; RevokeFrame(reason); Publish(); } }
+
+    /// <summary>Explicit host observation, never a side effect of a read. Like
+    /// the original aligned foreground watcher, idle context loss retires the
+    /// published cycle; returning to the old geometry cannot revive its grant.</summary>
+    public bool InvalidateObsoleteDisplay()
+    {
+        lock (_sync)
+        {
+            if (_closed || _workActive || _worker.CurrentCount == 0 || !_mapOpen || _render is null || _frame is null
+                || _capture.IsObservationContextCurrent(_frame)) return false;
+            _epoch++; RevokeFrame("capture-context-changed"); Publish(); return true;
+        }
+    }
 
     public void InvalidateResources(string reason = "resources-invalidated")
     {
@@ -142,7 +157,15 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     public async ValueTask<RuntimeOperationResult> DispatchAsync(SessionRuntimeRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        try { await _worker.WaitAsync(cancellationToken).ConfigureAwait(false); }
+        try
+        {
+            if (request.Action == "refresh_map")
+            {
+                if (!await _worker.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+                    return Receipt(request, true, "refresh-coalesced");
+            }
+            else await _worker.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
         catch (OperationCanceledException) { return Receipt(request, false, "cancelled"); }
         long operation, epoch;
         lock (_sync)
@@ -214,6 +237,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 "map" => await MapInput(request, epoch, cancellationToken).ConfigureAwait(false),
                 "capture_now" => await CaptureAndSolve(request, epoch, cancellationToken).ConfigureAwait(false),
                 "recover_map_open" => await RecoverMapOpen(request, epoch, cancellationToken).ConfigureAwait(false),
+                "refresh_map" => await RefreshMap(request, epoch, cancellationToken).ConfigureAwait(false),
                 "confirm_route" => ConfirmMap(request, epoch, cancellationToken),
                 "select_group_member" => SelectGroupMember(request, epoch, cancellationToken),
                 "select_candidate" or "previous_candidate" or "next_candidate" => SelectCandidate(request),
@@ -276,6 +300,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             {
                 AdvanceOwnedEpoch(); RevokeFrame("round-started"); ClearIdentity(); ClearFloor();
                 _roundActive = true; _roundId = Guid.NewGuid().ToString("N");
+                _probeMisses = 0;
                 _structureSession = _resources.StructureCatalog is { } catalog ? new(catalog, _roundId) : null;
             }
             _reason = "round-started"; Publish(); return Receipt(request, true, _reason);
@@ -325,7 +350,9 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             bound = _resources;
             captureBinding = _capture.BindingScope;
             wasOpen = _mapOpen;
-            RevokeFrame("map-open-preparing", retainRecovery: recovery is not null); _workActive = true; Publish();
+            if (request.Action == "refresh_map") _reason = "map-refreshing";
+            else RevokeFrame("map-open-preparing", retainRecovery: recovery is not null);
+            _workActive = true; Publish();
         }
         var started = _options.TimeProvider.GetTimestamp();
         var limit = recovery is not null ? RecoveryLifetime - _options.TimeProvider.GetElapsedTime(recovery.Started)
@@ -351,6 +378,8 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         {
             if (_capture.BindingScope != captureBinding)
                 return FailCurrent(request, epoch, "capture-context-obsolete", Preparation("binding-changed"));
+            if (request.Action == "refresh_map")
+                return PassiveProbeMiss(request, epoch, token, captured, bound, floorRead, Preparation(phase));
             if (recovery is null)
                 return preparing ? PreparationFailed(request, epoch, Preparation(phase))
                     : FailCurrent(request, epoch, "map-not-observed", Preparation(phase));
@@ -448,6 +477,13 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             if (recovery is not null && (!ReferenceEquals(_mapRecovery, recovery) || recovery.Scope != CurrentRecoveryScope()))
                 return Receipt(request, false, "cancelled-or-stale");
             floor = ResolveObservedFloor(floorRead);
+            if (request.Action == "refresh_map")
+            {
+                RevokeDisplay(floor is null ? "current-floor-unavailable" : "new-capture");
+                _entryCandidates.Clear();
+                _structureSession?.RevokeCurrent(); _structureTicket = null;
+            }
+            if (observedFloor is not null) _probeMisses = 0;
             if (!wasOpen) _mapCycle++;
             _frame = captured; _mapOpen = true; _floor = floor; _pose = null;
             _diagnostics = JsonSerializer.SerializeToElement(new { stage = "floor-observation", map = floorRead.MapObservation, floor = floorRead.FloorRead, preparation }, Json);
@@ -715,6 +751,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             _reason, _diagnostics.Clone(), Array.AsReadOnly(Gaps))
         { Closed = _closed, ManualFloor = _manualFloor, ObservedFloor = _observedFloor, Display = _display, AlignedVisible = _alignedVisible,
             MapOpenRecovery = RecoveryStatus(),
+            ProbeMisses = _probeMisses,
             IdentityKind = _identitySource == "group-default" ? "group" : _mapId is null ? "unresolved" : "map",
             MapDisplayName = _resources?.Passports.Maps.FirstOrDefault(map => map.MapId == _mapId)?.Name,
             IdentityGroupId = HasRegisteredGroup ? _nativeIdentity!.GroupId : null,
@@ -731,7 +768,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             commands.AddRange(["set_floor", "reselect_map"]);
             commands.AddRange(["capture_now", "map"]);
             if (state.MapOpenRecovery.Pending) commands.Add("recover_map_open");
-            if (state.MapOpen) commands.Add("cycle_floor");
+            if (state.MapOpen) commands.AddRange(["cycle_floor", "refresh_map"]);
             if (state.Candidates.Count > 0 && !state.IdentityLocked) commands.AddRange(["select_candidate", "previous_candidate", "next_candidate", "confirm_route"]);
             if (state.IdentityMemberIds.Count > 1 && state.Context.FloorId is not null) commands.Add("select_group_member");
         }

@@ -50,7 +50,7 @@ public sealed partial class LiveRuntime
 
     private bool CanonicalCurrent() => !_closed && _mapOpen && _frame is not null && _canonical is { } grant
         && grant.Epoch == _epoch && grant.Stamp == _frame.Stamp && _pose is not null
-        && _capture.IsCurrent(grant.Stamp) && _alignment?.ActiveObservation is { } observation
+        && _capture.IsObservationContextCurrent(_frame) && _alignment?.ActiveObservation is { } observation
         && grant.Authorization.Current(observation.ObservationId, new(_roundId!), _mapId!, _floor!, _frameGeneration);
 
     private bool RenderCurrent() => CanonicalCurrent() && _render is { } render && render.Epoch == _epoch
