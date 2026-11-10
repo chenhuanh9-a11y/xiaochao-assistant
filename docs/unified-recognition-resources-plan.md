@@ -1,6 +1,6 @@
 # 四模式识别、贴合与资源导入统一方案
 
-核查日期：2026-11-11。状态：**P0 调查/设计完成；P1 空资源默认入口、P2 保存基础、S0 噩梦启用及 S1 困难数据启用已接资源页；其余两组合、作者显示与四模式回放尚未完成**。本文件同时作为现状清单、设计和实施台账，不另建重复任务说明。第 2–4 节现状引用绑定原核查 commit，后续实施状态另见第 8 节。
+核查日期：2026-11-11。状态：**P0 调查/设计完成；P1 空资源默认入口、P2 保存基础、S0 噩梦启用及 S1 两模式数据启用已接资源页；S0 困难、作者显示与四模式回放尚未完成**。本文件同时作为现状清单、设计和实施台账，不另建重复任务说明。第 2–4 节现状引用绑定原核查 commit，后续实施状态另见第 8 节。
 
 ## 1. 范围与基线
 
@@ -347,7 +347,7 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 
 ### S0 噩梦基础组件语义解码
 
-- `decode_native_base(PackageView)` 只处理当前 S0 噩梦自包含基础组件，返回带实际视图代际检查的 pack/store/adapters/versions/入口对象；不拥有候选算法、catalog、个人数据或显示授权。真实测试包得到 26 图、78 typed 层、26 main/78 local entries。显式 unavailable 图层保留在完整竞争池中，返回具体 gap；其它尚未支持的语义合同明确报告，不能借接口声称四组合完成。
+- `decode_native_base(PackageView)` 首个语义切片处理 S0 噩梦自包含基础组件，返回带实际视图代际检查的 pack/store/adapters/versions/入口对象；不拥有候选算法、catalog、个人数据或显示授权。真实测试包得到 26 图、78 typed 层、26 main/78 local entries。显式 unavailable 图层保留在完整竞争池中，返回具体 gap；后续 S1 接线见下节，不能借接口声称四组合完成。
 - 引用按实际字段和文档锚点核对，包含合法的 entry 相对 `../sourceIndex`；作者/renderer provenance 不作为运行路径。调用实际解码器前核入口数组、必需文本与 gates、矩阵/search header/网格；逐层实际读取二值图、canvas、binding 和版本。搜索预处理的全部消费字段按现有 `prepare_arrays` 从实际入口/门几何重建并严格比较，重建前限制 orientation 和网格规模；未用 hash/baseline 替代数学关系。
 - 独立复核实际复现并修复了派生搜索数据不符仍可用、必需 DTO 字段遗漏及内部 NPZ 错误未归一三类问题；16 项回归及不同 fresh Reviewer 复核通过。真实原包在 OpenCV 4.12.0/NumPy 2.2.6 下的 26 个 F2 预处理重建无数值差异，并经实际 side-door pool 保留 26 图。该证据不是 rank/fit、完整候选调度、真实帧或游戏验收。
 - 新资源测试加入既有 Windows joint 工作流的 packaging 组，沿用逐模块独立进程及全失败汇总，不执行 Setup 或游戏。本地按同一模块列表独立执行 26 个模块，237 项全通过、无跳过，测试用时合计 177.226 秒。远端 `ed298aa` 四条工作流成功，joint 的 packaging 组失败，暴露 Windows 临时目录短路径/长路径不一致；不将本机通过替代该 CI 结论。
@@ -370,7 +370,7 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 ### S1 困难基础数据与控件参数
 
 - 同一 native decoder 复用 typed/canvas/坐标/版本及有界入口校验，新增 S1 困难的精确 14 图、四层 `-1/-2/-3/-4`、shared profile 合同。14 条正门只提出候选、不授权身份或位姿，56 条局部轮廓不冒充语义侧门；不补造 anchors/search/exit。原 S0 噩梦的 F1 正门与侧门搜索语义保留。S1 若提供 canonical→legacy 矩阵只接受精确单位矩阵，不填造缺省 bridge。
-- exporter 扩展现有 `--season/--mode`，默认 S0 噩梦保持，新增 S1 困难，S1 噩梦仍明确不支持。实际 identity、typed NPZ、neutral 和三份 entry JSON 保留源字节，版本/坐标只补真实组件引用与 reference-only lookup；作者显示不进入基础包。S1 正门的 `game-entry-room-proposal` 来源与局部结构来源保留区别。源库存及现有无覆盖发布/失败恢复继续执行。
+- exporter 扩展现有 `--season/--mode`，默认 S0 噩梦保持，先新增 S1 困难；S1 噩梦泛化见后节。实际 identity、typed NPZ、neutral 和三份 entry JSON 保留源字节，版本/坐标只补真实组件引用与 reference-only lookup；作者显示不进入基础包。S1 正门的 `game-entry-room-proposal` 来源与局部结构来源保留区别。源库存及现有无覆盖发布/失败恢复继续执行。
 - S1 controls 为同 ZIP 的独立组件，外置负四层合同、固定/扩大搜索域和 X、加减按钮及 rail 的实际形状参数。外置固定列也需独立 UI 与邻接证明，屏蔽按实际 full-client ROI；无效边界和空带返回未验证。程序默认 `controls=None` 保持原 S0/S1 行为及资格。所有外置 profile（含默认数值）当前只返回观察候选，`automaticFloorEligible=False`、`observedFloorValidated=False`、`validationScope=external-controls-unreviewed`；没有以包声明继承源码默认探测器的回放资格。
 - 新 decoder 7 项和原 S0 decoder/工厂 28 项通过；独立 decoder 复核 10 项及额外 4 个反例通过。producer 新 5 项与原 10 项通过，外置控件 14 项及受影响默认路径回归通过并独立复核。真实截图回放因 `S1_FLOOR_FIXTURE_ROOT` 缺失跳过；数学像素不代替真实源图、实机或游戏。
 - 真实 S1 困难测试 ZIP 为 1,156,554 字节，SHA256 `b8232ab84df718fbbee2070b40d9060d5f362b690397c4a0a5935af5722307f2`；65 个实际源文件与 855 项库存绑定。主任务实际 inspect→保存→decoder/controls 得到 14 图、56 typed 层、14 main/56 local entries；同包参数在合成像素上读出 `-1`，仍保持外置未复核资格。该次资源/合成观察往返 12.575 秒，未激活 catalog，不是 rank/fit 或可见像素耗时。后续默认工厂及资源组件接线见下节；真实控制截图、完整 QtClient 旅程和 Setup 尚未验证，不能称 S1 实时识别可用或 P2 完成。
@@ -386,6 +386,14 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 
 ### S1 困难资源页数据启用
 
-- 沿用同一 `activate_context`、空闲 Session 租约与 catalog 发布/恢复，不新增事务。资源页按实际包内 base/controls 的 contexts 提供启用选项；S1 按钮为“启用 S1 困难数据”，按钮旁和成功/重复启用消息均说明自动楼层识别尚未验证、仍不可用，不改变工厂的 live/candidate 资格。程序固定的选项列表不随包行状态重建，卡片、按钮及列表模型保持原实例。S1 噩梦等未实现上下文仍拒绝。
+- 沿用同一 `activate_context`、空闲 Session 租约与 catalog 发布/恢复，不新增事务。资源页按实际包内 base/controls 的 contexts 提供启用选项；S1 按钮为“启用 S1 困难数据”，按钮旁和成功/重复启用消息均说明自动楼层识别尚未验证、仍不可用，不改变工厂的 live/candidate 资格。程序固定的选项列表不随包行状态重建，卡片、按钮及列表模型保持原实例。未实现上下文仍拒绝；后续 S1 噩梦接线见下节。
 - 新 helper 回归 1 项通过（67.033 秒），以微型合成源 fixture 导出真实 ZIP，实际执行两次 prospective admission、默认工厂与 scanner，核对其他上下文/登记引用/display 保留和幂等 catalog；原 S0 helper 8 项通过（60.678 秒）。新 GUI 回归从旧 service 的 `canActivate=False` 先失败，修后 2 项通过（65.984 秒）：真实离屏 QML 鼠标事件启用、忙碌会话及错误上下文拒绝、重复启用不改 catalog、不重复通知、稳定按钮实例和未验证提示。控件/结构源仍为合成 fixture，不算真实截图识别。
 - 主任务另用上述真实 1,156,554 字节 S1 ZIP，经过实际离屏资源组件鼠标事件、Session 租约、两次 prospective 校验、catalog 和默认工厂，保留 14 图/56 typed 层、14 main/56 local，结构 RGBA 1860×1320，选择 `s1:difficult`，通知 1/错误 0、未写个人学习数据，`liveReady=False`。保存 4.003 秒、启用 23.610 秒、active 构造 16.357 秒，均为资源操作耗时。650×470 与 1000×720 页面的按钮和提示已核实际渲染图；不代表文件选择器实选、完整 QtClient 激活、源截图楼层回放、rank/fit、物理首像素、游戏或 Setup 通过。
+
+### S1 噩梦复用同一数据链
+
+- 按显式 mode 参数复用 producer、decoder、S1 context、默认工厂、scanner 和资源启用流程。噩梦读取 `seasons/s1/nightmare` 及既有登记池 `107001..107015`，15 图、四负层、60 typed 层、15 main/60 local；保持 proposal-only、无语义侧门与外置控件未验证资格。包声明所需 `native-s1-nightmare-base-v1` 由程序实现承接，不以包声明授予身份、自动楼层或 live 权限。困难与噩梦的 source prefix、map pool、控件 context 和成功文案分别对应实际模式。
+- 新 N producer 3 项和原 D producer 5 项通过（57.715 秒），源 fixture 为 8×8 合成结构。主任务新 N service/默认工厂/实际 scanner 两项通过（79.831 秒），含负四层扫描及错误 context/controls 拒绝；首轮有一项测试误期异常类型，实际代码已正确拒绝，改为既有 `ImportedProviderUnavailable` 合同后用最终 source 重新全跑通过。受影响工厂/资源服务 9 项（2.038 秒）、S0/S1 困难 GUI 3 项（77.603 秒）通过。两个新增模块接入既有 CI 独立进程循环。
+- 独立 producer 复核以同一 fixture 比较 `46d2300` 和当前 D 的全部 65 份 base payload/controls，字节不变；同进程 D→N→D 不串模式。真实 N ZIP 的 66 份原样文件（60 typed、pack/index/neutral 与三份 entry）另与源及既有库存对应项逐字节一致；本次读取源 69 份，根库存共有 855 项，二者不混计。
+- 真实 N 测试 ZIP 为 1,167,359 字节，SHA256 `0ab2157e8e90f71792e2c73a0b5e5cfedb44b064f285d1434a2c00ffb0c9c659`。主任务独立复核产物字节/摘要，并经实际离屏 QML 鼠标事件、Session 租约、prospective 校验、catalog、默认工厂和同层结构底图，得到 15/60/15/60、RGBA 1980×1440、选择 `s1:nightmare`，通知 1/错误 0、学习目录未写、live 仍 false。单次保存 3.752 秒、启用 23.400 秒、active 构造 16.237 秒；不是首贴或首像素耗时。
+- 同一真实包在显式 `-4` 层用合成 1920×1200 黑帧调用实际 `engine.rank`，预算 0.05 秒返回 `budget-unresolved`，已扫 1/未扫 14、排除 0，身份/自动选择/live 全 false；单次负向 rank 0.292 秒。该证据不含真实帧正向识别/贴合、源截图楼层资格、完整 QtClient 旅程、文件选择实选、游戏或统一架构 Setup；S0 困难、显示包与 P3–P5 仍未完成。

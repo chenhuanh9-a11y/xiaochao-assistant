@@ -1,4 +1,4 @@
-"""Current, component-bound S1 difficult data for existing native consumers.
+"""Current, component-bound S1 data for existing native consumers.
 
 The decoded base supplies structure and coordinates. External controls supply
 parameters, never the source-replay authority of the old disk-backed context.
@@ -18,7 +18,7 @@ def _reject(reason):
 
 
 class ImportedS1NativeContext:
-    """Adapt one validated S1D base without granting automatic observation.
+    """Adapt one validated S1 base without granting automatic observation.
 
     Returned decoded objects retain their existing lifetime contract: callers
     must call assert_current before operations and cache hits. The same guard
@@ -38,7 +38,7 @@ class ImportedS1NativeContext:
                 or bundle.reader.view.component_ref != self._component_ref
                 or bundle.reader.root.resolve() != self._root.resolve()):
             _reject('base-bundle-mismatch')
-        if (bundle.season, bundle.mode) != ('s1', 'difficult'):
+        if bundle.season != 's1' or bundle.mode not in ('difficult', 'nightmare'):
             _reject('context-unsupported')
         if not bundle.ready:
             _reject('base-incomplete')

@@ -13,9 +13,12 @@ from backend import ResourceRows
 
 
 _ACTIVATION_CONTEXTS = {
-    ('s0', 'nightmare'): dict(label='启用 S0 噩梦', objectSuffix='', notice=''),
+    ('s0', 'nightmare'): dict(label='启用 S0 噩梦', objectSuffix='', notice='',
+        activatedMessage='S0 噩梦基础结构与楼层控件已启用。'),
     ('s1', 'difficult'): dict(label='启用 S1 困难数据', objectSuffix='-s1-difficult',
-        notice='自动楼层识别尚未验证，启用后仍不可用。'),
+        notice='自动楼层识别尚未验证，启用后仍不可用。', activatedMessage='S1 困难基础数据已启用。'),
+    ('s1', 'nightmare'): dict(label='启用 S1 噩梦数据', objectSuffix='-s1-nightmare',
+        notice='自动楼层识别尚未验证，启用后仍不可用。', activatedMessage='S1 噩梦基础数据已启用。'),
 }
 
 
@@ -283,10 +286,10 @@ class ImportedResourceService(QObject):
             if kind == 'activate':
                 outcome = value['activated']
                 duplicate = outcome['status'] == 'already-active'
-                s1_data = value['activatedContext'] == 's1:difficult'
-                self._message = ('此版本已经启用，资源选择未改变。' if duplicate else
-                    'S1 困难基础数据已启用。' if s1_data else 'S0 噩梦基础结构与楼层控件已启用。')
-                if s1_data:
+                context = tuple(value['activatedContext'].split(':'))
+                self._message = ('此版本已经启用，资源选择未改变。' if duplicate
+                                 else _ACTIVATION_CONTEXTS[context]['activatedMessage'])
+                if context[0] == 's1':
                     self._message += ' 自动楼层识别尚未验证，暂不可用。'
                 if inventory is None:
                     self._message += ' 列表暂时无法读取，请重新核对。'

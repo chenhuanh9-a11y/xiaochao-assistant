@@ -25,20 +25,24 @@ from s1_native_resources import MODE_LAYOUTS, SOURCE_VERSION
 class S1NativeBaseSourceFixture:
     """Small, internally consistent source tree reusable by importer tests.
 
-    The identity competition is the registered full S1 difficult pool, while
+    The identity competition is the selected registered S1 mode pool, while
     typed canvases stay tiny so tests exercise the real archive/readers cheaply.
     """
 
-    def __init__(self, root, *, package_id='fixture-s1-difficult', resource_version='fixture-v1'):
+    def __init__(self, root, *, mode='difficult', package_id=None, resource_version='fixture-v1'):
+        if mode not in ('difficult', 'nightmare'):
+            raise ValueError('unsupported S1 fixture mode')
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.sourceRoot = self.root / 'source-root'
-        self.prefixRoot = self.sourceRoot / exporter.S1_PREFIX
+        self.mode = mode
+        self.sourcePrefix = f'seasons/s1/{mode}'
+        self.prefixRoot = self.sourceRoot / self.sourcePrefix
         self.inventory = self.root / 'source-inventory.json'
         self.output = self.root / 's1-native-base.zip'
-        self.package_id = package_id
+        self.package_id = package_id or f'fixture-s1-{mode}'
         self.resource_version = resource_version
-        self.ids = tuple(sorted(MODE_LAYOUTS['difficult']))
+        self.ids = tuple(sorted(MODE_LAYOUTS[mode]))
         self.floors = exporter.S1_FLOORS
         self.pack_path = exporter.S1_PACK
         self.index_path = exporter.S1_INDEX
@@ -116,8 +120,8 @@ class S1NativeBaseSourceFixture:
                 routeProfileId='shared-structure', oneFlow=None, sideDoorCrop=[0, 0, 8, 8],
                 layers=layers))
 
-        self.write_json(self.pack_path, dict(schemaVersion=1, season='s1', mode='difficult',
-            packId='fixture-s1-difficult', displayName='Fixture S1 difficult',
+        self.write_json(self.pack_path, dict(schemaVersion=1, season='s1', mode=self.mode,
+            packId='fixture-s1-' + self.mode, displayName='Fixture S1 ' + self.mode,
             floors=list(self.floors), defaultEntryFloor=-1, identityProfiles=identity_profiles,
             maps=pack_maps))
         self.write_json(self.index_path, dict(schemaVersion=1, resourceKind='shared-structure',
@@ -128,7 +132,7 @@ class S1NativeBaseSourceFixture:
             resourceKind='typed-shared-structure-display', indexPath=self.index_path,
             entries=neutral_rows))
         self.write_json(self.coordinates_path, dict(schema=CANONICAL_SCHEMA,
-            canonicalPackId='fixture-s1-canonical', coordinateReferenceProfileId='shared-structure',
+            canonicalPackId='fixture-s1-' + self.mode + '-canonical', coordinateReferenceProfileId='shared-structure',
             policy=dict(requiresCurrentFrameGeometryFit=True, authorizesMapIdentity=False,
                         authorizesCrossFloorProjection=False), maps=coordinate_maps,
             profiles={'shared-structure': dict(maps=shared_maps)},
@@ -160,13 +164,13 @@ class S1NativeBaseSourceFixture:
                         chains=[dict(points=[[1., 1.], [2., 2.], [3., 3.]],
                                      rays=[[1., 0.], [0., 1.]])]))
         self.write_json(self.entries_path + '/entries.json', dict(schemaVersion=1, season='s1',
-            mode='difficult', profileId='shared-structure', entries=main_entries,
+            mode=self.mode, profileId='shared-structure', entries=main_entries,
             semanticGaps=['fixture-main-authority-unavailable']))
         self.write_json(self.entries_path + '/side-entries.json', dict(schemaVersion=1, season='s1',
-            mode='difficult', profileId='shared-structure', entries=local_entries,
+            mode=self.mode, profileId='shared-structure', entries=local_entries,
             semanticGaps=['fixture-semantic-side-exits-unavailable']))
         self.write_json(self.entries_path + '/entry-passports.json', dict(schemaVersion=1, season='s1',
-            mode='difficult', profileId='shared-structure', entries=[], coverage=[]))
+            mode=self.mode, profileId='shared-structure', entries=[], coverage=[]))
 
         # These source-only display declarations are deliberately inventoried,
         # but are not part of the portable recognition base.
@@ -183,11 +187,12 @@ class S1NativeBaseSourceFixture:
             relative = path.relative_to(self.prefixRoot).as_posix()
             raw = path.read_bytes()
             manifest_files.append(dict(path=relative, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()))
-        self.write_json('native-map-manifest.json', dict(schemaVersion=1, season='s1', mode='difficult',
+        self.write_json('native-map-manifest.json', dict(schemaVersion=1, season='s1', mode=self.mode,
             sourceVersion=SOURCE_VERSION, runtimeInterfaces=interfaces,
             opencvVersion=self._opencv_version(), capabilities=dict(sideEntries=False, floorControls=False),
             files=manifest_files))
-        self._write_root_bytes('seasons/s1/nightmare/unrelated.bin', b'other-context-must-not-be-exported')
+        other_mode = 'nightmare' if self.mode == 'difficult' else 'difficult'
+        self._write_root_bytes(f'seasons/s1/{other_mode}/unrelated.bin', b'other-context-must-not-be-exported')
         self._write_root_bytes('references/unrelated-root.bin', b'outside-mode-prefix-must-not-be-exported')
         self.refresh_inventory()
 
@@ -226,7 +231,7 @@ class S1NativeBaseSourceFixture:
     def export(self, **kwargs):
         return exporter.export_package(self.sourceRoot, self.output, package_id=self.package_id,
             resource_version=self.resource_version, source_inventory=self.inventory,
-            season='s1', mode='difficult', **kwargs)
+            season='s1', mode=self.mode, **kwargs)
 
 
 class S1NativeBaseExporterTests(unittest.TestCase):
@@ -336,8 +341,8 @@ class S1NativeBaseExporterTests(unittest.TestCase):
         self.assertFalse(self.fixture.output.exists())
         self.assertEqual((self.fixture.prefixRoot / self.fixture.pack_path).read_bytes(), before)
 
-    def test_s1_nightmare_is_explicitly_unsupported(self):
-        with self.assertRaisesRegex(ValueError, 'context-unsupported'):
+    def test_difficult_source_cannot_be_reinterpreted_as_nightmare(self):
+        with self.assertRaisesRegex(ValueError, 's1-source-manifest-unavailable:nightmare'):
             exporter.export_package(self.fixture.sourceRoot, self.fixture.output,
                 package_id='fixture-s1-nightmare', resource_version='fixture-v1',
                 source_inventory=self.fixture.inventory, season='s1', mode='nightmare')

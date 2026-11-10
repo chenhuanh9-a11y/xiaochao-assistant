@@ -131,6 +131,7 @@ class ImportedS1ActivationUiTests(unittest.TestCase):
         self.assertEqual(self.service.packageRows[0]['status'], 'selected')
         self.assertIs(self.service.packageModel, model)
         self.assertIs(find(view.rootObject(), button_name), button)
+        self.assertIn('S1 困难', self.service.message)
         self.assertIn('自动楼层识别', self.service.message)
         self.assertIn('不可用', self.service.message)
         engine = self.factories.get_engine('difficult', season='s1')

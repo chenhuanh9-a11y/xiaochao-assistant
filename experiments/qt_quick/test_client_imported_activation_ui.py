@@ -86,6 +86,7 @@ class ImportedActivationUiTests(unittest.TestCase):
         self.assertEqual(self.changes, [True])
         self.assertEqual(self.service.packageRows[0]['status'], 'selected')
         self.assertIs(self.service.packageModel, model)
+        self.assertIn('S0 噩梦', self.service.message)
         engine = self.factories.get_engine('nightmare')
         self.assertTrue(engine.qt_native_base.ready)
         self.assertEqual(engine.qt_controls_profile.for_context('s0', 'nightmare').contract.floor_ids,

@@ -296,7 +296,7 @@ def _search_declarations(raw, local_rows, typed):
 
 
 def _decode(view, season, mode):
-    if (season, mode) not in {('s0', 'nightmare'), ('s1', 'difficult')}:
+    if (season, mode) not in {('s0', 'nightmare'), ('s1', 'difficult'), ('s1', 'nightmare')}:
         raise NativeBaseUnavailable('native-base-context-unsupported')
     proposal_only = season == 's1'
     floors = frozenset(('-1', '-2', '-3', '-4')) if proposal_only else FLOORS

@@ -12,7 +12,7 @@ from client_providers import EngineFactories, ProviderResourceBinding, ProviderU
 
 # Capabilities are granted by completed program decoders, never package claims.
 SUPPORTED_CAPABILITIES = frozenset({'native-s0-nightmare-base-v1', 's0-signed-templates-v1',
-    'native-s1-difficult-base-v1', 's1-signed-column-geometry-v1'})
+    'native-s1-difficult-base-v1', 'native-s1-nightmare-base-v1', 's1-signed-column-geometry-v1'})
 
 
 class ImportedProviderUnavailable(ProviderUnavailable):
@@ -141,7 +141,7 @@ class ImportedEngineFactories(EngineFactories):
                 resource_revision=revision) from error
         if resources.gaps:
             raise ImportedProviderUnavailable(';'.join(resources.gaps), resources.gaps, resource_revision=revision)
-        if (season, mode) not in {('s0', 'nightmare'), ('s1', 'difficult')}:
+        if (season, mode) not in {('s0', 'nightmare'), ('s1', 'difficult'), ('s1', 'nightmare')}:
             raise ImportedProviderUnavailable('recognition-decoder-unavailable',
                 ('recognition-decoder-unavailable',), resource_revision=revision)
         return resources, revision
