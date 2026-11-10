@@ -58,15 +58,19 @@ class ImportedProviderBoundaryTests(unittest.TestCase):
             contexts={f"{row['season']}:{row['mode']}": dict(recognitionBase=refs['base'], controls=refs['controls'], reviewedGroups=None)
                       for row in contexts})
         (self.resolver.root / 'catalog.json').write_text(json.dumps(catalog))
+        expected_gaps = {
+            ('s0', 'nightmare'): ['native-base-schema-unsupported'],
+            ('s0', 'difficult'): ['imported-native-base-difficult-context-invalid'],
+            ('s1', 'difficult'): ['native-base-schema-unsupported'],
+            ('s1', 'nightmare'): ['native-base-schema-unsupported'],
+        }
         with patch('client_providers.EngineFactories._build', side_effect=AssertionError('legacy loader used')):
             for season in ('s0', 's1'):
                 for mode in ('nightmare', 'difficult'):
                     self.factories.prepare_context(mode, season=season)
                     report = self.factories.capabilities(season)[mode]
                     self.assertFalse(report['available'])
-                    self.assertEqual(report['resourceGaps'], ['native-base-schema-unsupported']
-                        if (season, mode) in {('s0', 'nightmare'), ('s1', 'difficult'), ('s1', 'nightmare')}
-                        else ['recognition-decoder-unavailable'])
+                    self.assertEqual(report['resourceGaps'], expected_gaps[(season, mode)])
         self.assertFalse((self.root / 'escaped').exists())
 
 
