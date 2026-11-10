@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 import json
 import hashlib
+import os
 import stat
 from pathlib import Path
 import sys
@@ -60,6 +61,38 @@ def _no_links(path):
             raise ValueError("Runtime paths cannot use links or reparse points")
 
 
+def _local_app_data_root():
+    value = os.environ.get("LOCALAPPDATA")
+    if not value or not value.strip():
+        raise ValueError("LOCALAPPDATA must name an existing absolute user data directory")
+    if "\0" in value:
+        raise ValueError("LOCALAPPDATA must name an existing absolute user data directory")
+    root = Path(value)
+    if not root.is_absolute():
+        raise ValueError("LOCALAPPDATA must name an existing absolute user data directory")
+    try:
+        _no_links(root)
+        is_directory = root.is_dir()
+    except OSError as exc:
+        raise ValueError("LOCALAPPDATA must name an existing absolute user data directory") from exc
+    if not is_directory:
+        raise ValueError("LOCALAPPDATA must name an existing absolute user data directory")
+    return root
+
+
+def _validate_future_directory(path):
+    try:
+        _no_links(path)
+        for item in reversed((path, *path.parents)):
+            if item.exists() and not item.is_dir():
+                if item == path:
+                    raise ValueError("Imported resource root must be a directory")
+                raise ValueError("Imported resource root parent must be a directory")
+    except OSError as exc:
+        raise ValueError("Imported resource root is not a valid directory path") from exc
+    return path
+
+
 @dataclass(frozen=True)
 class RuntimePaths:
     installation_root: Path
@@ -68,6 +101,16 @@ class RuntimePaths:
     @property
     def resource_root(self):
         return RESOURCE_ROOT if self.production else self.installation_root / "_internal"
+
+    @property
+    def program_root(self):
+        return RESOURCE_ROOT
+
+    @property
+    def imported_resource_root(self):
+        if self.production:
+            return _validate_future_directory(_local_app_data_root() / "Xingtu" / "resources")
+        return _validate_future_directory(self.installation_root / "work" / "imported-resources")
 
     @property
     def work_root(self):
@@ -148,7 +191,8 @@ def bundled_author_root():
 def runtime_paths(root=None):
     paths = RuntimePaths(validate_installation_root(DEFAULT_SANDBOX if root is None else root), PRODUCTION)
     for path in (paths.settings_path, paths.custom_galleries_path, paths.update_state_path, paths.tutorial_state_path,
-                 paths.editor_base_root, paths.resource_root, paths.work_root,
+                 paths.editor_base_root, paths.resource_root, paths.program_root, paths.imported_resource_root,
+                 paths.work_root,
                  *(paths.memory_root(mode, season) for season in SEASONS
                    for mode in modes_for_season(season))):
         _no_links(path)
