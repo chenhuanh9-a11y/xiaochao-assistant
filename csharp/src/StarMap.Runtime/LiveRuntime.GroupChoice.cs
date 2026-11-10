@@ -23,7 +23,7 @@ public sealed partial class LiveRuntime
     private sealed record GroupChoiceIntent(string Round, string Resource, string Group, string[] Members, string Map);
     private sealed record PendingGroupMaterial(long Intent, long Epoch, long FrameGeneration,
         GroupMemberChoicePlan Plan, CapturedClientFrame Frame, BoundResources Resources,
-        NativeGeometryPose Pose, CanonicalDisplayCommit Commit, CancellationToken Cancellation,
+        NativeGeometryPose? Pose, CanonicalDisplayCommit Commit, CancellationToken Cancellation,
         CapturedClientFrame SourceFrame,RuntimeRenderPacket? SourceRender,MapDragCycle? SourceDragCycle,
         FloorObservationResult? StagedObservation,SessionRequestContext OwnerContext,bool ReusesSourceGeometry=false)
     {
@@ -44,7 +44,7 @@ public sealed partial class LiveRuntime
         currentGroupMemberId: _mapId, manualHold: _heldGroupMember is not null,
         manualMemberId: _heldGroupMember, roundActive: _roundActive,
         identityPhase: HasRegisteredGroup ? _heldGroupMember is null ? "GROUP_LOCKED" : "MANUAL_MEMBER_CONFIRMED" : "UNLOCKED",
-        selectionPending: !ignorePending && _pendingGroupMaterial is not null);
+        selectionPending: !ignorePending && (_pendingGroupMaterial is not null || _pendingProjection is not null));
 
     private RuntimeGroupChoice ReadGroupChoice() => new(
         _nativeIdentity?.Snapshot()["generation"]?.GetValue<int>() ?? 0,
@@ -60,6 +60,8 @@ public sealed partial class LiveRuntime
     private void DiscardGroupMaterial(string reason)
     {
         _groupIntent++;
+        // Both pending material variants belong to this shared display intent.
+        DiscardProjectionMaterial(reason);
         var pending=_pendingGroupMaterial;_pendingGroupMaterial=null;
         // Unregister never waits for a callback which may itself need _sync.
         pending?.CancellationRegistration.Unregister();
@@ -74,13 +76,14 @@ public sealed partial class LiveRuntime
         DiscardGroupMaterial("group-choice-reset");
         _desiredGroupChoice = null; _heldGroupMember = null;
         _groupChoiceStatus = _groupChoiceReason = "";
-        if (resetCycle) _mapCycle = 0;
+        if (resetCycle) {_mapCycle=0;ClearProjectionDisplay("group-choice-reset");}
     }
 
     // This read never changes the current render or grants live evidence.
     public RuntimeRenderPacket? ReadPendingGroupMaterial()
     {
-        lock (_sync) return PendingGroupCurrent(_pendingGroupMaterial) ? _pendingGroupMaterial!.Commit.Render : null;
+        lock (_sync) return _pendingProjection is { } projection && PendingProjectionCurrent(projection) ? projection.Grant.Render
+            :PendingGroupCurrent(_pendingGroupMaterial) ? _pendingGroupMaterial!.Commit.Render : null;
     }
 
     private bool PendingGroupCurrent(PendingGroupMaterial? pending) => pending is not null && !_closed
@@ -98,6 +101,7 @@ public sealed partial class LiveRuntime
         ArgumentNullException.ThrowIfNull(packet);
         lock (_sync)
         {
+            if(ReferenceEquals(_pendingProjection?.Grant.Render,packet))return AcceptProjectionMaterial(packet);
             var pending = _pendingGroupMaterial;
             if (_activeDrag is not null || _workActive || !PendingGroupCurrent(pending) || !ReferenceEquals(packet, pending!.Commit.Render)
                 || !_nativeIdentity!.TrySelectRegisteredMember(pending.Plan.MapId,out var selectedIdentity)) return false;
@@ -134,6 +138,8 @@ public sealed partial class LiveRuntime
         ArgumentNullException.ThrowIfNull(packet);
         lock (_sync)
         {
+            if(ReferenceEquals(_pendingProjection?.Grant.Render,packet))
+            {DiscardProjectionMaterial(reason);_reason="transient-projection-unavailable";Publish();return true;}
             if (_pendingGroupMaterial is not { } pending || !ReferenceEquals(packet, pending.Commit.Render)) return false;
             DiscardGroupMaterial(reason); _reason = "group-member-awaiting-geometry"; Publish(); return true;
         }
@@ -300,7 +306,7 @@ public sealed partial class LiveRuntime
         object payload;
         lock (_sync)
         {
-            if (!DesiredGroupCurrent() || _groupChoiceStatus == "confirmed" || _pendingGroupMaterial is not null || !_mapOpen)
+            if (!DesiredGroupCurrent() || _groupChoiceStatus == "confirmed" || _pendingGroupMaterial is not null || _pendingProjection is not null || !_mapOpen)
                 return result;
             var scope = GroupChoiceState();
             payload = new { mapId = _desiredGroupChoice!.Map, groupId = scope.GroupId,

@@ -245,7 +245,8 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 RequireCurrent(epoch, cancellationToken);
                 if(PointerRetired(request))return Receipt(request,false,"request-retired-by-floor-intent");
                 // Establish observation-only ownership before cancellation can publish.
-                if(DragCycleCurrent && PassiveObservation(request.Action))_dragProbeWorkOwner=request.Context;
+                if(DragCycleCurrent && (PassiveObservation(request.Action) || request.Action is "capture_now" or "set_floor" or "cycle_floor"))
+                    _dragProbeWorkOwner=request.Context;
                 _progressRequest = request.Context; _progressEpoch = epoch; _progressCancellation = cancellationToken;
                 if ((request.Action is "capture_now" or "observe_manual_floor") && !AcceptObservationSequence(request.Payload))
                     return Receipt(request, false, "map-input-sequence-expired");
@@ -291,6 +292,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             Text(request.Payload, "profileId") ?? request.Context.Runtime.ProfileId);
         string root;
         bool reload;
+        bool projectionPreferenceChanged=false;
         lock (_sync)
         {
             if (_roundActive && (desired.Mode != _selection.Mode || desired.Season != _selection.Season))
@@ -311,11 +313,21 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 _resources = bound; _resourceRoot = root;
             }
             if (desired.ProfileId != _selection.ProfileId)
-            { _displayGeneration++; DiscardGroupMaterial("group-author-preference-changed"); }
-            _selection = desired; _reason = "context-bound"; Publish();
+            {
+                bool hadProjection=_projection is not null || _pendingProjection is not null;
+                _displayGeneration++;DiscardGroupMaterial("group-author-preference-changed");
+                if(hadProjection)
+                {
+                    projectionPreferenceChanged=true;
+                    ClearProjectionDisplay("projection-author-preference-changed");
+                    _render=null;_canonical=null;_pose=null;_materialProposal=null;
+                    _display=new(false,false,false,"projection-author-preference-changed");
+                }
+            }
+            _selection = desired; _reason = projectionPreferenceChanged?"projection-author-preference-changed":"context-bound"; Publish();
         }
         bool reprojected = !reload && RefreshDisplayPreference(epoch, token, desired.ProfileId);
-        return Receipt(request, true, reprojected ? "route-display-reprojected" : "context-bound");
+        return Receipt(request, true, reprojected ? "route-display-reprojected" : projectionPreferenceChanged?"projection-author-preference-changed":"context-bound");
     }
 
     private RuntimeOperationResult StartRound(SessionRuntimeRequest request, long epoch, CancellationToken token,bool manualAlignment=false)
@@ -447,7 +459,8 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             s1Manual=S1FloorObserverAvailable && _manualAlignmentSession;
             captureBinding = _capture.BindingScope;
             wasOpen = _mapOpen;
-            if (_manualAlignmentSession || request.Action is "refresh_map" or "observe_manual_floor" or "confirm_route" || _mapOpen && request.Action=="capture_now")
+            if (_manualAlignmentSession || request.Action is "refresh_map" or "observe_manual_floor" or "confirm_route" || _mapOpen && request.Action=="capture_now"
+                || DragCycleCurrent && request.Action is "set_floor" or "cycle_floor")
             {
                 if(_manualAlignmentSession && request.Action!="observe_manual_floor")
                 {RevokeDisplay("s1-current-floor-fit");_frame=null;_pose=null;}
@@ -611,7 +624,8 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         lock (_sync)
         {
             RequireCurrent(epoch, token, captured, bound);
-            if (request.Action is "refresh_map" or "observe_manual_floor" or "confirm_route" || wasOpen && request.Action=="capture_now")
+            if (request.Action is "refresh_map" or "observe_manual_floor" or "confirm_route" || wasOpen && request.Action=="capture_now"
+                || DragCycleCurrent && request.Action is "set_floor" or "cycle_floor")
             {
                 RevokeDisplay(floor is null ? "current-floor-unavailable" : "new-capture");
                 _entryCandidates.Clear();
@@ -638,18 +652,9 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         if(floorPolicyReason=="pending-click-mismatch")return Receipt(request,false,"pending-click-mismatch");
         if(floorConflict)return Receipt(request,false,"current-frame-floor-conflict");
         if (floor is null) return Receipt(request, false, s1Manual?"s1-current-floor-unavailable":"current-floor-unavailable");
-        lock(_sync)
-        {
-            RequireCurrent(epoch,token,captured,bound);
-            // A fresh explicit read advances observation, but cannot fit over
-            // an opening whose display has been moved independently of pose.
-            // Target-floor provisional projection is a separate transaction.
-            if(DragCycleCurrent)
-            {
-                RevokeDisplay("transient-projection-unavailable");_reason="transient-projection-unavailable";
-                Publish();return Receipt(request,false,_reason);
-            }
-        }
+        bool transient;
+        lock(_sync){RequireCurrent(epoch,token,captured,bound);transient=DragCycleCurrent;}
+        if(transient)return TryTransientFloorProjection(request,epoch,token,captured,bound,floor);
         using var current = ToBgr(captured);
         // Original Runtime re-enters identity ranking only when no map is
         // selected. A provisional group display member also owns this slot;
@@ -792,8 +797,15 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             if (request.Action == "cycle_floor")
             { var index = floors.ToList().IndexOf(_floor ?? ""); floor = floors[(index + 1) % floors.Count]; }
             if (!valid || floor is not null && !floors.Contains(floor)) return Receipt(request, false, "unsupported-floor");
+            bool transient=DragCycleCurrent;
             recapture = _mapOpen || _manualAlignmentSession && _mapId is not null; AdvanceOwnedEpoch(); epoch = _epoch;
-            RevokeFrame("floor-changed"); _manualFloor = floor;
+            if(transient)
+            {
+                _activeDrag=null;WithdrawDisplay("floor-changed");_pose=null;
+                pointerObservation=null;pointerSlot.Publish(null);
+            }
+            else RevokeFrame("floor-changed");
+            _manualFloor = floor;
             _manualFloorStarted = floor is null ? null : _options.TimeProvider.GetTimestamp();
             _floor = _manualAlignmentSession?null:floor ?? _observedFloor; Publish();
         }

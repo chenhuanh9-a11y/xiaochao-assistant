@@ -93,7 +93,7 @@ public sealed partial class LiveRuntime
             _epoch++;_progressRequest=null;floorClickEpochSpan=(first,_epoch);_mapRecovery=null;
             bool targetChanged=_floor!=floor;
             floorClickRequired=_observedFloor!=floor;
-            if(targetChanged){ResetSteady();_geometryGroup=null;}
+            if(targetChanged && !DragCycleCurrent){ResetSteady();_geometryGroup=null;}
             // An existing assistant hold follows the explicit game target,
             // keeping its original deadline. A game click creates no hold.
             if(_manualFloorStarted is { } hold && _options.TimeProvider.GetElapsedTime(hold)<TimeSpan.FromSeconds(2))

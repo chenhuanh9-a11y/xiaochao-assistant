@@ -8,4 +8,5 @@
   <ItemGroup><ProjectReference Include="..\..\src\StarMap.App\StarMap.App.csproj" /></ItemGroup>
   <ItemGroup><Compile Include="..\StarMap.InputHost.Tests\FixtureInputSource.cs" Link="Fixtures\FixtureInputSource.cs" /></ItemGroup>
   <ItemGroup><Compile Include="..\StarMap.RuntimeReplay.Tests\RecordedCapture.cs" Link="Fixtures\RecordedCapture.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="..\StarMap.RuntimeReplay.Tests\SyntheticProjectionCoordinates.cs" Link="Fixtures\SyntheticProjectionCoordinates.cs" /></ItemGroup>
 </Project>

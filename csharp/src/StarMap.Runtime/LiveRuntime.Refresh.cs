@@ -15,7 +15,7 @@ public sealed partial class LiveRuntime
             if (!_roundActive || !_mapOpen) return Receipt(request, false, "map-refresh-not-active");
             // A material acknowledgement completes the existing user choice;
             // passive maintenance cannot supersede that pending transaction.
-            if (_pendingGroupMaterial is not null) return Receipt(request, true, "refresh-coalesced");
+            if (_pendingGroupMaterial is not null || _pendingProjection is not null) return Receipt(request, true, "refresh-coalesced");
         }
         if(DragCycleCurrent)
             return await RetryDesiredGroupChoice(request,epoch,token,await ProbeMapAfterDrag(request,epoch,token).ConfigureAwait(false)).ConfigureAwait(false);

@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using StarMap.Core.Input;
 using StarMap.Core.Session;
+using StarMap.Core.Display;
 using StarMap.Vision;
 
 namespace StarMap.Runtime;
@@ -17,7 +18,9 @@ public sealed partial class LiveRuntime
     SessionRequestContext? _dragProbeWorkOwner;
     sealed record MapDragGesture(GlobalInputPointerEvent Press,GameFloorClickContext Context,string Floor,
         double BaseX,double BaseY,long Sequence,double TotalX=0,double TotalY=0,bool Moved=false,long PreparedSequence=0);
-    sealed record MapDragCycle(string Round,string Resource,string Map,long Cycle,double X,double Y,long Gesture,long Sequence);
+    sealed record MapDragCycle(string Round,string Resource,string Map,long Cycle,double X,double Y,long Gesture,long Sequence,
+        SharedProjectionSource Current)
+    { public bool ProbePending {get;set;} }
 
     bool DragCycleCurrent => _dragCycle is { } cycle && !_closed && _mapOpen && _roundActive
         && cycle.Round==_roundId && cycle.Resource==_resources?.Id && cycle.Map==EffectiveMapId && cycle.Cycle==_mapCycle;
@@ -88,10 +91,13 @@ public sealed partial class LiveRuntime
             if(moved)
             {
                 _materialProposal=null;
+                var provenance=DragCycleCurrent?_dragCycle!.Current:new SharedProjectionSource(EffectiveMapId!,_floor!,new(_mapCycle),true,false);
                 _dragCycle=new(_roundId!,_resources!.Id,EffectiveMapId!,_mapCycle,
-                    active.BaseX+step.TotalX,active.BaseY+step.TotalY,pointer.GestureId,pointer.Sequence);
+                    active.BaseX+step.TotalX,active.BaseY+step.TotalY,pointer.GestureId,pointer.Sequence,provenance)
+                    {ProbePending=_dragCycle?.ProbePending??false};
                 _render=new(_render!,_dragCycle.X,_dragCycle.Y,++_presentationRevision);
             }
+            if(pointer.Phase=="up" && DragCycleCurrent)_dragCycle!.ProbePending=moved;
             _activeDrag=pointer.Phase=="up"?null:active with {Sequence=pointer.Sequence,TotalX=step.TotalX,TotalY=step.TotalY,Moved=moved};
             _reason=moved?"map-drag-translated":"map-drag-no-motion";Publish();
             return new(true,_reason,ProbeRequired:pointer.Phase=="up" && moved);
@@ -100,7 +106,7 @@ public sealed partial class LiveRuntime
 
     public void CancelGameMapDrag(long gestureId)
     {lock(_sync){if(_activeDrag?.Press.GestureId==gestureId)_activeDrag=null;}}
-    void ClearDragPresentation(){_activeDrag=null;_dragCycle=null;}
+    void ClearDragPresentation(){_activeDrag=null;_dragCycle=null;ClearProjectionDisplay("drag-presentation-cleared");}
     void PreserveDragPresentation()
     {if(DragCycleCurrent && _render is not null)_render=new(_render,_dragCycle!.X,_dragCycle.Y,++_presentationRevision);}
 
@@ -129,6 +135,7 @@ public sealed partial class LiveRuntime
             var read=FloorObservation.Observe(pixels,bound.Passports.Season,bound.Passports.Mode,
                 _options.FloorSettings is { } settings?JsonNode.Parse(settings.GetRawText())?.AsObject():null,
                 _manualAlignmentSession?S1FloorUse.ManualMap:bound.StructureCatalog is not null?S1FloorUse.StructureCandidate:_options.S1FloorUse);
+            bool project=false;string? target=null;
             lock(_sync)
             {
                 RequireCurrent(epoch,token,captured,bound);
@@ -143,18 +150,25 @@ public sealed partial class LiveRuntime
                     _reason="map-not-observed";Publish();return Receipt(request,false,_reason);
                 }
                 _probeMisses=0;
-                ResolveObservedFloor(read);
+                target=ResolveObservedFloor(read);cycle.ProbePending=false;
                 bool unknownS1Candidate=bound.Passports.Season=="s1" && !_manualAlignmentSession && !read.AutomaticEligible;
                 bool contradiction=read.AutomaticEligible && read.FloorId is { } actual && actual!=_floor;
-                if(unknownS1Candidate || contradiction)
+                project=!unknownS1Candidate && target is not null && target!=_floor && read.AutomaticEligible && read.FloorId==target;
+                if(project)
+                {
+                    RevokeDisplay("transient-floor-observed");_frame=captured;_floor=target;_pose=null;
+                    RememberPointerObservation(captured,read);_reason="transient-floor-observed";Publish();
+                }
+                else if(unknownS1Candidate || contradiction)
                 {
                     if(unknownS1Candidate)ClearDragPresentation();
                     _pose=null;RevokeDisplay(unknownS1Candidate?"drag-floor-unavailable":"drag-floor-projection-pending");
                     _reason=unknownS1Candidate?"drag-floor-unavailable":"drag-floor-projection-pending";
                     Publish();return Receipt(request,false,_reason);
                 }
-                _reason="post-drag-observation-current";Publish();return Receipt(request,true,_reason);
+                else{_reason="post-drag-observation-current";Publish();return Receipt(request,true,_reason);}
             }
+            return TryTransientFloorProjection(request,epoch,token,captured,bound,target!);
         }
         catch(OperationCanceledException){return Receipt(request,false,"cancelled-or-obsolete");}
         catch(Exception error)

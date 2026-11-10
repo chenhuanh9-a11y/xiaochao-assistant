@@ -549,6 +549,12 @@ internal sealed partial class RuntimePage : UserControl
     static string FloorLabel(string? value) => value is null ? "楼层待确认" : value == "B1" ? "地下 1 层" : value.StartsWith('-') ? $"地下 {value[1..]} 层" : value + "F";
     static string ModeLabel(string value) => value switch { "nightmare" => "噩梦", "difficult" => "困难", "difficulty2" => "普通（历史）", _ => value };
     static string Reason(string reason) => reason switch {
+        "shared-root-projection-awaiting-material" => "已读取新楼层，正在准备临时地图。",
+        "shared-root-provisional" => "当前楼层暂按已有关系显示，仍待结构定位。",
+        "projection-relation-unavailable" or "projection-target-relation-unavailable" => "当前图包缺少可用的跨层关系，请重新开图定位。",
+        "projection-author-preference-changed" => "已切换图层，临时投影已撤销；请重新开图定位。",
+        "projection-source-geometry-unavailable" or "projection-provenance-unavailable" => "当前楼层仍待结构定位，暂不能继续跨层投影。",
+        "transient-projection-unavailable" or "projection-profile-mismatch" or "projection-normal-floors-only" => "当前画面暂不能跨层投影，请重新开图定位。",
         "game-floor-control-intent" or "pending-click-mismatch" => "已记录切层点击，等待游戏当前楼层高亮确认。",
         "context-bound" => "资源已就绪，开始本局不会自动开图或采集。", "round-started" => "请在游戏中打开地图，再读取画面。",
         "entry-neighborhood-candidates" or "candidates-awaiting-confirmation" => "画面尚不能唯一确认地图，可选择候选或手动选图。", "window-binding-changed" => "窗口连接已改变，请重新读取。",

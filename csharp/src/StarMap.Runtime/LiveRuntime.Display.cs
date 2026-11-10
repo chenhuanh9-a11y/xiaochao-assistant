@@ -45,6 +45,7 @@ public sealed class RuntimeRenderPacket
     public double PresentationOffsetY { get; }
     public long TransformRevision { get; }
     public bool IsTransient { get; }
+    public bool ProjectionOnly => Authorization.Source=="shared-root-provisional";
     public DisplayAffine PresentationTransform => new(1,0,PresentationOffsetX,0,1,PresentationOffsetY);
     internal long Epoch { get; }
     internal bool RemembersGeometry { get; }
@@ -78,8 +79,14 @@ public sealed partial class LiveRuntime
         && _capture.IsObservationContextCurrent(_frame) && _alignment?.ActiveObservation is { } observation
         && grant.Authorization.Current(observation.ObservationId, new(_roundId!), EffectiveMapId!, _floor!, _frameGeneration);
 
-    private bool RenderCurrent() => CanonicalCurrent() && _render is { } render && render.Epoch == _epoch
-        && render.Stamp == _canonical!.Stamp && ReferenceEquals(render.Authorization, _canonical.Authorization);
+    private bool RenderCurrent()
+    {
+        if(_render is not { } render || render.Epoch!=_epoch)return false;
+        if(CanonicalCurrent())return render.Stamp==_canonical!.Stamp && ReferenceEquals(render.Authorization,_canonical.Authorization);
+        return _projection is { } projection && DragCycleCurrent && _dragCycle!.Current==projection.Provenance
+            && ProjectionGrantCurrent(projection) && render.Stamp==projection.Frame.Stamp
+            && ReferenceEquals(render.Authorization,projection.Render.Authorization);
+    }
 
     private sealed record CanonicalGrant(CaptureStamp Stamp, long Epoch, DisplayAuthorization Authorization,
         string PackId, DisplayAffine Matrix, SharedStructureData Reference,
@@ -225,9 +232,13 @@ public sealed partial class LiveRuntime
     }
 
     private void RevokeDisplay(string reason)
+    { WithdrawDisplay(reason);_frameGeneration++; }
+
+    private void WithdrawDisplay(string reason)
     {
         DiscardGroupMaterial(reason);
-        _alignment?.Close(reason: reason); _render = null; _canonical = null; _materialProposal = null; _frameGeneration++;
+        ClearProjectionDisplay(reason);
+        _alignment?.Close(reason: reason); _render = null; _canonical = null; _materialProposal = null;
         _display = new(false, false, false, reason);
     }
 }
