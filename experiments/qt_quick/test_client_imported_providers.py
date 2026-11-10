@@ -65,7 +65,8 @@ class ImportedProviderBoundaryTests(unittest.TestCase):
                     report = self.factories.capabilities(season)[mode]
                     self.assertFalse(report['available'])
                     self.assertEqual(report['resourceGaps'], ['native-base-schema-unsupported']
-                        if (season, mode) == ('s0', 'nightmare') else ['recognition-decoder-unavailable'])
+                        if (season, mode) in {('s0', 'nightmare'), ('s1', 'difficult')}
+                        else ['recognition-decoder-unavailable'])
         self.assertFalse((self.root / 'escaped').exists())
 
 

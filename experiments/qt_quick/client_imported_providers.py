@@ -11,7 +11,8 @@ from client_providers import EngineFactories, ProviderResourceBinding, ProviderU
 
 
 # Capabilities are granted by completed program decoders, never package claims.
-SUPPORTED_CAPABILITIES = frozenset({'native-s0-nightmare-base-v1', 's0-signed-templates-v1'})
+SUPPORTED_CAPABILITIES = frozenset({'native-s0-nightmare-base-v1', 's0-signed-templates-v1',
+    'native-s1-difficult-base-v1', 's1-signed-column-geometry-v1'})
 
 
 class ImportedProviderUnavailable(ProviderUnavailable):
@@ -30,23 +31,30 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
     """
     from difficult_native_identity import NativeDifficultCandidateEngine
     from imported_controls_profile import S0ControlsProfile
+    from imported_s1_controls_profile import S1ControlsProfile
+    from imported_s1_native_context import ImportedS1NativeContext
     from imported_native_base import decode_native_base
     from nightmare_candidate import NightmareMemoryStore
     from s0_vertical_controls import observe_s0_map
-    from client_providers import SharedReferenceProvider
+    from client_providers import SharedReferenceProvider, _build_memory_store, attach_structure_scanner
 
     bundle = decode_native_base(base_view, season=season, mode=mode)
     if not bundle.ready:
         raise ImportedProviderUnavailable('native-base-incomplete', bundle.gaps)
     if controls_view.component['dependencies']:
         raise ImportedProviderUnavailable('controls-dependencies-unsupported', ('controls-dependencies-unsupported',))
-    controls = S0ControlsProfile(controls_view)
+    controls = S1ControlsProfile(controls_view) if season == 's1' else S0ControlsProfile(controls_view)
     context = controls.for_context(season, mode)
     pack, root, interfaces = bundle.pack, base_view.root, bundle.interfaces
     if context is None or set(context.contract.floor_ids) != set(pack.floors):
         raise ImportedProviderUnavailable('controls-base-floors-mismatch', ('controls-base-floors-mismatch',))
 
+    native = ImportedS1NativeContext(base_view, bundle, controls) if season == 's1' else None
+
     def check_current():
+        if native is not None:
+            native.assert_current()
+            return
         bundle.assert_current()
         controls_view.root  # Check the controls manifest as well as its catalog.
 
@@ -57,12 +65,14 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
         except (OSError, ValueError):
             return False
 
-    memory = NightmareMemoryStore(pack, paths.memory_root(mode, season), portable_seed_path=None,
-        sample_validator=lambda frame: observe_s0_map(frame, mode, season=season, controls=controls)[0].get('detected') is True)
+    memory = (_build_memory_store(pack, paths.memory_root(mode, season), root, season=season, controls=controls)
+        if season == 's1' else NightmareMemoryStore(pack, paths.memory_root(mode, season), portable_seed_path=None,
+            sample_validator=lambda frame: observe_s0_map(frame, mode, season=season, controls=controls)[0].get('detected') is True))
     provider = SharedReferenceProvider(root, bundle.resources, bundle.versions, check_current=check_current)
     engine = NativeDifficultCandidateEngine(pack, identity_root=root / interfaces['identityEntries'],
         identity_profile_id=interfaces['identityProfile'], identity_floors=pack.floors,
-        exit_icon_path=base_view.path(interfaces['exitIcon']),
+        exit_icon_path=base_view.path(interfaces['exitIcon']) if native is None else None,
+        entry_semantic_side_entries=native is None,
         entry_structure_store=bundle.resources, entry_shared_reference_provider=provider,
         entry_read_resource=bundle.reader, entry_typed_index_path=base_view.path(interfaces['typedIndex']),
         shared_reference_loader=provider, entry_context_is_current=entry_current,
@@ -80,13 +90,20 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
     engine.qt_adapters = bundle.adapters
     engine.qt_controls_profile = controls
     engine.qt_resource_root = root
-    engine.qt_catalog = engine.qt_native_context = engine.qt_optional_displays = None
+    engine.qt_catalog = engine.qt_optional_displays = None
+    engine.qt_native_context = native
     engine.qt_logical_group_registry = None
-    engine.qt_live_gaps = ()
-    engine.qt_live_ready = True
+    engine.qt_live_gaps = tuple(native.live_gaps) if native is not None else ()
+    engine.qt_live_ready = not engine.qt_live_gaps
     engine.qt_season = season
     engine.qt_resource_inventory = dict(typedLayers=len(bundle.versions),
-        mainEntries=len(engine.entry_identity.entries), sideEntries=len(engine.side_entry_identity.entries))
+        mainEntries=len(engine.entry_identity.entries), sideEntries=len(engine.side_entry_identity.entries),
+        semanticSideEntries=local.semantic_side_entries)
+    if native is not None:
+        from s1_structure_selection import StructureCatalog
+        engine.qt_s1_index_resource_root = root
+        engine.qt_s1_private_coordinate_prepare = engine.qt_s1_pose_prior = None
+        attach_structure_scanner(engine, StructureCatalog.from_engine(engine))
     check_current()
     return engine
 
@@ -124,7 +141,7 @@ class ImportedEngineFactories(EngineFactories):
                 resource_revision=revision) from error
         if resources.gaps:
             raise ImportedProviderUnavailable(';'.join(resources.gaps), resources.gaps, resource_revision=revision)
-        if (season, mode) != ('s0', 'nightmare'):
+        if (season, mode) not in {('s0', 'nightmare'), ('s1', 'difficult')}:
             raise ImportedProviderUnavailable('recognition-decoder-unavailable',
                 ('recognition-decoder-unavailable',), resource_revision=revision)
         return resources, revision

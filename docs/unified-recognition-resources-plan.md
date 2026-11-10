@@ -1,6 +1,6 @@
 # 四模式识别、贴合与资源导入统一方案
 
-核查日期：2026-11-11。状态：**P0 调查/设计完成；P1 空资源默认入口、P2 保存基础及 S0 噩梦资源页启用已接线；其余三组合、作者显示与四模式回放尚未完成**。本文件同时作为现状清单、设计和实施台账，不另建重复任务说明。第 2–4 节现状引用绑定原核查 commit，后续实施状态另见第 8 节。
+核查日期：2026-11-11。状态：**P0 调查/设计完成；P1 空资源默认入口、P2 保存基础及 S0 噩梦资源页启用已接线，S1 困难数据默认工厂已接线；S1 困难资源页、其余两组合、作者显示与四模式回放尚未完成**。本文件同时作为现状清单、设计和实施台账，不另建重复任务说明。第 2–4 节现状引用绑定原核查 commit，后续实施状态另见第 8 节。
 
 ## 1. 范围与基线
 
@@ -373,4 +373,13 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 - exporter 扩展现有 `--season/--mode`，默认 S0 噩梦保持，新增 S1 困难，S1 噩梦仍明确不支持。实际 identity、typed NPZ、neutral 和三份 entry JSON 保留源字节，版本/坐标只补真实组件引用与 reference-only lookup；作者显示不进入基础包。S1 正门的 `game-entry-room-proposal` 来源与局部结构来源保留区别。源库存及现有无覆盖发布/失败恢复继续执行。
 - S1 controls 为同 ZIP 的独立组件，外置负四层合同、固定/扩大搜索域和 X、加减按钮及 rail 的实际形状参数。外置固定列也需独立 UI 与邻接证明，屏蔽按实际 full-client ROI；无效边界和空带返回未验证。程序默认 `controls=None` 保持原 S0/S1 行为及资格。所有外置 profile（含默认数值）当前只返回观察候选，`automaticFloorEligible=False`、`observedFloorValidated=False`、`validationScope=external-controls-unreviewed`；没有以包声明继承源码默认探测器的回放资格。
 - 新 decoder 7 项和原 S0 decoder/工厂 28 项通过；独立 decoder 复核 10 项及额外 4 个反例通过。producer 新 5 项与原 10 项通过，外置控件 14 项及受影响默认路径回归通过并独立复核。真实截图回放因 `S1_FLOOR_FIXTURE_ROOT` 缺失跳过；数学像素不代替真实源图、实机或游戏。
-- 真实 S1 困难测试 ZIP 为 1,156,554 字节，SHA256 `b8232ab84df718fbbee2070b40d9060d5f362b690397c4a0a5935af5722307f2`；65 个实际源文件与 855 项库存绑定。主任务实际 inspect→保存→decoder/controls 得到 14 图、56 typed 层、14 main/56 local entries；同包参数在合成像素上读出 `-1`，仍保持外置未复核资格。该次资源/合成观察往返 12.575 秒，未激活 catalog，不是 rank/fit 或可见像素耗时。默认 S1 工厂、LiveRuntime 接线、真实控制截图、GUI 和 Setup 尚未验证，不能称 S1 可用或 P2 完成。
+- 真实 S1 困难测试 ZIP 为 1,156,554 字节，SHA256 `b8232ab84df718fbbee2070b40d9060d5f362b690397c4a0a5935af5722307f2`；65 个实际源文件与 855 项库存绑定。主任务实际 inspect→保存→decoder/controls 得到 14 图、56 typed 层、14 main/56 local entries；同包参数在合成像素上读出 `-1`，仍保持外置未复核资格。该次资源/合成观察往返 12.575 秒，未激活 catalog，不是 rank/fit 或可见像素耗时。后续默认工厂接线见下节；真实控制截图、GUI 和 Setup 尚未验证，不能称 S1 实时识别可用或 P2 完成。
+
+### S1 困难默认工厂与结构扫描接线
+
+- `ImportedS1NativeContext` 仅适配已解码 base 与实际 controls，所有元数据入口核对两组件当前性；不重造旧磁盘 native manifest、legacy 显示绑定或私测坐标。已有显示消费者从同层共享结构生成底图，矩阵保持实际单位桥。外置控件尚未取得源截图回放资格，`liveReady`、`candidateReady`、自动楼层和手动开图观测仍为 false；另行声明显式传入楼层的数据扫描能力，不能借此绕过 LiveRuntime 的观测资格。
+- 默认 imported 工厂支持 S1 困难的数据构造，S1 个人学习关闭、不加载 portable seed；正门/局部轮廓仍走真实有界 reader。程序侧 `semantic_side_entries=False` 禁止无语义侧门的上下文读取 anchors/search/exit 或启动延迟出口识别，不以错误字符串代替能力。旧调用默认 true，S0 噩梦语义侧门保持。
+- 从旧 S1 provider 提取同一 `attach_structure_scanner` 装配，旧 provider 显式传入其私测 fitter，新 imported provider 仅传已校验共享结构。S1 `engine.rank` 进入实际 `StructureCandidateScanner`，扫描入口、进度回调和返回均核资源当前性；没有转回 S0 entry rank 或旧资源 fallback。导入方要求私测 fixed fit 时明确拒绝，不能隐式读私测资产。此项复用 S1 算法，不等于 P3 的 S0 向 S1 链迁移已经完成。
+- 新默认工厂 3 项集成通过：真实 fixture ZIP 保存、两次 prospective 校验、catalog 发布、默认 factory、结构回退；合成黑帧调用实际 scanner，完整保留 14 个竞争者且不授予身份/自动选择；替换 catalog 后旧上下文和 scanner 失效并重建缓存。fixture 为微型合成结构，黑帧是负例，不证明实际地图正向识别、贴合、自动采集、GUI 或游戏。
+- 同一真实 S1 困难 ZIP 另经隔离根保存、两次 prospective admission、catalog、默认工厂和实际结构底图，得到 14 图、56 typed/14 main/56 local，底图 RGBA 1860×1320。保存 4.649 秒、启用 26.569 秒、active 构造 17.201 秒；资源操作不能当作首贴或首像素耗时。合成 1920×1200 黑帧在显式 `-1` 层调用实际 `engine.rank`，预算 0.05 秒返回 `budget-unresolved`，已扫 1/未扫 13、排除 0，身份/自动选择/live 均 false；实测该负向 rank 0.269 秒。此证据不含真实帧正向识别、贴合或实时采集。
+- 受影响 S0 decoder/默认工厂、语义接缝、旧 provider/季节/运行合同合计 63 项通过（232.122 秒）。独立复核另运行语义/decoder/context 16 项及两个 S0 真实资源边界；工厂复核运行 5 项现有边界与 6 个明确替换 host 的 scanner 探针。新增三个 unittest 模块已接入现有 CI 独立进程循环；本地结果不替代本次提交的远端工作流结果。

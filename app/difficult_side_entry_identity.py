@@ -15,13 +15,17 @@ class MapLocalEntryIdentity:
     def __init__(self, root, *, route_loader=None, shared_reference_provider=None, geometry_provider=None, author_visible_provider=None,
                  mode='difficult', profile_id='zhan10-speed', floors=('1','2'),
                  exit_icon_path=None, structure_store=None, profile_for_map=None,
-                 read_resource=None, typed_index_path=None):
+                 read_resource=None, typed_index_path=None, semantic_side_entries=True):
+        if type(semantic_side_entries) is not bool:
+            raise TypeError('semantic_side_entries-must-be-bool')
         self.root = Path(root)
         self.mode = mode
         self.profile_id = profile_id
         self.profile_for_map = profile_for_map or (lambda map_id: self.profile_id)
         self.floors = tuple(floors)
-        self.exit_icon_path = Path(exit_icon_path) if exit_icon_path is not None else self.root.parent / 'difficult-exit-icon.json'
+        self.semantic_side_entries = semantic_side_entries
+        self.exit_icon_path = (Path(exit_icon_path) if exit_icon_path is not None else
+                               self.root.parent / 'difficult-exit-icon.json') if semantic_side_entries else None
         self.route_loader = route_loader
         self.read_resource = read_resource
         self.shared_reference_provider = shared_reference_provider
@@ -63,12 +67,16 @@ class MapLocalEntryIdentity:
             self.entries.append((item, points, rays, pairs))
         self.registered_floors=frozenset((str(item['mapId']),str(item['floor']))
             for item,_,_,_ in self.entries)
-        from side_entry_geometry import load_side_doors
-        self.side_doors, self.side_door_error = load_side_doors(self.root, self.entries, self.mode, self.profile_id,
-            read_resource=read_resource, typed_index_path=typed_index_path)
-        from side_entry_search import load_index
-        self.side_search, self.side_search_error = load_index(self.root, self.entries, self.side_doors,
-            read_resource=read_resource)
+        if semantic_side_entries:
+            from side_entry_geometry import load_side_doors
+            self.side_doors, self.side_door_error = load_side_doors(self.root, self.entries, self.mode, self.profile_id,
+                read_resource=read_resource, typed_index_path=typed_index_path)
+            from side_entry_search import load_index
+            self.side_search, self.side_search_error = load_index(self.root, self.entries, self.side_doors,
+                read_resource=read_resource)
+        else:
+            self.side_doors, self.side_search = {}, {}
+            self.side_door_error = self.side_search_error = None
         self.passports = []
         self.entry_coverage = []
         self.passport_error = None
@@ -104,6 +112,8 @@ class MapLocalEntryIdentity:
 
     def _entry_observations(self, frame, *, context=None):
         """Reuse actual exit/rectangle primitives without altering nightmare."""
+        if not self.semantic_side_entries:
+            return []
         from side_door_recognition import SideDoorRecognizer
         from nightmare_candidate import visible_map_component, local_side_door_rectangle, live_side_door_direction
         if self._exit_recognizer is None:

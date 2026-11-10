@@ -131,6 +131,67 @@ class SharedReferenceProvider:
                     metadata=dict(row["expected"], binding=row["binding"]))
 
 
+def attach_structure_scanner(engine, catalog, *, private_fit=None):
+    """Attach the existing S1 scanner without choosing any resource fallback.
+
+    Legacy private coordinates are supplied by their owning provider. Imported
+    bases can use the same scanner with only their checked shared references.
+    """
+    from s1_structure_selection import StructureCandidateScanner
+
+    def check_current():
+        check = getattr(engine, 'qt_assert_resource_current', None)
+        if check is not None:
+            check()
+
+    def structure_scan(frame, *, floor, floor_source="operator-declared", cancelled=None, budget_seconds=None,
+                       on_progress=None, candidate_order=None, preferred_map_id=None,
+                       preferred_material_committed=None, private_coordinate_report=None, planned_map_ids=None,
+                       first_material_committed=None, pose_priors=None, collect_fit_diagnostics=False):
+        check_current()
+        from client_live_runtime import _AlignmentHost
+        host = _AlignmentHost(engine, pose_priors=pose_priors,
+            collect_fit_diagnostics=collect_fit_diagnostics)
+        fixed = private_coordinate_report is not None and private_coordinate_report.get("coordinateVerified") is True
+        if fixed and private_fit is None:
+            raise ProviderUnavailable('private-coordinate-provider-unavailable')
+        fit = (lambda f, mid, fl, cancel, **kw: private_fit(
+            f, mid, fl, cancel, report=private_coordinate_report, **kw)) if fixed else host.fit
+        scanner = StructureCandidateScanner(catalog, fit,
+            prepare_fit=None if fixed else host.prepare_structure_scan)
+        def progress(value):
+            check_current()
+            on_progress(value)
+        report = scanner.scan(frame, floor=floor, floor_source=floor_source,
+            cancelled=cancelled, budget_seconds=budget_seconds,
+            on_progress=progress if on_progress is not None else None, candidate_order=candidate_order,
+            preferred_map_id=preferred_map_id, preferred_material_committed=preferred_material_committed,
+            planned_map_ids=planned_map_ids, first_material_committed=first_material_committed)
+        check_current()
+        report["posePriorOutcomes"] = [{key: event[key] for key in
+            ("mapId", "floor", "accepted", "fallback", "elapsedMs") if key in event}
+            for event in host.events if event.get("event") == "experimental-pose-prior"][:6]
+        if collect_fit_diagnostics and report['status'] != 'cancelled':
+            try:
+                from s1_fit_diagnostics import scan_summary
+                report['fitEvidence'] = scan_summary(host.events, mode=catalog.mode,
+                    resource_key=catalog.resource_key, floor=floor, frame_shape=frame.shape,
+                    event_counts=host.diagnostic_event_counts, outcomes=report.get('outcomes', ()))
+            except Exception:
+                pass  # Evidence cannot turn a solver result into a failure.
+        return report
+
+    def structure_rank(frame, *, floor, budget_seconds=None):
+        report = structure_scan(frame, floor=floor, budget_seconds=budget_seconds)
+        engine.last_s1_structure_scan = report
+        engine.last_difficult_evidence = {key: value for key, value in report.items() if key != "poses"}
+        return StructureCandidateScanner.rank_rows(report, engine.pack)
+
+    engine.qt_s1_structure_scan = structure_scan
+    engine.qt_s1_structure_rank = structure_rank
+    return engine
+
+
 class EngineFactories(dict):
     """A mapping of lazy per-mode factories plus cached capability reports.
 
@@ -472,7 +533,7 @@ class EngineFactories(dict):
                 engine.qt_resource_inventory["optionalAuthorErrors"] = dict(optional.errors)
             else:
                 engine.qt_optional_displays = None
-            from s1_structure_selection import StructureCatalog, StructureCandidateScanner
+            from s1_structure_selection import StructureCatalog
             catalog = StructureCatalog.from_engine(engine)
             private_observer = None
             def private_coordinate_prepare(frame, pool_ids, floor, *, cancelled, stage=None):
@@ -496,44 +557,8 @@ class EngineFactories(dict):
                         provider=lambda mid, fl: engine.qt_shared_provider("shared-structure", mid, fl))
                 return pose_index.make_hint(source, target_floor=floor, current_owner_scope=owner_scope)
             engine.qt_s1_pose_prior = pose_prior
-            def structure_scan(frame, *, floor, floor_source="operator-declared", cancelled=None, budget_seconds=None,
-                               on_progress=None, candidate_order=None, preferred_map_id=None,
-                               preferred_material_committed=None, private_coordinate_report=None, planned_map_ids=None,
-                               first_material_committed=None, pose_priors=None, collect_fit_diagnostics=False):
-                # Lazy import keeps provider construction free of live IO.
-                from client_live_runtime import _AlignmentHost
-                host = _AlignmentHost(engine, pose_priors=pose_priors,
-                    collect_fit_diagnostics=collect_fit_diagnostics)
-                fixed = private_coordinate_report is not None and private_coordinate_report.get("coordinateVerified") is True
-                fit = (lambda f, mid, fl, cancel, **kw: private_observer.fixed_fit(
-                    f, mid, fl, cancel, report=private_coordinate_report, **kw)) if fixed else host.fit
-                scanner = StructureCandidateScanner(catalog, fit,
-                    prepare_fit=None if fixed else host.prepare_structure_scan)
-                report = scanner.scan(frame, floor=floor, floor_source=floor_source,
-                                    cancelled=cancelled, budget_seconds=budget_seconds,
-                                    on_progress=on_progress, candidate_order=candidate_order,
-                                    preferred_map_id=preferred_map_id,
-                                    preferred_material_committed=preferred_material_committed,
-                                    planned_map_ids=planned_map_ids, first_material_committed=first_material_committed)
-                report["posePriorOutcomes"] = [{key: event[key] for key in
-                    ("mapId", "floor", "accepted", "fallback", "elapsedMs") if key in event}
-                    for event in host.events if event.get("event") == "experimental-pose-prior"][:6]
-                if collect_fit_diagnostics and report['status'] != 'cancelled':
-                    try:
-                        from s1_fit_diagnostics import scan_summary
-                        report['fitEvidence'] = scan_summary(host.events, mode=catalog.mode,
-                            resource_key=catalog.resource_key, floor=floor, frame_shape=frame.shape,
-                            event_counts=host.diagnostic_event_counts, outcomes=report.get('outcomes', ()))
-                    except Exception:
-                        pass  # Evidence cannot turn a solver result into a failure.
-                return report
-            def structure_rank(frame, *, floor, budget_seconds=None):
-                report = structure_scan(frame, floor=floor, budget_seconds=budget_seconds)
-                engine.last_s1_structure_scan = report
-                engine.last_difficult_evidence = {key: value for key, value in report.items() if key != "poses"}
-                return StructureCandidateScanner.rank_rows(report, engine.pack)
-            engine.qt_s1_structure_scan = structure_scan
-            engine.qt_s1_structure_rank = structure_rank
+            attach_structure_scanner(engine, catalog,
+                private_fit=lambda *args, **kwargs: private_observer.fixed_fit(*args, **kwargs))
             return engine
         if not self.optional_displays:
             # New resource catalogs own displays separately from base geometry.

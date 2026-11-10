@@ -475,15 +475,12 @@ def _decode(view, season, mode):
     local = MapLocalEntryIdentity(entry_root, mode=mode, profile_id=profile, floors=pack.floors,
         exit_icon_path=None if proposal_only else view.path(paths['exitIcon']), structure_store=resources,
         profile_for_map=pack.identity_profiles.__getitem__, read_resource=reader,
-        typed_index_path=view.path(paths['typedIndex']))
-    if any(error is not None for error in (main.error, local.passport_error)):
+        typed_index_path=view.path(paths['typedIndex']), semantic_side_entries=not proposal_only)
+    if any(error is not None for error in
+           (main.error, local.passport_error, local.side_door_error, local.side_search_error)):
         _reject('entry-loader-invalid')
-    if proposal_only:
-        if (local.side_doors or local.side_search or local.side_door_error != 'not-nightmare'
-                or local.side_search_error != 'side-door-source-unavailable'):
-            _reject('proposal-side-evidence-invalid')
-    elif any(error is not None for error in (local.side_door_error, local.side_search_error)):
-        _reject('entry-loader-invalid')
+    if proposal_only and (local.side_doors or local.side_search or local.exit_icon_path is not None):
+        _reject('proposal-side-evidence-invalid')
     for item, points, rays, pairs in local.entries:
         if proposal_only or str(item['floor']) != '2':
             continue

@@ -262,6 +262,7 @@ class MapIdentityEngine(NightmareCandidateEngine):
                  entry_structure_store=None, entry_route_loader=None,
                  entry_shared_reference_provider=None,
                  entry_read_resource=None, entry_typed_index_path=None,
+                 entry_semantic_side_entries=True,
                  native_similarity_root=None, native_similarity_priority_provider=None,
                  native_similarity_binding_provider=None,native_similarity_context_provider=None,
                  entry_context_is_current=None, **kwargs):
@@ -302,7 +303,8 @@ class MapIdentityEngine(NightmareCandidateEngine):
                 shared_reference_provider=entry_shared_reference_provider,
                 author_visible_provider=author_visible_provider,
                 structure_store=self.entry_identity.structures,profile_for_map=self.identity_profile_for_map,
-                read_resource=entry_read_resource, typed_index_path=entry_typed_index_path)
+                read_resource=entry_read_resource, typed_index_path=entry_typed_index_path,
+                semantic_side_entries=entry_semantic_side_entries)
         except (ImportError,OSError,ValueError,KeyError,TypeError) as error:
             self.side_entry_error = str(error)
         from front_gate_observation import FrontGatePrefilter
