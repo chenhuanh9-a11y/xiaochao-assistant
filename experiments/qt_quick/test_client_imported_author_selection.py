@@ -31,7 +31,7 @@ def changed_png():
     return output.getvalue()
 
 
-class ClientImportedAuthorSelectionTests(_AuthorDisplayFixture):
+class _AuthorSelectionFixture(_AuthorDisplayFixture):
     def resource_root(self):
         self.paths = RuntimePaths(self.root, False)
         return self.paths.imported_resource_root
@@ -60,6 +60,8 @@ class ClientImportedAuthorSelectionTests(_AuthorDisplayFixture):
         with resource_runtime_lease(self.resources):
             return activation.activate_display(self.resolver(), self.paths, view.component_ref, **kwargs)
 
+
+class ClientImportedAuthorSelectionTests(_AuthorSelectionFixture):
     def test_add_replace_and_repeat_preserve_other_selection_and_show_new_pixels(self):
         dormant = _inert_component(self.resources, 'display', 'display')
         self.seed(displays=[dormant])

@@ -18,6 +18,7 @@ import star_map_import as files
 
 
 _ROLES = ('recognitionBase', 'controls', 'reviewedGroups')
+_CONTEXTS = frozenset({('s0', 'nightmare'), ('s0', 'difficult'), ('s1', 'difficult'), ('s1', 'nightmare')})
 
 
 def _wire(ref):
@@ -86,138 +87,133 @@ def _validate_proposal(root, paths, resolver, base_ref, controls_ref, *, season,
     return validate
 
 
-def activate_context(resolver, paths, base_ref, controls_ref, *, season='s0', mode='nightmare',
-                     cancelled=None):
-    """Activate only one supported imported recognition context.
+def _prepare_display_updates(root, snapshot, display_refs, season, mode, operation_current):
+    """Replace only requested logical components; never drop omitted authors."""
+    from imported_author_display import read_display_identity
+    displays, updates, requested = list(snapshot.displays), [], set()
+    for display_ref in display_refs:
+        operation_current()
+        if not isinstance(display_ref, ComponentRef):
+            raise catalog.ResourceCatalogError('resource-catalog-reference-invalid')
+        logical = (display_ref.package_id, display_ref.component_id)
+        if logical in requested:
+            raise catalog.ResourceCatalogError('resource-display-selection-ambiguous')
+        requested.add(logical)
+        previous = [ref for ref in snapshot.displays
+                    if (ref.package_id, ref.component_id) == logical]
+        if len(previous) > 1:
+            raise catalog.ResourceCatalogError('resource-display-selection-ambiguous')
+        previous_ref = previous[0] if previous else None
+        new_view = PackageView(root, display_ref, assert_current=operation_current)
+        identity = read_display_identity(new_view)
+        if (identity.season, identity.mode) != (season, mode):
+            raise catalog.ResourceCatalogError('resource-component-context-mismatch')
+        old_view = PackageView(root, previous_ref, assert_current=operation_current) if previous_ref else None
+        updates.append((new_view, old_view, previous_ref))
+        if previous_ref is None:
+            displays.append(display_ref)
+        else:
+            displays = [display_ref if ref == previous_ref else ref for ref in displays]
 
-    The caller must already hold its Session idle resource lease. The catalog
-    write lock here serializes this operation with package/catalog writers.
-    All four implemented base/control data contexts are admitted. Data admission
-    does not grant rank or live capability; no legacy factory is consulted.
+    def check_updates():
+        for new_view, old_view, previous_ref in updates:
+            operation_current()
+            new_identity = read_display_identity(new_view)
+            if (new_identity.season, new_identity.mode) != (season, mode):
+                raise catalog.ResourceCatalogError('resource-component-context-mismatch')
+            if old_view is not None:
+                try:
+                    old_identity = read_display_identity(old_view)
+                except (OSError, ValueError) as cause:
+                    operation_current()
+                    error = catalog.ResourceCatalogError('resource-previous-display-metadata-unavailable')
+                    error.previous_display_ref = previous_ref
+                    raise error from cause
+                if old_identity != new_identity:
+                    raise catalog.ResourceCatalogError('resource-display-identity-mismatch')
+
+    check_updates()
+    return tuple(displays), check_updates
+
+
+def _snapshot_for_root(resolver, root):
+    snapshot = resolver.snapshot()
+    if Path(snapshot.root).resolve() != root:
+        raise catalog.ResourceCatalogError('resource-root-mismatch')
+    return snapshot
+
+
+def _activate_locked(root, snapshot, paths, resolver, *, season, mode, display_refs,
+                     cancelled, base_ref=None, controls_ref=None):
+    def operation_current():
+        files._check_cancelled(cancelled)
+
+    expected_stamp = snapshot.catalog_stamp
+    displays, check_updates = _prepare_display_updates(root, snapshot, display_refs,
+        season, mode, operation_current)
+    context_key = f'{season}:{mode}'
+    current = snapshot.contexts.get(context_key)
+    if base_ref is None and controls_ref is None:
+        if current is None or current['recognitionBase'] is None or current['controls'] is None:
+            raise catalog.ResourceCatalogError('resource-display-base-context-not-active')
+        base_ref, controls_ref = current['recognitionBase'], current['controls']
+    validate_context = _validate_proposal(root, paths, resolver,
+        base_ref, controls_ref, season=season, mode=mode, cancelled=cancelled)
+
+    def validate(document):
+        operation_current()
+        # Only the proposed closure is decoded. Old replaced images/base data
+        # may be damaged; their exact old display header still binds the scope.
+        check_updates()
+        validate_context(document)
+        operation_current()
+
+    already_active = (current is not None and current['recognitionBase'] == base_ref
+        and current['controls'] == controls_ref and displays == snapshot.displays)
+    contexts = {key:{role:_wire(row[role]) for role in _ROLES} for key,row in snapshot.contexts.items()}
+    row = contexts.setdefault(context_key, {role:None for role in _ROLES})
+    row.update(recognitionBase=_wire(base_ref), controls=_wire(controls_ref))
+    document = dict(schema=catalog.SCHEMA,
+        generation=snapshot.generation if already_active else str(uuid.uuid4()),
+        contexts=contexts, displays=[_wire(ref) for ref in displays])
+    if already_active:
+        validate(document)
+        operation_current()
+        snapshot.assert_current()
+        return dict(status='already-active', generation=snapshot.generation, context=context_key)
+    return publication.activate_catalog_locked(root, document, expected_catalog_stamp=expected_stamp,
+        validate=validate, cancelled=cancelled)
+
+
+def activate_context(resolver, paths, base_ref, controls_ref, *, season='s0', mode='nightmare',
+                     display_refs=(), cancelled=None):
+    """Select B/C and explicitly requested display updates in one transaction.
+
+    display_refs is an update subset, not a replacement list. Omitted authors
+    remain selected and their exact base dependencies must still be satisfied.
+    The caller owns the Session idle lease. Data admission grants no live/rank.
     """
-    if (season, mode) not in {('s0', 'nightmare'), ('s0', 'difficult'), ('s1', 'difficult'), ('s1', 'nightmare')}:
+    if (season, mode) not in _CONTEXTS:
         raise catalog.ResourceCatalogError('native-base-context-unsupported')
     if not isinstance(base_ref, ComponentRef) or not isinstance(controls_ref, ComponentRef):
         raise catalog.ResourceCatalogError('resource-catalog-reference-invalid')
-    base_wire, controls_wire = _wire(base_ref), _wire(controls_ref)
     root = _resolved_root(resolver, paths)
-
     with resource_write_lock(root, wait=True, cancelled=cancelled):
-        snapshot = resolver.snapshot()
-        if Path(snapshot.root).resolve() != root:
-            raise catalog.ResourceCatalogError('resource-root-mismatch')
-        expected_stamp = snapshot.catalog_stamp
-        context_key = f'{season}:{mode}'
-        current = snapshot.contexts.get(context_key)
-        already_active = (current is not None
-                          and current['recognitionBase'] == base_ref
-                          and current['controls'] == controls_ref)
-
-        contexts = {
-            key: {role: _wire(row[role]) for role in _ROLES}
-            for key, row in snapshot.contexts.items()
-        }
-        row = contexts.setdefault(context_key, {role: None for role in _ROLES})
-        row['recognitionBase'] = base_wire
-        row['controls'] = controls_wire
-        document = dict(
-            schema=catalog.SCHEMA,
-            generation=snapshot.generation if already_active else str(uuid.uuid4()),
-            contexts=contexts,
-            displays=[_wire(ref) for ref in snapshot.displays],
-        )
-        validate = _validate_proposal(root, paths, resolver, base_ref, controls_ref,
-                                      season=season, mode=mode, cancelled=cancelled)
-
-        if already_active:
-            # Idempotence still proves the installed package contents and the
-            # current decoder semantics, but does not publish a new generation.
-            validate(document)
-            files._check_cancelled(cancelled)
-            snapshot.assert_current()
-            return dict(status='already-active', generation=snapshot.generation,
-                        context=context_key)
-
-        return publication.activate_catalog_locked(
-            root, document, expected_catalog_stamp=expected_stamp,
-            validate=validate, cancelled=cancelled,
-        )
+        snapshot = _snapshot_for_root(resolver, root)
+        return _activate_locked(root, snapshot, paths, resolver, season=season, mode=mode,
+            base_ref=base_ref, controls_ref=controls_ref, display_refs=display_refs, cancelled=cancelled)
 
 
 def activate_display(resolver, paths, display_ref, *, cancelled=None):
-    """Select a display version without changing any base or other component.
-
-    A normal update replaces one logical component in place and preserves its
-    profile/context. Unknown old metadata requires an explicit retirement flow,
-    not a guess from the replacement. The caller owns the Session idle lease.
-    """
+    """Select one display version while preserving the currently active base."""
     from imported_author_display import read_display_identity
     if not isinstance(display_ref, ComponentRef):
         raise catalog.ResourceCatalogError('resource-catalog-reference-invalid')
     root = _resolved_root(resolver, paths)
-
-    def operation_current():
-        files._check_cancelled(cancelled)
-
     with resource_write_lock(root, wait=True, cancelled=cancelled):
-        snapshot = resolver.snapshot()
-        if Path(snapshot.root).resolve() != root:
-            raise catalog.ResourceCatalogError('resource-root-mismatch')
-        expected_stamp = snapshot.catalog_stamp
-        previous = [ref for ref in snapshot.displays
-                    if (ref.package_id, ref.component_id) == (display_ref.package_id, display_ref.component_id)]
-        if len(previous) > 1:
-            raise catalog.ResourceCatalogError('resource-display-selection-ambiguous')
-        previous_ref = previous[0] if previous else None
-        # These views deliberately use the operation guard through both checks,
-        # including the publication transaction's pending-marker phase.
-        new_view = PackageView(root, display_ref, assert_current=operation_current)
-        identity = read_display_identity(new_view)
-        old_view = PackageView(root, previous_ref, assert_current=operation_current) if previous_ref else None
-
-        def check_previous(new_identity):
-            if old_view is None:
-                return
-            try:
-                old_identity = read_display_identity(old_view)
-            except (OSError, ValueError) as cause:
-                operation_current()
-                error = catalog.ResourceCatalogError('resource-previous-display-metadata-unavailable')
-                error.previous_display_ref = previous_ref
-                raise error from cause
-            if old_identity != new_identity:
-                raise catalog.ResourceCatalogError('resource-display-identity-mismatch')
-
-        check_previous(identity)
-        season, mode = identity.season, identity.mode
-        context_key = f'{season}:{mode}'
-        current = snapshot.contexts.get(context_key)
-        if current is None or current['recognitionBase'] is None or current['controls'] is None:
-            raise catalog.ResourceCatalogError('resource-display-base-context-not-active')
-        validate_context = _validate_proposal(root, paths, resolver,
-            current['recognitionBase'], current['controls'], season=season, mode=mode, cancelled=cancelled)
-
-        def validate(document):
-            operation_current()
-            new_identity = read_display_identity(new_view)
-            check_previous(new_identity)
-            validate_context(document)
-            operation_current()
-
-        displays = [display_ref if ref == previous_ref else ref for ref in snapshot.displays]
-        if previous_ref is None:
-            displays.append(display_ref)
-        already_active = previous_ref == display_ref
-        document = dict(schema=catalog.SCHEMA,
-            generation=snapshot.generation if already_active else str(uuid.uuid4()),
-            contexts={key:{role:_wire(row[role]) for role in _ROLES} for key,row in snapshot.contexts.items()},
-            displays=[_wire(ref) for ref in displays])
-        if already_active:
-            validate(document)
-            operation_current()
-            snapshot.assert_current()
-            return dict(status='already-active', generation=snapshot.generation, context=context_key,
-                        profileId=identity.profile_id)
-        outcome = publication.activate_catalog_locked(root, document, expected_catalog_stamp=expected_stamp,
-            validate=validate, cancelled=cancelled)
-        return dict(outcome, context=context_key, profileId=identity.profile_id)
+        snapshot = _snapshot_for_root(resolver, root)
+        view = PackageView(root, display_ref, assert_current=lambda:files._check_cancelled(cancelled))
+        identity = read_display_identity(view)
+        outcome = _activate_locked(root, snapshot, paths, resolver, season=identity.season,
+            mode=identity.mode, display_refs=(display_ref,), cancelled=cancelled)
+        return dict(outcome, context=f'{identity.season}:{identity.mode}', profileId=identity.profile_id)

@@ -256,7 +256,8 @@ jobs:
             'packaging-imported-display' {
               $modules = @(
                 'test_imported_author_displays',
-                'test_client_imported_author_activation', 'test_client_imported_author_selection'
+                'test_client_imported_author_activation', 'test_client_imported_author_selection',
+                'test_client_imported_author_joint_activation'
               )
             }
             'season-ui' { $modules = @('test_s1_builtin_resources', 'test_probe_resource_context', 'test_season_settings', 'test_season_catalog', 'test_season_selector', 'test_season_selector_layout', 'test_season_gallery', 'test_season_resources', 'test_season_session', 'test_client_season_preparation', 'test_client_context_failure', 'test_settings_accessibility', 'test_client_gallery_actions', 'test_client_gallery_layout', 'test_client_gallery_resource_refresh') }
