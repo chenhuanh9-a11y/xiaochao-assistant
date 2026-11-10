@@ -35,7 +35,7 @@ public sealed partial class LiveRuntime
         =>pointerObservation=new(frame,JsonSerializer.SerializeToElement(read.FloorRead),++pointerObservationOrdinal,PointerNowSeconds,read.CloseControl);
     void ClearFloorClickIntent(bool preservePolicy=false)
     {gameFloorIntent=null;floorClickEpochSpan=null;if(!preservePolicy)floorPolicyReason="";floorClickRequired=false;}
-    void ClearPointerObservation(){ClearFloorClickIntent();pointerObservation=null;pointerSlot.Publish(null);}
+    void ClearPointerObservation(){ClearFloorClickIntent();ClearDragPresentation();pointerObservation=null;pointerSlot.Publish(null);}
     bool PointerRetired(SessionRuntimeRequest request)=>request.Action is not ("end_round" or "stop_round" or "reset_round" or "cancel" or "close_map")
         && !string.IsNullOrEmpty(request.Context.Ticket.SessionId)
         && pointerRetiredThrough.TryGetValue(request.Context.Ticket.SessionId,out long retired) && request.Context.Ticket.Sequence<=retired;

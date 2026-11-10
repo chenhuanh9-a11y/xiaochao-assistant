@@ -19,7 +19,7 @@ public sealed partial class LiveRuntime
             if(!_resources.Passports.MapProfiles.ContainsKey(map))return Receipt(request,false,"invalid-manual-map");
             if(_structurePool is { } pool && !pool.Remaining.Contains(map))return Receipt(request,false,"map-excluded-this-round");
             AdvanceOwnedEpoch();epoch=_epoch;
-            LockIdentity(map,"manual");
+            ClearDragPresentation();LockIdentity(map,"manual");
             // Publish the human choice before a possibly blocked acquisition.
             // A floor seed is view intent; only the new observation may fit it.
             if(explicitMap && _floor is null && !_manualAlignmentSession)_floor=_resources.Passports.DefaultEntryFloor;

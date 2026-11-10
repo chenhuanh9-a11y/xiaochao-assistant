@@ -67,6 +67,7 @@ public sealed partial class LiveRuntime
     }
 
     private bool MaterialProposalCurrent(MaterialRememberProposal proposal) => proposal.Epoch == _epoch
+        && _activeDrag is null && !DragCycleCurrent
         && ReferenceEquals(proposal.Packet, _render) && ReferenceEquals(proposal.Frame, _frame)
         && ReferenceEquals(proposal.Canonical, _canonical) && ReferenceEquals(proposal.Resources, _resources)
         && ReferenceEquals(proposal.Group, _geometryGroup) && proposal.Context == Context() && RenderCurrent();

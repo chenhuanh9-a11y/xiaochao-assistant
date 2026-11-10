@@ -25,7 +25,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         "locked-canvas-floor-reuse-unavailable", "native-identity-strong-conflict-producer-unavailable",
         "pose-index-candidate-provider-unavailable",
         "retained-group-fit-context-unavailable",
-        "game-map-drag-policy-unavailable", "foreground-loss-return-plan-unavailable"];
+        "drag-floor-projection-and-fresh-group-choice-unavailable", "foreground-loss-return-plan-unavailable"];
     private readonly object _sync = new();
     private readonly SemaphoreSlim _worker = new(1, 1);
     private readonly ICapturePort _capture;
@@ -176,13 +176,16 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         lock (_sync)
         {
             if(PointerRetired(request)){ReleaseRuntimeWorker();return Receipt(request,false,"request-retired-by-floor-intent");}
+            if(_activeDrag is not null && PassiveObservation(request.Action))
+            {ReleaseRuntimeWorker();return Receipt(request,true,"drag-probe-coalesced");}
             operation = ++_operation; epoch = _epoch;
+            _executingRequest=request;
             _progressRequest = null;
         }
         using var registration = cancellationToken.Register(() =>
         {
             lock (_sync)
-                if (!_closed && _operation == operation && _progressRequest == request.Context && _progressEpoch==_epoch && !PointerRetired(request))
+                if (!_closed && _operation == operation && _progressRequest == request.Context && _progressEpoch==_epoch && !PublicationRetired(request))
                 {
                     if (request.Action == "select_group_member") DiscardGroupMaterial("group-choice-cancelled");
                     else { _epoch++; RevokeFrame("cancelled"); }
@@ -210,6 +213,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         }
         finally
         {
+            lock(_sync){if(ReferenceEquals(_executingRequest,request))_executingRequest=null;}
             ReleaseRuntimeWorker();
         }
     }
@@ -252,6 +256,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 "fit_manual_frame" => await FitManualFrame(request,epoch,cancellationToken).ConfigureAwait(false),
                 "recover_map_open" => await RecoverMapOpen(request, epoch, cancellationToken).ConfigureAwait(false),
                 "refresh_map" => await RefreshMap(request, epoch, cancellationToken).ConfigureAwait(false),
+                "probe_map_after_drag" => await ProbeMapAfterDrag(request,epoch,cancellationToken).ConfigureAwait(false),
                 "observe_manual_floor" => await ObserveS1Floor(request,epoch,cancellationToken,true).ConfigureAwait(false),
                 "observe_candidate_floor" => await ObserveS1Floor(request,epoch,cancellationToken,false).ConfigureAwait(false),
                 "confirm_route" => await ConfirmMap(request, epoch, cancellationToken).ConfigureAwait(false),
@@ -266,7 +271,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         catch (Exception error)
         {
             lock (_sync)
-                if (epoch == _epoch) { RevokeFrame("runtime-error:" + error.GetType().Name); Publish(); }
+                if (!Obsolete(epoch,cancellationToken)) { RevokeFrame("runtime-error:" + error.GetType().Name); Publish(); }
             return Receipt(request, false, "runtime-error:" + error.GetType().Name + ":" + error.Message);
         }
     }
@@ -625,6 +630,18 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         if(floorPolicyReason=="pending-click-mismatch")return Receipt(request,false,"pending-click-mismatch");
         if(floorConflict)return Receipt(request,false,"current-frame-floor-conflict");
         if (floor is null) return Receipt(request, false, s1Manual?"s1-current-floor-unavailable":"current-floor-unavailable");
+        lock(_sync)
+        {
+            RequireCurrent(epoch,token,captured,bound);
+            // A fresh explicit read advances observation, but cannot fit over
+            // an opening whose display has been moved independently of pose.
+            // Target-floor provisional projection is a separate transaction.
+            if(DragCycleCurrent)
+            {
+                RevokeDisplay("transient-projection-unavailable");_reason="transient-projection-unavailable";
+                Publish();return Receipt(request,false,_reason);
+            }
+        }
         using var current = ToBgr(captured);
         // Original Runtime re-enters identity ranking only when no map is
         // selected. A provisional group display member also owns this slot;
@@ -849,6 +866,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     }
     private bool Obsolete(long epoch, CancellationToken token, CapturedClientFrame? frame = null, BoundResources? bound = null)
         { lock (_sync) return _closed || token.IsCancellationRequested || epoch != _epoch || bound is not null && !ReferenceEquals(bound, _resources)
+            || ExecutingPublicationRetired
             || frame is not null && !_capture.IsCurrent(frame.Stamp); }
     private void RequireCurrent(long epoch, CancellationToken token, CapturedClientFrame? frame = null, BoundResources? bound = null)
     { if (Obsolete(epoch, token, frame, bound)) throw new OperationCanceledException("runtime-work-obsolete", token); }
@@ -859,7 +877,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     {
         lock (_sync)
         {
-            if (_epoch == epoch)
+            if (_epoch == epoch && !ExecutingPublicationRetired)
             { _pose = null; RevokeDisplay(reason); _workActive = false; _reason = reason; if (diagnostic is not null) _diagnostics = JsonSerializer.SerializeToElement(diagnostic, Json); Publish(); }
             return Receipt(request, false, reason);
         }
@@ -906,6 +924,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             if(state.ManualAlignmentSession && state.Context.MapId is not null)commands.Add("fit_manual_frame");
             if (state.MapOpenRecovery.Pending) commands.Add("recover_map_open");
             if (state.MapOpen) commands.AddRange(["cycle_floor", "refresh_map"]);
+            if(DragCycleCurrent)commands.Add("probe_map_after_drag");
             if(S1FloorObserverAvailable)
             {
                 if(state.ManualAlignmentSession && S1ManualIdentity && (state.MapOpen || state.MapOpenRecovery.Pending))commands.Add("observe_manual_floor");

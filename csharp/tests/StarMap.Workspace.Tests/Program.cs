@@ -154,6 +154,7 @@ internal static class Program
                 Await(PassiveRefreshWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption + 1]), Path.GetFullPath(args[replayOption + 1]), output, Check));
                 Await(ManualLearningWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption + 1]), Path.GetFullPath(args[replayOption + 1]), output, Check));
                 Await(FloorClickWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption + 1]), Path.GetFullPath(args[replayOption + 1]), output, Check));
+                Await(GameMapDragWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption+1]),Path.GetFullPath(args[replayOption+1]),output,Check));
                 int closeOption=Array.IndexOf(args,"--close-oracle");
                 if(closeOption>=0)Await(MapCloseWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption+1]),Path.GetFullPath(args[replayOption+1]),Path.GetFullPath(args[closeOption+1]),output,Check));
                 Await(CurrentPoseWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption + 1]), Path.GetFullPath(args[replayOption + 1]), Check));

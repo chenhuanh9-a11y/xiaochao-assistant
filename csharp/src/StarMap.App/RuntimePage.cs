@@ -14,7 +14,7 @@ using StarMap.Runtime;
 namespace StarMap.App;
 
 /// <summary>Persistent UI consumer of the real session/runtime, with no capture or round on construction.</summary>
-internal sealed class RuntimePage : UserControl
+internal sealed partial class RuntimePage : UserControl
 {
     readonly ICapturePort capture;
     readonly Action<string> status;
@@ -280,6 +280,8 @@ internal sealed class RuntimePage : UserControl
             }
             if (closed) return false;
             runtime!.SetIdvb0059Enabled(steadyEnabled);
+            dragBoundary=settings.Get("dragBoundaryNormalized") is { } boundary?JsonSerializer.SerializeToElement(boundary):null;
+            CancelPointerDrag();
             observationTimer.Start();
             if (IsVisible) renderTimer.Start();
             var applied = runtime!.ReadState();
@@ -299,7 +301,7 @@ internal sealed class RuntimePage : UserControl
         var result = session.Dispatch(action, payload is null ? null : JsonSerializer.SerializeToElement(payload));
         if (result.Disposition is SessionDispatchDisposition.Enqueued or SessionDispatchDisposition.Coalesced)
         {
-            if (action is "capture_now" or "map" or "recover_map_open" or "refresh_map" or "observe_manual_floor" or "observe_candidate_floor" or "confirm_route" or "fit_manual_frame")
+            if (action is "capture_now" or "map" or "recover_map_open" or "refresh_map" or "observe_manual_floor" or "observe_candidate_floor" or "confirm_route" or "fit_manual_frame" or "probe_map_after_drag")
                 mapRead = (session.Read().Sequence.LastIssuedSequence, mapInput.Sequence, previousFrame);
             if (action is "end_round" or "stop_round" or "reset_round") { mapInput.Reset(); mapRead = null; }
         }
@@ -313,7 +315,7 @@ internal sealed class RuntimePage : UserControl
 
     internal GlobalInputPointerContextSlot? GamePointerContextSlot=>closed || configuring || loadingResources?null:runtime?.PointerContextSlot;
     long pointerSourceGeneration=-1,pointerSequence;
-    internal void ResetPointerInputOrder(){pointerSourceGeneration=-1;pointerSequence=0;}
+    internal void ResetPointerInputOrder(){CancelPointerDrag();pointerSourceGeneration=-1;pointerSequence=0;}
     internal GameFloorClickResult HandleGamePointerIntent(GlobalInputPointerEvent press)
     {
         var view=session?.Read();
@@ -348,6 +350,7 @@ internal sealed class RuntimePage : UserControl
     internal void SuspendInput(string reason)
     {
         if (closed) return;
+        CancelPointerDrag();
         mapInput.Reset(); mapRead = null;
         CancelDelay(); session?.CancelPending(reason);
         runtime?.InvalidateCapture(reason); session?.RefreshRuntime(); Render();

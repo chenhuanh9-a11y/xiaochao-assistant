@@ -21,6 +21,12 @@ public sealed class RuntimeRenderPacket
     internal RuntimeRenderPacket(RuntimeRenderPacket previous, CapturedClientFrame frame, DisplayAuthorization authorization,
         long generation, long epoch) : this(previous.Material, frame, authorization, generation, epoch, scene: previous.Scene)
     { MaterialToken = previous.MaterialToken; }
+    internal RuntimeRenderPacket(RuntimeRenderPacket previous,double offsetX,double offsetY,long revision)
+    {
+        Material=previous.Material;Scene=previous.Scene;MaterialToken=previous.MaterialToken;Stamp=previous.Stamp;
+        Client=previous.Client;Authorization=previous.Authorization;Generation=previous.Generation;Epoch=previous.Epoch;
+        RemembersGeometry=false;PresentationOffsetX=offsetX;PresentationOffsetY=offsetY;TransformRevision=revision;IsTransient=true;
+    }
     public PreparedDisplayLayer Material { get; }
     public RuntimeSceneFrame? Scene { get; }
     public string MaterialToken { get; } = Guid.NewGuid().ToString("N");
@@ -28,6 +34,11 @@ public sealed class RuntimeRenderPacket
     public string MapId => Authorization.MapId;
     public ClientFrameContext? Client { get; }
     public long Generation { get; }
+    public double PresentationOffsetX { get; }
+    public double PresentationOffsetY { get; }
+    public long TransformRevision { get; }
+    public bool IsTransient { get; }
+    public DisplayAffine PresentationTransform => new(1,0,PresentationOffsetX,0,1,PresentationOffsetY);
     internal long Epoch { get; }
     internal bool RemembersGeometry { get; }
     internal DisplayAuthorization Authorization { get; }
@@ -139,6 +150,7 @@ public sealed partial class LiveRuntime
                 _geometryGroup?.Model.RebaseDisplayProfile(prepared.Selection.EffectiveProfileId, pose.FloorId, GroupPixels(layer));
                 _render = new(layer, frame, previous.Authorization, _frameGeneration, _epoch, remembersGeometry: false,
                     scene: ProjectMapScene(prepared,pose.FloorId));
+                PreserveDragPresentation();
                 _display = new(true, true, _render.IsLive, "display-prepared", preferred,
                     prepared.Selection.EffectiveProfileId, prepared.Selection.DisplayKind,
                     prepared.Scene?.Floors.Count??0, prepared.Scene is null ? "common-space-source-unavailable" : prepared.Scene.Unavailable.Count==0?"common-scene-ready":"common-scene-partial");
@@ -198,6 +210,7 @@ public sealed partial class LiveRuntime
 
     private void ApplyCanonicalCommit(CanonicalDisplayCommit commit)
     {
+        ClearDragPresentation();
         _alignment = commit.Alignment; _canonical = commit.Grant; _render = commit.Render; _display = commit.Display;
         _geometryGroup = commit.Group;
         RegisterMaterialProposal();

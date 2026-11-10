@@ -157,7 +157,9 @@ public partial class WorkspaceWindow
                 inputWanted = false; runtimePage?.SuspendInput("input-stopped");
                 inputState.Text = "快捷键已停止：" + delivery.Notification.Message; UpdateInputControls(); break;
         }
-        if(delivery.PointerIntentPress is { } press)runtimePage?.HandleGamePointerIntent(press);
+        var pointerIntent=delivery.PointerIntentPress is { } press?runtimePage?.HandleGamePointerIntent(press):null;
+        if(delivery.Pointer is { } pointer && (pointer.Phase!="down" || pointerIntent is {Success:false,Reason:"not-floor-control",CloseControlHit:false}))
+            runtimePage?.HandleGamePointer(pointer);
         foreach (var action in delivery.Dispatch.Actions)
         {
             if (action == "toggle-panel") { TogglePanel(); continue; }

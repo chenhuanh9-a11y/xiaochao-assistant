@@ -148,5 +148,13 @@ Check(Marshal.SizeOf<WindowsGlobalInputNative.RawMouse>() == 24
 Check(Marshal.SizeOf<WindowsGlobalInputNative.RawDevice>() == (IntPtr.Size == 8 ? 16 : 12)
     && Marshal.SizeOf<WindowsGlobalInputNative.RawHeader>() == (IntPtr.Size == 8 ? 24 : 16), "raw-device-header-win32-abi");
 await OverflowDeliveryRegression.RunAsync(Check);
+var drag=new MapDragMotion(500,500,0,0,1000,1000,System.Text.Json.JsonSerializer.SerializeToElement(new[]{.2,.2,.8,.8}));
+Check(drag.Active && drag.Consume("move",510,490) is {DeltaX:10,DeltaY:-10,TotalX:10,TotalY:-10},"calibrated drag begins with physical deltas");
+Check(drag.Consume("move",900,900) is {DeltaX:0,DeltaY:0} && drag.Consume("move",500,500) is {DeltaX:0,DeltaY:0},"calibrated leave/reentry never catches up");
+Check(drag.Consume("up",503,504) is {DeltaX:3,DeltaY:4,TotalX:13,TotalY:-6,Finished:true} && !drag.Active && drag.Consume("up",503,504) is null,"calibrated release includes final delta once");
+var freeDrag=new MapDragMotion(500,500,0,0,1000,1000);
+Check(freeDrag.Active && freeDrag.Consume("up",1100,-100) is {DeltaX:600,DeltaY:-600},"uncalibrated held motion preserves original outside-client behavior");
+Check(!new MapDragMotion(80,500,0,0,1000,1000).Active && !new MapDragMotion(500,130,0,0,1000,1000).Active
+    && !new MapDragMotion(double.NaN,500,0,0,1000,1000).Active,"HUD boundary and nonfinite press grant no drag");
 Console.WriteLine($"{checks} checks, {failures.Count} failures. Pure original-source sequence and production-linked no-start checks only; no native installation, OS events, GUI or game acceptance.");
 return failures.Count == 0 ? 0 : 1;

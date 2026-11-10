@@ -9,10 +9,11 @@ public sealed partial class LiveRuntime
     private bool S1FloorObserverAvailable => _resources?.StructureCatalog is not null && _selection.Season=="s1"
         && _resources.Passports.Floors.ToHashSet().SetEquals(["-1","-2","-3","-4"]);
     private bool S1ManualIdentity => _identitySource=="manual" && _mapId is not null;
-    private static bool PassiveObservation(string action) => action is "refresh_map" or "observe_manual_floor" or "observe_candidate_floor";
+    private static bool PassiveObservation(string action) => action is "refresh_map" or "observe_manual_floor" or "observe_candidate_floor" or "probe_map_after_drag";
 
     private async ValueTask<RuntimeOperationResult> ObserveS1Floor(SessionRuntimeRequest request,long epoch,CancellationToken token,bool manual)
     {
+        if(DragCycleCurrent)return await ProbeMapAfterDrag(request,epoch,token).ConfigureAwait(false);
         BoundResources bound;bool recover;
         lock(_sync)
         {

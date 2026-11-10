@@ -275,12 +275,20 @@ public sealed class SessionService
         CancelPendingCore(reason, close: false);
     }
 
-    private void CancelPendingCore(string reason, bool close)
+    /// <summary>The presentation owner has already retired issued work; keep its published observation and opening.</summary>
+    public void CancelPendingForPresentation(string reason)
+    {
+        VerifyOwner();
+        using var mutation = BeginMutation();
+        if (!Closed) CancelPendingCore(reason, close: false, cancelRecovery: false);
+    }
+
+    private void CancelPendingCore(string reason, bool close, bool cancelRecovery = true)
     {
         var contextPending = _foreground?.Action == "set_context";
         Invalidate(reason, close);
         // Invalidation precedes cooperative runtime cancellation.
-        if (_runtime is IRuntimeRecoveryControl recovery)
+        if (cancelRecovery && _runtime is IRuntimeRecoveryControl recovery)
         {
             Defer(() =>
             {

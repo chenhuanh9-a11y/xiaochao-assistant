@@ -17,6 +17,7 @@ public sealed partial class LiveRuntime
             // passive maintenance cannot supersede that pending transaction.
             if (_pendingGroupMaterial is not null) return Receipt(request, true, "refresh-coalesced");
         }
+        if(DragCycleCurrent)return await ProbeMapAfterDrag(request,epoch,token).ConfigureAwait(false);
         return await CaptureAndSolve(request, epoch, token).ConfigureAwait(false);
     }
 

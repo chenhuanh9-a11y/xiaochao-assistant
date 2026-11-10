@@ -72,6 +72,7 @@ public sealed partial class LiveRuntime
     }
 
     private bool PendingGroupCurrent(PendingGroupMaterial? pending) => pending is not null && !_closed
+        && !DragCycleCurrent
         && pending.Intent == _groupIntent && pending.Epoch == _epoch && pending.FrameGeneration == _frameGeneration
         && !pending.Cancellation.IsCancellationRequested && _mapOpen && ReferenceEquals(pending.Frame, _frame)
         && ReferenceEquals(pending.Resources, _resources) && _capture.IsCurrent(pending.Frame.Stamp)
@@ -84,7 +85,7 @@ public sealed partial class LiveRuntime
         lock (_sync)
         {
             var pending = _pendingGroupMaterial;
-            if (_workActive || !PendingGroupCurrent(pending) || !ReferenceEquals(packet, pending!.Commit.Render)) return false;
+            if (_activeDrag is not null || _workActive || !PendingGroupCurrent(pending) || !ReferenceEquals(packet, pending!.Commit.Render)) return false;
             _alignment?.Close(reason: "group-member-material-ready");
             ResetSteady();
             _mapId = pending.Plan.MapId; _identitySource = "group-manual"; _heldGroupMember = _mapId;
@@ -135,7 +136,7 @@ public sealed partial class LiveRuntime
             bound = _resources!;
             _desiredGroupChoice = new(_roundId!, bound.Id, _nativeIdentity!.GroupId!, _nativeIdentity.MemberIds.ToArray(), plan.MapId);
             _groupChoiceStatus = "awaiting-geometry"; _groupChoiceReason = "已选择地图，等待定位；当前显示尚未切换";
-            captured = _mapOpen && _frame is { } current && _capture.IsCurrent(current.Stamp) ? current : null;
+            captured = !DragCycleCurrent && _mapOpen && _frame is { } current && _capture.IsCurrent(current.Stamp) ? current : null;
             _workActive = captured is not null; Publish();
             if (captured is null) return Receipt(request, true, "group-member-awaiting-geometry");
         }

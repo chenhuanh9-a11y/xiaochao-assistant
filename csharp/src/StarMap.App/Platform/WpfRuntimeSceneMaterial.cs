@@ -42,8 +42,8 @@ internal sealed class WpfRuntimeSceneMaterial
         if(!Matches(packet))throw new InvalidDataException("Scene material belongs to another packet source.");
         var g=packet.Client!.Geometry;var client=new WpfOverlayClientGeometry(g.Left,g.Top,g.Width,g.Height,g.Dpi);
         return packet.Scene is { } scene
-            ? WpfAlignedOverlaySurface.PrepareScene(ticket,this,Layers,scene.SelectedFloor,Matrix(scene.CommonToClient),client,opacity)
-            : WpfAlignedOverlaySurface.PrepareAffine(ticket,Bitmap,Matrix(packet.Material.Bridge.DisplayToClient!.Value),client,opacity);
+            ? WpfAlignedOverlaySurface.PrepareScene(ticket,this,Layers,scene.SelectedFloor,Matrix(packet.PresentationTransform*scene.CommonToClient),client,opacity)
+            : WpfAlignedOverlaySurface.PrepareAffine(ticket,Bitmap,Matrix(packet.PresentationTransform*packet.Material.Bridge.DisplayToClient!.Value),client,opacity);
     }
     internal static WpfOverlayHomography Matrix(DisplayAffine value)=>new(value.M00,value.M01,value.M02,value.M10,value.M11,value.M12,0,0,1);
 }
