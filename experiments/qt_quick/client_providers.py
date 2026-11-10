@@ -67,16 +67,25 @@ def _build_memory_store(pack, memory_root, resource_root, *, production=PRODUCTI
 
 class SharedReferenceProvider:
     """Version-checked typed references; six-entry cache, no pose/UI state."""
-    def __init__(self, root, resources, versions, *, native=None):
+    def __init__(self, root, resources, versions, *, native=None, check_current=None):
+        if check_current is not None and not callable(check_current):
+            raise TypeError('reference lifetime guard must be callable')
         self.root, self.resources, self.versions, self.native = root, resources, versions, native
+        self._check_current = check_current
         self._cache = OrderedDict()
         self._lock = threading.RLock()
 
+    def _assert_current(self):
+        if self._check_current is not None:
+            self._check_current()
+
     def __call__(self, profile, map_id, floor):
         import numpy as np
+        self._assert_current()
         if self.native is not None:
             legacy = self.native.legacy_reference(map_id, floor)
             if legacy is not None:
+                self._assert_current()
                 return legacy
         keys = [key for key in self.versions if key[1] == str(map_id) and key[3] == str(floor)]
         if len(keys) != 1:
@@ -88,6 +97,7 @@ class SharedReferenceProvider:
         with self._lock:
             reference = self._cache.get(key)
             if reference is not None:
+                self._assert_current()
                 self._cache.move_to_end(key)
                 return reference
             reference = self.resources.load(key[0], key[1], key[3], variant=key[2])
@@ -96,15 +106,18 @@ class SharedReferenceProvider:
                     or reference.metadata.get("canvas") != version["canvas"]
                     or any(reference.metadata.get(name) != value for name, value in version["expected"].items())):
                 return None
+            self._assert_current()
             self._cache[key] = reference
             while len(self._cache) > 6:
                 self._cache.popitem(last=False)
             return reference
 
     def binding_metadata(self, profile, map_id, floor):
+        self._assert_current()
         if self.native is not None:
             legacy = self.native.legacy_reference(map_id, floor)
             if legacy is not None:
+                self._assert_current()
                 return dict(path=legacy.path, shape=list(legacy.shape), metadata=legacy.metadata)
         keys = [key for key in self.versions if key[1] == str(map_id) and key[3] == str(floor)]
         if len(keys) != 1:
@@ -112,6 +125,7 @@ class SharedReferenceProvider:
         row = self.versions[keys[0]]
         if row.get("sharedError"):
             return None
+        self._assert_current()
         return dict(path=row["path"], shape=row["canvas"]["shapeHW"],
                     metadata=dict(row["expected"], binding=row["binding"]))
 
