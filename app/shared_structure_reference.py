@@ -8,8 +8,10 @@ not substituted with an author image or a zero canvas.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
@@ -61,13 +63,18 @@ class SharedStructureResourceStore:
     resource or by inheriting its validation mask.
     """
 
-    def __init__(self, index_path: str | Path, resource_root: str | Path):
+    def __init__(self, index_path: str | Path, resource_root: str | Path, *,
+                 read_resource: Callable[[Path], bytes] | None = None):
         self.index_path = Path(index_path)
         self.resource_root = Path(resource_root)
+        self.read_resource = read_resource
         self.entries: dict[tuple[str, str, str, str], dict] = {}
         self.error: str | None = None
         try:
-            payload = json.loads(self.index_path.read_text(encoding="utf-8"))
+            if read_resource is None:
+                payload = json.loads(self.index_path.read_text(encoding="utf-8"))
+            else:
+                payload = json.loads(read_resource(self.index_path).decode("utf-8"))
             if payload.get("schemaVersion") != 1 or payload.get("resourceKind") != "shared-structure":
                 raise ValueError("unsupported shared structure index")
             for entry in payload.get("entries", []):
@@ -94,7 +101,8 @@ class SharedStructureResourceStore:
         except ValueError:
             return None
         binding = dict(profile=str(profile), mapId=str(map_id), floor=str(floor), variant=str(variant))
-        return load_shared_structure(path, expected_binding=binding, resource_root=self.resource_root)
+        return load_shared_structure(path, expected_binding=binding, resource_root=self.resource_root,
+                                     read_resource=self.read_resource)
 
 
 def _metadata_from_archive(archive) -> dict | None:
@@ -160,6 +168,7 @@ def load_shared_structure(
     expected_binding: dict | None = None,
     expected_shape: tuple[int, int] | None = None,
     resource_root: str | Path | None = None,
+    read_resource: Callable[[Path], bytes] | None = None,
 ) -> SharedStructureReference | None:
     """Load one game-rendered binary structure product, fail-closed.
 
@@ -169,10 +178,16 @@ def load_shared_structure(
     metadata explicitly declares both clean and validation as that same field.
     """
     candidate = Path(path)
-    if candidate.suffix.lower() != ".npz" or not candidate.is_file():
+    if candidate.suffix.lower() != ".npz":
         return None
     try:
-        with np.load(candidate, allow_pickle=False) as archive:
+        if read_resource is None:
+            if not candidate.is_file():
+                return None
+            source = candidate
+        else:
+            source = BytesIO(read_resource(candidate))
+        with np.load(source, allow_pickle=False) as archive:
             metadata = _metadata_from_archive(archive)
             if metadata is None or metadata.get("sourceKind") not in {
                 "game-rendered-shared-structure", "legacy-shared-binary",
