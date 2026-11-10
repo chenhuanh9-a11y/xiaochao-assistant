@@ -2,7 +2,7 @@
 
 One latest-failure file, at the first writable location: installation work,
 LocalAppData/Xingtu/diagnostics, then user Temp/Xingtu/diagnostics. One native
-notification per report; no retries, subprocess, configuration reads or Qt.
+notification per report; no retries, subprocess, user configuration reads or Qt.
 """
 from datetime import datetime, timezone
 import os
@@ -224,15 +224,31 @@ def _details(error, stage):
     return code, "\n".join(rows) + "\n"
 
 
+def _fallback_directory():
+    if getattr(sys, "frozen", False):
+        try:
+            from packaged_product_identity import baked_identity
+            if baked_identity(require_qt=True) == "qt-production":
+                return Path("Xingtu/diagnostics")
+        except (OSError, ValueError, ImportError, AttributeError, TypeError):
+            # Metadata failure must still have a report. The original formal
+            # executable keeps its recovery location; private/unknown entries
+            # cannot overwrite the formal fallback report.
+            if Path(sys.executable).name.casefold() == "星图.exe":
+                return Path("Xingtu/diagnostics")
+        return Path("Xingtu/qt-test/diagnostics")
+    return Path("Xingtu/diagnostics")
+
+
 def _candidate_directories():
     base = (Path(sys.executable).absolute().parent if getattr(sys, "frozen", False)
             else Path(__file__).resolve().parents[1])
     yield base / "work"
     local = os.environ.get("LOCALAPPDATA")
     if local and Path(local).is_absolute():
-        yield Path(local) / "Xingtu/diagnostics"
+        yield Path(local) / _fallback_directory()
     try:
-        yield Path(tempfile.gettempdir()) / "Xingtu/diagnostics"
+        yield Path(tempfile.gettempdir()) / _fallback_directory()
     except OSError:
         pass
 
@@ -286,9 +302,11 @@ def _record_location(path):
     locations = [(base / "work", "安装目录下的 work 文件夹")]
     local = os.environ.get("LOCALAPPDATA")
     if local and Path(local).is_absolute():
-        locations.append((Path(local) / "Xingtu/diagnostics", "%LOCALAPPDATA%/Xingtu/diagnostics"))
+        relative = _fallback_directory()
+        locations.append((Path(local) / relative, "%LOCALAPPDATA%/" + relative.as_posix()))
     try:
-        locations.append((Path(tempfile.gettempdir()) / "Xingtu/diagnostics", "%TEMP%/Xingtu/diagnostics"))
+        relative = _fallback_directory()
+        locations.append((Path(tempfile.gettempdir()) / relative, "%TEMP%/" + relative.as_posix()))
     except OSError:
         pass
     label = next((label for directory, label in locations if path.parent == directory), None)

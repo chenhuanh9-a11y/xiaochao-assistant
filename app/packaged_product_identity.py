@@ -22,8 +22,9 @@ _ISOLATED = {
     "s1-auto-test": "ED53B6E8-E9A0-4F21-AF75-7C8A62BE7347",
     "s1-playtest": "D9FE6D76-C31A-47AF-9281-B4614C245E92",
     "feature-test": "7A2F6C81-9B54-4DB6-A308-6E452D91F0BC",
+    "grid-test": "2D739B42-E6AC-4C37-9498-95DC9CC9AA43",
 }
-PRIVATE_S1_INSTANCES = frozenset(("s0-s1-test", "s1-floor-test", "s1-auto-test", "s1-playtest", "feature-test"))
+PRIVATE_S1_INSTANCES = frozenset(("s0-s1-test", "s1-floor-test", "s1-auto-test", "s1-playtest", "feature-test", "grid-test"))
 
 
 class InstallationProfileError(ValueError):
@@ -77,6 +78,14 @@ def expected_application_executable():
     raise ValueError("Isolated Qt clients cannot use production resource helpers")
 
 
+def qt_isolated_instance_id():
+    """Return the source-owned private instance after validating its baked identity."""
+    if baked_identity(require_qt=True) != "qt-isolated":
+        return None
+    profile = json.loads((Path(sys._MEIPASS) / "installation-profile.json").read_text(encoding="utf-8"))
+    return profile["installerInstance"]["id"]
+
+
 def qt_application_model_id():
     """Taskbar identity follows the validated baked product, never caller input."""
     identity = baked_identity(require_qt=True)
@@ -90,5 +99,5 @@ def qt_application_model_id():
         raise InstallationProfileError("Unknown isolated Qt application identity")
     return {"s0-s1-test": "Xingtu.S0S1PrivateTest", "s1-floor-test": "Xingtu.S1FloorPrivateTest",
             "s1-auto-test": "Xingtu.S1AutoPrivateTest", "s1-playtest": "Xingtu.S1Playtest",
-            "feature-test": "Xingtu.FeatureTest"}.get(
+            "feature-test": "Xingtu.FeatureTest", "grid-test": "Xingtu.GridTest"}.get(
         instance, "Xingtu.QtClientTest")

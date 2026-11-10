@@ -1,8 +1,11 @@
 """Installer source contracts only; native wizard/registry checks run on Windows."""
 from pathlib import Path
+import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
+import build_qt_client as build
 
 
 class InstallerDirectoryTests(unittest.TestCase):
@@ -11,10 +14,14 @@ class InstallerDirectoryTests(unittest.TestCase):
 
     def test_private_directory_is_selectable_and_previous_location_is_adopted(self):
         private = self.source.split("AppPublisher=Xingtu project (private Qt test)", 1)[1].split("#endif", 1)[0]
-        self.assertIn("UsePreviousAppDir=yes", private)
+        self.assertIn("UsePreviousAppDir={#InstallerUsePreviousAppDir}", private)
         self.assertIn("DisableDirPage=no", private)
-        build = (ROOT / "tools/build_qt_client.py").read_text(encoding="utf-8")
-        self.assertIn("usePreviousAppDir=True,", build)
+        client = build.installer_instance_profile("client")
+        self.assertTrue(client["usePreviousAppDir"])
+        self.assertIn("/DInstallerUsePreviousAppDir=yes", build.inno_identity_defines(client))
+        grid = build.installer_instance_profile("grid-test")
+        self.assertFalse(grid["usePreviousAppDir"])
+        self.assertIn("/DInstallerUsePreviousAppDir=no", build.inno_identity_defines(grid))
 
     def test_private_guard_rechecks_selection_and_final_install_boundary(self):
         self.assertIn("; Private directory selection", self.source)

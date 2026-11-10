@@ -17,7 +17,7 @@ import tempfile
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QEvent, QCoreApplication, Qt, Signal, Slot
 from PySide6.QtGui import QGuiApplication, QKeyEvent
 
-from client_paths import RESOURCE_ROOT as ROOT, WORK_ROOT, runtime_paths
+from client_paths import GRID_TEST, RESOURCE_ROOT as ROOT, WORK_ROOT, runtime_paths
 if str(ROOT / "app") not in sys.path:
     sys.path.insert(0, str(ROOT / "app"))
 from season_context import CONTEXTS, MODES, KNOWN_MODES, context_key, normalize_season, selected_profile, season_options
@@ -583,6 +583,8 @@ class SettingsService(QObject):
                     invalid[key] = str(error)
                     if key == "automaticFailureEvidence":
                         values[key] = False
+        if GRID_TEST:
+            values["automaticFailureEvidence"] = False
         try:
             context_key(values["gameMode"], values["gameSeason"])
         except ValueError as error:

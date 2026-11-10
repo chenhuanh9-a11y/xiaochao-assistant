@@ -53,10 +53,39 @@ INSTANCES = {
     "feature-test": dict(appId="7A2F6C81-9B54-4DB6-A308-6E452D91F0BC", appName="Xingtu Feature Test",
                          installFolder="XingtuFeatureTest", startMenuGroup="Xingtu Feature Test",
                          setupPrefix="XingtuFeatureTest-Setup", versionSuffix="-feature-test", product=PRODUCT),
+    "grid-test": dict(appId="2D739B42-E6AC-4C37-9498-95DC9CC9AA43", appName="Xingtu Grid Test",
+                      installFolder="XingtuGridTest", startMenuGroup="Xingtu Grid Test",
+                      setupPrefix="XingtuGridTest-Setup", versionSuffix="-grid-test",
+                      product=PRODUCT, appUserModelId="Xingtu.GridTest"),
     "production": dict(appId="D04394A0-DACE-4FF9-874D-3DCB43EE53D1", appName="星图",
                        installFolder="XiaochaoAssistant", startMenuGroup="星图",
                        setupPrefix="星图", versionSuffix="", product="星图"),
 }
+
+
+def installer_instance_profile(name):
+    """Return the closed installer identity plus its runtime directory policy."""
+    if name not in INSTANCES:
+        raise ValueError("Unknown installer instance")
+    instance = dict(id=name, **INSTANCES[name])
+    instance.update(defaultDirName=("{localappdata}\\Programs\\XiaochaoAssistant" if name == "production"
+                                    else "{autopf}\\" + instance["installFolder"]),
+                    usePreviousAppDir=name != "grid-test",
+                    installerPrivilege="lowest" if name == "production" else "admin",
+                    runtimeDataProfile="production" if name == "production" else "isolated")
+    return instance
+
+
+def inno_identity_defines(instance):
+    """Return the compiler arguments used to bind a source-owned profile to Inno."""
+    return ["/DInstallerAppId={{" + instance["appId"] + "}",
+            f"/DInstallerAppName={instance['appName']}",
+            f"/DInstallerFolder={instance['installFolder']}",
+            f"/DInstallerGroup={instance['startMenuGroup']}",
+            f"/DInstallerExeName={instance['product']}.exe",
+            "/DInstallerUsePreviousAppDir=" + ("yes" if instance["usePreviousAppDir"] else "no")]
+
+
 def setup_basename(instance, display, source_commit):
     if instance["appId"] == INSTANCES["production"]["appId"]:
         return f"{instance['setupPrefix']}-{display}-Setup"
@@ -1266,13 +1295,8 @@ def main(argv=None):
     notices = notice_inputs()
     support = source_support_assets(resources)
     resources = dict(resources, **support)
-    instance = dict(id=args.instance, **INSTANCES[args.instance])
+    instance = installer_instance_profile(args.instance)
     product = instance["product"]
-    instance.update(defaultDirName=("{localappdata}\\Programs\\XiaochaoAssistant" if args.instance == "production"
-                                    else "{autopf}\\" + instance["installFolder"]),
-                    usePreviousAppDir=True,
-                    installerPrivilege="lowest" if args.instance == "production" else "admin",
-                    runtimeDataProfile="production" if args.instance == "production" else "isolated")
     output_name = source["commit"][:12] + ("-" + args.instance if args.instance != "client" else "")
     output = (args.output_dir or ROOT / "work/qt-setup" / output_name).resolve()
     if (not any(output.is_relative_to(ROOT / folder) for folder in ("work", "dist"))
@@ -1402,11 +1426,7 @@ def main(argv=None):
     setup_name = setup_basename(instance, display, source["commit"])
     subprocess.run([str(args.iscc.resolve()), f"/DStageDir={stage}", f"/DSetupOutputDir={output / 'setup'}",
                     f"/DSetupName={setup_name}", f"/DDisplayVersion={display}", f"/DNumericVersion={numeric}",
-                    "/DInstallerAppId={{" + instance["appId"] + "}",
-                    f"/DInstallerAppName={instance['appName']}",
-                    f"/DInstallerFolder={instance['installFolder']}",
-                    f"/DInstallerGroup={instance['startMenuGroup']}",
-                    f"/DInstallerExeName={product}.exe",
+                    *inno_identity_defines(instance),
                     *production_defines,
                     str(TOOLS / "qt-client.iss")], cwd=ROOT, check=True)
     setup = output / "setup" / (setup_name + ".exe")

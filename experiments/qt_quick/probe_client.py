@@ -7,6 +7,7 @@ from PySide6.QtCore import QObject, QPointF, QTimer, Qt, QMetaObject
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QTest
 from season_context import modes_for_season
+from client_paths import GRID_TEST
 
 
 class ResourceContextAcceptance:
@@ -189,6 +190,11 @@ def run_client_probe(client, output):
     output.mkdir(parents=True, exist_ok=True)
     app, window, backend = client.app, client.main, client.backend
     state = dict(assertions={}, errors=[], step=0)
+    if GRID_TEST:
+        state["gridTestIdentity"] = dict(
+            **client.info._package_metadata, buildFingerprint=client.info._build_fingerprint,
+            installationRoot=str(client.paths.installation_root),
+            settingsPath=str(client.paths.settings_path), resourceRoot=str(client.paths.resource_root))
     started = time.monotonic()
     original = dict(client.settings.values)
     def check(key, value):
@@ -289,7 +295,17 @@ def run_client_probe(client, output):
             elif step == 6:
                 if client.info.checking:
                     return
-                check("update_service_real_parser", client.info.release.get("version") == "1.0.5")
+                if GRID_TEST:
+                    check("formal_update_entry_disabled", client.info._service.phase == "idle"
+                          and not client.info._startup_requested and not client.info.release)
+                    check("automatic_sampling_disabled", not client.info.automaticFailureSampling
+                          and not client.settings.persistedValues["automaticFailureEvidence"])
+                    check("production_watcher_unavailable", not client.game_startup.available)
+                    check("marked_private_data_root", not client.paths.production
+                          and (client.paths.installation_root / ".qt-lab-owner").is_file()
+                          and client.paths.settings_path == client.paths.installation_root / "ui-settings.json")
+                else:
+                    check("update_service_real_parser", client.info.release.get("version") == "1.0.5")
                 capture("help-1180.png")
                 window.setWidth(960); window.setHeight(680)
                 window.setProperty("page", "settings")

@@ -276,6 +276,7 @@ class QtEntryFailureTests(StartupFixture):
     def test_diagnostic_defaults_use_three_explicit_locations(self):
         import qt_startup_diagnostics as diagnostics
         import os
+        self.bake()
         local = self.root / "local"
         temp = self.root / "temp"
         with patch.dict(os.environ, {"LOCALAPPDATA": str(local)}), patch("tempfile.gettempdir", return_value=str(temp)):
