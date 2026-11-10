@@ -159,7 +159,7 @@ class QtClient:
         # preparation/recognition starts later on SessionService's worker.
         self.runtime.dispatch("set_context", {"season": season, "mode": mode, "profileId": profile})
         self.session = SessionService(self.runtime)
-        self.resources = ImportedResourceService(self.resource_resolver)
+        self.resources = ImportedResourceService(self.resource_resolver, paths=self.paths)
         self.resources.setLeaseProvider(self.session)
         self.online_packages = OnlinePackagesService(self.sandbox, self.resources,
             index_url=None if probe_output else os.environ.get("STAR_MAP_PACKAGE_INDEX_URL"),

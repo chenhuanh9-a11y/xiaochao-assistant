@@ -70,6 +70,13 @@ Item {
                         Label { Layout.fillWidth: true; text: modelData.title; elide: Text.ElideRight; font.pixelSize: 15; font.bold: true; color: "#142b4b"; textFormat: Text.PlainText }
                         Label { Layout.fillWidth: true; text: "版本 " + modelData.resourceVersion; elide: Text.ElideRight; color: "#354f75"; textFormat: Text.PlainText }
                         Label { objectName: "packageStatusLabel-" + modelData.key; Layout.fillWidth: true; text: panel.statusText(modelData); wrapMode: Text.Wrap; color: modelData.status === "damaged" ? "#b8364a" : modelData.status === "selected" ? "#17775a" : "#526785" }
+                        AppButton {
+                            objectName: "activatePackageButton-" + modelData.key
+                            visible: modelData.canActivate === true
+                            enabled: panel.refreshAllowed && !panel.operationPending && !panel.recoveryPending
+                            text: "启用 S0 噩梦"
+                            onClicked: resourceService.activatePackage(modelData.key, "s0", "nightmare")
+                        }
                     }
                     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#edf1f7"; visible: index < packages.count - 1 }
                 }

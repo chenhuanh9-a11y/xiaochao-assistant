@@ -23,6 +23,29 @@ class _Signals(QObject):
     done = Signal(int, object, object)
 
 
+def _failure(error):
+    code = getattr(error, 'code', None) or getattr(error, 'reason', None) or str(error)
+    if not isinstance(code, str) or not re.fullmatch('[a-z0-9-]{1,120}', code):
+        code = 'resource-operation-failed'
+    return dict(code=code, errorType=type(error).__name__)
+
+
+def _activation_refs(row, season, mode):
+    from imported_resource_packages import ComponentRef
+    context = f'{season}:{mode}'
+    if context != 's0:nightmare' or row.get('status') == 'damaged':
+        return None
+    refs = []
+    for role in ('recognition-base', 'controls-profile'):
+        components = [item for item in row['components']
+                      if item['type'] == role and context in item['contexts']]
+        if len(components) != 1:
+            return None
+        refs.append(ComponentRef(row['packageId'], row['resourceVersion'],
+                                 components[0]['componentId'], row['manifestSha256']))
+    return tuple(refs)
+
+
 class _Work(QRunnable):
     def __init__(self, token, function):
         super().__init__()
@@ -33,10 +56,7 @@ class _Work(QRunnable):
         try:
             self.signals.done.emit(self.token, self.function(), None)
         except Exception as error:
-            code = getattr(error, 'code', None) or getattr(error, 'reason', None)
-            if not isinstance(code, str) or not re.fullmatch('[a-z0-9-]{1,120}', code):
-                code = 'resource-operation-failed'
-            self.signals.done.emit(self.token, None, dict(code=code, errorType=type(error).__name__))
+            self.signals.done.emit(self.token, None, _failure(error))
 
 
 class ImportedResourceService(QObject):
@@ -46,9 +66,10 @@ class ImportedResourceService(QObject):
     errorReported = Signal(object)
     importCompleted = Signal(str, str)
 
-    def __init__(self, resolver, parent=None):
+    def __init__(self, resolver, parent=None, *, paths=None):
         super().__init__(parent)
         self.resolver = resolver
+        self.paths = paths
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(1)
         self.model = PackageRows()
@@ -68,10 +89,12 @@ class ImportedResourceService(QObject):
     operationGeneration = Property(int, lambda s: s._token, notify=changed)
     message = Property(str, lambda s: '\n'.join(filter(None, (s._startup_notice, s._message))), notify=changed)
     canCancel = Property(bool, lambda s: s._busy and s._kind != 'recover' and not s._cancel.is_set(), notify=changed)
-    pendingWrites = Property(bool, lambda s: s._busy and s._kind in {'save', 'recover'}, notify=changed)
+    pendingWrites = Property(bool, lambda s: s._busy and s._kind in {'save', 'activate', 'recover'}, notify=changed)
     recoveryRequired = Property(bool, lambda s: s._catalog_issue == 'resource-catalog-recovery-required', notify=changed)
 
     def setLeaseProvider(self, provider):
+        if self._busy or self._lease:
+            raise RuntimeError('Cannot replace an active resource lease provider')
         self._lease_provider = provider
 
     def setStartupCompatibilityReport(self, report):
@@ -87,6 +110,7 @@ class ImportedResourceService(QObject):
         self._cancel = threading.Event()
         self._message = {'list': '正在读取已保存版本…', 'refresh': '正在校验已保存文件…',
                          'save': '正在校验并保存；完成后仍需启用。',
+                         'activate': '正在校验并启用所选资源…',
                          'recover': '正在处理未完成的资源切换…'}[kind]
         job = _Work(self._token, lambda: function(self._cancel.is_set))
         self._jobs[self._token] = job
@@ -150,6 +174,44 @@ class ImportedResourceService(QObject):
             return dict(summary=summary, inventory=inventory)
         return self._begin('save', save)
 
+    @Slot(str, str, str, result=bool)
+    def activatePackage(self, key, season, mode):
+        if self._closed or self._busy:
+            return False
+        row = next((row for row in self._rows if row['key'] == key), None)
+        refs = _activation_refs(row, season, mode) if row is not None else None
+        if refs is None or self.paths is None or self._lease_provider is None:
+            self._problem('resource-activation-unavailable')
+            return False
+        self._lease = self._lease_provider.acquireResourceLease()
+        if not self._lease:
+            self._message = '请先结束本局，并等待后台任务完成，再启用资源。'
+            self.changed.emit()
+            return False
+
+        def activate(cancelled):
+            from client_imported_activation import activate_context
+            from imported_resource_inventory import list_saved_versions
+            outcome, failure = None, None
+            try:
+                outcome = activate_context(self.resolver, self.paths, *refs,
+                    season=season, mode=mode, cancelled=cancelled)
+            except Exception as error:
+                failure = _failure(error)
+            # Observe the actual final state after success, cancellation or a
+            # failed rollback. A committed change remains success if this read
+            # fails; a retained pending operation must expose recovery.
+            try:
+                inventory = list_saved_versions(self.resolver)
+            except (OSError, ValueError, RuntimeError):
+                inventory = None
+            return dict(activated=outcome, operationError=failure, inventory=inventory)
+
+        if self._begin('activate', activate):
+            return True
+        self._release_lease()
+        return False
+
     @Slot()
     def requestRecovery(self):
         if self._closed or self._busy or not self.recoveryRequired or self._lease_provider is None:
@@ -183,14 +245,16 @@ class ImportedResourceService(QObject):
         self._release_lease()
         if self._closed:
             return
+        if value is not None:
+            inventory = value['inventory']
+            self._catalog_issue = inventory.catalog_issue or '' if inventory is not None else 'resource-inventory-unavailable'
+            self._set_rows(inventory.rows if inventory is not None else [])
+            error = error or value.get('operationError')
         if error:
             if kind in {'list', 'refresh'}:
                 self._set_rows([])
             self._problem(error['code'])
         else:
-            inventory = value['inventory']
-            self._catalog_issue = inventory.catalog_issue or '' if inventory is not None else 'resource-inventory-unavailable'
-            self._set_rows(inventory.rows if inventory is not None else [])
             self._message = ('资源切换尚未完成，请处理后再使用。' if self.recoveryRequired else
                              '资源选择记录无法读取；已保存的版本仍予保留。' if self._catalog_issue else
                              '已读取保存版本。' if kind == 'list' else '文件完整性校验已完成。')
@@ -205,10 +269,21 @@ class ImportedResourceService(QObject):
             if kind == 'recover':
                 self._message = '未完成的资源切换已处理，请重新核对可用资源。'
                 self.resourcesChanged.emit()
+            if kind == 'activate':
+                outcome = value['activated']
+                duplicate = outcome['status'] == 'already-active'
+                self._message = '此版本已经启用，资源选择未改变。' if duplicate else 'S0 噩梦基础结构与楼层控件已启用。'
+                if inventory is None:
+                    self._message += ' 列表暂时无法读取，请重新核对。'
+                elif inventory.generation != outcome['generation']:
+                    self._message = '资源选择随后发生了变化，请重新核对当前版本。'
+                if not duplicate:
+                    self.resourcesChanged.emit()
         self.changed.emit()
 
     def _set_rows(self, rows):
-        rows = list(rows)
+        rows = [dict(row, canActivate=_activation_refs(row, 's0', 'nightmare') is not None)
+                for row in rows]
         if rows != self._rows:
             self._rows = deepcopy(rows)
             self.model.reconcile(rows)
@@ -216,6 +291,7 @@ class ImportedResourceService(QObject):
 
     def _problem(self, code):
         self._message = ('此为旧版图包，请获取新版资源包；原文件已保留。' if code == 'legacy-format-unsupported' else
+                         '此资源尚不能在当前版本启用，请获取对应的基础结构与楼层控件包。' if code == 'resource-activation-unavailable' else
                          '操作已取消；若版本已经保存，可在列表中重新核对。' if code.endswith('-cancelled') else
                          '资源操作未完成，请检查资源包或重新核对本地版本。')
         self.errorReported.emit(dict(title='资源操作未完成', summary=self._message,
