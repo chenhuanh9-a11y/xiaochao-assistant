@@ -8,7 +8,7 @@ portably flush a Windows directory handle.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 import hashlib
 import os
@@ -21,6 +21,8 @@ import zlib
 import imported_resource_packages as packages
 import map_package_upgrade as package_upgrade
 import resource_transaction
+from resource_zip_io import (NonOwningBoundedReader, ZIP_END_WINDOW_BYTES,
+                             validate_zip_directory)
 import star_map_import as files
 
 
@@ -31,6 +33,7 @@ MAX_FILE_BYTES = files.MAX_FILE_BYTES
 MAX_TOTAL_BYTES = files.MAX_TOTAL_BYTES
 MAX_ARCHIVE_BYTES = files.MAX_ARCHIVE_BYTES
 _READ_BYTES = 1024 * 1024
+_DIRECTORY_BYTES = 4 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -130,7 +133,14 @@ def _open_archive(zip_path, expected_sha256=None):
             _reject('changed')
         handle.seek(0)
         try:
-            with zipfile.ZipFile(handle) as archive:
+            directory = validate_zip_directory(handle, max_entries=MAX_FILES + 1,
+                                               max_directory_bytes=_DIRECTORY_BYTES, reject=_reject)
+            reader = NonOwningBoundedReader(handle,
+                max_read_bytes=_DIRECTORY_BYTES + ZIP_END_WINDOW_BYTES, reject=_reject,
+                directory_snapshot=directory)
+            with zipfile.ZipFile(reader) as archive:
+                reader.release_metadata()
+                _same_archive(path, handle, stamp)
                 yield archive, digest
         except (zipfile.BadZipFile, EOFError) as error:
             raise files.ImportRejected('resource-archive-invalid-zip') from error
@@ -631,33 +641,40 @@ def _remove_owned_stage(stage: Path, root: Path, ownership) -> bool:
 def save_archive(zip_path, resource_root, *, expected_archive_sha256=None, cancelled=None) -> ArchiveSummary:
     """Validate, stage and atomically save one complete immutable version."""
     _check_cancelled(cancelled)
-    root = _ensure_resource_root(Path(resource_root))
     try:
-        with resource_transaction.resource_write_lock(
-                root, wait=True, cancelled=lambda: cancelled is not None and cancelled()):
+        with ExitStack() as lifetime:
+            source = lifetime.enter_context(ExitStack())
+            archive, archive_sha256 = source.enter_context(
+                _open_archive(zip_path, expected_archive_sha256))
+            parsed = _archive_inventory(archive, cancelled)
+            root = _ensure_resource_root(Path(resource_root))
+            lifetime.enter_context(resource_transaction.resource_write_lock(
+                root, wait=True, cancelled=lambda: cancelled is not None and cancelled()))
             files._no_links(root)
             stage = None
             ownership = None
             try:
-                with _open_archive(zip_path, expected_archive_sha256) as (archive, archive_sha256):
-                    parsed = _archive_inventory(archive, cancelled)
-                    package_id = parsed[1]['packageId']
-                    version = parsed[1]['resourceVersion']
-                    stage_parent = _ensure_directory(root, 'staging')
-                    packages_parent = _ensure_directory(root, 'packages')
-                    _ensure_directory(packages_parent, package_id)
-                    target = files._target(root, f'packages/{package_id}/{version}')
+                package_id = parsed[1]['packageId']
+                version = parsed[1]['resourceVersion']
+                stage_parent = _ensure_directory(root, 'staging')
+                packages_parent = _ensure_directory(root, 'packages')
+                _ensure_directory(packages_parent, package_id)
+                target = files._target(root, f'packages/{package_id}/{version}')
 
-                    stage = stage_parent / uuid.uuid4().hex
-                    try:
-                        stage.mkdir()
-                    except OSError as error:
-                        raise files.ImportRejected('resource-archive-staging-unavailable') from error
-                    _directory_sync(stage.parent)
-                    ownership = _new_stage_ownership(stage)
-                    _extract_archive(archive, stage, parsed, cancelled, ownership)
-                    _validate_staged(stage, parsed[3])
-                    _check_cancelled(cancelled)
+                stage = stage_parent / uuid.uuid4().hex
+                try:
+                    stage.mkdir()
+                except OSError as error:
+                    raise files.ImportRejected('resource-archive-staging-unavailable') from error
+                _directory_sync(stage.parent)
+                ownership = _new_stage_ownership(stage)
+                _extract_archive(archive, stage, parsed, cancelled, ownership)
+                _validate_staged(stage, parsed[3])
+                _check_cancelled(cancelled)
+                # Keep the original descriptor through extraction. Closing its
+                # context checks the source stamp/path before any publication,
+                # while the ResourceRoot write lock is still held.
+                source.close()
 
                 # A same-version retry still validates every ZIP payload and the
                 # complete existing tree before it is reported as already saved.

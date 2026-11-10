@@ -1,5 +1,7 @@
 """Real ZIP and filesystem coverage for inert resource archive storage."""
+from contextlib import contextmanager
 import hashlib
+from io import BytesIO
 import json
 import os
 from pathlib import Path
@@ -14,6 +16,7 @@ from unittest.mock import patch
 import imported_resource_archive as archives
 import imported_resource_packages as packages
 import resource_transaction
+from test_resource_zip_io import zip64_shadow_directory
 
 
 def canonical(value):
@@ -91,6 +94,167 @@ class ImportedResourceArchiveTests(unittest.TestCase):
                             and ref.manifest_sha256 == summary.manifest_sha256
                             for ref in summary.component_refs))
         self.assertFalse(self.resource_root.exists())
+        self.assertEqual(self.archive_path.read_bytes(), self.source_bytes)
+
+    def test_forged_directory_count_is_rejected_before_inspect_or_save(self):
+        candidate = bytearray(self.source_bytes)
+        end = candidate.rfind(b'PK\x05\x06')
+        struct.pack_into('<2H', candidate, end + 8, 1, 1)
+        self.archive_path.write_bytes(candidate)
+
+        for operation in (lambda: archives.inspect_archive(self.archive_path),
+                          lambda: archives.save_archive(self.archive_path, self.resource_root)):
+            with self.subTest(operation=operation), self.assertRaisesRegex(
+                    ValueError, '^resource-archive-directory-format$'):
+                operation()
+            self.assertFalse(self.resource_root.exists())
+            self.assertEqual(self.archive_path.read_bytes(), bytes(candidate))
+
+    def test_zip64_shadow_is_rejected_before_zipfile_or_resource_root_creation(self):
+        source = zip64_shadow_directory(self.source_bytes)
+        self.archive_path.write_bytes(source)
+
+        with patch.object(archives.zipfile, 'ZipFile',
+                          side_effect=AssertionError('unbounded central directory parser called')):
+            for operation in (lambda: archives.inspect_archive(self.archive_path),
+                              lambda: archives.save_archive(self.archive_path, self.resource_root)):
+                with self.subTest(operation=operation), self.assertRaisesRegex(
+                        ValueError, '^resource-archive-directory-format$'):
+                    operation()
+                self.assertFalse(self.resource_root.exists())
+                self.assertEqual(self.archive_path.read_bytes(), source)
+
+    def test_zipfile_receives_a_bounded_reader_after_directory_preflight(self):
+        def changed_metadata_reader(stream):
+            stream.read(2**40)
+            self.fail('huge read reached the source descriptor')
+
+        with patch.object(archives.zipfile, 'ZipFile', side_effect=changed_metadata_reader):
+            with self.assertRaisesRegex(ValueError, '^resource-archive-read-size$'):
+                archives.inspect_archive(self.archive_path)
+        self.assertFalse(self.resource_root.exists())
+        self.assertEqual(self.archive_path.read_bytes(), self.source_bytes)
+
+    def test_in_place_rewrite_after_preflight_cannot_allocate_an_unchecked_directory(self):
+        rewritten = BytesIO(self.source_bytes)
+        with zipfile.ZipFile(rewritten, 'a') as archive:
+            for index in range(4096 - len(archive.infolist())):
+                archive.writestr(f'undeclared-{index}.bin', b'x')
+        replacement = rewritten.getvalue()
+        self.assertLess(len(replacement), archives._DIRECTORY_BYTES)
+        validate = archives.validate_zip_directory
+        zipinfo_init = zipfile.ZipInfo.__init__
+
+        for operation in (lambda: archives.inspect_archive(self.archive_path),
+                          lambda: archives.save_archive(self.archive_path, self.resource_root)):
+            with self.subTest(operation=operation):
+                self.archive_path.write_bytes(self.source_bytes)
+                constructed = 0
+
+                def rewrite_after_validation(stream, **kwargs):
+                    result = validate(stream, **kwargs)
+                    self.archive_path.write_bytes(replacement)
+                    return result
+
+                def count_zipinfo(info, *args, **kwargs):
+                    nonlocal constructed
+                    constructed += 1
+                    zipinfo_init(info, *args, **kwargs)
+
+                with patch.object(archives, 'validate_zip_directory', side_effect=rewrite_after_validation), \
+                        patch.object(zipfile.ZipInfo, '__init__', count_zipinfo):
+                    with self.assertRaises(ValueError) as caught:
+                        operation()
+                self.assertLessEqual(constructed, archives.MAX_FILES + 1)
+                self.assertEqual(constructed, len(self.payloads) + 1)
+                self.assertEqual(str(caught.exception), 'resource-archive-changed')
+                self.assertFalse(self.resource_root.exists())
+                self.assertEqual(self.archive_path.read_bytes(), replacement)
+
+    def test_save_keeps_original_descriptor_and_checks_source_before_publication_under_lock(self):
+        events = []
+        state = {'locked': False, 'source': None, 'checked_handles': set()}
+        inventory = archives._archive_inventory
+        lock = resource_transaction.resource_write_lock
+        extract = archives._extract_archive
+        same_source = archives._same_archive
+        move = resource_transaction.rename_owned_directory_no_replace
+
+        def recording_inventory(archive, cancelled):
+            self.assertFalse(state['locked'])
+            self.assertFalse(self.resource_root.exists())
+            state['source'] = archive.fp._stream
+            result = inventory(archive, cancelled)
+            events.append('format')
+            return result
+
+        @contextmanager
+        def recording_lock(*args, **kwargs):
+            with lock(*args, **kwargs):
+                state['locked'] = True
+                events.append('lock')
+                try:
+                    yield
+                finally:
+                    state['locked'] = False
+                    events.append('unlock')
+
+        def recording_extract(archive, *args, **kwargs):
+            self.assertTrue(state['locked'])
+            self.assertIs(archive.fp._stream, state['source'])
+            events.append('extract')
+            return extract(archive, *args, **kwargs)
+
+        def recording_source_check(path, handle, stamp):
+            same_source(path, handle, stamp)
+            if id(handle) not in state['checked_handles']:
+                state['checked_handles'].add(id(handle))
+                if state['source'] is None:
+                    self.assertFalse(state['locked'])
+                    events.append('source-open')
+                else:
+                    self.assertTrue(state['locked'])
+                    events.append('reopened-open')
+            else:
+                self.assertTrue(state['locked'])
+                events.append('original-source' if handle is state['source'] else 'reopened-source')
+
+        def recording_publication(*args, **kwargs):
+            self.assertTrue(state['locked'])
+            self.assertTrue(state['source'].closed)
+            self.assertEqual(events, ['source-open', 'format', 'lock', 'extract',
+                                      'original-source', 'reopened-open', 'reopened-source'])
+            events.append('publish')
+            return move(*args, **kwargs)
+
+        with patch.object(archives, '_archive_inventory', side_effect=recording_inventory), \
+                patch.object(resource_transaction, 'resource_write_lock', side_effect=recording_lock), \
+                patch.object(archives, '_extract_archive', side_effect=recording_extract), \
+                patch.object(archives, '_same_archive', side_effect=recording_source_check), \
+                patch.object(resource_transaction, 'rename_owned_directory_no_replace',
+                             side_effect=recording_publication):
+            summary = archives.save_archive(self.archive_path, self.resource_root)
+        self.assertEqual(summary.status, 'saved')
+        self.assertEqual(events, ['source-open', 'format', 'lock', 'extract', 'original-source',
+                                  'reopened-open', 'reopened-source', 'publish', 'unlock'])
+
+    def test_save_source_changed_after_extraction_is_rejected_before_publication(self):
+        validate = archives._validate_staged
+
+        def touch_after_validation(root, refs):
+            validate(root, refs)
+            if root.parent == self.resource_root / 'staging':
+                current = self.archive_path.stat()
+                os.utime(self.archive_path, ns=(current.st_atime_ns,
+                                                current.st_mtime_ns + 5_000_000_000))
+
+        with patch.object(archives, '_validate_staged', side_effect=touch_after_validation), \
+                patch.object(resource_transaction, 'rename_owned_directory_no_replace',
+                             side_effect=AssertionError('changed source reached publication')):
+            with self.assertRaisesRegex(ValueError, '^resource-archive-changed$'):
+                archives.save_archive(self.archive_path, self.resource_root)
+        self.assertFalse(self.package_path().exists())
+        self.assertEqual(list((self.resource_root / 'staging').iterdir()), [])
         self.assertEqual(self.archive_path.read_bytes(), self.source_bytes)
 
     def test_inspect_hashes_every_payload_without_creating_a_temporary_tree(self):

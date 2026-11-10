@@ -5,7 +5,28 @@ from pathlib import Path
 import numpy as np
 
 
-def load_side_doors(root, entries, mode, profile):
+def _bounded_list(value, maximum, label):
+    """Bound source-derived work before a decoder creates numeric arrays."""
+    if not isinstance(value, list) or len(value) > maximum:
+        raise ValueError('entry-resource-complexity: ' + label)
+    return value
+
+
+def _bounded_points(value, maximum, label):
+    for point in _bounded_list(value, maximum, label):
+        if not isinstance(point, list) or len(point) != 2 or any(isinstance(v, (list, dict)) for v in point):
+            raise ValueError('invalid entry coordinates: ' + label)
+    return value
+
+
+def _bounded_wall_lines(value, maximum, label):
+    for line in _bounded_list(value, maximum, label):
+        if any(isinstance(line[key], (list, dict)) for key in ('axis', 'sign', 'normal', 'lo', 'hi')):
+            raise ValueError('invalid entry wall coordinates: ' + label)
+    return value
+
+
+def load_side_doors(root, entries, mode, profile, *, read_resource=None, typed_index_path=None):
     """Enable only a complete, version-matched F2 source inventory.
 
     The geometric boundary is deliberately separate from icon-centred legacy
@@ -15,8 +36,16 @@ def load_side_doors(root, entries, mode, profile):
         return {}, 'not-nightmare'
     try:
         root = Path(root)
-        data = json.loads((root / 'side-door-anchors.json').read_text('utf8'))
-        index = json.loads((root.parent / 'nightmare-shared-structure-index.json').read_text('utf8'))
+        data_path = root / 'side-door-anchors.json'
+        index_path = (Path(typed_index_path) if typed_index_path is not None else
+                      root.parent / 'nightmare-shared-structure-index.json')
+        data = json.loads(data_path.read_text('utf8') if read_resource is None else read_resource(data_path))
+        index = json.loads(index_path.read_text('utf8') if read_resource is None else read_resource(index_path))
+        if read_resource is not None:
+            _bounded_list(data['entries'], 256, 'side doors')
+            _bounded_list(index['entries'], 1024, 'typed bindings')
+            for door in data['entries']:
+                _bounded_points([door['boundaryCenter']], 1, 'side-door center')
         if (data['schemaVersion'], data['mode'], data['profileId']) != (1, mode, profile):
             raise ValueError('side-door mode/profile mismatch')
         targets = {item['mapId']: item for item, *_ in entries if str(item['floor']) == '2'}

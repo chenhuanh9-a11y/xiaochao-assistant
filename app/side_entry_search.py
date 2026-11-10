@@ -5,6 +5,7 @@ point distance fields only reject impossible four-turn seeds. Every surviving
 seed uses the original full reference and final competition is still complete.
 """
 import json
+from io import BytesIO
 import time
 import zlib
 from zipfile import BadZipFile
@@ -57,17 +58,26 @@ def write_index(path, entries, doors):
         np.savez_compressed(target, **arrays)
 
 
-def load_index(root, entries, doors):
+def load_index(root, entries, doors, *, read_resource=None):
     if not doors:
         return {}, 'side-door-source-unavailable'
     try:
+        if read_resource is not None:
+            if len(entries) > 256 or any(len(points) > 1024 or len(rays) > 1024 or len(pairs) > 1024
+                                        for _, points, rays, pairs in entries):
+                raise ValueError('entry-resource-complexity: side search graph')
         targets = {(item['mapId'], str(item['floor'])): (item, points, rays, pairs)
                    for item, points, rays, pairs in entries if str(item['floor']) == '2'}
         result = {}
-        with np.load(Path(root)/'side-entry-search.npz', allow_pickle=False) as archive:
+        path = Path(root)/'side-entry-search.npz'
+        source = path if read_resource is None else BytesIO(read_resource(path))
+        with np.load(source, allow_pickle=False) as archive:
             metadata = json.loads(str(archive['metadata'].item()))
             if metadata['schemaVersion'] != 1:
                 raise ValueError('side local index version mismatch')
+            if read_resource is not None:
+                from side_entry_geometry import _bounded_list
+                _bounded_list(metadata['entries'], 256, 'side search records')
             for record in metadata['entries']:
                 binding = (record['mapId'], record['floor'])
                 item, points, rays, pairs = targets[binding]
@@ -90,6 +100,8 @@ def load_index(root, entries, doors):
                         or float(prepared['cell']) != item['unit']/12
                         or len(prepared['first']) != len(prepared['lower'])):
                     raise ValueError('invalid side local index arrays')
+                if read_resource is not None and len(prepared['lower']) > len(points):
+                    raise ValueError('entry-resource-complexity: side search orientations')
                 expected_groups = np.unique(np.rint(rays).astype(np.int8).reshape(len(rays),4),
                                             axis=0,return_inverse=True)[1]
                 if not np.array_equal(prepared['groups'],expected_groups):

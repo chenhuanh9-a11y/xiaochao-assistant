@@ -261,6 +261,7 @@ class MapIdentityEngine(NightmareCandidateEngine):
                  identity_floors=('1','2'), exit_icon_path=None, entry_advisory=None,
                  entry_structure_store=None, entry_route_loader=None,
                  entry_shared_reference_provider=None,
+                 entry_read_resource=None, entry_typed_index_path=None,
                  native_similarity_root=None, native_similarity_priority_provider=None,
                  native_similarity_binding_provider=None,native_similarity_context_provider=None,
                  entry_context_is_current=None, **kwargs):
@@ -281,7 +282,8 @@ class MapIdentityEngine(NightmareCandidateEngine):
         self.entry_identity = MapEntryGeometryIdentity(identity_root,
             structure_store=entry_structure_store, route_loader=entry_route_loader,
             shared_reference_provider=entry_shared_reference_provider,
-            profile_id=identity_profile_id,profile_for_map=self.identity_profile_for_map)
+            profile_id=identity_profile_id,profile_for_map=self.identity_profile_for_map,
+            read_resource=entry_read_resource)
         def geometry_provider(frame):
             if entry_context_is_current is not None and not entry_context_is_current():
                 return None
@@ -299,7 +301,8 @@ class MapIdentityEngine(NightmareCandidateEngine):
                 route_loader=entry_route_loader, geometry_provider=geometry_provider,
                 shared_reference_provider=entry_shared_reference_provider,
                 author_visible_provider=author_visible_provider,
-                structure_store=self.entry_identity.structures,profile_for_map=self.identity_profile_for_map)
+                structure_store=self.entry_identity.structures,profile_for_map=self.identity_profile_for_map,
+                read_resource=entry_read_resource, typed_index_path=entry_typed_index_path)
         except (ImportError,OSError,ValueError,KeyError,TypeError) as error:
             self.side_entry_error = str(error)
         from front_gate_observation import FrontGatePrefilter

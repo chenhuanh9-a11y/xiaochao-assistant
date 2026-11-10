@@ -51,20 +51,40 @@ def entry_corners(frame,context):
 
 
 class MapEntryGeometryIdentity:
-    def __init__(self,root,*,structure_store=None,route_loader=None,shared_reference_provider=None,profile_id='zhan10-speed',profile_for_map=None):
+    def __init__(self,root,*,structure_store=None,route_loader=None,shared_reference_provider=None,profile_id='zhan10-speed',profile_for_map=None,read_resource=None):
         self.profile_id=profile_id
         self.profile_for_map=profile_for_map or (lambda map_id: self.profile_id)
         self.root=Path(root);self.entries=[];self.error=None
         self._observation=None
         self._wall_lines={}
         self.route_loader=route_loader
+        self.read_resource=read_resource
         self.shared_reference_provider=shared_reference_provider
-        from author_structure_resources import AuthorStructureResourceStore
-        self.structures=(structure_store if structure_store is not None else
-            AuthorStructureResourceStore(self.root/'index.json',self.root))
+        if structure_store is None:
+            if read_resource is not None:
+                raise ValueError('entry-reader-requires-structure-store')
+            from author_structure_resources import AuthorStructureResourceStore
+            structure_store=AuthorStructureResourceStore(self.root/'index.json',self.root)
+        self.structures=structure_store
         try:
-            payload=json.loads((self.root/'entries.json').read_text(encoding='utf8'))
+            path=self.root/'entries.json'
+            payload=json.loads(path.read_text(encoding='utf8') if read_resource is None else read_resource(path))
             if payload['schemaVersion']!=1:raise ValueError('unsupported entry index')
+            if read_resource is not None:
+                from side_entry_geometry import _bounded_list,_bounded_points
+                _bounded_list(payload['entries'],256,'main entries')
+                # Current source maxima are 124 chains and 21 outline points.
+                # Bound both axes before the chains x outline distance array.
+                total_chains=0
+                for item in payload['entries']:
+                    chains=_bounded_list(item['chains'],512,'main chains')
+                    outline=_bounded_points(item['outline'],256,'main outline')
+                    total_chains+=len(chains)
+                    if total_chains>65536 or not outline or len(chains)*len(outline)>131072:
+                        raise ValueError('entry-resource-complexity: main distances')
+                    for chain in chains:
+                        if len(_bounded_points(chain['points'],3,'main chain points'))!=3 or len(_bounded_points(chain['rays'],2,'main chain rays'))!=2:
+                            raise ValueError('invalid entry chain shape')
             for item in payload['entries']:
                 points=np.array([c['points'] for c in item['chains']],float)
                 rays=np.array([c['rays'] for c in item['chains']],float)
@@ -242,8 +262,10 @@ class MapEntryGeometryIdentity:
         # Wrong candidates often fail regional geometry. Decode an author image
         # only after that test, and reuse the worker's actual selected image.
         if regional['regionalEdgeVerified'] and route is None and shared_reference is None and self.shared_reference_provider is None:
-            route=(self.route_loader(profile,item['mapId'],item['floor'])
-                if self.route_loader is not None else imread_unicode(self.root/item['routeResource'],-1))
+            if self.route_loader is not None:
+                route=self.route_loader(profile,item['mapId'],item['floor'])
+            elif self.read_resource is None:
+                route=imread_unicode(self.root/item['routeResource'],-1)
         if regional['regionalEdgeVerified'] and route is None and shared_reference is None:
             return dict(success=False,reason='entry-shared-structure-unavailable')
         if regional['regionalEdgeVerified'] and route is not None and route.shape[:2]!=product.clean_mask.shape:
