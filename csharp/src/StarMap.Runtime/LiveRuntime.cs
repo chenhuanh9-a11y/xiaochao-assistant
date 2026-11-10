@@ -65,6 +65,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         _resourceRoot = Path.GetFullPath(resourceRoot);
         _options = options is null ? new() : options with { FloorSettings = options.FloorSettings?.Clone() };
         _alignedVisible = _options.SheetVisibilityEnabled;
+        _steadySettingEnabled = _options.Idvb0059Enabled;
         if (_options.PreparationTimeout <= TimeSpan.Zero || _options.PreparationInterval <= TimeSpan.Zero
             || _options.MainEntryBudget <= TimeSpan.Zero) throw new ArgumentException("runtime-budget-invalid");
         lock (_sync) Publish();
@@ -297,8 +298,8 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             { _displayGeneration++; DiscardGroupMaterial("group-author-preference-changed"); }
             _selection = desired; _reason = "context-bound"; Publish();
         }
-        if (!reload) RefreshDisplayPreference(epoch, token, desired.ProfileId);
-        return Receipt(request, true, "context-bound");
+        bool reprojected = !reload && RefreshDisplayPreference(epoch, token, desired.ProfileId);
+        return Receipt(request, true, reprojected ? "route-display-reprojected" : "context-bound");
     }
 
     private RuntimeOperationResult StartRound(SessionRuntimeRequest request, long epoch, CancellationToken token)
@@ -493,6 +494,16 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             if (recovery is not null && (!ReferenceEquals(_mapRecovery, recovery) || recovery.Scope != CurrentRecoveryScope()))
                 return Receipt(request, false, "cancelled-or-stale");
             floor = ResolveObservedFloor(floorRead);
+        }
+        if (request.Action == "refresh_map" && floor is not null)
+        {
+            var renewed = TryRenewCurrentPose(request, epoch, token, captured, bound, floor, floorRead, preparation);
+            if (renewed is not null) return renewed.Receipt.Success
+                ? RetryDesiredGroupChoice(request, epoch, token, renewed) : renewed;
+        }
+        lock (_sync)
+        {
+            RequireCurrent(epoch, token, captured, bound);
             if (request.Action == "refresh_map")
             {
                 RevokeDisplay(floor is null ? "current-floor-unavailable" : "new-capture");

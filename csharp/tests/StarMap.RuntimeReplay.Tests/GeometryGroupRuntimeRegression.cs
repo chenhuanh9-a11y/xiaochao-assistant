@@ -31,6 +31,7 @@ internal static class GeometryGroupRuntimeRegression
                 var before = Model(runtime); runtime.TryReadRender(out var material);
                 check(before is not null && material is not null && runtime.ReadState().NativeGeometryVerified,
                     id + " own cold seed reaches the actual canonical group and material");
+                runtime.AcknowledgeRenderMaterial(material!);
                 await runtime.RememberRenderMaterialAsync(material!.MaterialToken, runtime.ReadSnapshot().Context, default);
                 var rowsBefore = Rows(runtime);
                 await Ask("close_map"); port.Select(id); await Ask("capture_now");
@@ -106,6 +107,7 @@ internal static class GeometryGroupRuntimeRegression
                             name + "/" + id + " current material proposes the same group-bound remember token");
                         // Same explicit consumer ACK seam as the original oracle.
                         // WPF readiness itself is covered separately in Workspace.Tests.
+                        runtime.AcknowledgeRenderMaterial(packet!);
                         await runtime.RememberRenderMaterialAsync(packet!.MaterialToken, runtime.ReadSnapshot().Context, default);
                     }
                     var rows = Rows(runtime); var expectedRows = step["afterState"]!["rows"]!.AsArray();

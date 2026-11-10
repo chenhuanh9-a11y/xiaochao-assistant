@@ -31,7 +31,8 @@ internal static class PassiveRefreshRuntimeRegression
                     switch (action)
                     {
                         case "material-ack":
-                            check(runtime.TryReadRender(out _) == step["result"]!["success"]!.GetValue<bool>(),
+                            bool acknowledged = runtime.TryReadRender(out var offered) && runtime.AcknowledgeRenderMaterial(offered!).Accepted;
+                            check(acknowledged == step["result"]!["success"]!.GetValue<bool>(),
                                 name + " explicit recorded ACK admits only the original current material, including stale rejection"); break;
                         case "remember_render_material":
                             runtime.TryReadRender(out var packet);
@@ -97,6 +98,7 @@ internal static class PassiveRefreshRuntimeRegression
                 await Ask("set_context", new { season = "s0", mode = "nightmare", profileId = "shared-structure" });
                 await Ask("start_round"); capture.Select("batch01-event-000006", false); await Ask("capture_now");
                 runtime.TryReadRender(out var originalPacket);
+                runtime.AcknowledgeRenderMaterial(originalPacket!);
                 await runtime.RememberRenderMaterialAsync(originalPacket!.MaterialToken, runtime.ReadSnapshot().Context, default);
                 var frame = (CapturedClientFrame)typeof(LiveRuntime).GetField("_frame", System.Reflection.BindingFlags.Instance
                     | System.Reflection.BindingFlags.NonPublic)!.GetValue(runtime)!;

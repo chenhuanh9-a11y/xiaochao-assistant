@@ -105,13 +105,18 @@ internal static class SteadyWorkspaceRegression
                 "steady-material-learning-preserves-recorded-evidence-and-issues-no-native-display-grant");
             var disabled = new SettingsDocument(new JsonObject { ["gameSeason"] = "s0", ["gameMode"] = "difficult",
                 ["routeProfileId"] = "shared-structure", ["idvb0059Enabled"] = false });
-            check(!await page.Configure(resources, disabled), "steady-solver-setting-cannot-replace-an-active-round");
+            var activeRuntime = Field<LiveRuntime>(page, "runtime");
+            check(await page.Configure(resources, disabled) && ReferenceEquals(activeRuntime, Field<LiveRuntime>(page, "runtime")),
+                "steady-setting-can-update-without-replacing-the-active-round-owner");
             await Action("end_round");
             check(await page.Configure(resources, disabled), "steady-disabled-import-is-applied-on-the-idle-runtime");
             await Action("start_round"); await Capture("batch02-event-000147");
             await Action("confirm_route", new { mapId = "difficult-map-15" });
-            check(page.State!.NativeGeometryVerified && page.ReadMaterialToRemember() is null,
-                "steady-disabled-runtime-keeps-real-cold-fit-but-does-not-propose-learning");
+            check(page.State!.NativeGeometryVerified && page.ReadMaterialToRemember() is not null,
+                "steady-disabled-runtime-keeps-cold-fit-and-offers-material-readiness-separately-from-cache-writing");
+            StartHost(); await Remembered(); StopHost();
+            check(Field<System.Collections.IDictionary>(Field<LiveRuntime>(page, "runtime"), "_steadyFloors").Count == 0,
+                "steady-disabled-real-material-worker-consumes-readiness-without-writing-a-floor-prior");
             await Capture("batch02-event-000147");
             check(!Attempted() && page.State!.Reason != "idvb0059-steady" && page.State.NativeGeometryVerified,
                 "steady-disabled-runtime-does-not-enter-the-steady-producer");

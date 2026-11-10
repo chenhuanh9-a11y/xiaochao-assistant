@@ -10,6 +10,22 @@ namespace StarMap.Vision;
 
 public sealed partial class S0HostFit
 {
+    /// <summary>Remeasures one already known native pose with the same current
+    /// geometry residual used by the real Host. Does not fit, rank or adopt.</summary>
+    public JsonObject EvaluateCanonicalResidual(Mat frame, ResourceCatalogEntry target, double[][] nativeToClient,
+        Func<bool>? cancelled = null)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        if (frame.Empty() || frame.Type() != MatType.CV_8UC3) throw new ArgumentException("current-residual-frame-invalid");
+        if (!ReferenceEquals(resources.Find(target.Mode, target.Season, target.Profile, target.MapId, target.Floor), target))
+            return new() { ["verified"] = false, ["reason"] = "current-residual-resource-owner-mismatch" };
+        if (cancelled?.Invoke() == true) return new() { ["verified"] = false, ["reason"] = "current-residual-obsolete" };
+        var reference = Prepare(target, out var reason);
+        if (reference is null) return new() { ["verified"] = false, ["reason"] = reason };
+        var residual = CanonicalResidual(frame, reference, nativeToClient);
+        return cancelled?.Invoke() == true ? new() { ["verified"] = false, ["reason"] = "current-residual-obsolete" } : residual;
+    }
+
     private sealed record Prepared(StructureGeometry Geometry, FastPrepared? Fast, string CanonicalPackId);
 
     private Prepared? Prepare(ResourceCatalogEntry target, out string reason)

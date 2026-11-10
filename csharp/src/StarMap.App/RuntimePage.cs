@@ -156,11 +156,13 @@ internal sealed class RuntimePage : UserControl
     bool CanAcknowledgeGroupMaterial => !closed && !configuring && !loadingResources
         && session?.Read() is { WorkerActive: false, Busy: false, ContextPending: false, ResourceLocked: false, QueuedCount: 0 };
     internal RuntimeRenderPacket? ReadPendingGroupMaterial() => CanAcknowledgeGroupMaterial ? runtime?.ReadPendingGroupMaterial() : null;
-    internal RuntimeRenderPacket? ReadMaterialToRemember() => CanAcknowledgeGroupMaterial ? runtime?.ReadMaterialToRemember() : null;
+    bool CanAcknowledgeOrdinaryMaterial => !closed && !configuring && !loadingResources && session is not null;
+    internal RuntimeRenderPacket? ReadMaterialToRemember() => CanAcknowledgeOrdinaryMaterial ? runtime?.ReadMaterialToRemember() : null;
     internal bool RememberMaterialReady(RuntimeRenderPacket packet)
     {
-        if (!CanAcknowledgeGroupMaterial || !ReferenceEquals(runtime?.ReadMaterialToRemember(), packet)) return false;
-        return session!.DispatchMaintenance(packet.MaterialToken);
+        if (!CanAcknowledgeOrdinaryMaterial || runtime is null) return false;
+        var acknowledgement = runtime.AcknowledgeRenderMaterial(packet);
+        return acknowledgement.NeedsWorker && session!.DispatchMaintenance(packet.MaterialToken);
     }
     internal bool AcceptGroupMaterialReady(RuntimeRenderPacket packet)
     {
@@ -222,7 +224,7 @@ internal sealed class RuntimePage : UserControl
         var desired = new SessionSelection(settings.GameSeason, settings.GameMode, settings.RouteProfileId);
         bool steadyEnabled = settings.Get("idvb0059Enabled") is JsonValue steadyValue && steadyValue.TryGetValue<bool>(out var savedSteady) ? savedSteady : true;
         var controls = JsonSerializer.SerializeToElement(new JsonObject { ["floorControlMode"] = settings.FloorControlMode,
-            ["floorControlRegion"] = settings.FloorControlRegion, ["idvb0059Enabled"] = steadyEnabled });
+            ["floorControlRegion"] = settings.FloorControlRegion });
         bool replace = reloadResources || runtime is null || root != resourceRoot || floorSettings is null || !JsonElement.DeepEquals(floorSettings.Value, controls);
         if (replace && !CanReplaceResources)
         { status("设置已保存；请先结束本局并等待识别停止，再点击“保存并应用到测试版”。"); return false; }
@@ -266,6 +268,7 @@ internal sealed class RuntimePage : UserControl
                 await session.DrainAsync();
             }
             if (closed) return false;
+            runtime!.SetIdvb0059Enabled(steadyEnabled);
             observationTimer.Start();
             if (IsVisible) renderTimer.Start();
             var applied = runtime!.ReadState();

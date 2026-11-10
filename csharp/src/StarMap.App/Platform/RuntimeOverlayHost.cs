@@ -1,4 +1,5 @@
 using System.IO;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using StarMap.Runtime;
 
@@ -20,6 +21,7 @@ internal sealed class RuntimeOverlayHost : IDisposable
     readonly Func<RuntimeRenderPacket, bool> rememberMaterialReady;
     readonly Action observeDisplayContext;
     readonly WpfAlignedOverlaySurface surface;
+    readonly WpfDisplayProjectionCache projection = new();
     readonly DispatcherTimer timer;
     RuntimeRenderPacket? requested, applied;
     RuntimeRenderPacket? failed;
@@ -27,7 +29,9 @@ internal sealed class RuntimeOverlayHost : IDisposable
     WpfAlignedOverlayTicket? ticket;
     Task? preparing;
     Task? preparingGroupMaterial;
-    RuntimeRenderPacket? rememberedMaterial, failedMaterial;
+    sealed record PreparedMaterial(PreparedDisplayLayer Material, BitmapSource Bitmap);
+    PreparedMaterial? preparedMaterial;
+    PreparedDisplayLayer? failedMaterial;
     bool disposed;
     int captureLeases;
 
@@ -62,13 +66,16 @@ internal sealed class RuntimeOverlayHost : IDisposable
         // Hidden and Recorded material still reaches the real WPF consumer.
         // Its readiness cannot authorize native display or bypass Session receipt collection.
         var candidate = readPendingMaterial() ?? readMaterialToRemember();
-        if (preparingGroupMaterial is not { IsCompleted: false } && candidate is not null
-            && !ReferenceEquals(candidate, rememberedMaterial) && !ReferenceEquals(candidate, failedMaterial))
-            preparingGroupMaterial = PrepareGroupMaterial(candidate);
+        if (candidate is not null && !ReferenceEquals(candidate.Material, failedMaterial))
+        {
+            if (preparedMaterial is { Bitmap.IsFrozen: true } ready && ReferenceEquals(candidate.Material, ready.Material))
+                CompleteMaterialReady(candidate);
+            else if (preparingGroupMaterial is not { IsCompleted: false }) preparingGroupMaterial = PrepareGroupMaterial(candidate);
+        }
         var packet = read();
         if (packet is null) observeDisplayContext();
         if (packet is null || !Current(packet)) { Withdraw(); return; }
-        if (ReferenceEquals(failed, packet)) return;
+        if (ReferenceEquals(failed, packet) || ReferenceEquals(failedMaterial, packet.Material)) return;
         double desiredOpacity = opacity();
         if (ReferenceEquals(applied, packet) && surface.IsVisible && appliedOpacity == desiredOpacity) return;
         if (preparing is { IsCompleted: false })
@@ -94,14 +101,8 @@ internal sealed class RuntimeOverlayHost : IDisposable
             var ready = await Task.Run(() => WpfDisplayMaterialConsumer.PrepareMaterialReady(packet.Material));
             dispatcher.VerifyAccess();
             if (disposed || !ready.IsFrozen) return;
-            if (ReferenceEquals(readPendingMaterial(), packet))
-            {
-                if (!acceptMaterialReady(packet)) return;
-                if (rememberMaterialReady(packet)) rememberedMaterial = packet;
-                Pulse();
-            }
-            else if (ReferenceEquals(readMaterialToRemember(), packet) && rememberMaterialReady(packet))
-                rememberedMaterial = packet;
+            if (ReferenceEquals(readPendingMaterial(), packet) || readMaterialToRemember() is { } current && current.SharesMaterial(packet))
+            { preparedMaterial = new(packet.Material, ready); CompleteMaterialReady(packet); }
         }
         catch (Exception error)
         {
@@ -110,12 +111,22 @@ internal sealed class RuntimeOverlayHost : IDisposable
                 rejectMaterial(packet, "wpf-material-error:" + error.GetType().Name);
                 report("所选地图素材暂不可用，保留当前选择：" + error.Message);
             }
-            else if (!disposed && ReferenceEquals(readMaterialToRemember(), packet))
+            else if (!disposed && readMaterialToRemember() is { } current && current.SharesMaterial(packet))
             {
-                failedMaterial = failed = packet; Withdraw();
+                failedMaterial = packet.Material; failed = current; Withdraw();
                 report("地图素材暂不可用：" + error.Message);
             }
         }
+    }
+
+    void CompleteMaterialReady(RuntimeRenderPacket offered)
+    {
+        if (ReferenceEquals(readPendingMaterial(), offered))
+        {
+            if (acceptMaterialReady(offered)) rememberMaterialReady(offered);
+        }
+        else if (readMaterialToRemember() is { } current && current.SharesMaterial(offered))
+            rememberMaterialReady(offered);
     }
 
     async Task PrepareAndShow(RuntimeRenderPacket packet, WpfAlignedOverlayTicket ownTicket, double desiredOpacity)
@@ -124,10 +135,9 @@ internal sealed class RuntimeOverlayHost : IDisposable
         {
             var geometry = packet.Client!.Geometry;
             var affine = packet.Material.Bridge.DisplayToClient ?? throw new InvalidDataException("overlay-display-transform-unavailable");
-            var projected = await Task.Run(() => WpfAlignedOverlaySurface.Prepare(ownTicket,
-                new(packet.Material.Width, packet.Material.Height, packet.Material.Stride, packet.Material.CopyPixels()),
+            var projected = await projection.PrepareAsync(ownTicket, packet.Material,
                 new(affine.M00, affine.M01, affine.M02, affine.M10, affine.M11, affine.M12, 0, 0, 1),
-                new(geometry.Left, geometry.Top, geometry.Width, geometry.Height, geometry.Dpi), desiredOpacity));
+                new(geometry.Left, geometry.Top, geometry.Width, geometry.Height, geometry.Dpi), desiredOpacity);
             dispatcher.VerifyAccess();
             if (!Current(packet) || !ReferenceEquals(ticket, ownTicket) || opacity() != desiredOpacity) return;
             if (!surface.TryApply(ownTicket, projected)) return;
@@ -176,6 +186,6 @@ internal sealed class RuntimeOverlayHost : IDisposable
         dispatcher.VerifyAccess();
         if (disposed) return;
         disposed = true; timer.Stop(); capture.AcquireOverlayCaptureLease = null;
-        Withdraw(); surface.Dispose();
+        Withdraw(); surface.Dispose(); projection.Clear(); preparedMaterial = null; failedMaterial = null;
     }
 }

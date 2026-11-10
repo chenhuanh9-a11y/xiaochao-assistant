@@ -23,6 +23,11 @@ public sealed class WpfAlignedOverlayTicket
 
 public sealed class WpfAlignedOverlayPreparedFrame
 {
+    internal WpfAlignedOverlayPreparedFrame(WpfAlignedOverlayTicket ticket, WpfAlignedOverlayPreparedFrame pixels, double opacity)
+    {
+        Ticket = ticket; ClientPixels = pixels.ClientPixels; Client = pixels.Client;
+        DisplayToClient = pixels.DisplayToClient; Opacity = opacity; Image = pixels.Image;
+    }
     internal WpfAlignedOverlayPreparedFrame(WpfAlignedOverlayTicket ticket, WpfOverlayBgra32 clientPixels,
         WpfOverlayClientGeometry client, WpfOverlayHomography displayToClient, double opacity)
     {
@@ -117,6 +122,16 @@ public sealed class WpfAlignedOverlaySurface : IDisposable
         var pixels = WpfAlignedOverlayRasterizer.Project(display, displayToClient, client, preparation.Token);
         preparation.Token.ThrowIfCancellationRequested();
         return new(ticket, pixels, client, displayToClient, opacity);
+    }
+
+    /// <summary>Reuses immutable projected pixels with a NEW presentation ticket. Never renews runtime authority.</summary>
+    internal static WpfAlignedOverlayPreparedFrame ReuseProjection(WpfAlignedOverlayTicket ticket,
+        WpfAlignedOverlayPreparedFrame previous, double opacity)
+    {
+        ArgumentNullException.ThrowIfNull(ticket); ArgumentNullException.ThrowIfNull(previous);
+        if (!double.IsFinite(opacity) || opacity is < 0 or > 1) throw new ArgumentOutOfRangeException(nameof(opacity));
+        ticket.PreparationCancellation.ThrowIfCancellationRequested();
+        return new(ticket, previous, opacity);
     }
 
     public bool IsCurrent(WpfAlignedOverlayTicket ticket)

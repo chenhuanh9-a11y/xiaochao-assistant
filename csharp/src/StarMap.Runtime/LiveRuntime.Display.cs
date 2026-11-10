@@ -17,6 +17,9 @@ public sealed class RuntimeRenderPacket
     internal RuntimeRenderPacket(PreparedDisplayLayer material, CapturedClientFrame frame, DisplayAuthorization authorization,
         long generation, long epoch, bool remembersGeometry = true)
     { Material = material; Stamp = frame.Stamp; Client = frame.Context; Authorization = authorization; Generation = generation; Epoch = epoch; RemembersGeometry = remembersGeometry; }
+    internal RuntimeRenderPacket(RuntimeRenderPacket previous, CapturedClientFrame frame, DisplayAuthorization authorization,
+        long generation, long epoch) : this(previous.Material, frame, authorization, generation, epoch)
+    { MaterialToken = previous.MaterialToken; }
     public PreparedDisplayLayer Material { get; }
     public string MaterialToken { get; } = Guid.NewGuid().ToString("N");
     public CaptureStamp Stamp { get; }
@@ -27,6 +30,8 @@ public sealed class RuntimeRenderPacket
     internal bool RemembersGeometry { get; }
     internal DisplayAuthorization Authorization { get; }
     public bool IsLive => Client?.EvidenceKind == CaptureEvidenceKind.LiveClient;
+    /// <summary>Unchanged pixels, not an observation or display permission.</summary>
+    public bool SharesMaterial(RuntimeRenderPacket other) => MaterialToken == other.MaterialToken && ReferenceEquals(Material, other.Material);
 }
 
 public sealed partial class LiveRuntime
@@ -95,24 +100,25 @@ public sealed partial class LiveRuntime
         }, StringComparer.Ordinal);
     }
 
-    private void RefreshDisplayPreference(long epoch, CancellationToken token, string preferred)
+    private bool RefreshDisplayPreference(long epoch, CancellationToken token, string preferred)
     {
         BoundResources bound; CapturedClientFrame frame; NativeGeometryPose pose; CanonicalGrant previous;
         lock (_sync)
         {
             RequireCurrent(epoch, token);
-            if (!CanonicalCurrent()) return;
+            if (!CanonicalCurrent()) return false;
             bound = _resources!; frame = _frame!; pose = _pose!; previous = _canonical!;
         }
         var entry = bound.Catalog.Find(bound.Passports.Mode, bound.Passports.Season,
             bound.Passports.MapProfiles[pose.MapId], pose.MapId, pose.FloorId);
-        if (entry is null) return;
+        if (entry is null) return false;
         var prepared = PrepareDisplay(bound, entry, pose.ToMatrix(), previous.NativeReference, preferred, token);
         lock (_sync)
         {
             RequireCurrent(epoch, token, frame, bound);
-            if (!ReferenceEquals(_canonical, previous) || !CanonicalCurrent()) return;
+            if (!ReferenceEquals(_canonical, previous) || !CanonicalCurrent()) return false;
             var layer = prepared.Material.Layer;
+            _materialProposal = null;
             // Preference changes replace pixels, never the canonical pose/token.
             if (prepared.CanonicalBasis is not { } basis || basis.CanonicalPackId != previous.PackId
                 || basis.CanonicalToClient is not { } canonical || !canonical.AlmostEquals(previous.Matrix))
@@ -132,7 +138,9 @@ public sealed partial class LiveRuntime
                 _display = new(true, true, _render.IsLive, "display-prepared", preferred,
                     prepared.Selection.EffectiveProfileId, prepared.Selection.DisplayKind);
             }
-            Publish();
+            bool reprojected = _render is not null && ReferenceEquals(_render.Authorization, previous.Authorization);
+            if (reprojected) _reason = "route-display-reprojected";
+            Publish(); return reprojected;
         }
     }
 
@@ -185,12 +193,13 @@ public sealed partial class LiveRuntime
     {
         _alignment = commit.Alignment; _canonical = commit.Grant; _render = commit.Render; _display = commit.Display;
         _geometryGroup = commit.Group;
+        RegisterMaterialProposal();
     }
 
     private void RevokeDisplay(string reason)
     {
         DiscardGroupMaterial(reason);
-        _alignment?.Close(reason: reason); _render = null; _canonical = null; _frameGeneration++;
+        _alignment?.Close(reason: reason); _render = null; _canonical = null; _materialProposal = null; _frameGeneration++;
         _display = new(false, false, false, reason);
     }
 }

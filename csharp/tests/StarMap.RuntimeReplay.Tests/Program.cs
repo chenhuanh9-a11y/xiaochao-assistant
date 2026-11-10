@@ -3,7 +3,7 @@ using System.Text.Json.Nodes;
 using StarMap.Core.Session;
 using StarMap.Runtime;
 
-if (args.Length == 5 && args[0] is "--identity-prior-only" or "--unselected-floor-only" or "--map-recovery-only" or "--map-recovery-late-only" or "--passive-refresh-only" or "--passive-context-only" or "--s1-rich-sequence-only")
+if (args.Length == 5 && args[0] is "--identity-prior-only" or "--unselected-floor-only" or "--map-recovery-only" or "--map-recovery-late-only" or "--passive-refresh-only" or "--passive-context-only" or "--s1-rich-sequence-only" or "--current-pose-only")
 {
     string priorOnlyOutput = Path.GetFullPath(args[4]);
     if (Directory.Exists(priorOnlyOutput)) throw new IOException("Preserve previous evidence; use a new output.");
@@ -15,7 +15,9 @@ if (args.Length == 5 && args[0] is "--identity-prior-only" or "--unselected-floo
             priorOnlyChecks.Add(new { name, passed });
             if (!passed) { priorOnlyFailures.Add(name); throw new InvalidOperationException(name); }
         };
-        if (args[0] == "--s1-rich-sequence-only")
+        if (args[0] == "--current-pose-only")
+            await CurrentPoseRenewalRegression.Run(args[1], args[2], args[3], priorOnlyOutput, priorOnlyCheck);
+        else if (args[0] == "--s1-rich-sequence-only")
             await StructureIndexRuntimeRegression.Run(args[1], args[2], args[3], priorOnlyOutput, priorOnlyCheck);
         else if (args[0] == "--identity-prior-only")
             await IdentityEntryRuntimeRegression.RunPrior(args[1], args[2], args[3], priorOnlyOutput, priorOnlyCheck);

@@ -10,6 +10,8 @@ using StarMap.Vision.Steady;
 
 namespace StarMap.Runtime;
 
+public sealed record RenderMaterialAcknowledgement(bool Accepted, bool NeedsWorker, string Reason);
+
 public sealed partial class LiveRuntime
 {
     private sealed record SteadyFloorKey(string Map, string Floor, string Resource, string Window,
@@ -20,11 +22,30 @@ public sealed partial class LiveRuntime
     private readonly Dictionary<SteadyFloorKey, CommittedSteadyFloor> _steadyFloors = new();
     private string? _rememberedMaterial;
     private RoundLayerGroup? _steadyOwner;
+    private bool _steadySettingEnabled;
+    private sealed class MaterialRememberProposal(RuntimeRenderPacket packet, CapturedClientFrame frame,
+        CanonicalGrant canonical, BoundResources resources, GeometryGroup group, RuntimeContext context, long epoch)
+    {
+        internal readonly RuntimeRenderPacket Packet = packet;
+        internal readonly CapturedClientFrame Frame = frame;
+        internal readonly CanonicalGrant Canonical = canonical;
+        internal readonly BoundResources Resources = resources;
+        internal readonly GeometryGroup Group = group;
+        internal readonly RuntimeContext Context = context;
+        internal readonly long Epoch = epoch;
+        internal bool Accepted, Consumed;
+    }
+    private MaterialRememberProposal? _materialProposal;
 
     // Original Qt S1 supplies an explicit full-frame observation domain. The
     // Host deliberately skips 0059 there, even when the setting is enabled.
-    private bool SteadyEnabled => _selection.Season == "s0" && _options.Idvb0059Enabled
+    private bool SteadyEnabled => _selection.Season == "s0" && _steadySettingEnabled
         && Environment.GetEnvironmentVariable("IDENTITYV_IDVB0059_STEADY") != "0";
+    private bool SteadyMaterialReady => _geometryGroup is { } group && ReferenceEquals(_steadyOwner, group.Model)
+        && _steadyFloors.Values.Any(row => ReferenceEquals(row.Owner, group.Model));
+
+    public bool SetIdvb0059Enabled(bool enabled)
+    { lock (_sync) { if (_closed) return false; _steadySettingEnabled = enabled; return true; } }
 
     private static SteadyFloorKey? SteadyKey(CapturedClientFrame frame, string map, string floor, string resource)
     {
@@ -35,14 +56,40 @@ public sealed partial class LiveRuntime
     }
 
     private void ResetSteady()
-    { _steadyFloors.Clear(); _rememberedMaterial = null; _steadyOwner = null; }
+    { _steadyFloors.Clear(); _rememberedMaterial = null; _steadyOwner = null; _materialProposal = null; }
 
-    /// <summary>Unacknowledged current material only; it never proposes identity or a new transform.</summary>
+    private void RegisterMaterialProposal(bool accepted = false)
+    {
+        _materialProposal = _selection.Season == "s0" && _render is { RemembersGeometry: true } packet
+            && _frame is { Context: not null } frame && _canonical is { Group: { } group } canonical
+            && ReferenceEquals(group, _geometryGroup) && _resources is { } resources
+            ? new(packet, frame, canonical, resources, group, Context(), _epoch) { Accepted = accepted } : null;
+    }
+
+    private bool MaterialProposalCurrent(MaterialRememberProposal proposal) => proposal.Epoch == _epoch
+        && ReferenceEquals(proposal.Packet, _render) && ReferenceEquals(proposal.Frame, _frame)
+        && ReferenceEquals(proposal.Canonical, _canonical) && ReferenceEquals(proposal.Resources, _resources)
+        && ReferenceEquals(proposal.Group, _geometryGroup) && proposal.Context == Context() && RenderCurrent();
+
+    public RenderMaterialAcknowledgement AcknowledgeRenderMaterial(RuntimeRenderPacket offered)
+    {
+        ArgumentNullException.ThrowIfNull(offered);
+        lock (_sync)
+        {
+            if (_materialProposal is not { } proposal || !MaterialProposalCurrent(proposal)
+                || !proposal.Packet.SharesMaterial(offered) || proposal.Packet.Epoch != offered.Epoch
+                || proposal.Packet.MapId != offered.MapId || proposal.Packet.Client != offered.Client
+                || proposal.Packet.Stamp.WindowIdentity != offered.Stamp.WindowIdentity || proposal.Packet.Stamp.Generation != offered.Stamp.Generation)
+                return new(false, false, "material-context-expired");
+            bool first = !proposal.Accepted; proposal.Accepted = true;
+            return new(first, !proposal.Consumed, first ? "material-accepted" : "material-already-accepted");
+        }
+    }
+
+    /// <summary>Unconsumed current proposal only; it never proposes identity or a new transform.</summary>
     public RuntimeRenderPacket? ReadMaterialToRemember()
     {
-        lock (_sync) return SteadyEnabled && RenderCurrent() && _render!.RemembersGeometry && _frame?.Context is not null
-            && _canonical?.Group is { } group && ReferenceEquals(group, _geometryGroup)
-            && _render!.MaterialToken != _rememberedMaterial ? _render : null;
+        lock (_sync) return _materialProposal is { Consumed: false } proposal && MaterialProposalCurrent(proposal) ? proposal.Packet : null;
     }
 
     // Uses the existing private Session work lane. This method cannot publish
@@ -53,15 +100,18 @@ public sealed partial class LiveRuntime
         try
         {
             CapturedClientFrame frame; CanonicalGrant canonical; BoundResources bound; SteadyFloorKey key;
-            RoundLayerGroup owner; long epoch; SteadyCoverageState? previous;
+            RoundLayerGroup owner; MaterialRememberProposal proposal; SteadyCoverageState? previous;
             lock (_sync)
             {
-                if (!SteadyEnabled || !RenderCurrent() || !_render!.RemembersGeometry || _render.MaterialToken != renderToken
-                    || Context() != lifetime || _rememberedMaterial == renderToken) return;
-                frame = _frame!; canonical = _canonical!; bound = _resources!; epoch = _epoch;
-                if (canonical.Group is not { } group || !ReferenceEquals(group, _geometryGroup)
-                    || !group.Model.CanonicalGeometryVerifiedFloors.Contains(_floor!)) return;
-                owner = group.Model;
+                if (_materialProposal is not { Accepted: true, Consumed: false } current || !MaterialProposalCurrent(current)
+                    || current.Packet.MaterialToken != renderToken || !SameMaintenanceLifetime(lifetime, current.Context)) return;
+                proposal = current; proposal.Consumed = true;
+                // ACK/consumption are independent of whether this setting permits
+                // a cache write. Existing ready cache remains valid when disabled.
+                if (!SteadyEnabled) return;
+                frame = proposal.Frame; canonical = proposal.Canonical; bound = proposal.Resources;
+                if (!proposal.Group.Model.CanonicalGeometryVerifiedFloors.Contains(_floor!)) return;
+                owner = proposal.Group.Model;
                 var scoped = SteadyKey(frame, _mapId!, _floor!, bound.Id);
                 var matrix = canonical.NativeToClient;
                 if (scoped is null || !matrix.IsFinite || Math.Abs(matrix.M01) > 1e-8 || Math.Abs(matrix.M10) > 1e-8
@@ -81,10 +131,8 @@ public sealed partial class LiveRuntime
             }
             lock (_sync)
             {
-                if (_closed || cancellationToken.IsCancellationRequested || epoch != _epoch
-                    || !ReferenceEquals(bound, _resources) || !ReferenceEquals(owner, _geometryGroup?.Model)
-                    || !ReferenceEquals(canonical, _canonical) || Context() != lifetime || !RenderCurrent()
-                    || _render!.MaterialToken != renderToken) return;
+                if (_closed || !SteadyEnabled || cancellationToken.IsCancellationRequested || !ReferenceEquals(_materialProposal, proposal)
+                    || !MaterialProposalCurrent(proposal)) return;
                 if (!ReferenceEquals(_steadyOwner, owner)) _steadyFloors.Clear();
                 _steadyOwner = owner;
                 _steadyFloors[key] = new(owner, canonical.NativeReference, canonical.NativeToClient.M00, coverage);
@@ -93,6 +141,11 @@ public sealed partial class LiveRuntime
         }
         finally { ReleaseRuntimeWorker(); }
     }
+
+    // A queued cache intent names material, not the frame that happened to be
+    // displayed when queued. Only the sealed current proposal supplies geometry.
+    private static bool SameMaintenanceLifetime(RuntimeContext queued, RuntimeContext current) =>
+        queued.RoundId == current.RoundId && queued.ResourceId == current.ResourceId && queued.Selection == current.Selection;
 
     private PreparedSteadyFit? TrySteady(long epoch, CancellationToken token, CapturedClientFrame captured,
         BoundResources bound, ResourceCatalogEntry entry, SharedStructureData reference, Mat frame,

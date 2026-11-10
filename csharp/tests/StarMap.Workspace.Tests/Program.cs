@@ -152,6 +152,7 @@ internal static class Program
                 Await(GroupChoiceWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption + 1]), Path.GetFullPath(args[replayOption + 1]), output, Check));
                 Await(MapRecoveryWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption + 1]), Path.GetFullPath(args[replayOption + 1]), output, Check));
                 Await(PassiveRefreshWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption + 1]), Path.GetFullPath(args[replayOption + 1]), output, Check));
+                Await(CurrentPoseWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption + 1]), Path.GetFullPath(args[replayOption + 1]), Check));
                 Await(StructureIndexWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption + 1]), Path.GetFullPath(args[replayOption + 1]), output, Check));
             }
             int steadyOption = Array.IndexOf(args, "--steady-oracle");

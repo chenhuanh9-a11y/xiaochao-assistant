@@ -17,7 +17,7 @@
 | 楼层/开图准备 | client_live_runtime.py / map_open_preparation.py / floor_contract.py | 37 项真实/合成边界及全部 S0 251 张原始客户区的观察结果与原 Python 严格一致；S1 当前真实输入由全 154 张组件回放及连续 Runtime 样本覆盖。map/foreground-return 准备沿原 1.05s/50ms/最多 21 probe；普通 capture_now 单次观察。超时未知楼层的正地图帧仍供人工修正，晚到可用楼层不绕过期限；有原 Runtime 真实晚采集对照及 C# 修前失败/修后回归。不是实机准备延迟验收 |
 | 身份与入口竞争 | map_identity_engine.py / difficult_entry_identity.py / difficult_side_entry_identity.py / front_door_recognition.py | S0 完整 passport/main/side/source-advisory/native/登记组/最终行消费者已接，全部 251 张当前原图严格零差异；S1 正支持候选始终不充当唯一身份。组内成员选择已接独立目标贴合、WPF 素材回执与同锁提交，手选跨层保留。实际调用已按原 Runtime 纠正：有选中参考时不额外重排；无地图且有实际条件先验时以完整 cohort 竞争。强冲突观测及配置 source store 时的 SIFT producer 仍缺 |
 | prepare/grid/refine/propose/验证 | fast_structure_alignment.py / single_map_structure.py / nightmare_candidate.py / idvb0059_steady.py | 共用数值内核与 S0 Host 冷流程/拒绝顺序、S1 目标楼层 Fit 已接；S0 当前 285 次候选 Fit 与原程序零差异，另有禁用 fast 的 6 次真实原 Host 对照。0059 数值流程和 coverage refresh、S0 established 几何组局部/全局/native recall 与 entry producer 已接；S1 原 explicit-full-frame 路径继续跳过0059及 established 几何恢复。准备/观察数组有逐位对照，标量有严格差异报告。pose-index、tracking 与强冲突 producer 尚缺 |
-| 会话/取消/缓存/恢复 | client_session.py / client_coordinator.py / client_live_runtime.py | SessionService 单写者/单 worker/取消/资源 lease/真实回调重入与 Python 纯状态 43 项通过；Runtime 原图回放覆盖显隐、组内选择、canonical/material 与恢复。几何组复用现有 Core RoundLayerGroup，由同一提交包发布；无关系新层成功建新根，失败保留旧组。S0 的0059仅在实际 WPF 素材就绪、Session 已收取结果后记录实际组 owner 的目标层尺度/coverage；新 owner ACK 清旧层缓存，作者重投影保留 owner 且不新建学习回执。S1 素材不请求0059学习。开图准备失败后已接原 8 次/200ms 间隔/2s 有界恢复，每次单帧复用同一求解链；票据绑定本局、输入、资源、作者代际和稳定窗口绑定。隐藏页面的独立 timer/Session 已接默认 S0 被动刷新及两次负帧关图，并同步同一物理输入相位；窗口/几何上下文有效期与最新采集帧分开，求解仍验证最新帧。当前姿态直接续期、S1 专用楼层观察、点击意图策略、保留观测的组内拟合及人工确认重新采集仍缺；Recorded 始终不授予 LiveAuthorization |
+| 会话/取消/缓存/恢复 | client_session.py / client_coordinator.py / client_live_runtime.py | SessionService 单写者/单 worker/取消/资源 lease/真实回调重入与 Python 纯状态 43 项通过；Runtime 原图回放覆盖显隐、组内选择、canonical/material 与恢复。几何组复用现有 Core RoundLayerGroup，由同一提交包发布；无关系新层成功建新根，失败保留旧组。S0 的0059仅在实际 WPF 素材就绪、Session 已收取结果后记录实际组 owner 的目标层尺度/coverage；新 owner ACK 清旧层缓存，作者重投影保留 owner 且不新建学习回执。S1 素材不请求0059学习。开图准备失败后已接原 8 次/200ms 间隔/2s 有界恢复，每次单帧复用同一求解链；票据绑定本局、输入、资源、作者代际和稳定窗口绑定。隐藏页面的独立 timer/Session 已接默认 S0 被动刷新及两次负帧关图，并同步同一物理输入相位；窗口/几何上下文有效期与最新采集帧分开，求解仍验证最新帧。S0 当前姿态直接续期已接，稳定素材与当前帧记忆 proposal 分开；S1 专用楼层观察、点击意图策略、保留观测的组内拟合及人工确认重新采集仍缺；Recorded 始终不授予 LiveAuthorization |
 | 结构/作者/浮窗/穿透/DPI | client_windows.py / ClientAligned.qml / ClientReference.qml / author_display_policy.py / nightmare_author_coordinate_adapter.py | 显示桥当前 391 adapters/391 bridges/5 native corners/1 非单位校准零差异，完整选择 233 项和素材 261 项通过。Runtime 已接 canonical/material 提交、偏好替换与撤销；浮层已有真实 WPF 主机和离屏几何/票据回归。完整作者交互、参考窗及实机穿透/多屏 DPI 仍缺；素材不授权身份或结构位姿 |
 | 账号/路线广场/投稿 | account_service.py / client_route_plaza.py / ClientAccount.qml | 待迁；不以演示数据或按钮提示冒称接入 |
 | 教程/公告/帮助/诊断/更新 | client_info.py / update_service.py / ClientHelp.qml 等 | 待迁；关闭/后台恢复、状态与错误路径需覆盖 |
@@ -33,7 +33,13 @@
 
 当前原图对照包含 S1 困难全部 62 张（55 张完整候选扫描、7 张闭图或楼层未决），107 条实际 Python 索引报告与 C# 对照，以及完整 Runtime 的 14→3→1 递进。旧版在 261 的整池冲突恢复 14 张；按用户新规则保留 3 张后，307 能继续排除到 106008。它是算法结果，不把用户此前“分不出”改写为独立身份真值。预算定向反例另证明 27,264 个可行假设不可被误作无解；修正后整个观察返回未知，而非用不完整域作永久排除。
 
-以上仍是录制客户区、实际算法与 WPF 素材消费的验证，不是原生游戏/显示延迟验收。预算反例执行的是实际 domain 单元；整帧预算异常的上浮另由源码消费链核对，尚无真实帧触发整帧预算的集成反例。多楼层统一画布且只切显隐、后台并行复核和更新位置复用既有 WPF 图片尚未全部接入。CartoVeil 的机制研究另存外部报告，不将其静态实现或语言选择称作星图性能收益。
+以上仍是录制客户区、实际算法与 WPF 素材消费的验证，不是原生游戏/显示延迟验收。预算反例执行的是实际 domain 单元；整帧预算异常的上浮另由源码消费链核对，尚无真实帧触发整帧预算的集成反例。多楼层统一画布且只切显隐、后台并行复核和位置变化时复用既有 WPF 图片仍缺。CartoVeil 的机制研究另存外部报告，不将其静态实现或语言选择称作星图性能收益。
+
+### 同姿态续权与稳定素材
+
+S0 默认尚无已记忆0059素材、或公开关闭0059时，`refresh_map` 会先对原生矩阵执行真实新帧 canonical residual。通过后保留图片、token、几何组与历史 pose，仅提交新的 Core observation/authorization；不以旧授权冒充新帧，不跨楼层借尺度。原 Python 五条公有路径（噩梦、困难、已记忆后关闭0059、作者意图重投影、换层拒绝）供独立事后比较，未将答案矩阵注入求解。作者案例实际资源缺艺术层，仍是 shared-structure fallback。
+
+素材就绪、当前帧记忆 proposal 的 accepted/consumed、0059 prior 是否可写分别维护。迟到的同素材回执和排队任务只能绑定最新的已验证 proposal；关闭、换层、换作者素材或本局/资源失效后拒绝旧回执。关闭0059允许消费就绪任务，但不写新 prior，也不清既有 ready cache。WPF 缓存一张已加载位图；完整素材、矩阵和客户区上下文不变时再复用已投影图片，每次仍签发新 surface ticket。位置或缩放改变继续 CPU 投影；尚未启用任意 affine 的 WPF 直接变换，也未证明 GPU 上传或实机端到端耗时改善。
 
 ## 技术与视觉选择
 

@@ -24,6 +24,7 @@ public sealed partial class LiveRuntime
     {
         _structureIndex?.Dispose(); _structureIndex = null; _structureIndexResources = null;
         _structureFits?.Dispose(); _structureFits = null; _structureFitResources = null;
+        _currentResidualHost?.Dispose(); _currentResidualHost = null; _currentResidualResources = null;
     }
 
     // The single runtime worker owns these immutable resource preparations.

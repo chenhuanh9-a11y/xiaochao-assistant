@@ -147,6 +147,7 @@ internal static class IdentityEntryRuntimeRegression
                         check(state.NativePose is not null && state.NativePose.ToMatrix().SelectMany(row => row)
                             .Zip(wanted.SelectMany(row => row)).All(pair => Math.Abs(pair.First-pair.Second) <= 1e-5),
                             name + "/" + id + " own automatic native matrix matches original after production solve");
+                        runtime.AcknowledgeRenderMaterial(packet!);
                         await runtime.RememberRenderMaterialAsync(packet!.MaterialToken, runtime.ReadSnapshot().Context, default);
                     }
                 }
@@ -182,7 +183,10 @@ internal static class IdentityEntryRuntimeRegression
                                 acceptedAck = pending is not null && runtime.AcceptGroupMaterialReady(pending); break;
                             case "remember_render_material":
                                 if (runtime.TryReadRender(out var material))
+                                {
+                                    runtime.AcknowledgeRenderMaterial(material!);
                                     await runtime.RememberRenderMaterialAsync(material!.MaterialToken, runtime.ReadSnapshot().Context, default);
+                                }
                                 break;
                             case "select_group_member":
                                 var current = runtime.ReadState();

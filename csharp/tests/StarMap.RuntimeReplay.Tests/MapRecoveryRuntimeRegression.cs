@@ -40,7 +40,8 @@ internal static class MapRecoveryRuntimeRegression
                         case "public-invalidate-resources": runtime.InvalidateResources("resources-changed"); break;
                         case "set_route_profile": result = await Ask("set_context", payload); break;
                         case "material-ack":
-                            check(runtime.TryReadRender(out _), name + " current material exists at explicit recorded ACK seam"); break;
+                            check(runtime.TryReadRender(out var offered) && runtime.AcknowledgeRenderMaterial(offered!).Accepted,
+                                name + " actual current material is acknowledged at the explicit recorded consumer seam"); break;
                         case "remember_render_material":
                             runtime.TryReadRender(out var packet);
                             check(packet is not null, name + " actual material consumer receives current packet");
