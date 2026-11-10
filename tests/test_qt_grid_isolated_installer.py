@@ -6,8 +6,13 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-ISCC = Path(os.environ.get(
-    "INNO_SETUP_ISCC", r"E:\codex\tools\inno-setup-6.7.3\compiler\ISCC.exe"))
+if os.environ.get("INNO_SETUP_ISCC"):
+    ISCC = Path(os.environ["INNO_SETUP_ISCC"])
+else:
+    candidates = [Path(r"E:\codex\tools\inno-setup-6.7.3\compiler\ISCC.exe")]
+    candidates += [Path(base) / "Inno Setup 6/ISCC.exe" for key in ("ProgramFiles", "ProgramFiles(x86)")
+                   if (base := os.environ.get(key))]
+    ISCC = next((path for path in candidates if path.is_file()), candidates[0])
 
 import sys
 sys.path.insert(0, str(ROOT / "tools"))
