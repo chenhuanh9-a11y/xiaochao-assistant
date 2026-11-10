@@ -36,6 +36,13 @@ internal static class Program
         }
         try
         {
+            if(Array.IndexOf(args,"--display-preparation-only")>=0)
+            {
+                int resourcesIndex=Array.IndexOf(args,"--resources"),replayIndex=Array.IndexOf(args,"--original-replay");
+                if(resourcesIndex<0 || replayIndex<0)throw new ArgumentException("Display preparation entry needs resources and original replay.");
+                Await(DisplayPreparationMeasurement.Run(Path.GetFullPath(args[resourcesIndex+1]),Path.GetFullPath(args[replayIndex+1]),output,Check));
+                return 0;
+            }
             if(Array.IndexOf(args,"--projection-author-only")>=0)
             {
                 int resourcesIndex=Array.IndexOf(args,"--resources"),replayIndex=Array.IndexOf(args,"--original-replay");
@@ -419,7 +426,9 @@ internal static class Program
         finally
         {
             shell?.Close();
-            File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new { exit, checks, scope = Array.IndexOf(args,"--projection-author-only")>=0
+            File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new { exit, checks, scope = Array.IndexOf(args,"--display-preparation-only")>=0
+                ?"Recorded Page/Session/Runtime display preparation measurements, actual WPF source consumer and labelled component timings; no game/native visibility or latency acceptance. Unavailable recognition is retained in display-preparation.json."
+                :Array.IndexOf(args,"--projection-author-only")>=0
                 ?"Targeted actual projection/author RuntimePage, Session, strict fixture input and production WPF material consumer with recorded images and scoped relation/display faults. No native capture/input/game, author accuracy or latency acceptance."
                 :"Real WPF construction/navigation, Runtime/Session confirmation and settings save/control/serialization/IO race. The picker loads real resources through SetMaps in a shown offscreen nonactivating window; clicks are routed programmatically. Capture/foreground use recorded fixtures, no native input/capture/game or visual acceptance. The existing document serialization semaphore arranges IO interleaving." }, new JsonSerializerOptions { WriteIndented = true }));
             app.Shutdown(exit);

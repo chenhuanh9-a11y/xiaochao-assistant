@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json;
 using OpenCvSharp;
@@ -109,6 +110,48 @@ internal static class Program
                     }
                     catch(Exception error){failures.Add(new{label,error=error.ToString()});Console.Error.WriteLine("FAIL "+label+": "+error.Message);}
                 }
+            }
+            foreach(var row in oracle.RootElement.GetProperty("cases").EnumerateArray().Where(r=>Text(r,"label") is "synthetic/generic-rgba" or "synthetic/generic-snapshot"))
+            {
+                string label=Text(row,"label")+"/one-selection-reference-preparation";count++;
+                try
+                {
+                    var catalog=catalogs[Text(row,"resourceRoot")];
+                    var entry=catalog.Entries.Single(e=>e.Season==Text(row,"season")&&e.Mode==Text(row,"mode")&&e.MapId==Text(row,"mapId")&&e.Floor==Text(row,"floor"));
+                    SharedStructureData? initial=null;
+                    var chosen=selector.Select(catalog,entry,Text(row,"preferred"),Affine(row.GetProperty("referenceToClient")),Text(row,"variant"),request=>
+                    {initial=request.ReferenceBridge.Reference;return null;});
+                    Require(chosen.Prepared&&chosen.DisplayKind=="author-route","normal author path did not execute");
+                    Require(initial is not null&&ReferenceEquals(initial,chosen.Bridge!.Reference),"one selection repeated typed reference preparation");
+                    Require(chosen.Bridge!.Resources!.Single(resource=>string.Equals(resource.Path,entry.StructureNpzPath,StringComparison.OrdinalIgnoreCase)).RequiresRegularSingleLink,
+                        "native reference reuse lost the registered source single-link requirement");
+                    var next=selector.Select(catalog,entry,Text(row,"preferred"),Affine(row.GetProperty("referenceToClient")),Text(row,"variant"));
+                    Require(next.Prepared&&!ReferenceEquals(initial,next.Bridge!.Reference),"prepared reference escaped its selection lifetime");
+                    File.WriteAllText(Path.Combine(output,"cases",$"{count:D4}.json"),JsonSerializer.Serialize(new{label,chosen,next,sameInvocationReused=true,nextInvocationReloaded=true},JsonOptions));
+                }
+                catch(Exception error){failures.Add(new{label,error=error.ToString()});Console.Error.WriteLine("FAIL "+label+": "+error.Message);}
+            }
+            {
+                string label="same-selection-json-reuse-still-detects-same-length-timestamp-change";count++;
+                try
+                {
+                    string scratch=Path.Combine(output,"scratch","json-revalidation");Directory.CreateDirectory(scratch);
+                    string path=Path.Combine(scratch,"value.json");File.WriteAllText(path,"{\"value\":1}");
+                    var type=typeof(DisplayBridgeResolver).GetNestedType("ResourceReads",BindingFlags.NonPublic)!;
+                    var reads=Activator.CreateInstance(type,[scratch])!;var read=type.GetMethod("Json")!;
+                    JsonElement first=(JsonElement)read.Invoke(reads,[scratch,"value.json"])!;
+                    JsonElement repeated=(JsonElement)read.Invoke(reads,[scratch,"value.json"])!;
+                    Require(first.GetProperty("value").GetInt32()==1&&repeated.GetProperty("value").GetInt32()==1,"real JSON read differs");
+                    var stamp=File.GetLastWriteTimeUtc(path);File.WriteAllText(path,"{\"value\":2}");File.SetLastWriteTimeUtc(path,stamp);
+                    bool rejected=false;
+                    try{read.Invoke(reads,[scratch,"value.json"]);}
+                    catch(TargetInvocationException error)when(error.InnerException is InvalidDataException){rejected=true;}
+                    Require(rejected,"parsed JSON reuse masked a changed resource");
+                    var fresh=Activator.CreateInstance(type,[scratch])!;
+                    Require(((JsonElement)read.Invoke(fresh,[scratch,"value.json"])!).GetProperty("value").GetInt32()==2,"next selection could not observe new bytes");
+                    File.WriteAllText(Path.Combine(output,"cases",$"{count:D4}.json"),JsonSerializer.Serialize(new{label,rejected,nextSelectionValue=2},JsonOptions));
+                }
+                catch(Exception error){failures.Add(new{label,error=error.ToString()});Console.Error.WriteLine("FAIL "+label+": "+error.Message);}
             }
         }
         catch(Exception error){failures.Add(new{label="harness",error=error.ToString()});}

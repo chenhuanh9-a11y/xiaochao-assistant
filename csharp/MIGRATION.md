@@ -45,6 +45,10 @@ S0 默认尚无已记忆0059素材、或公开关闭0059时，`refresh_map` 会�
 
 ### 多楼层共同场景
 
+素材选择在一次 Select 内共用资源读取上下文，复用已解析 JSON 和同一条目/路径/内容的 typed reference；下一次 Select 仍重新建立上下文。每次查找仍实际读取并校验字节，解析复用不替代资源新鲜度、注册单链接要求或提交前复核；注册过程加强单链接策略也不能使相同结构重复解压，最终快照仍保留加强后的要求。作者策略、fallback、坐标矩阵和像素生产者不变。
+
+现有 WPF 测试入口 `--display-preparation-only` 记录实际 Page/Session/Runtime 和隐藏素材消费者，以及 selector、像素准备、资源复核、BitmapSource 转换的分段耗时。使用新版录制帧，临时显示的地图来自显示包而非未锁定身份；组件新 preparer 只表示应用缓存冷，首样本含 JIT，素材就绪只是轮询观察上界。小样本 p50/p95/max 不代表完整负载或实机首像素，也不将无法提供显示的输入算成识别通过。
+
 `CommonFloorSpace` 从实际原生 NPZ 声明读取静态 reference→common 坐标。S0 使用 renderer bounds、60px 静态网格和 product 变换；S1 使用 imageToMapPlaneXZ。它们是资源位置，不是目标楼层测得的 scale seed 或可信 pose；已有校准桥按声明合成。252 层实际 NPZ 均已检查，旧困难图29两层缺少可靠共同空间，继续独立贴合，不补造关系。
 
 `RuntimeSceneSources` 准备同图各层的真实显示来源和各自静态桥，最多保留两套地图/偏好。当前帧仍通过原数值拟合、残差和 Core canonical 提交，由唯一 Runtime owner 派生共同根变换；未将静态关系写进几何组、0059 或其他楼层求解先验。WPF 同时持有各层 Image/source/transform，仅显示当前获许可的层；共同根变动会一起更新隐藏层。关图撤销 ticket 和显示许可，保留不可变素材；退出释放视觉引用。缺失层逐项报告，不能获得显示或学习许可。

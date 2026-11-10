@@ -17,20 +17,24 @@ public sealed partial class DisplayBridgeResolver(IDisplayRasterValidator raster
     public DisplayBridgeResult ResolveDisplayReference(ResourceCatalog catalog,ResourceCatalogEntry entry,string displayProfile,
         DisplayAffine referenceToClient,string variant="variant-01",bool neutral=false) => ResolveCore(catalog,entry,displayProfile,referenceToClient,variant,true,neutral);
 
+    internal DisplayBridgeResult ResolveDisplayReference(ResourceCatalog catalog,ResourceCatalogEntry entry,string displayProfile,
+        DisplayAffine referenceToClient,ResourceReads reads,string variant="variant-01",bool neutral=false)
+        => ResolveCore(catalog,entry,displayProfile,referenceToClient,variant,true,neutral,reads);
+
     private DisplayBridgeResult ResolveCore(ResourceCatalog catalog,ResourceCatalogEntry entry,string displayProfile,
-        DisplayAffine referenceToClient,string variant,bool allowLegacyReference,bool neutral)
+        DisplayAffine referenceToClient,string variant,bool allowLegacyReference,bool neutral,ResourceReads? reads=null)
     {
         try
         {
             if (!ReferenceEquals(entry.Owner,catalog)) return Reject("resource-catalog-owner-mismatch");
             if (!referenceToClient.IsInvertible) return Reject("reference-to-client-invalid");
             if (variant != "variant-01" && !DisplayAuthorInventory.IsCoffin(entry,displayProfile)) return Reject("display-variant-not-bound-to-selected-reference");
+            var files = reads ?? new ResourceReads(catalog.RootPath);
             if (entry.StructureKind == "legacy-clean") return allowLegacyReference
-                ? ResolveLegacyDisplay(catalog,entry,displayProfile,referenceToClient,variant,neutral)
+                ? ResolveLegacyDisplay(catalog,entry,displayProfile,referenceToClient,variant,neutral,files)
                 : Reject("legacy-clean-native-bridge-unavailable");
             if (entry.StructureStatus != ResourceBindingStatus.Ready || entry.StructureNpzPath is null)
                 return Reject(entry.StructureIssue?.Code ?? "typed-reference-unavailable");
-            var files = new ResourceReads(catalog.RootPath);
             var context = ReadContext(files,entry);
             var pack = files.Json(context.Root,context.Coordinates);
             var adapter = new AuthorCoordinateAdapter(pack);
@@ -48,8 +52,7 @@ public sealed partial class DisplayBridgeResolver(IDisplayRasterValidator raster
             string referencePath = files.Local(context.Root,referenceRelative);
             if (!string.Equals(referencePath,Path.GetFullPath(entry.StructureNpzPath),StringComparison.OrdinalIgnoreCase))
                 return Reject("typed-reference-path-mismatch");
-            files.BytesAbsolute(referencePath,128*1024*1024);
-            var loaded = catalog.LoadSharedStructure(entry);
+            var loaded = files.SharedStructure(catalog,entry);
             if (!loaded.Success) return Reject(loaded.Error?.Code ?? "typed-reference-load-failed");
             var structure = loaded.Value!;
             if (structure.CleanMask is null) return Reject("clean-reference-unavailable");
@@ -386,6 +389,10 @@ public sealed partial class DisplayBridgeResolver(IDisplayRasterValidator raster
     {
         public string Root { get; } = Path.GetFullPath(root);
         public List<DisplayResourceSnapshot> Snapshots { get; } = [];
+        // One selector invocation only. Each lookup still reads and validates
+        // bytes; reuse avoids repeated parsing/decompression, never freshness checks.
+        private readonly Dictionary<string,JsonElement> json = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<ResourceCatalogEntry,(DisplayResourceSnapshot Source,ResourceLoadResult<SharedStructureData> Loaded)> structures = new(ReferenceEqualityComparer.Instance);
         public string Local(string scope,string relative)
         {
             if (string.IsNullOrWhiteSpace(relative) || Path.IsPathRooted(relative)
@@ -412,9 +419,27 @@ public sealed partial class DisplayBridgeResolver(IDisplayRasterValidator raster
         }
         public JsonElement Json(string scope,string relative)
         {
-            using var doc = JsonDocument.Parse(BytesAbsolute(Local(scope,relative),32*1024*1024),new JsonDocumentOptions {MaxDepth=64});
+            string path=Local(scope,relative);
+            byte[] bytes=BytesAbsolute(path,32*1024*1024);
+            if(json.TryGetValue(path,out var prepared))return prepared;
+            using var doc = JsonDocument.Parse(bytes,new JsonDocumentOptions {MaxDepth=64});
             if (doc.RootElement.ValueKind != JsonValueKind.Object) throw Gap("display-resource-json-not-object");
-            return doc.RootElement.Clone();
+            prepared=doc.RootElement.Clone();json.Add(path,prepared);return prepared;
+        }
+        public ResourceLoadResult<SharedStructureData> SharedStructure(ResourceCatalog catalog,ResourceCatalogEntry entry)
+        {
+            if(entry.StructureNpzPath is not { } path)return catalog.LoadSharedStructure(entry);
+            BytesAbsolute(path,128*1024*1024);
+            var snapshot=Snapshots.Single(s=>string.Equals(s.Path,path,StringComparison.OrdinalIgnoreCase));
+            // Registration can strengthen the snapshot's single-link policy
+            // after the neutral pass. That policy is still checked by the
+            // final snapshot; identical bytes need no second decompression.
+            if(structures.TryGetValue(entry,out var prepared) && prepared.Source.Length==snapshot.Length
+                && prepared.Source.Sha256==snapshot.Sha256
+                && string.Equals(prepared.Source.Path,snapshot.Path,StringComparison.OrdinalIgnoreCase))return prepared.Loaded;
+            var loaded=catalog.LoadSharedStructure(entry);
+            if(loaded.Success)structures[entry]=(snapshot,loaded);
+            return loaded;
         }
         public void RequireDigest(string path,string? expected)
         {

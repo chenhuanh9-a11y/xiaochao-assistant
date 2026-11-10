@@ -5,10 +5,10 @@ namespace StarMap.Core.Display;
 
 public sealed partial class DisplayBridgeResolver
 {
-    private DisplayBridgeResult ResolveLegacyDisplay(ResourceCatalog catalog,ResourceCatalogEntry entry,string profile,DisplayAffine referenceToClient,string variant,bool neutral)
+    private DisplayBridgeResult ResolveLegacyDisplay(ResourceCatalog catalog,ResourceCatalogEntry entry,string profile,DisplayAffine referenceToClient,string variant,bool neutral,ResourceReads files)
     {
-        var files=new ResourceReads(catalog.RootPath);var context=ReadContext(files,entry);
-        var loaded=catalog.LoadSharedStructure(entry);
+        var context=ReadContext(files,entry);
+        var loaded=files.SharedStructure(catalog,entry);
         if(!loaded.Success||loaded.Value!.CleanMask is null)return new(false,loaded.Error?.Code??"legacy-clean-reference-unavailable",entry.StableKey,profile);
         var reference=loaded.Value;var canvas=J.Get(reference.Metadata,"canvas");var declared=entry.CoordinateMetadata;
         int height=reference.CleanMask!.Shape[0],width=reference.CleanMask.Shape[1];

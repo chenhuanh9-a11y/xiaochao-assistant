@@ -29,7 +29,7 @@ public sealed class DisplayLayerSelector
         var files=new DisplayBridgeResolver.ResourceReads(catalog.RootPath);DisplayAuthorInventory? inventory=null;
         try
         {
-            var reference=resolver.ResolveDisplayReference(catalog,entry,"shared-structure",referenceToClient,neutral:true);
+            var reference=resolver.ResolveDisplayReference(catalog,entry,"shared-structure",referenceToClient,files,neutral:true);
             if(!reference.Accepted)return Failure("display-reference-unavailable",reference.Reason);
             var custom=customProvider?.Invoke(new(catalog,entry,preferredProfile,variant,referenceToClient,reference));
             if(custom is not null)
@@ -61,7 +61,7 @@ public sealed class DisplayLayerSelector
                     ||inventory.CoordinateAdapter.TryProfileToCanonical(effective,entry.MapId,entry.Floor,out _,out _);
                 if(inventory.Profiles.TryGetValue(effective,out var profile)&&profile.Aligned&&available&&layer is not null&&sourceBound&&displayBound)
                 {
-                    var chosen=resolver.ResolveDisplayReference(catalog,entry,effective,referenceToClient,coffin?variant:"variant-01");
+                    var chosen=resolver.ResolveDisplayReference(catalog,entry,effective,referenceToClient,files,coffin?variant:"variant-01");
                     if(chosen.Accepted)return Complete(chosen,effective,"none",failure,coffin?variant:null,"author-route",effective);
                     failure="author-display-load-or-bridge-error";
                 }
@@ -70,13 +70,13 @@ public sealed class DisplayLayerSelector
             }
             if(status=="missing"&&entry.Season=="s0"&&entry.Mode=="nightmare")
             {
-                var atlas=resolver.ResolveDisplayReference(catalog,entry,"base-map",referenceToClient);
+                var atlas=resolver.ResolveDisplayReference(catalog,entry,"base-map",referenceToClient,files);
                 if(atlas.Accepted)return Complete(atlas,"shared-structure",status,"selected-author-layer-missing",null,"base-map","基础地图（暂无作者路线）");
             }
             else if(status=="available")status=available?"load-error":"registration-failed";
             if(entry.Season=="s1")
             {
-                var native=resolver.ResolveDisplayReference(catalog,entry,"shared-structure",referenceToClient);
+                var native=resolver.ResolveDisplayReference(catalog,entry,"shared-structure",referenceToClient,files);
                 if(native.Accepted)return Complete(native,"shared-structure",status,failure,null,"game-native","S1 原生渲染地图");
                 failure=native.Reason.StartsWith("s1-resource-not-uniquely-inventoried:assets/game-native/",StringComparison.Ordinal)
                     ?"s1-native-display-not-installed":"s1-native-display-invalid-binding-or-image";
