@@ -757,7 +757,7 @@ def _discard_owned_temporary(path, identity):
         return False
 
 
-def _publish_output(staged, output, digest):
+def _publish_output(staged, output, digest, *, before_move=None):
     """Finish and fsync a same-directory temporary before a no-replace move."""
     files._no_links(output.parent)
     descriptor, name = tempfile.mkstemp(prefix='.' + output.name + '.', suffix='.tmp', dir=output.parent)
@@ -772,9 +772,12 @@ def _publish_output(staged, output, digest):
         # Reuse the existing owned-file move: verify exact bytes and original
         # identity, then publish without replacing any destination. On Windows
         # verification and FileRenameInfo use the same exclusive native handle.
+        move_options = {'linkless': True}
+        if before_move is not None:
+            move_options['before_move'] = before_move
         publication._move_owned(temporary, output,
             dict(path=temporary.name, bytes=staged.stat().st_size, sha256=digest),
-            list(identity), linkless=True)
+            list(identity), **move_options)
     except BaseException as error:
         if not _discard_owned_temporary(temporary, identity):
             error.add_note('native-base-export-temporary-preserved: ' + str(temporary))

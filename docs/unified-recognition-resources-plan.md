@@ -455,3 +455,11 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 - 初次检查及两次 prospective callback 均核旧/新声明；候选仍经原 selection 依赖闭包、真实 engine/provider 和完整 display 解码。幂等选择重验当前上下文的所有作者一次，generation 和 catalog 字节不变。正常更新后旧 engine/cache 拒绝旧 catalog，默认工厂取得新版实际像素，身份/楼层/rank/live 不因作者更新改变。
 - `test_client_imported_author_selection` 当时 6 项通过（379.885 秒），覆盖添加/替换/幂等、新版 BGRA 与透明度、其他作者/上下文、坏旧图片修复、坏旧元数据拒绝、身份改变/歧义拒绝、有效历史 base 不得自选、坏新图片/提权/错依赖、第二次检查取消恢复。后补旧绑定头在两次检查间被改坏 1 项通过（57.824 秒）：恢复原 catalog、清 pending，并保留外部制造的坏头，不擅自还原原件。两组为 7 个不同用例，未称同一次全量运行。共享头提取后的原 codec 6 项通过（145.956 秒）。首轮两处测试构造错误及失败日志保留：一次 callback 会重验两个作者；改写 manifest 后原 PackageView 本就应过期，下一故障通过预先取得的 fixture 路径注入，未放宽生产当前性。
 - 作者 codec/显示/启用前验证/版本选择四模块移入独立 `packaging-imported-display` 候选组；原资源 60 模块与新选择模块的精确多重集保持为 61 项，按 legacy/data/runtime/display 分成 10/31/16/4。保留每模块进程、失败汇总、25 分钟上限和历史 baseline；避免新增的数分钟作者往返重新挤进原运行组。新分组的实际远端耗时仍待核。作者 UI、图库、多依赖联合启用及真实四模式作者验收仍未完成。
+
+### 独立作者 ZIP 制包与可取消发布
+
+- `tools/export_author_display_component.py` 提供 `export_component` 和 CLI `--help`。输入是精确安装 base 引用、注册 JSON、图片根及输出包 ID/版本；注册 schema 为 `xingtu-author-display-registration-v1`，根字段为 `schema/profileId/authorName/displayName/layers`，每层给 `mapId/floor/image/matrixDisplayToReference`。程序通过公共 base decoder 与实际 provider 派生引用文件、画布和版本，图片 bytes 原样进入独立 display 组件。默认组件 ID 为 `display-{season}-{mode}`，可显式指定；跨模式用不同组件 ID 可同时保留。
+- PNG alpha、JPEG 和完整 affine 沿用共享校验，注册 JSON 按公共 reader 的 16 MiB 上限先做文件大小检查。实际 ZIP 经公共 inspect/save/display decode 往返后，再复用已有同目录临时文件、内容/身份核验和无覆盖移动发布；产物随后由资源选择启用。缺 typed reference 明确拒绝，不补 legacy native layout 或权威资格。
+- 独立复核发现最终 ZIP 哈希期间到达的取消仍会发布。保留实际 public export 红例（1 项失败），修后在最终哈希后及实际移动前核取消。既有 `_publish_output`/`_move_owned` 新增默认 None 的可选回调；Windows 在同一个独占句柄完成身份/内容验证后、无覆盖重命名前调用，POSIX 在验证后、移动/链接前调用。默认调用形状、原文件核验及只清自己临时文件的逻辑保留；移动已成功后不再把实际成功改报取消。
+- 扩充 producer 12 项通过（148.660 秒），包括四个取消时机、真实超限注册文件和原 PNG/JPEG/配准正反例；四个取消定向项另通过（62.458 秒）。真实 copy/hash/原生 rename 执行，hook 只控制取消到达时机。旧 native publisher 10 项通过（12.165 秒）、真实 owned move 1 项通过（0.187 秒）；不同 fresh Reviewer 独立复验关键 5 项（86.310 秒）及目标竞争/替换临时文件保留 2 项（0.043 秒），未见阻断。探索阶段错 hook 和失败日志保留，没有改称通过。
+- 作者 data 两模块（codec/producer）与显示/启用 lifecycle 三模块分组，资源模块精确总数增加为 62；其余检查、25 分钟上限及历史 baseline 保持。当前动态制包证据仅为完整 synthetic S1D fixture；其他三模式、真实作者素材、文件选择器/作者启用 UI、图库、实帧/物理像素、游戏及统一架构 Setup 仍未验证。

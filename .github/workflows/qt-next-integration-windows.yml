@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [features, core, diagnostics, packaging, packaging-imported-data, packaging-imported-runtime, packaging-imported-display, tutorials, map-defaults, season-ui, next-version-contracts, author-snapshots, installer-reset, fit-simulation, main-baseline, released-baseline]
+        group: [features, core, diagnostics, packaging, packaging-imported-data, packaging-imported-runtime, packaging-imported-display-data, packaging-imported-display, tutorials, map-defaults, season-ui, next-version-contracts, author-snapshots, installer-reset, fit-simulation, main-baseline, released-baseline]
     env:
       PYTHONPATH: 'app;tests;tools;experiments/qt_quick'
       QT_QPA_PLATFORM: offscreen
@@ -246,11 +246,16 @@ jobs:
                 'test_client_imported_resources', 'test_client_imported_resource_startup'
               )
             }
-            # Author display roundtrips use complete native fixtures too. Keep
-            # these independent modules out of the already long runtime shard.
+            # Author codecs/exporters and lifecycle consumers each use complete
+            # native fixtures. Retain their separate-process runner and cap.
+            'packaging-imported-display-data' {
+              $modules = @(
+                'test_imported_author_display', 'test_export_author_display_component'
+              )
+            }
             'packaging-imported-display' {
               $modules = @(
-                'test_imported_author_display', 'test_imported_author_displays',
+                'test_imported_author_displays',
                 'test_client_imported_author_activation', 'test_client_imported_author_selection'
               )
             }

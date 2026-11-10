@@ -169,7 +169,7 @@ def _receipt_row(package_id, data):
             "sha256": hashlib.sha256(data).hexdigest()}
 
 
-def _move_owned(source, destination, row, identity, *, linkless=False):
+def _move_owned(source, destination, row, identity, *, linkless=False, before_move=None):
     """Move only the verified old object, exclusively, retaining no-overwrite."""
     adapter = _adapter()
     adapter._no_links(source)
@@ -179,6 +179,8 @@ def _move_owned(source, destination, row, identity, *, linkless=False):
     if os.name != "nt":
         if not _matches(source, row, identity):
             _reject("upgrade-owned-target-changed-before-backup")
+        if before_move is not None:
+            before_move()
         # The move-only protocol keeps this object's identity in a durable
         # journal instead of requiring a second hard link. POSIX still has its
         # documented final pathname race; verify the moved object afterward.
@@ -215,6 +217,8 @@ def _move_owned(source, destination, row, identity, *, linkless=False):
                         or getattr(info, "st_file_attributes", 0) & 0x400
                         or hashlib.file_digest(handle, "sha256").hexdigest() != row["sha256"]):
                     _reject("upgrade-owned-target-changed-before-backup")
+                if before_move is not None:
+                    before_move()
                 class RenameInfo(ctypes.Structure):
                     _fields_ = [("ReplaceIfExists", ctypes.c_ubyte),
                                 ("RootDirectory", wintypes.HANDLE),
