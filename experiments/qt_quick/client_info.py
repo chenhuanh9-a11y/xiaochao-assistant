@@ -29,9 +29,10 @@ class ClientInfoService(QObject):
     announcementRequested = Signal("QVariantMap")
     homePreviewRequested = Signal(str, str, str, str)
 
-    def __init__(self, sandbox, *, fetch=None, open_url=None):
+    def __init__(self, sandbox, *, fetch=None, open_url=None, resource_resolver=None):
         super().__init__()
         self.paths = runtime_paths(sandbox)
+        self.resource_resolver = resource_resolver
         self.sandbox = self.paths.installation_root
         version = json.loads((ROOT / "version.json").read_text(encoding="utf-8"))
         self._version = version.get("displayVersion", "unknown")
@@ -40,7 +41,7 @@ class ClientInfoService(QObject):
         self._package_metadata = {}
         # Frozen build identity belongs to this running bundle, never the
         # retained isolated resource/data sandbox (which may predate upgrades).
-        profile_path = (ROOT if getattr(sys, 'frozen', False) else self.paths.resource_root) / "installation-profile.json"
+        profile_path = self.paths.program_root / "installation-profile.json"
         try:
             if profile_path.stat().st_size <= 1024 * 1024:
                 profile = json.loads(profile_path.read_text(encoding="utf-8"))
@@ -221,6 +222,9 @@ class ClientInfoService(QObject):
         def read_home():
             from resource_transaction import assert_resources_ready, resource_read_lock
             cancelled = lambda: self._closed or generation != self._home_preview_generation
+            if self.resource_resolver is not None:
+                from client_imported_browse import imported_home_rows
+                return imported_home_rows(self.resource_resolver, *context, cancelled=cancelled)
             with resource_read_lock(self.sandbox, wait=True, cancelled=cancelled):
                 assert_resources_ready(self.sandbox)
                 return self._home_rows(self.paths.resource_root, *context, cancelled=cancelled)
@@ -600,7 +604,7 @@ class ClientInfoService(QObject):
                 report["recentProblems"] = deepcopy(problems.recent)
         resources = self._providers.get("resources")
         if resources is not None:
-            report["resourceStates"] = [{key: row.get(key) for key in ("packageId", "status")}
+            report["resourceStates"] = [{key: row.get(key) for key in ("packageId", "resourceVersion", "manifestSha256", "selectedContexts", "status")}
                                         for row in resources.packageRows]
         input_provider = self._providers.get("input")
         input_state = dict(input_provider.snapshot) if input_provider is not None else {}
@@ -666,7 +670,7 @@ class ClientInfoService(QObject):
                 self.paths.work_root / "nightmare-live", destination=destination,
                 app_version=self._app_version, build_fingerprint=self._build_fingerprint,
                 package_metadata=package_metadata, window_environment=window_environment, export_id=export_id,
-                resource_root=self.paths.resource_root,
+                resource_root=(self.resource_resolver.root if self.resource_resolver is not None else self.paths.resource_root),
                 runtime_context=runtime_context, failure_roots=failure_roots, summary=report,
                 automatic_failure_only=automatic_only,
                 include_automatic_failure_evidence=include_automatic,

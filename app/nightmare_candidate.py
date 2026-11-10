@@ -1285,10 +1285,10 @@ def side_door_candidate_pool(
 class NightmarePack:
     mode='nightmare'
     floors=('1','2','B1')
-    def __init__(self, manifest_path: Path = DEFAULT_MANIFEST) -> None:
+    def __init__(self, manifest_path: Path = DEFAULT_MANIFEST, *, resource_root: Path | None = None) -> None:
         self.manifest_path = Path(manifest_path)
         raw = json.loads(self.manifest_path.read_text(encoding="utf-8"))
-        self.resource_root=self.manifest_path.parent.parent
+        self.resource_root=Path(resource_root) if resource_root is not None else self.manifest_path.parent.parent
         self.source_candidates=NightmareSourceCandidateStore(self.resource_root)
         configured = os.environ.get("IDENTITYV_NIGHTMARE_MAPS")
         bundled = USER_ROOT / "assets" / "nightmare-maps"
@@ -1318,7 +1318,7 @@ class NightmarePack:
             resource_base = item.get("resourceBase", "source-root")
             if resource_base not in {"source-root", "resource-root"}:
                 raise ValueError(f"unsupported nightmare resource base: {resource_base}")
-            root = self.manifest_path.parent.parent if resource_base == "resource-root" else self.source_root
+            root = self.resource_root if resource_base == "resource-root" else self.source_root
             self.maps.append(NightmareMap(
                 id=item["id"], name=item["name"], direction=item["direction"],
                 door_count=int(item["doorCount"]), shape=item["shape"],

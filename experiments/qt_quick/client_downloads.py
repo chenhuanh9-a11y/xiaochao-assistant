@@ -35,10 +35,13 @@ class OnlinePackagesService(QObject):
     changed = Signal()
     errorReported = Signal(object)
 
-    def __init__(self, sandbox, resources, *, index_url=None, transport=None):
+    def __init__(self, sandbox, resources, *, index_url=None, transport=None, installed_package=None, save_only=False):
         super().__init__()
         self.sandbox = owned_sandbox(sandbox)
         self.resources = resources
+        self._save_only = bool(save_only)
+        self._installed_package = installed_package or (lambda package_id, sha, cancelled:
+            verified_installed_package(self.sandbox, package_id, sha, cancelled=cancelled))
         self.download_root = self.sandbox / "work/map-packages/downloads"
         self._index_url = index_url.strip() if isinstance(index_url, str) else ""
         self._transport = transport
@@ -69,6 +72,7 @@ class OnlinePackagesService(QObject):
     def _snapshot(self):
         ready = self._configured and not self._closed and not self._busy and self._local_idle()
         return dict(configured=self._configured, busy=self._busy, stage=self._stage,
+            saveOnly=self._save_only,
             message=self._message, packages=deepcopy(self._rows), selectedPackageId=self._selected,
             activePackageId=self._active, progress=dict(self._progress),
             canCheck=ready, canDownload=ready and bool(self._entries),
@@ -136,13 +140,12 @@ class OnlinePackagesService(QObject):
             if operation == "index":
                 service = self._get_transport()
                 rows = service.read_index(cancel_event=cancel)
-                return [dict(row, installation=verified_installed_package(self.sandbox,
-                    row["packageId"], row.get("sha256"), cancelled=cancel.is_set)) for row in rows]
+                return [dict(row, installation=self._installed_package(
+                    row["packageId"], row.get("sha256"), cancel.is_set)) for row in rows]
             # Startup may have pruned the ZIP after installation. Revalidate the
             # receipt AND installed bytes in the worker before fetching it again;
             # a card's earlier index snapshot is not proof of current contents.
-            installation = verified_installed_package(self.sandbox, package_id,
-                expected["sha256"], cancelled=cancel.is_set)
+            installation = self._installed_package(package_id, expected["sha256"], cancel.is_set)
             if installation.get("status") == "installed":
                 return dict(installation=installation)
             service = self._get_transport()
@@ -219,7 +222,8 @@ class OnlinePackagesService(QObject):
                 accepted = self.resources.importVerifiedArchive(QUrl.fromLocalFile(result["path"]).toString(),
                     expected, self._resource_generation)
                 self._stage = "handoff" if accepted else "cached"
-                self._message = ("已交给本地图包检查；覆盖确认和安装结果见本地管理。" if accepted
+                self._message = (("正在校验并保存版本，结果见本地资源。保存不会启用资源。" if self._save_only else
+                                  "已交给本地图包检查；覆盖确认和安装结果见本地管理。") if accepted
                                  else "图包已缓存；本地操作或会话忙，未提交导入，可稍后重试。")
         self.changed.emit()
 

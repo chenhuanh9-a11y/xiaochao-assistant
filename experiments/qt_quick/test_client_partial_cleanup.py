@@ -18,6 +18,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 import client
 import client_paths
 import backend
+import client_imported_browse
 from client_input import NativeShortcutBackend
 from resource_transaction import resource_runtime_lease
 
@@ -48,13 +49,13 @@ class PartialClientCleanupTests(unittest.TestCase):
                 return instance
         self.enterContext(patch.object(client, "QtClient", TrackedClient))
         self.started, self.release, self.loaded = threading.Event(), threading.Event(), threading.Event()
-        original = backend.load_browse_context
+        original = client_imported_browse.load_imported_browse_context
         def blocked(*args, **kwargs):
             self.started.set()
             if not self.release.wait(8):
                 raise RuntimeError("fixture worker timeout")
             return original(*args, **kwargs)
-        self.enterContext(patch.object(backend, "load_browse_context", side_effect=blocked))
+        self.enterContext(patch.object(client_imported_browse, "load_imported_browse_context", side_effect=blocked))
         self.args = SimpleNamespace(sandbox=self.root, probe_output=self.root / "probe")
         self.guard = Mock()
         self.report = self.enterContext(patch("qt_startup_diagnostics.report_startup_failure"))

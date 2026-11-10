@@ -107,7 +107,8 @@ class InfoTests(unittest.TestCase):
         commit = '7' * 40
         (baked / 'installation-profile.json').write_text(json.dumps(dict(sourceCommit=commit)))
         (self.root / 'installation-profile.json').write_text(json.dumps(dict(sourceCommit='f' * 40)))
-        with patch.object(client_info, 'ROOT', baked), patch.object(client_info.sys, 'frozen', True, create=True):
+        with patch.object(client_info, 'ROOT', baked), patch('client_paths.RESOURCE_ROOT', baked), \
+             patch.object(client_info.sys, 'frozen', True, create=True):
             service = self.service()
         self.assertEqual(service._build_fingerprint, '77777777')
         self.assertEqual(service._source_commit, commit)

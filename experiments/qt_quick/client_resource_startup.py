@@ -6,6 +6,32 @@ from resource_transaction import assert_resources_ready, resource_read_lock, res
 
 
 @contextmanager
+def program_runtime(root, *, production, startup_report=None):
+    """Keep Setup away from running code; imported data has its own lock/root.
+
+    Ordinary startup never repairs or seeds old installation map resources.
+    Installer/reset interruptions keep their existing program-side protection.
+    Other legacy resource journals are retained for explicit recovery.
+    """
+    if not production:
+        yield
+        return
+    from pathlib import Path
+    from resource_transaction import assert_installer_upgrade_ready, ResourceTransactionError, _safe
+    with resource_runtime_lease(root):
+        assert_installer_upgrade_ready(root)
+        reset = _safe(Path(root) / 'work/map-packages/pending-resource-reset.json')
+        if reset.exists():
+            raise ResourceTransactionError('resource-reset-recovery-required')
+        if startup_report is not None:
+            legacy = [name for name in ('pending-base-repair.json', 'pending-upgrade.json',
+                'pending-additions.json', 'pending-removal.json', 'pending-author-snapshot.json')
+                if (Path(root) / 'work/map-packages' / name).exists()]
+            startup_report.update(status='imported-resources', legacyPending=legacy)
+        yield
+
+
+@contextmanager
 def production_resources(root, *, production, on_failure=None, startup_report=None):
     if not production:
         yield

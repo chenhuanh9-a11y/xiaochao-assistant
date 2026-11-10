@@ -1,8 +1,8 @@
-"""Production main scheduling with actual resource files/leases, no game IO.
+"""Production main scheduling with actual program leases, no game IO.
 
 Only QtClient (resource consumer), native single-instance guard, and the owned
-application identity are replaced. The actual main, Qt event loop, build
-projection, repair, file hashing and resource lease execute against Temp.
+application identity are replaced. The actual main and Qt event loop run
+against Temp. Legacy resource journals are preserved without boot-time repair.
 """
 from contextlib import nullcontext
 from pathlib import Path
@@ -55,8 +55,12 @@ class ResourceStartupTests(unittest.TestCase):
                 guard.close.assert_called_once()
         return result
 
-    def test_main_repairs_before_first_reader_and_keeps_lease_through_shutdown(self):
+    def test_main_does_not_seed_legacy_resources_and_keeps_program_lease_through_shutdown(self):
         observed = {}
+        def legacy_files():
+            return {path.relative_to(self.root).as_posix(): path.read_bytes()
+                    for path in (self.root / '_internal').rglob('*') if path.is_file()}
+        before = legacy_files()
         def consumer(app, root, **_):
             observed['ready'] = all((root / '_internal' / name).is_file()
                                     for name in self.fixture.resources)
@@ -76,11 +80,12 @@ class ResourceStartupTests(unittest.TestCase):
             QTimer.singleShot(0, app.quit)
             return instance
         self.assertEqual(self.run_main(consumer), 0)
-        self.assertEqual(observed, dict(ready=True, leased=True, shutdownLeased=True))
+        self.assertEqual(observed, dict(ready=False, leased=True, shutdownLeased=True))
+        self.assertEqual(legacy_files(), before)
         with resource_runtime_lease(self.root):
             pass
 
-    def test_pending_author_transaction_prevents_reader_and_releases_lease(self):
+    def test_legacy_author_transaction_is_preserved_without_blocking_new_store_shell(self):
         pending = self.root / 'work/map-packages/pending-additions.json'
         pending.parent.mkdir(parents=True)
         pending.write_text('{}', encoding='utf-8')
@@ -89,9 +94,8 @@ class ResourceStartupTests(unittest.TestCase):
             called.append(True)
             QTimer.singleShot(0, app.quit)
             return Mock()
-        with self.assertRaisesRegex(ValueError, 'recovery-required'):
-            self.run_main(consumer)
-        self.assertEqual(called, [])
+        self.assertEqual(self.run_main(consumer), 0)
+        self.assertEqual(called, [True])
         self.assertTrue(pending.exists())
         with resource_runtime_lease(self.root):
             pass
@@ -139,19 +143,29 @@ class ResourceStartupTests(unittest.TestCase):
         with resource_runtime_lease(self.root):
             pass
 
-    def test_self_check_never_prepares_providers_during_pending_transaction(self):
+    def test_self_check_reports_empty_imported_store_independent_of_legacy_journal(self):
         pending = self.root / 'work/map-packages/pending-additions.json'
         pending.parent.mkdir(parents=True)
         pending.write_text('{}', encoding='utf-8')
-        registry = Mock()
-        registry.capabilities.return_value = {'difficult': {'available': True}}
+        from client_paths import RuntimePaths
+        from io import StringIO
+        import json
+        output = StringIO()
         with patch.object(sys, 'argv', ['client', '--sandbox', str(self.root), '--self-check', '--verify-resources']), \
              patch.object(client, 'PRODUCTION', True), patch.object(client, 'FROZEN', False), \
              patch.object(client, 'owned_sandbox', side_effect=lambda p: Path(p)), \
-             patch('client_providers.build_engine_factories', return_value=registry):
-            with self.assertRaisesRegex(ValueError, 'additions-recovery-required'):
-                client.main()
-        registry.prepare.assert_not_called()
+             patch.object(client, 'runtime_paths', return_value=RuntimePaths(self.root, False)), \
+             patch('sys.stdout', output), \
+             patch('client_providers.build_engine_factories', side_effect=AssertionError('Legacy factory')):
+            self.assertEqual(client.main(), 1)
+        report = json.loads(output.getvalue())
+        self.assertTrue(report['ready'])
+        self.assertFalse(report['resourcesReady'])
+        self.assertEqual(set(report['resourceContexts']), {'s0:nightmare', 's0:difficult', 's1:nightmare', 's1:difficult'})
+        self.assertTrue(all(set(row['resourceGaps']) == {'recognition-base-missing', 'controls-profile-missing'}
+                            for row in report['resourceContexts'].values()))
+        self.assertFalse((self.root / 'work/imported-resources').exists())
+        self.assertEqual(pending.read_text(), '{}')
 
 
 if __name__ == '__main__':

@@ -159,6 +159,12 @@ class ClientProviderTests(unittest.TestCase):
 
     def test_malformed_optional_catalog_keeps_validated_typed_mode_available(self):
         import numpy as np
+        import test_imported_s0_observation as pixels
+        from client_live_runtime import LiveRuntime
+        controls_fixture = pixels.ImportedS0ObservationTests()
+        controls_fixture.setUp()
+        self.addCleanup(controls_fixture.doCleanups)
+        _package, controls = controls_fixture.profile(ids={'nightmare': {2: 'Upper'}})
         binding = dict(profile="shared-structure", mapId="fixture", variant="variant-01", floor="1")
         resource_key = dict(layoutId="fixture-layout", structureRawRecordSha256="a" * 64, floor="1")
         expected = dict(structureVersionKey="fixture-layout@" + "a" * 64 + "/1",
@@ -205,15 +211,19 @@ class ClientProviderTests(unittest.TestCase):
                 side_entry_identity=SimpleNamespace(entries=[], side_door_error=None, side_search_error=None),
                 native_similarity_index=SimpleNamespace(error=None))
         with patch("map_identity_engine.MapIdentityEngine", side_effect=identity_engine):
-            healthy = build_engine_factories(self.root)["nightmare"]()
+            healthy = build_engine_factories(self.root, controls_profile=controls)["nightmare"]()
             catalog.write_text("{malformed", encoding="utf-8")
-            factories = build_engine_factories(self.root)
+            factories = build_engine_factories(self.root, controls_profile=controls)
             fallback = factories["nightmare"]()
             self.assertTrue(factories.capabilities()["nightmare"]["available"])
             self.assertIsNone(fallback.qt_catalog)
             self.assertFalse(fallback.qt_optional_displays.profiles)
             self.assertIn("JSONDecodeError", fallback.qt_resource_inventory["optionalAuthorCatalogError"])
             for engine in (healthy, fallback):
+                self.assertIs(engine.qt_controls_profile, controls)
+                runtime = LiveRuntime(engine_factories={'nightmare': lambda: engine}, evidence_kind='synthetic')
+                runtime._engine = engine
+                self.assertEqual(runtime._floor_contract().floor_id_for(2), 'Upper')
                 self.assertEqual(engine.qt_resource_inventory["typedLayers"], 1)
                 self.assertIsNone(next(iter(engine.qt_shared_provider.versions.values()))["sharedError"])
             np.testing.assert_array_equal(healthy.qt_shared_provider("shared-structure", "fixture", "1").clean_mask,

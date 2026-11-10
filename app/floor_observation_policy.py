@@ -95,17 +95,21 @@ def decide_floor_transition(evidence, *, current_floor, floor_required=False,
         reason="floor-state-applied", apply_target=True)
 
 
-def game_floor_control_hit(cursor, client_bounds, floor_read):
+def game_floor_control_hit(cursor, client_bounds, floor_read, *, controls=None):
     """Read clicks only from complete current-frame registered geometry."""
     if (not isinstance(floor_read, dict) or floor_read.get("layout") not in
             {"localized-s0-vertical", "localized-floor-contract"}):
         return None
     if floor_read.get("layout") == "localized-s0-vertical":
         from s0_vertical_controls import control_hit
-        return control_hit(cursor, client_bounds, floor_read)
+        return control_hit(cursor, client_bounds, floor_read, controls=controls)
     if floor_read.get("layout") == "localized-floor-contract":
         from floor_contract import floor_contract
-        contract = floor_contract(floor_read.get("mode"), season=floor_read.get("season"))
+        if controls is None:
+            contract = floor_contract(floor_read.get("mode"), season=floor_read.get("season"))
+        else:
+            context = controls.for_context(floor_read.get('season'), floor_read.get('mode'))
+            contract = context.contract if context is not None else None
         if (contract is None or floor_read.get("mapOpen") is not True
                 or floor_read.get("controlGeometryVerified") is not True
                 or floor_read.get("controlAxis") != contract.control_axis):

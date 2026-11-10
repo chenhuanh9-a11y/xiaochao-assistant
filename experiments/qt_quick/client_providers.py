@@ -49,7 +49,7 @@ def _read(root, relative):
     return data
 
 
-def _build_memory_store(pack, memory_root, resource_root, *, production=PRODUCTION, season="s0"):
+def _build_memory_store(pack, memory_root, resource_root, *, production=PRODUCTION, season="s0", controls=None):
     """Original exemplar policy, with diagnostic stores/seeds kept isolated."""
     season = normalize_season(season)
     from nightmare_candidate import NightmareMemoryStore
@@ -57,7 +57,8 @@ def _build_memory_store(pack, memory_root, resource_root, *, production=PRODUCTI
         validator = lambda frame: False  # No learning labels before validated S1 map controls.
     else:
         from s0_vertical_controls import observe_s0_map
-        validator = lambda frame: observe_s0_map(frame, pack.mode, season=season)[0].get("detected") is True
+        validator = lambda frame: observe_s0_map(frame, pack.mode, season=season,
+                                                controls=controls)[0].get("detected") is True
     return NightmareMemoryStore(pack, memory_root, sample_validator=validator,
         portable_seed_path=Path(resource_root) / "references" / "nightmare-portable-layout-seeds.json"
         if production and season == "s0" else
@@ -123,12 +124,19 @@ class EngineFactories(dict):
     """
     MODES = ("nightmare", "difficult")  # Legacy S0 dict facade remains unchanged.
 
-    def __init__(self, resource_root, *, context_roots=None):
+    def __init__(self, resource_root, *, context_roots=None, nightmare_interfaces=None,
+                 memory_root_provider=None, optional_displays=True, controls_profile=None):
         self.root = Path(resource_root).resolve()
         roots = dict(context_roots or {})
         if not set(roots) <= set(CONTEXTS):
             raise ValueError("unknown explicit provider root context")
         self.context_roots = MappingProxyType({key: Path(value).resolve() for key, value in roots.items()})
+        self.nightmare_interfaces = MappingProxyType(dict(nightmare_interfaces or {}))
+        if memory_root_provider is not None and not callable(memory_root_provider):
+            raise TypeError('memory root provider must be callable')
+        self.memory_root_provider = memory_root_provider
+        self.optional_displays = bool(optional_displays)
+        self.controls_profile = controls_profile
         self._lock = threading.RLock()
         self._build_locks = {key: threading.Lock() for key in CONTEXTS}
         self._engines = {}
@@ -302,7 +310,14 @@ class EngineFactories(dict):
             profile, exit_icon = "shared-structure", None
             engine_type = NativeDifficultCandidateEngine
         elif mode == "nightmare":
-            raw = _read(root, "references/nightmare-map-pack.json")
+            interfaces = dict(identityPack="references/nightmare-map-pack.json",
+                typedIndex="references/nightmare-shared-structure-index.json",
+                coordinatePack="references/nightmare-canonical-coordinate-pack.json",
+                neutralDisplay="references/nightmare-structure-display.json",
+                identityEntries="references/nightmare-entries",
+                exitIcon="references/difficult-exit-icon.json", identityProfile="zhan10-speed")
+            interfaces.update(self.nightmare_interfaces)
+            raw = _read(root, interfaces['identityPack'])
             # NightmarePack supports developer/environment source roots. Reject
             # those manifests before constructing it, keeping every path local.
             if not raw.get("maps") or any(row.get("resourceBase") != "resource-root" for row in raw["maps"]):
@@ -310,25 +325,26 @@ class EngineFactories(dict):
             for row in raw["maps"]:
                 for relative in [row["oneFlow"], *row["layers"].values()]:
                     _local(root, relative)
-            pack = NightmarePack(_local(root, "references/nightmare-map-pack.json"))
-            resources = SharedStructureResourceStore(_local(root, "references/nightmare-shared-structure-index.json"), root)
+            pack = NightmarePack(_local(root, interfaces['identityPack']), resource_root=root)
+            resources = SharedStructureResourceStore(_local(root, interfaces['typedIndex']), root)
             if resources.error:
                 raise ValueError(resources.error)
-            adapters = AuthorCoordinateAdapters(_local(root, "references/nightmare-canonical-coordinate-pack.json"))
+            adapters = AuthorCoordinateAdapters(_local(root, interfaces['coordinatePack']))
             catalog = None
             # Author display is optional and never recognition evidence.
             catalog_path = _local(root, "references/nightmare-author-route-catalog.json")
-            if catalog_path.is_file():
+            if self.optional_displays and catalog_path.is_file():
                 try:
                     catalog = AuthorRouteCatalog(catalog_path, asset_base=root)
                 except (OSError, ValueError, KeyError, TypeError) as error:
                     # Match the original typed-resource path: optional display
                     # metadata must not disable independently validated geometry.
                     catalog_error = f"{type(error).__name__}:{error}"
-            entry_root = _local(root, "references/nightmare-entries")
-            neutral = "references/nightmare-structure-display.json"
-            entry_relative = "references/nightmare-entries"
-            profile, exit_icon = "zhan10-speed", _local(root, "references/difficult-exit-icon.json")
+            entry_relative = interfaces['identityEntries']
+            entry_root = _local(root, entry_relative)
+            neutral = interfaces['neutralDisplay']
+            profile = interfaces['identityProfile']
+            exit_icon = _local(root, interfaces['exitIcon']) if interfaces['exitIcon'] else None
             version_pack = pack
             engine_type = MapIdentityEngine
         else:
@@ -359,10 +375,11 @@ class EngineFactories(dict):
         # Constructor performs no IO; ranking submits no human-label writes.
         # Explicit live manual confirmation reuses this store on its worker.
         # Source/test diagnostics retain isolated memory.
-        memory_root = (runtime_paths().memory_root(mode, season) if PRODUCTION else
+        memory_root = (self.memory_root_provider(mode, season) if self.memory_root_provider is not None else
+                       runtime_paths().memory_root(mode, season) if PRODUCTION else
                        root / ".qt-saved-frame-memory" / mode if season == "s0" else
                        root / ".qt-saved-frame-memory" / season / mode)
-        memory = _build_memory_store(pack, memory_root, root, season=season)
+        memory = _build_memory_store(pack, memory_root, root, season=season, controls=self.controls_profile)
         provider = SharedReferenceProvider(root, resources, {}, native=native)
         engine = engine_type(pack, identity_root=entry_root, identity_profile_id=profile,
             identity_floors=pack.floors, exit_icon_path=exit_icon,
@@ -412,6 +429,7 @@ class EngineFactories(dict):
             # Separate complete schema2 inventory root from selected mode root.
             engine.qt_s1_index_resource_root = self.root
         engine.qt_adapters = adapters
+        engine.qt_controls_profile = self.controls_profile
         engine.qt_catalog = catalog
         engine.qt_native_context = native
         engine.qt_season = season
@@ -419,10 +437,13 @@ class EngineFactories(dict):
         engine.qt_live_ready = not engine.qt_live_gaps
         if season == "s1":
             from s1_author_displays import S1AuthorDisplays
-            optional = S1AuthorDisplays(self.root, native)
-            engine.qt_optional_displays = optional
-            engine.qt_adapters, engine.qt_catalog = optional.adapters, optional.catalog
-            engine.qt_resource_inventory["optionalAuthorErrors"] = dict(optional.errors)
+            if self.optional_displays:
+                optional = S1AuthorDisplays(self.root, native)
+                engine.qt_optional_displays = optional
+                engine.qt_adapters, engine.qt_catalog = optional.adapters, optional.catalog
+                engine.qt_resource_inventory["optionalAuthorErrors"] = dict(optional.errors)
+            else:
+                engine.qt_optional_displays = None
             from s1_structure_selection import StructureCatalog, StructureCandidateScanner
             catalog = StructureCatalog.from_engine(engine)
             private_observer = None
@@ -486,6 +507,10 @@ class EngineFactories(dict):
             engine.qt_s1_structure_scan = structure_scan
             engine.qt_s1_structure_rank = structure_rank
             return engine
+        if not self.optional_displays:
+            # New resource catalogs own displays separately from base geometry.
+            engine.qt_optional_displays = None
+            return engine
         from optional_author_displays import OptionalAuthorDisplays
         optional = OptionalAuthorDisplays(root, pack, catalog, adapters, versions, mode=mode)
         from s1_author_displays import S1AuthorDisplays
@@ -500,9 +525,12 @@ class EngineFactories(dict):
         return engine
 
 
-def build_engine_factories(resource_root, *, context_roots=None):
+def build_engine_factories(resource_root, *, context_roots=None, nightmare_interfaces=None,
+                           memory_root_provider=None, optional_displays=True, controls_profile=None):
     """Pass the exact sandbox ``_internal`` path; no parent/root discovery."""
-    return EngineFactories(resource_root, context_roots=context_roots)
+    return EngineFactories(resource_root, context_roots=context_roots,
+        nightmare_interfaces=nightmare_interfaces, memory_root_provider=memory_root_provider,
+        optional_displays=optional_displays, controls_profile=controls_profile)
 
 
 def bind_identity_context(engine, *, priority, context):

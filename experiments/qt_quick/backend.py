@@ -93,9 +93,10 @@ class Backend(QObject):
     overlayRequested = Signal()
     clickThroughRequested = Signal(bool)
 
-    def __init__(self, sandbox):
+    def __init__(self, sandbox, *, resource_resolver=None):
         super().__init__()
         self.paths = runtime_paths(sandbox)
+        self.resource_resolver = resource_resolver
         self.sandbox = self.paths.installation_root
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(2)
@@ -203,12 +204,17 @@ class Backend(QObject):
                     self._profile = next((p["id"] for p in self._profiles if p["available"]),
                                          self._profiles[0]["id"] if self._profiles else "")
                 self._apply_rows()
-                self._message = (f"S1 图库 · 已读取 {self.mapCount} 份图"
+                self._message = ('\n'.join(context.warnings) if not self._profiles and context.warnings else
+                                f"S1 图库 · 已读取 {self.mapCount} 份图"
                                  if season == "s1" else self._import_notice or f"已读取 {self.mapCount} 份图")
             self.changed.emit()
             if self.viewKey != initial_view:
                 self.viewChanged.emit(self.viewKey)
         def read():
+            if self.resource_resolver is not None:
+                from client_imported_browse import load_imported_browse_context
+                return load_imported_browse_context(self.resource_resolver, mode, season=season,
+                                                     cancelled=cancel.is_set)
             # The UI stays responsive while its worker waits for an author
             # transaction. Never cache the intermediate on-disk removal state.
             with resource_read_lock(self.sandbox, wait=True, cancelled=cancel.is_set):

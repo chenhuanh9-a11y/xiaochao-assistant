@@ -2400,7 +2400,8 @@ class LiveRuntime:
             if not self._capture_is_current(observation["captured"].context, observation["capture_generation"]):
                 return dict(success=False, reason="capture-context-changed")
             try:
-                clicked = game_floor_control_hit((screen_x, screen_y), current["clientBounds"], observation["floor_read"])
+                clicked = game_floor_control_hit((screen_x, screen_y), current["clientBounds"], observation["floor_read"],
+                    controls=getattr(self._engine, 'qt_controls_profile', None))
             except Exception:
                 # Original native click producer treats malformed HUD geometry
                 # as no hit; it must never mutate floor/pose from an exception.
@@ -2459,16 +2460,24 @@ class LiveRuntime:
                 return None
             return self._floor if evidence.stable is not None or self._manual_override else None
 
-    @staticmethod
-    def _floor_read_conflicts(floor_read, target):
+    def _floor_read_conflicts(self, floor_read, target):
         from floor_contract import floor_contract
-        contract = floor_contract(floor_read.get("mode", "nightmare"), season=floor_read.get("season", "s0"))
+        controls = getattr(getattr(self, '_engine', None), 'qt_controls_profile', None)
+        if controls is None:
+            contract = floor_contract(floor_read.get("mode", "nightmare"), season=floor_read.get("season", "s0"))
+        else:
+            context = controls.for_context(floor_read.get('season', self._season), floor_read.get('mode', self._mode))
+            contract = context.contract if context is not None else None
         observed = floor_read.get("selectedFloor")
         floor = contract.floor_id_for(observed) if contract else None
         return floor is not None and floor != str(target)
 
     def _floor_contract(self):
         from floor_contract import floor_contract
+        controls = getattr(getattr(self, '_engine', None), 'qt_controls_profile', None)
+        if controls is not None:
+            context = controls.for_context(self._season, self._mode)
+            return context.contract if context is not None else None
         return floor_contract(self._mode, season=self._season)
 
     def _current_frame_floor_conflicts(self, target, *, frame_id=None):
@@ -6127,7 +6136,8 @@ class LiveRuntime:
                 controlGeometryVerified=False, floorSource="unavailable")
             return dict(detected=False, mapOpen=None, reason=unavailable["reason"]), None, unavailable
         from s0_vertical_controls import observe_s0_map
-        result, floor_read = observe_s0_map(frame, engine.pack.mode, settings=settings, season=self._season)
+        result, floor_read = observe_s0_map(frame, engine.pack.mode, settings=settings, season=self._season,
+                                          controls=getattr(engine, 'qt_controls_profile', None))
         floor = result.get("floor")
         if result.get("detected") is True:
             self._latest_map_frame = (frame, engine.pack.mode, floor_read)
