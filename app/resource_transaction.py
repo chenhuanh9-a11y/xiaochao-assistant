@@ -275,6 +275,132 @@ def rename_no_replace(source, target):
         raise OSError(code, 'atomic-no-replace-failed')
 
 
+def rename_owned_directory_no_replace(source, target, expected_identity, *, before_move):
+    """Publish the caller's original directory without replacing a destination.
+
+    ``before_move`` verifies the complete owned tree while its directory handle
+    remains open. Windows binds validation and rename to that same handle and
+    denies concurrent writes/deletion of the directory itself. This does not
+    recursively freeze its children; staging still requires a single writer.
+    POSIX retains a final pathname race between validation and rename, just as
+    rename_no_replace does. A failed postcheck never moves or deletes a target.
+    The destination parent must already exist; this helper creates nothing.
+    """
+    if (not isinstance(expected_identity, list) or len(expected_identity) != 2
+            or any(type(number) is not int or not 0 <= number < 2 ** 256
+                   for number in expected_identity)):
+        raise ResourceTransactionError('resource-directory-invalid-identity')
+    expected_identity = list(expected_identity)
+    if not callable(before_move):
+        raise TypeError('directory publication requires a before_move verifier')
+    source = _safe(Path(os.path.abspath(source)))
+    target = _safe(Path(os.path.abspath(target)))
+
+    def directory_info(path, code):
+        try:
+            info = path.lstat()
+        except OSError as error:
+            raise ResourceTransactionError(code) from error
+        if (not stat.S_ISDIR(info.st_mode)
+                or getattr(info, 'st_file_attributes', 0) & 0x400):
+            raise ResourceTransactionError(code)
+        return info
+
+    def identity(info):
+        return [info.st_dev, info.st_ino]
+
+    parent_identity = identity(directory_info(
+        target.parent, 'resource-directory-target-parent-unavailable'))
+
+    def check_source(info):
+        if (not stat.S_ISDIR(info.st_mode)
+                or getattr(info, 'st_file_attributes', 0) & 0x400
+                or identity(info) != expected_identity):
+            raise ResourceTransactionError('resource-directory-source-changed')
+
+    def recheck_paths():
+        _safe(source)
+        _safe(target)
+        check_source(directory_info(source, 'resource-directory-source-changed'))
+        if identity(directory_info(target.parent, 'resource-directory-target-parent-changed')) != parent_identity:
+            raise ResourceTransactionError('resource-directory-target-parent-changed')
+
+    def check_target():
+        _safe(target)
+        if identity(directory_info(target, 'resource-directory-target-changed')) != expected_identity:
+            raise ResourceTransactionError('resource-directory-target-changed')
+
+    if os.name != 'nt':
+        flags = (os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0)
+                 | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_CLOEXEC', 0))
+        try:
+            descriptor = os.open(source, flags)
+        except OSError as error:
+            raise ResourceTransactionError('resource-directory-source-unavailable') from error
+        try:
+            check_source(os.fstat(descriptor))
+            before_move()
+            recheck_paths()
+            check_source(os.fstat(descriptor))
+            rename_no_replace(source, target)
+            check_target()
+        finally:
+            os.close(descriptor)
+        return
+
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+    api = ctypes.WinDLL('kernel32', use_last_error=True)
+    api.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+        ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    api.CreateFileW.restype = wintypes.HANDLE
+    api.CloseHandle.argtypes = [wintypes.HANDLE]
+    api.CloseHandle.restype = wintypes.BOOL
+    api.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                               ctypes.c_void_p, wintypes.DWORD]
+    api.SetFileInformationByHandle.restype = wintypes.BOOL
+    # READ|DELETE, share READ only; open directories and reparse points themselves.
+    native = api.CreateFileW(str(source), 0x80010000, 1, None, 3, 0x02200000, None)
+    if native == ctypes.c_void_p(-1).value:
+        error = ctypes.WinError(ctypes.get_last_error())
+        raise ResourceTransactionError('resource-directory-source-unavailable') from error
+    descriptor = None
+    try:
+        descriptor = msvcrt.open_osfhandle(int(native), os.O_RDONLY | os.O_BINARY)
+        native = None  # The CRT descriptor now owns the directory handle.
+        check_source(os.fstat(descriptor))
+        before_move()
+        recheck_paths()
+        check_source(os.fstat(descriptor))
+
+        class RenameInfo(ctypes.Structure):
+            _fields_ = [('ReplaceIfExists', ctypes.c_ubyte),
+                        ('RootDirectory', wintypes.HANDLE),
+                        ('FileNameLength', wintypes.DWORD),
+                        ('FileName', wintypes.WCHAR * 1)]
+
+        name = str(target).encode('utf-16-le')
+        size = max(ctypes.sizeof(RenameInfo), RenameInfo.FileName.offset + len(name) + 2)
+        buffer = ctypes.create_string_buffer(size)
+        rename = RenameInfo.from_buffer(buffer)
+        rename.ReplaceIfExists = 0
+        rename.RootDirectory = None
+        rename.FileNameLength = len(name)
+        ctypes.memmove(ctypes.addressof(buffer) + RenameInfo.FileName.offset, name, len(name))
+        if not api.SetFileInformationByHandle(msvcrt.get_osfhandle(descriptor), 3, buffer, size):
+            error = ctypes.WinError(ctypes.get_last_error())
+            if getattr(error, 'winerror', None) in {80, 183}:
+                raise FileExistsError(errno.EEXIST, 'resource-directory-target-exists', str(target)) from error
+            raise ResourceTransactionError('resource-directory-rename-failed') from error
+        check_target()
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if native is not None:
+            api.CloseHandle(native)
+
+
 def hardlinks_unsupported(error):
     """Only explicit missing-link capability permits an owned move fallback."""
     return (isinstance(error, OSError) and
