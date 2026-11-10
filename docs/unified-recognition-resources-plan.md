@@ -413,3 +413,9 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 - Native main 仍为无身份/位姿授权的 proposal；local 的静态出口 marker 不变成门宽、状态或向外方向。源缺少 native passport 时显式跳过读取，保留 `entry-passports-source-unavailable`；两条真实 legacy glyph passport 都在 F1，F2 coverage 明确 incomplete，不补空 native 文件或扩大完整性。bundle 的 `rank_ready`、语义侧门和 native passport 可用性均为 false；直接 engine builder 在数据解码后明确返回 `native-base-rank-unavailable`，不把数据可读当作旧 S0 rank 资格。
 - 制包器通过声明的 S0 manifest 和库存选择基础结构，转换 identity DTO、补实际组件引用、移除作者图显示依赖；控件复用完整 720 模板/12 类，仅按困难的 1/2 层合同配置。真实测试 ZIP：`s0-difficult-native-2.104.3034860-p2-export-v1.zip`，4,046,049 bytes，SHA256 `d1bcc98cdfdb105ae0324d0915ef7d28cff041081bafe63fa1ab0419a8ddf54f`。源 71 文件、输出 73 数据文件；67 份原样文件逐个匹配 855 项库存中的真实原件，其他基础数据为三份明确转换的 JSON 与新 context。真实 ZIP 保存至私有临时资源根并从公共 decoder 回读 30/58/2/30/60，15.543 秒，未创建 catalog 或 engine。
 - 新微型合成资源测试保留完整 30 图竞争池、两个旧二值产品和多 glyph/F2 缺口，验证缺候选/缺 legacy、提权 proposal/marker、根相对引用错配、草稿/坐标资格篡改及 passport 错绑/重复拒绝。旧结构适配器另经 5 项及独立审阅；完整公共入口与受影响回归按本次实际结果记录。默认工厂、资源页启用、识别/贴合、GUI、游戏和统一架构 Setup 仍未验证，不将数据往返称为 P2 或四模式验收完成。
+
+### 数据就绪与识别资格的消费
+
+- 成功构造和 cache 命中共用同一能力报告，`dataReady` 表示数据 engine 已取得，`rankReady`/原 `available` 表示可执行 rank；显式 `qt_rank_ready=False` 不会被普通或 imported factory 的 cache 命中改回 true，也不会保留 live 可用资格。未声明该字段的旧 engine 按原默认处理。首次构造失败、成功后 binding 失效或 imported 当前性校验失败均同步撤销数据/rank/live 资格，写入具体失败类别；恢复后重新取得 engine 可恢复资格，不冻结失败状态。
+- 离线识别的实际 dispatch 在首次和缓存 engine 上均核资格；实时 `_get_engine(require_live=True)` 及 native engine 公开 rank 入口同样拒绝 false，读取数据的 getter 保留。主页在数据就绪但尚无识别资格时说明识别功能未开放，不误报文件损坏或要求重复导入；输入与采集前置保持拒绝。
+- 这些是 engine DTO/资源绑定及采集替身下的真实 factory、offline、runtime、coordinator/native 入口回归，不是 S0 困难默认工厂接入或实帧识别。新负例先复现 6 处失败及 1 处 error，主页另有错误提示反例；独立审阅又复现晚失败残留 live=true，新增 2 项回归修前 3 处失败，覆盖成功→失效→重试恢复与首次构造失败。修后 provider/offline/runtime 99 项、资源反馈/coordinator 61 项分别通过；新测试只加入候选 core，不加入缺少该文件的两个历史 baseline。

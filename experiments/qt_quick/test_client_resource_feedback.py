@@ -91,6 +91,22 @@ class ResourceFeedbackTests(unittest.TestCase):
                 self.assertEqual(r._capture.enable_count, 0)
                 self.assertEqual(engine.rank_count, 0)
 
+    def test_data_ready_without_rank_explains_status_before_input_or_capture(self):
+        with self.chain('difficult') as (o,c,s,r,f,k,n,a,root):
+            engine = runtime_fixture.fixture_engine('difficult')
+            engine.qt_rank_ready = False
+            engine.qt_rank_gaps = ('fixture-rank-unvalidated',)
+            f._build = lambda mode, *, season='s0': engine
+            f.prepare_context('difficult'); s.refreshRuntime()
+            with patch.object(c, 'setInputEnabled', wraps=c.setInputEnabled) as input_enabled:
+                c.startRound(); c.startRound()
+                input_enabled.assert_not_called()
+            self.assertEqual(len(self.resource_notices(n)), 1)
+            self.assertIn('地图数据已就绪', c.runtimeStatus)
+            self.assertFalse(any(action == 'start_round' for action, _ in a))
+            self.assertEqual(r._capture.enable_count, 0)
+            self.assertEqual(engine.rank_count, 0)
+
     def test_real_lease_rejects_start_once_and_explicit_round_opens_after_ready(self):
         for mode in ("nightmare", "difficult"):
             with self.subTest(mode=mode), self.chain(mode) as (o,c,s,r,f,k,n,a,root):

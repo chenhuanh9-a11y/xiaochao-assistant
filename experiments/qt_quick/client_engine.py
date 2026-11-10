@@ -424,6 +424,8 @@ class EngineAdapter:
                     if resource_revision != self._revision or self._cancelled(cancelled):
                         return {}
                     self._engines[key] = engine
+            if not getattr(engine, 'qt_rank_ready', True):
+                raise EngineUnavailable(';'.join(getattr(engine, 'qt_rank_gaps', ())) or 'recognition-rank-unavailable')
             if context["floor"] not in tuple(map(str, engine.identity_floors)):
                 raise EngineUnavailable(f"saved-frame-floor-unavailable:{mode}/{context['floor']}")
             if self._cancelled(cancelled):

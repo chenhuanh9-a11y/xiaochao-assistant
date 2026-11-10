@@ -4548,6 +4548,9 @@ class LiveRuntime:
             from client_providers import ProviderUnavailable
             raise ProviderUnavailable(f"season-resources-unavailable:{season}")
         engine = getter(mode, season) if callable(getter) else self._factories[mode]()
+        if require_live and not getattr(engine, 'qt_rank_ready', True):
+            from client_providers import ProviderUnavailable
+            raise ProviderUnavailable(';'.join(getattr(engine, 'qt_rank_gaps', ())) or 'recognition-rank-unavailable')
         if (require_live and not getattr(engine, "qt_live_ready", season == "s0")
                 and not (season == "s1" and self._s1_candidate_available(engine=engine))):
             from client_providers import ProviderUnavailable

@@ -224,7 +224,8 @@ class EngineFactories(dict):
         super().__init__({mode: lambda mode=mode: self._get(mode) for mode in self.MODES})
 
     def _initial_reports(self):
-        return {context_key(mode, season): dict(available=False, prepared=not CONTEXTS[context_key(mode, season)].registered,
+        return {context_key(mode, season): dict(available=False, dataReady=False, rankReady=False,
+                    prepared=not CONTEXTS[context_key(mode, season)].registered,
                     season=season, mode=mode, contextKey=context_key(mode, season),
                     reason="retired-mode" if is_retired_mode(mode, season) else "resource-validation-pending" if CONTEXTS[context_key(mode, season)].registered else f"season-resources-unavailable:{season}")
                 for season in SEASONS for mode in known_modes_for_season(season)}
@@ -320,6 +321,24 @@ class EngineFactories(dict):
     def _resource_failure_fields(self, error):
         return {}
 
+    @staticmethod
+    def _engine_capability_fields(engine, season):
+        rank_ready = bool(getattr(engine, 'qt_rank_ready', True))
+        rank_gaps = list(getattr(engine, 'qt_rank_gaps', ())) if not rank_ready else []
+        if not rank_ready and not rank_gaps:
+            rank_gaps = ['recognition-rank-unavailable']
+        live_gaps = list(getattr(engine, 'qt_live_gaps', ()))
+        if not rank_ready:
+            live_gaps = list(dict.fromkeys(live_gaps + rank_gaps))
+        return dict(available=rank_ready, dataReady=True, rankReady=rank_ready, rankGaps=rank_gaps,
+            reason='saved-frame-rank-ready' if rank_ready else 'recognition-data-only',
+            liveGaps=live_gaps, liveReady=rank_ready and bool(getattr(engine, 'qt_live_ready', season == 's0')))
+
+    @staticmethod
+    def _unavailable_engine_fields(gap):
+        return dict(available=False, dataReady=False, rankReady=False, rankGaps=[gap],
+                    liveReady=False, liveGaps=[gap])
+
     def _get(self, mode, season="s0"):
         season = normalize_season(season)
         try:
@@ -328,8 +347,9 @@ class EngineFactories(dict):
             with self._lock:
                 if getattr(error, 'resource_revision', self._revision) == self._revision:
                     key = context_key(mode, season)
-                    self._reports[key].update(available=False, prepared=True,
-                        reason=str(error), **self._resource_failure_fields(error))
+                    self._reports[key].update(prepared=True, reason=str(error),
+                        **self._unavailable_engine_fields('resource-context-unavailable'),
+                        **self._resource_failure_fields(error))
             raise
         key = binding.context.key
         with self._build_locks[key]:
@@ -337,7 +357,8 @@ class EngineFactories(dict):
                 if binding.resource_revision is not None and binding.resource_revision != self._revision:
                     raise ProviderUnavailable('resource-context-superseded')
                 if key in self._engines:
-                    self._reports[key].update(available=True, prepared=True, reason='saved-frame-rank-ready')
+                    self._reports[key].update(prepared=True,
+                        **self._engine_capability_fields(self._engines[key], season))
                     return self._engines[key]
                 if self._reports[key]["prepared"] and self.cache_preparation_failures:
                     raise ProviderUnavailable(self._reports[key]["reason"])
@@ -348,8 +369,10 @@ class EngineFactories(dict):
                 reason = f"{mode}:{type(error).__name__}:{error}"
                 with self._lock:
                     if revision == self._revision:
-                        self._reports[key] = dict(available=False, prepared=True, reason=reason,
-                            season=season, mode=mode, contextKey=key, **self._resource_failure_fields(error))
+                        self._reports[key] = dict(prepared=True, reason=reason,
+                            season=season, mode=mode, contextKey=key,
+                            **self._unavailable_engine_fields('resource-validation-failed'),
+                            **self._resource_failure_fields(error))
                     else:
                         reason = 'resource-context-superseded'
                 raise ProviderUnavailable(reason) from error
@@ -360,7 +383,7 @@ class EngineFactories(dict):
                 engine.qt_context_key = key
                 self._engines[key] = engine
                 self._attach_custom_display(engine, mode, season)
-                self._reports[key] = dict(available=True, prepared=True, reason="saved-frame-rank-ready",
+                self._reports[key] = dict(prepared=True,
                                        season=season, mode=mode, contextKey=key,
                                        mapCount=len(engine.pack.maps), floors=list(engine.identity_floors),
                                        liveAuthorization=False, resourceRoot=str(binding.root),
@@ -368,8 +391,7 @@ class EngineFactories(dict):
                                                                      "floor_observation_capability", {})),
                                        inventory=getattr(engine, "qt_resource_inventory", {}),
                                        candidateObservation=dict(getattr(getattr(engine, "qt_native_context", None), "structure_candidate_capability", {})),
-                                       liveGaps=list(getattr(engine, "qt_live_gaps", ())),
-                                       liveReady=bool(getattr(engine, "qt_live_ready", season == "s0")))
+                                       **self._engine_capability_fields(engine, season))
             return engine
 
     def _build(self, mode, *, season="s0"):

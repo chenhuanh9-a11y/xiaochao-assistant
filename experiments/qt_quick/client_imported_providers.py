@@ -174,15 +174,16 @@ class ImportedEngineFactories(EngineFactories):
                 with self._lock:
                     if self._engines.get(key) is engine:
                         self._engines.pop(key)
-                        self._reports[key].update(available=False, prepared=True,
-                            reason='resource-context-superseded', resourceGaps=['resource-context-superseded'])
+                        self._reports[key].update(prepared=True,
+                            reason='resource-context-superseded', resourceGaps=['resource-context-superseded'],
+                            **self._unavailable_engine_fields('resource-context-superseded'))
                 raise ImportedProviderUnavailable('resource-context-superseded',
                                                    ('resource-context-superseded',)) from error
         with self._lock:
             if self._engines.get(key) is not engine:
                 raise ImportedProviderUnavailable('resource-context-superseded', ('resource-context-superseded',))
-            self._reports[key].update(available=True, prepared=True,
-                reason='saved-frame-rank-ready', resourceGaps=[])
+            self._reports[key].update(prepared=True, resourceGaps=[],
+                **self._engine_capability_fields(engine, season))
         return engine
 
     def _build(self, mode, *, season='s0'):

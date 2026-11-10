@@ -544,6 +544,9 @@ class ClientCoordinator(QObject):
         if reason == "resource-validation-pending" or state.get("pendingAction") == "inspect_engine_resources":
             return ((mode, "resource-validation-pending"), "正在校验地图识别资源，请稍后再打开地图")
         if report.get("available") is False:
+            if report.get('dataReady') is True and report.get('rankReady') is False:
+                return ((season, mode, 'recognition-data-only'),
+                    f"{season_label(season)} 地图数据已就绪，识别功能尚未开放，暂不能开始识别")
             label = {"difficulty2": "普通模式", "difficult": "困难模式", "nightmare": "噩梦模式"}.get(mode, "当前模式")
             if "missing-resource:" in reason or "FileNotFoundError" in reason:
                 summary = f"{label}缺少地图识别资源，请到地图资源页补齐或重新导入资源"
