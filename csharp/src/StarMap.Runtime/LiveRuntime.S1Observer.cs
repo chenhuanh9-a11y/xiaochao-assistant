@@ -18,7 +18,7 @@ public sealed partial class LiveRuntime
         {
             RequireCurrent(epoch,token);
             recover=manual && (!_mapOpen || Text(request.Payload,"recoveryId") is not null);
-            if(!_roundActive || !S1FloorObserverAvailable || manual!=S1ManualIdentity || !_capture.IsBound
+            if(!_roundActive || !S1FloorObserverAvailable || manual!=_manualAlignmentSession || manual && !S1ManualIdentity || !_capture.IsBound
                 || !manual && !_mapOpen || recover && _mapRecovery is null)
                 return Receipt(request,false,manual?"manual-floor-observation-not-active":"candidate-probe-not-current");
             bound=_resources!;

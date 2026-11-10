@@ -10,8 +10,12 @@ internal sealed class RecordedCapture(Dictionary<string, JsonObject> index) : IC
     JsonObject? selected; CaptureStamp? current; long generation = 1, sequence;
     CapturedClientGeometry? acquiredGeometry;
     Hold? nextHold;
+    string? nextFailure;
+    Exception? nextError;
     public sealed record Hold(TaskCompletionSource Started, TaskCompletionSource Release);
     public Hold HoldNext() => nextHold = new(new(TaskCreationOptions.RunContinuationsAsynchronously), new(TaskCreationOptions.RunContinuationsAsynchronously));
+    public void FailNext(string reason="recorded-capture-unavailable")=>nextFailure=reason;
+    public void ThrowNext(Exception error)=>nextError=error;
     public int Calls { get; private set; }
     public bool IsBound => true;
     public CaptureBindingScope? BindingScope => new("recorded-only", generation);
@@ -34,6 +38,8 @@ internal sealed class RecordedCapture(Dictionary<string, JsonObject> index) : IC
             nextHold = null; hold.Started.TrySetResult();
             await hold.Release.Task.WaitAsync(cancellation);
         }
+        if(nextError is { } error){nextError=null;throw error;}
+        if(nextFailure is { } failure){nextFailure=null;return new(null,failure);}
         var sample = selected ?? throw new InvalidOperationException("No recorded input selected.");
         var captured = DateTimeOffset.Parse(sample["capturedAt"]!.GetValue<string>());
         if (captured < new DateTimeOffset(2026, 11, 5, 0, 0, 0, TimeSpan.Zero)) throw new InvalidDataException("Old UI capture rejected.");

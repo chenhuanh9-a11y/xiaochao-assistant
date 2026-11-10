@@ -52,6 +52,7 @@ public sealed record LiveRuntimeState(RuntimeContext Context, bool ResourcesBoun
 {
     public MapOpenRecoveryStatus MapOpenRecovery { get; init; } = new(false);
     public int ProbeMisses { get; init; }
+    public bool ManualAlignmentSession { get; init; }
     public IReadOnlyList<string> RemainingMapIds { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> EliminatedMapIds { get; init; } = Array.Empty<string>();
     public string RecognitionPath { get; init; } = "ordinary";

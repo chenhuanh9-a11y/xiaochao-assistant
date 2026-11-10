@@ -24,7 +24,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     private static readonly string[] Gaps = ["steady-tracking-fallback-unavailable",
         "locked-canvas-floor-reuse-unavailable", "native-identity-strong-conflict-producer-unavailable",
         "pose-index-candidate-provider-unavailable",
-        "retained-group-fit-context-unavailable", "manual-confirmation-fresh-capture-unavailable",
+        "retained-group-fit-context-unavailable",
         "floor-click-intent-policy-unavailable"];
     private readonly object _sync = new();
     private readonly SemaphoreSlim _worker = new(1, 1);
@@ -37,6 +37,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     private long? _manualFloorStarted;
     private string _identitySource = "", _reason = "context-not-bound";
     private bool _roundActive, _mapOpen, _workActive;
+    private bool _manualAlignmentSession;
     private bool _closed;
     private bool _alignedVisible;
     private long _epoch, _operation;
@@ -232,28 +233,26 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 if (!RequestMatches(request)) return Receipt(request, false, "request-runtime-context-mismatch");
                 RequireCurrent(epoch, cancellationToken);
                 _progressRequest = request.Context; _progressEpoch = epoch; _progressCancellation = cancellationToken;
-                if ((request.Action is "capture_now" or "observe_manual_floor") && request.Payload.TryGetProperty("inputObservationSequence", out var observationSequence))
-                {
-                    if (observationSequence.ValueKind != JsonValueKind.Number || !observationSequence.TryGetInt64(out var sequence)
-                        || sequence < _lastMapInputSequence) return Receipt(request, false, "map-input-sequence-expired");
-                    _lastMapInputSequence = sequence;
-                }
+                if ((request.Action is "capture_now" or "observe_manual_floor") && !AcceptObservationSequence(request.Payload))
+                    return Receipt(request, false, "map-input-sequence-expired");
             }
             return request.Action switch
             {
                 "set_context" => SetContext(request, epoch, cancellationToken),
                 "toggle_sheet_visibility" => ToggleSheetVisibility(request),
                 "start_round" => StartRound(request, epoch, cancellationToken),
+                "prepare_manual_alignment" => PrepareManualAlignment(request,epoch,cancellationToken),
                 "toggle_round" => IsRoundActive() ? EndRound(request) : StartRound(request, epoch, cancellationToken),
                 "end_round" or "stop_round" or "reset_round" or "cancel" => EndRound(request),
                 "close_map" => CloseMap(request),
                 "map" => await MapInput(request, epoch, cancellationToken).ConfigureAwait(false),
                 "capture_now" => await CaptureAndSolve(request, epoch, cancellationToken).ConfigureAwait(false),
+                "fit_manual_frame" => await FitManualFrame(request,epoch,cancellationToken).ConfigureAwait(false),
                 "recover_map_open" => await RecoverMapOpen(request, epoch, cancellationToken).ConfigureAwait(false),
                 "refresh_map" => await RefreshMap(request, epoch, cancellationToken).ConfigureAwait(false),
                 "observe_manual_floor" => await ObserveS1Floor(request,epoch,cancellationToken,true).ConfigureAwait(false),
                 "observe_candidate_floor" => await ObserveS1Floor(request,epoch,cancellationToken,false).ConfigureAwait(false),
-                "confirm_route" => ConfirmMap(request, epoch, cancellationToken),
+                "confirm_route" => await ConfirmMap(request, epoch, cancellationToken).ConfigureAwait(false),
                 "select_group_member" => SelectGroupMember(request, epoch, cancellationToken),
                 "select_candidate" or "previous_candidate" or "next_candidate" => SelectCandidate(request),
                 "set_floor" or "cycle_floor" => await SetFloor(request, epoch, cancellationToken).ConfigureAwait(false),
@@ -304,7 +303,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         return Receipt(request, true, reprojected ? "route-display-reprojected" : "context-bound");
     }
 
-    private RuntimeOperationResult StartRound(SessionRuntimeRequest request, long epoch, CancellationToken token)
+    private RuntimeOperationResult StartRound(SessionRuntimeRequest request, long epoch, CancellationToken token,bool manualAlignment=false)
     {
         lock (_sync)
         {
@@ -315,6 +314,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             {
                 AdvanceOwnedEpoch(); RevokeFrame("round-started"); ClearIdentity(); ClearFloor();
                 _roundActive = true; _roundId = Guid.NewGuid().ToString("N");
+                _manualAlignmentSession=manualAlignment;
                 _probeMisses = 0;
                 _structureSession = _resources.StructureCatalog is { } catalog ? new(catalog, _roundId) : null;
                 _structurePool = _resources.StructureCatalog is { } structure
@@ -322,7 +322,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 _recognitionPath = "ordinary";
                 _structureIndexEntered = false;
             }
-            _reason = "round-started"; Publish(); return Receipt(request, true, _reason);
+            _reason = _manualAlignmentSession?"manual-alignment-ready":"round-started"; Publish(); return Receipt(request, true, _reason);
         }
     }
 
@@ -356,22 +356,62 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     private async ValueTask<RuntimeOperationResult> CaptureAndSolve(SessionRuntimeRequest request, long epoch,
         CancellationToken token, RecoveryTicket? recovery = null)
     {
+        try { return await CaptureFrameAndSolve(request, epoch, token, recovery).ConfigureAwait(false); }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            lock (_sync)
+            {
+                RequireCurrent(epoch, token);
+                if (!_manualAlignmentSession && request.Action != "confirm_route") throw;
+                return FailCaptureObservation(request, epoch, "runtime-error:" + error.GetType().Name + ":" + error.Message);
+            }
+        }
+    }
+
+    private RuntimeOperationResult FailCaptureObservation(SessionRuntimeRequest request,long epoch,string reason,object? diagnostic=null)
+    {
+        lock (_sync)
+        {
+            // The capture adapter can report a null frame or throw. Neither
+            // supplies map-close evidence; both retire the manual observation.
+            if (_epoch == epoch && _manualAlignmentSession)
+            {
+                _floor = _observedFloor = null; _frame = null; _mapRecovery = null;
+                _structureSession?.RevokeCurrent(); _structureTicket = null;
+            }
+            return FailCurrent(request, epoch, reason, diagnostic);
+        }
+    }
+
+    private async ValueTask<RuntimeOperationResult> CaptureFrameAndSolve(SessionRuntimeRequest request, long epoch,
+        CancellationToken token, RecoveryTicket? recovery)
+    {
         BoundResources bound;
         CaptureBindingScope? captureBinding;
         bool wasOpen;
         bool s1Manual;
-        bool preparing = recovery is null && (request.Action == "map" || Flag(request.Payload, "foregroundReturn"));
+        bool preparing = recovery is null && (request.Action == "map" || request.Action=="fit_manual_frame" && Flag(request.Payload,"s1OpenEdge")
+            || Flag(request.Payload, "foregroundReturn"));
         lock (_sync)
         {
             RequireCurrent(epoch, token);
             if (!_roundActive) return Receipt(request, false, "start-round-before-capture");
             if (_resources is null) return Receipt(request, false, "resources-not-bound");
             if (!_capture.IsBound) return Receipt(request, false, "capture-not-bound");
+            if(_manualAlignmentSession && _mapId is null)return Receipt(request,false,"manual-map-required");
+            if (_manualAlignmentSession && (request.Action is "confirm_route" or "fit_manual_frame")
+                && !AcceptObservationSequence(request.Payload)) return Receipt(request, false, "map-input-sequence-expired");
             bound = _resources;
-            s1Manual=S1FloorObserverAvailable && S1ManualIdentity;
+            // Session policy is independent of a manually chosen identity.
+            s1Manual=S1FloorObserverAvailable && _manualAlignmentSession;
             captureBinding = _capture.BindingScope;
             wasOpen = _mapOpen;
-            if (request.Action is "refresh_map" or "observe_manual_floor") _reason = "map-refreshing";
+            if (_manualAlignmentSession || request.Action is "refresh_map" or "observe_manual_floor" or "confirm_route")
+            {
+                if(_manualAlignmentSession && request.Action!="observe_manual_floor")
+                {RevokeDisplay("s1-current-floor-fit");_frame=null;}
+                _reason = "map-refreshing";
+            }
             else RevokeFrame("map-open-preparing", retainRecovery: recovery is not null);
             _workActive = true; Publish();
         }
@@ -399,8 +439,10 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         {
             if (_capture.BindingScope != captureBinding)
                 return FailCurrent(request, epoch, "capture-context-obsolete", Preparation("binding-changed"));
-            if (request.Action=="observe_manual_floor")
+            if (s1Manual && !preparing)
                 return S1ManualObservationMiss(request,epoch,token,captured,bound,floorRead,Preparation(phase));
+            if(request.Action=="confirm_route")
+                return ConfirmationProbeMiss(request,epoch,token,captured,bound,Preparation(phase));
             if (request.Action == "refresh_map")
                 return PassiveProbeMiss(request, epoch, token, captured, bound, floorRead, Preparation(phase));
             if (recovery is null)
@@ -452,7 +494,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             if (!preparing && _options.TimeProvider.GetElapsedTime(started) >= limit)
                 return Unprepared("capture-finished-after-deadline");
             if (acquisition.Frame is null) return recovery is not null ? Unprepared("capture-unavailable")
-                : FailCurrent(request, epoch, acquisition.Reason.Length > 0 ? acquisition.Reason : "capture-unavailable", Preparation("capture-unavailable"));
+                : FailCaptureObservation(request, epoch, acquisition.Reason.Length > 0 ? acquisition.Reason : "capture-unavailable", Preparation("capture-unavailable"));
             captured = acquisition.Frame;
             if (_capture.BindingScope != captureBinding || !_capture.IsCurrent(captured.Stamp))
                 return FailCurrent(request, epoch, "capture-context-obsolete", Preparation("capture-obsolete"));
@@ -493,7 +535,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             : floorRead?.MapObservation["detected"]?.GetValue<bool>() == true || floorRead?.MapOpen == true;
         if (captured is null || floorRead is null || !mapObserved) return Unprepared("probe-loop-ended-without-map");
         var preparation = JsonSerializer.SerializeToElement(Preparation("prepared"), Json);
-        string? floor, map;
+        string? floor, map;bool floorConflict;
         lock (_sync)
         {
             RequireCurrent(epoch, token, captured, bound);
@@ -508,8 +550,9 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 floor=_observedFloor;
             }
             else floor = ResolveObservedFloor(floorRead);
+            floorConflict=floor is not null && observedFloor is not null && floor!=observedFloor;
         }
-        if ((request.Action is "refresh_map" or "observe_manual_floor") && floor is not null)
+        if ((request.Action is "refresh_map" or "observe_manual_floor") && floor is not null && !floorConflict)
         {
             var renewed = TryRenewCurrentPose(request, epoch, token, captured, bound, floor, floorRead, preparation);
             if (renewed is not null) return renewed.Receipt.Success
@@ -518,7 +561,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         lock (_sync)
         {
             RequireCurrent(epoch, token, captured, bound);
-            if (request.Action is "refresh_map" or "observe_manual_floor")
+            if (request.Action is "refresh_map" or "observe_manual_floor" or "confirm_route")
             {
                 RevokeDisplay(floor is null ? "current-floor-unavailable" : "new-capture");
                 _entryCandidates.Clear();
@@ -528,14 +571,20 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             if (observedFloor is not null) _probeMisses = 0;
             if (!wasOpen) _mapCycle++;
             _frame = captured; _mapOpen = true; _floor = floor; _pose = null;
-            _diagnostics = JsonSerializer.SerializeToElement(new { stage = "floor-observation", map = floorRead.MapObservation, floor = floorRead.FloorRead, preparation }, Json);
-            _reason = floor is null ? s1Manual?"s1-current-floor-unavailable":"current-floor-unavailable" : "current-floor-observed";
+            _diagnostics = floorConflict
+                ? JsonSerializer.SerializeToElement(new {stage="floor-conflict",map=floorRead.MapObservation,floor=floorRead.FloorRead,
+                    targetFloor=floor,observedFloor,fitAttempted=false,preparation},Json)
+                : JsonSerializer.SerializeToElement(new { stage = "floor-observation", map = floorRead.MapObservation, floor = floorRead.FloorRead, preparation }, Json);
+            _reason = floorConflict?"current-frame-floor-conflict":floor is null ? s1Manual?"s1-current-floor-unavailable":"current-floor-unavailable" : "current-floor-observed";
             map = _mapId;
             // The recovered observation now owns this opening. Clearing only
             // its ticket must not revoke the frame/material it is about to fit.
             if (recovery is not null) _mapRecovery = null;
             Publish();
         }
+        // A reliable current sensor may veto the target before ranking/index
+        // exclusion or fitting; an unknown sensor supplies no contradiction.
+        if(floorConflict)return Receipt(request,false,"current-frame-floor-conflict");
         if (floor is null) return Receipt(request, false, s1Manual?"s1-current-floor-unavailable":"current-floor-unavailable");
         using var current = ToBgr(captured);
         // Original Runtime re-enters identity ranking only when no map is
@@ -558,29 +607,6 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         }
         if (map is null) return Receipt(request, false, "candidates-awaiting-confirmation");
         return RetryDesiredGroupChoice(request, epoch, token, Fit(request, epoch, token, captured, bound, map, floor, current));
-    }
-
-    private RuntimeOperationResult ConfirmMap(SessionRuntimeRequest request, long epoch, CancellationToken token)
-    {
-        BoundResources bound; CapturedClientFrame? captured; string map; string? floor;
-        lock (_sync)
-        {
-            RequireCurrent(epoch, token);
-            if (!_roundActive || _resources is null) return Receipt(request, false, "start-round-before-confirming-map");
-            bound = _resources;
-            map = Text(request.Payload, "mapId") ?? (_selected >= 0 && _selected < _candidates.Length ? _candidates[_selected].MapId : "");
-            if (!bound.Passports.MapProfiles.ContainsKey(map)) return Receipt(request, false, "invalid-manual-map");
-            if (_structurePool is { } pool && !pool.Remaining.Contains(map))
-                return Receipt(request, false, "map-excluded-this-round");
-            LockIdentity(map, "manual");
-            // Identity commits before any preparation/fit, and survives fit failure.
-            RevokeDisplay("identity-confirmed-pose-pending"); _pose = null; _reason = "identity-locked-pose-pending";
-            captured = _mapOpen ? _frame : null; floor = _floor;
-            _workActive = captured is not null && floor is not null && _capture.IsCurrent(captured.Stamp); Publish();
-        }
-        if (captured is null || floor is null || !_capture.IsCurrent(captured.Stamp)) return Receipt(request, true, "identity-locked-pose-pending");
-        using var frame = ToBgr(captured);
-        return Fit(request, epoch, token, captured, bound, map, floor, frame);
     }
 
     private sealed record PreparedRuntimeFit(ResourceCatalogEntry Entry, JsonObject Result, double[][]? Matrix,
@@ -701,10 +727,10 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             if (request.Action == "cycle_floor")
             { var index = floors.ToList().IndexOf(_floor ?? ""); floor = floors[(index + 1) % floors.Count]; }
             if (!valid || floor is not null && !floors.Contains(floor)) return Receipt(request, false, "unsupported-floor");
-            recapture = _mapOpen; AdvanceOwnedEpoch(); epoch = _epoch;
+            recapture = _mapOpen || _manualAlignmentSession && _mapId is not null; AdvanceOwnedEpoch(); epoch = _epoch;
             RevokeFrame("floor-changed"); _manualFloor = floor;
             _manualFloorStarted = floor is null ? null : _options.TimeProvider.GetTimestamp();
-            _floor = floor ?? _observedFloor; Publish();
+            _floor = _manualAlignmentSession?null:floor ?? _observedFloor; Publish();
         }
         return recapture ? await CaptureAndSolve(request, epoch, token).ConfigureAwait(false)
             : Receipt(request, true, "floor-selected-pose-pending");
@@ -728,8 +754,19 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     private void ClearIdentity()
     { ResetSteady(); _geometryGroup = null; ClearGroupChoice(); _mapId = null; _s1ProvisionalMapId = null; _identitySource = ""; _nativeIdentity = null; _structureSession?.EndRound(); _structureSession = null; _structureTicket = null; _alignment = null; _roundFitOwner = new(); }
     private void ClearFloor()
-    { _floor = _manualFloor = _observedFloor = null; _manualFloorStarted = null; }
+    { _floor = _manualFloor = _observedFloor = null; _manualFloorStarted = null; _manualAlignmentSession=false; }
     private void AdvanceOwnedEpoch() { _epoch++; _progressEpoch = _epoch; }
+
+    // Called under _sync. An observation may share the last physical edge;
+    // MapInput separately requires new inputSequence edges to increase.
+    private bool AcceptObservationSequence(JsonElement payload)
+    {
+        if (!payload.TryGetProperty("inputObservationSequence", out var value)) return true;
+        if (value.ValueKind != JsonValueKind.Number || !value.TryGetInt64(out long sequence)
+            || sequence < _lastMapInputSequence) return false;
+        _lastMapInputSequence = sequence;
+        return true;
+    }
 
     private string? ResolveObservedFloor(FloorObservationResult read)
     {
@@ -799,7 +836,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             RemainingMapIds = _structurePool?.Remaining ?? Array.Empty<string>(),
             EliminatedMapIds = _structurePool?.Eliminated ?? Array.Empty<string>(), RecognitionPath = _recognitionPath,
             ProvisionalMapId = _s1ProvisionalMapId,
-            ProbeMisses = _probeMisses,
+            ProbeMisses = _probeMisses,ManualAlignmentSession=_manualAlignmentSession,
             IdentityKind = _identitySource == "group-default" ? "group" : IsStructureProvisional ? "candidate" : _mapId is null ? "unresolved" : "map",
             MapDisplayName = _resources?.Passports.Maps.FirstOrDefault(map => map.MapId == EffectiveMapId)?.Name,
             IdentityGroupId = HasRegisteredGroup ? _nativeIdentity!.GroupId : null,
@@ -811,16 +848,19 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     {
         var commands = new List<string> { "set_context", "end_round", "stop_round", "reset_round", "cancel", "close_map", "toggle_sheet_visibility" };
         if (state.ResourcesBound) commands.AddRange(["start_round", "toggle_round"]);
+        if(state.ResourcesBound && state.Context.Season=="s1" && !state.RoundActive)commands.Add("prepare_manual_alignment");
         if (state.RoundActive && state.ResourcesBound)
         {
             commands.AddRange(["set_floor", "reselect_map"]);
-            commands.AddRange(["capture_now", "map"]);
+            commands.Add("map");
+            if(!state.ManualAlignmentSession || state.Context.MapId is not null)commands.Add("capture_now");
+            if(state.ManualAlignmentSession && state.Context.MapId is not null)commands.Add("fit_manual_frame");
             if (state.MapOpenRecovery.Pending) commands.Add("recover_map_open");
             if (state.MapOpen) commands.AddRange(["cycle_floor", "refresh_map"]);
             if(S1FloorObserverAvailable)
             {
-                if(S1ManualIdentity && (state.MapOpen || state.MapOpenRecovery.Pending))commands.Add("observe_manual_floor");
-                else if(!S1ManualIdentity && state.MapOpen)commands.Add("observe_candidate_floor");
+                if(state.ManualAlignmentSession && S1ManualIdentity && (state.MapOpen || state.MapOpenRecovery.Pending))commands.Add("observe_manual_floor");
+                else if(!state.ManualAlignmentSession && state.MapOpen)commands.Add("observe_candidate_floor");
             }
             if (state.Candidates.Count > 0 && !state.IdentityLocked) commands.AddRange(["select_candidate", "previous_candidate", "next_candidate", "confirm_route"]);
             if (state.IdentityMemberIds.Count > 1 && state.Context.FloorId is not null) commands.Add("select_group_member");

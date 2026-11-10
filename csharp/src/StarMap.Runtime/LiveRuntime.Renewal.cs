@@ -20,7 +20,7 @@ public sealed partial class LiveRuntime
             RequireCurrent(epoch, token, captured, bound);
             // Selected S1 identities share renewal/Core commit, but measure
             // full-client geometry and never enter S0's group/scale cache lane.
-            s1Manual=request.Action=="observe_manual_floor" && S1ManualIdentity && S1FloorObserverAvailable;
+            s1Manual=request.Action=="observe_manual_floor" && _manualAlignmentSession && S1ManualIdentity && S1FloorObserverAvailable;
             if ((!s1Manual && _selection.Season != "s0") || !RenderCurrent() || _canonical is null
                 || !s1Manual && (_canonical.Group is null || !ReferenceEquals(_canonical.Group,_geometryGroup) || SteadyEnabled && SteadyMaterialReady)
                 || _floor != floor || read.FloorId is { } observed && observed != floor

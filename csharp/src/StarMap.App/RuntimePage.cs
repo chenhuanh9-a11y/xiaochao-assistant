@@ -31,7 +31,7 @@ internal sealed class RuntimePage : UserControl
     readonly Button chooseGroupMember;
     LiveRuntimeState? renderedGroupState;
     readonly ComboBox floor = new() { MinWidth = 130, HorizontalAlignment = HorizontalAlignment.Left, DisplayMemberPath = "Label", SelectedValuePath = "Id" };
-    readonly Button start, end, acquire, cancel, previous, next, confirm, pick, applyFloor, toggleVisibility;
+    readonly Button start, manualStart, fitManual, end, acquire, cancel, previous, next, confirm, pick, applyFloor, toggleVisibility;
     readonly DispatcherTimer renderTimer, observationTimer;
     long lastS1FloorObservation;
     SessionService? session;
@@ -71,6 +71,8 @@ internal sealed class RuntimePage : UserControl
         var actions = new WrapPanel();
         start = Add(actions, "开始本局", async (_, _) => { if (PrepareInput is not null) await PrepareInput(); Dispatch("start_round"); });
         start.SetResourceReference(StyleProperty, "StarMap.PrimaryButton");
+        manualStart=Add(actions,"准备手动贴合",async (_,_)=>{if(PrepareInput is not null)await PrepareInput();Dispatch("prepare_manual_alignment");});
+        manualStart.Name="RuntimePrepareManualAlignment";
         end = Add(actions, "结束本局", (_, _) => Dispatch("end_round"));
         acquire = Add(actions, "3 秒后读取地图", async (_, _) => await CaptureAfterDelay());
         cancel = Add(actions, "取消识别", (_, _) => CancelWork());
@@ -107,8 +109,14 @@ internal sealed class RuntimePage : UserControl
         var manualActions = new WrapPanel { Margin = new(0, 8, 0, 0) };
         pick = Add(manualActions, "确认手动选图", (_, _) =>
         {
-            if (manualMap.SelectedItem is string mapId) Dispatch("confirm_route", new { mapId });
+            if (manualMap.SelectedItem is string mapId)
+            {
+                if(runtime?.ReadState().ManualAlignmentSession==true)Dispatch("confirm_route",new {mapId,inputObservationSequence=mapInput.Sequence});
+                else Dispatch("confirm_route",new {mapId});
+            }
         });
+        fitManual=Add(manualActions,"贴合当前画面",(_,_)=>Dispatch("fit_manual_frame",new {inputObservationSequence=mapInput.Sequence}));
+        fitManual.Name="RuntimeFitManualFrame";
         manual.Children.Add(manualActions);
         panel.Children.Add(new Expander { Name = "RuntimeManualSelection", Header = "手动选择地图", Content = manual, HorizontalContentAlignment = HorizontalAlignment.Stretch, Margin = new(0, 4, 0, 12) });
         var floorActions = new WrapPanel { Margin = new(0, 4, 0, 0) };
@@ -290,7 +298,7 @@ internal sealed class RuntimePage : UserControl
         var result = session.Dispatch(action, payload is null ? null : JsonSerializer.SerializeToElement(payload));
         if (result.Disposition is SessionDispatchDisposition.Enqueued or SessionDispatchDisposition.Coalesced)
         {
-            if (action is "capture_now" or "map" or "recover_map_open" or "refresh_map" or "observe_manual_floor" or "observe_candidate_floor")
+            if (action is "capture_now" or "map" or "recover_map_open" or "refresh_map" or "observe_manual_floor" or "observe_candidate_floor" or "confirm_route" or "fit_manual_frame")
                 mapRead = (session.Read().Sequence.LastIssuedSequence, mapInput.Sequence, previousFrame);
             if (action is "end_round" or "stop_round" or "reset_round") { mapInput.Reset(); mapRead = null; }
         }
@@ -320,8 +328,10 @@ internal sealed class RuntimePage : UserControl
             if (configuring || loadingResources || runtime?.ReadState().RoundActive != true || session is null
                 || session.Read().PendingAction is "start_round" or "end_round" or "stop_round" or "reset_round" or "toggle_round") return;
             CancelDelay(); session.CancelPending("new-map-input"); runtime.InvalidateCapture("new-map-input"); session.RefreshRuntime();
-            var payload = new { inputSequence = edge.Sequence, openIntent = edge.OpenIntent, inputCreatedAt = edge.CreatedAtSeconds, inputSource = edge.Source };
-            Dispatch("map", payload);
+            var state=runtime.ReadState();bool manualOpen=edge.OpenIntent && state.ManualAlignmentSession && state.Context.MapId is not null;
+            var payload = new { inputSequence = edge.Sequence, openIntent = edge.OpenIntent, inputCreatedAt = edge.CreatedAtSeconds,
+                inputSource = edge.Source,s1OpenEdge=manualOpen };
+            Dispatch(manualOpen?"fit_manual_frame":"map", payload);
             return;
         }
         var command = action switch { "start-round" => "start_round", "toggle-round" => "toggle_round",
@@ -421,6 +431,10 @@ internal sealed class RuntimePage : UserControl
         bool Supports(string action) => view?.Runtime.AvailableCommands.Contains(action) == true;
         UpdateVisibilityControl();
         start.IsEnabled = available && !active && !working && Supports("start_round");
+        manualStart.Visibility=state?.Context.Season=="s1"?Visibility.Visible:Visibility.Collapsed;
+        manualStart.IsEnabled=available && !active && !working && Supports("prepare_manual_alignment");
+        fitManual.Visibility=state?.ManualAlignmentSession==true?Visibility.Visible:Visibility.Collapsed;
+        fitManual.IsEnabled=!working && Supports("fit_manual_frame");
         end.IsEnabled = active && !configuring && !loadingResources && Supports("end_round");
         acquire.IsEnabled = active && capture.IsBound && !working && Supports("capture_now");
         cancel.IsEnabled = !configuring && !loadingResources && (working || state?.MapOpenRecovery.Pending == true);
@@ -431,7 +445,7 @@ internal sealed class RuntimePage : UserControl
         applyFloor.IsEnabled = active && !working && Supports("set_floor");
         if (state is null) return;
         summary.Text = $"{state.Context.Season} · {ModeLabel(state.Context.Mode)}";
-        roundState.Text = !available ? "资源未就绪" : configuring || loadingResources ? "正在准备" : !active ? "等待开始" : working ? "正在处理" : "本局进行中";
+        roundState.Text = !available ? "资源未就绪" : configuring || loadingResources ? "正在准备" : !active ? "等待开始" : working ? "正在处理" : state.ManualAlignmentSession?"手动贴合本局":"本局进行中";
         mapIdentity.Text = state.IdentityKind == "group" ? $"已确认相似组 · {state.IdentityMemberIds.Count} 张地图"
             : state.IdentityLocked ? $"已锁定 {state.MapDisplayName ?? state.Context.MapId}"
             : state.ProvisionalMapId is not null ? $"临时参考 {state.MapDisplayName ?? state.ProvisionalMapId} · 剩余 {state.RemainingMapIds.Count} 张"

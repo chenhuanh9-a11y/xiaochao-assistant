@@ -21,6 +21,8 @@ public sealed class EntryPassportCatalog
     public string? NativePassportError { get; }
     public string? LegacyPassportSource { get; }
     public IReadOnlyList<string> Floors { get; }
+    /// <summary>Configured initial view intent, never current floor evidence.</summary>
+    public string DefaultEntryFloor { get; }
     public IReadOnlyDictionary<string, string> MapProfiles { get; }
     public IReadOnlyList<EntryMapDefinition> Maps { get; }
     public IReadOnlySet<(string MapId, string Floor)> RegisteredFloors { get; }
@@ -76,6 +78,7 @@ public sealed class EntryPassportCatalog
         if ((!legacyNightmare && pack.GetProperty("schemaVersion").GetInt32() != 1) ||
             (!legacyNightmare && String(pack, "mode") != mode) || (season == "s1" && String(pack, "season") != season))
             throw new InvalidDataException("Identity pack context mismatch.");
+        DefaultEntryFloor=pack.TryGetProperty("defaultEntryFloor",out var entryFloor)?entryFloor.ToString():legacyNightmare?"2":"1";
         Floors = Array.AsReadOnly(legacyNightmare ? ["1","2","B1"] :
             pack.GetProperty("floors").EnumerateArray().Select(x => x.ToString()).ToArray());
         if (season == "s1" && !Floors.SequenceEqual(["-1","-2","-3","-4"]))

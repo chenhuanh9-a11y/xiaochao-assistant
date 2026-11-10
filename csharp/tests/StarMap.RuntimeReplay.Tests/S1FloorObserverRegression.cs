@@ -39,10 +39,21 @@ internal static class S1FloorObserverRegression
                     CompareOriginal("observe_candidate_floor","batch02-event-000400",unknown);
                 }
                 capture.Select(sample,false);
+                await Ask("end_round");calls=capture.Calls;await Ask("prepare_manual_alignment");
+                check(capture.Calls==calls && runtime.ReadState() is {RoundActive:true,ManualAlignmentSession:true,Context.MapId:null,Context.FloorId:null,ObservedFloor:null},
+                    mode+" explicit manual preparation creates a separate empty session without capturing or seeding a floor");
+                var missingMap=await Ask("fit_manual_frame");
+                check(!missingMap.Receipt.Success && missingMap.Receipt.Reason=="manual-map-required" && capture.Calls==calls,
+                    mode+" manual fit requires a selected identity before acquiring pixels");
                 await Ask("confirm_route",new {mapId=map});
+                check(capture.Calls==calls+1 && runtime.ReadState() is {ManualAlignmentSession:true,MapOpen:true,Context.FloorId:"-1"},
+                    mode+" first manual confirmation captures and observes the actual floor without a previous frame");
                 check(runtime.ReadState().IdentityLocked && runtime.ReadState().IdentitySource=="manual",mode+" explicit identity is selected before passive fitting");
                 check(runtime.ReadSnapshot().AvailableCommands.Contains("observe_manual_floor")
-                    && !runtime.ReadSnapshot().AvailableCommands.Contains("observe_candidate_floor"),mode+" selected identity switches the actual observer command");
+                    && !runtime.ReadSnapshot().AvailableCommands.Contains("observe_candidate_floor"),mode+" explicit manual session owns its dedicated observer command");
+                calls=capture.Calls;var malformed=await Ask("fit_manual_frame",new {inputObservationSequence="invalid"});
+                check(!malformed.Receipt.Success && malformed.Receipt.Reason=="map-input-sequence-expired" && capture.Calls==calls,
+                    mode+" malformed manual input observation is rejected before acquisition");
                 calls=capture.Calls;var expired=await Ask("observe_manual_floor",new {inputObservationSequence=-1});
                 check(!expired.Receipt.Success && expired.Receipt.Reason=="map-input-sequence-expired" && capture.Calls==calls,
                     mode+" stale physical input sequence cannot launch a manual observer capture");
@@ -57,6 +68,21 @@ internal static class S1FloorObserverRegression
                     && renewal is not null && renewal.Stamp!=fresh!.Stamp && ReferenceEquals(renewal.Material.Pixels,fresh.Material.Pixels),
                     mode+" selected-map renewal measures fresh full-client residual and retains source pixels");
                 CompareOriginal("observe_manual_floor",sample,renewed);
+                foreach(var (action,throws) in new[]{("fit_manual_frame",true),("observe_manual_floor",true),("fit_manual_frame",false),("observe_manual_floor",false)})
+                {
+                    calls=capture.Calls;var retained=runtime.ReadState().RemainingMapIds.ToArray();
+                    if(throws)capture.ThrowNext(new IOException("recorded manual capture error"));else capture.FailNext();
+                    string failureKind=throws?"exception":"normalized null-frame";
+                    var failed=await Ask(action);
+                    check(!failed.Receipt.Success && capture.Calls==calls+1
+                        && runtime.ReadState() is {ManualAlignmentSession:true,MapOpen:true,Context.FloorId:null,ObservedFloor:null}
+                        && runtime.ReadState().Context.MapId==map && runtime.ReadState().RemainingMapIds.SequenceEqual(retained)
+                        && !runtime.TryReadRender(out _) && runtime.ReadSnapshot().AvailableCommands.Contains("observe_manual_floor"),
+                        mode+" "+action+" capture "+failureKind+" retires current floor and pixels without closing the observed cycle");
+                    var retried=await Ask("observe_manual_floor");
+                    check(retried.Receipt.Success && capture.Calls==calls+2 && runtime.TryReadRender(out _),
+                        mode+" passive observer recovers after "+action+" "+failureKind+" without another physical G edge");
+                }
                 if(mode=="nightmare")
                 {
                     capture.Select("batch02-event-000400",false);calls=capture.Calls;
@@ -101,6 +127,10 @@ internal static class S1FloorObserverRegression
                 CompareOriginal("observe_manual_floor","batch01-event-000002",closed);
                 calls=capture.Calls;await Ask("observe_manual_floor");
                 check(capture.Calls==calls,mode+" inactive observer cannot create a new opening");
+                capture.Select(sample,false);var explicitFit=await Ask("fit_manual_frame");
+                check(explicitFit.Receipt.Success && capture.Calls==calls+1 && runtime.ReadState() is {MapOpen:true,ManualAlignmentSession:true}
+                    && runtime.TryReadRender(out _),mode+" explicit manual fit can acquire a fresh opening after passive closure");
+                capture.Select("batch01-event-000002",false);await Ask("observe_manual_floor");
                 await Ask("map",new {inputSequence=1,openIntent=true});
                 var recovery=runtime.ReadState().MapOpenRecovery;
                 check(recovery.Pending && recovery.Id is not null && runtime.ReadSnapshot().AvailableCommands.Contains("observe_manual_floor"),
@@ -114,6 +144,7 @@ internal static class S1FloorObserverRegression
                     && !runtime.ReadState().MapOpenRecovery.Pending && runtime.TryReadRender(out _) && runtime.ReadState().Context.MapId==map,
                     mode+" dedicated manual observer consumes the owned due recovery using one actual capture and solve");
                 await Ask("end_round");await Ask("start_round");capture.Select(sample,false);await Ask("capture_now");
+                check(!runtime.ReadState().ManualAlignmentSession,mode+" new ordinary round retires the independent manual session policy");
                 // Synthetic resize of recorded pixels exercises raw UNKNOWN;
                 // this derived frame is not a natural screenshot or live proof.
                 var retainedPool=runtime.ReadState().RemainingMapIds.ToArray();

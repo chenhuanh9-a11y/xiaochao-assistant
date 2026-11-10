@@ -6,6 +6,7 @@ using System.Windows.Threading;
 using StarMap.App;
 using StarMap.App.Platform;
 using StarMap.Core.Input;
+using StarMap.Core.Identity;
 using StarMap.Core.Session;
 using StarMap.Core.Settings;
 using StarMap.Runtime;
@@ -20,6 +21,7 @@ internal static class PassiveRefreshWorkspaceRegression
         var page = new RuntimePage(capture, _ => { });
         using var native = new WindowsRuntimeCapturePort();
         RuntimeOverlayHost? host = null;
+        System.Windows.Window? pickerWindow=null;
         try
         {
             check(await page.Configure(resources, SettingsDocument.CreateNew()), "passive-workspace-binds-real-resources-through-session");
@@ -97,30 +99,103 @@ internal static class PassiveRefreshWorkspaceRegression
             await page.DrainAsync();
             check(page.State is {MapOpen:true,Reason:"candidate-floor-current"} && ReferenceEquals(candidate,page.ReadRender()),
                 "hidden-S1-same-floor-probe-retains-exact-material-without-S0-refresh-or-pose-renewal");
-            page.Dispatch("confirm_route",new {mapId="107012"});await page.DrainAsync();
+            var picker=Field<System.Windows.Controls.ComboBox>(page,"manualMap");
+            var pickButton=Field<System.Windows.Controls.Button>(page,"pick");
+            // Standalone RuntimePage receives the same real map list through
+            // the production host API. Show only an offscreen, nonactivating
+            // test window so its normal visible-content reconciliation runs.
+            page.SetMaps(EntryPassportCatalog.Load(resources,"s1","nightmare").MapProfiles.Keys);
+            pickerWindow=new(){Content=page,Left=-20000,Top=-20000,Width=900,Height=900,
+                ShowActivated=false,ShowInTaskbar=false,WindowStartupLocation=System.Windows.WindowStartupLocation.Manual};
+            pickerWindow.Show();
+            if(picker.Parent is System.Windows.Controls.StackPanel manualPanel && manualPanel.Parent is System.Windows.Controls.Expander manualExpander)
+                manualExpander.IsExpanded=true;
+            await Until(()=>picker.Items.Cast<string>().Contains("107012") && pickButton.IsVisible && pickButton.IsEnabled);
+            check(picker.Items.Count==EntryPassportCatalog.Load(resources,"s1","nightmare").Maps.Count,
+                "picker-is-loaded-from-real-resources-through-the-production-visible-page-host-contract");
+            picker.SelectedItem="107012";capture.Select("batch02-event-000323",false);
+            var confirmationHold=capture.HoldNext();before=capture.Calls;
+            pickButton.RaiseEvent(new(System.Windows.Controls.Button.ClickEvent));
+            try
+            {
+                await confirmationHold.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                check(page.State is {IdentityLocked:true,IdentitySource:"manual",Context.MapId:"107012",WorkActive:true}
+                    && page.SessionView?.PendingAction=="confirm_route" && page.ReadRender() is null && capture.Calls==before+1,
+                    "actual-map-picker-click-publishes-identity-before-its-blocked-fresh-capture");
+            }
+            finally{confirmationHold.Release.TrySetResult();}
+            await page.DrainAsync();
+            check(page.State?.Context.FloorId=="-2" && page.ReadRender()?.Stamp!=candidate!.Stamp && input.OpenIntent,
+                "picker-session-runtime-consumer-fits-the-new-layer-instead-of-the-retained-candidate-frame");
+            await Until(()=>pickButton.IsEnabled);
+            before=capture.Calls;long confirmationSequence=input.Sequence;capture.FailNext();
+            pickButton.RaiseEvent(new(System.Windows.Controls.Button.ClickEvent));await page.DrainAsync();
+            check(page.State is {MapOpen:true,IdentityLocked:true,Context.MapId:"107012",NativeGeometryVerified:false}
+                && capture.Calls==before+1 && page.ReadRender() is null && input.OpenIntent && input.Sequence==confirmationSequence,
+                "failed-picker-capture-retains-human-identity-and-physical-opening-without-old-pixels");
+            await Until(()=>pickButton.IsEnabled);
+            pickButton.RaiseEvent(new(System.Windows.Controls.Button.ClickEvent));await page.DrainAsync();
+            check(page.ReadRender() is not null && page.State?.Context.FloorId=="-2" && input.Sequence==confirmationSequence,
+                "picker-retries-fresh-capture-after-failure-without-an-extra-G-edge");
+            check(page.State is {ManualAlignmentSession:false} && runtime.ReadSnapshot().AvailableCommands.Contains("observe_candidate_floor"),
+                "ordinary-map-choice-preserves-the-ordinary-floor-policy-instead-of-creating-a-manual-session");
+            await Until(()=>pickButton.IsEnabled && pickButton.IsVisible);
+            capture.Select("batch02-event-000401",false);
+            pickButton.RaiseEvent(new(System.Windows.Controls.Button.ClickEvent));await page.DrainAsync();
+            check(page.State is {MapOpen:false,Reason:"map-not-observed",Context.MapId:"107012"}
+                && !input.OpenIntent && input.Sequence==confirmationSequence && page.ReadRender() is null,
+                "picker-fresh-negative-reconciles-the-existing-physical-G-edge-without-clearing-identity");
+            capture.Select("batch02-event-000319",false);page.HandleShortcut("map");await page.DrainAsync();
+            check(page.State?.MapOpen==true && input.OpenIntent && page.ReadRender() is not null,
+                "G-after-picker-negative-opens-a-new-cycle-instead-of-being-misread-as-close");
+            var endButton=Field<System.Windows.Controls.Button>(page,"end");
+            var manualStart=Field<System.Windows.Controls.Button>(page,"manualStart");
+            var fitManual=Field<System.Windows.Controls.Button>(page,"fitManual");
+            await Until(()=>endButton.IsEnabled);endButton.RaiseEvent(new(System.Windows.Controls.Button.ClickEvent));await page.DrainAsync();
+            await Until(()=>manualStart.IsVisible && manualStart.IsEnabled);before=capture.Calls;
+            manualStart.RaiseEvent(new(System.Windows.Controls.Button.ClickEvent));await page.DrainAsync();
+            check(capture.Calls==before && page.State is {RoundActive:true,ManualAlignmentSession:true,MapOpen:false,Context.MapId:null,Context.FloorId:null},
+                "actual-prepare-manual-button-starts-a-separate-empty-session-without-capture-or-floor-seed");
+            await Until(()=>pickButton.IsEnabled);picker.SelectedItem="107012";capture.Select("batch02-event-000323",false);
+            pickButton.RaiseEvent(new(System.Windows.Controls.Button.ClickEvent));await page.DrainAsync();
+            check(capture.Calls==before+1 && page.State is {ManualAlignmentSession:true,MapOpen:true,Context.MapId:"107012",Context.FloorId:"-2"}
+                && page.ReadRender() is not null && input.OpenIntent,
+                "first-manual-picker-confirmation-captures-a-fresh-floor-without-any-retained-frame");
+            pickerWindow.Hide();
             var manualHold=capture.HoldNext();before=capture.Calls;capture.Foreground=true;
             try
             {
                 await manualHold.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
                 check(page.SessionView?.PendingAction=="observe_manual_floor" && capture.Calls==before+1,
-                    "hidden-S1-timer-switches-to-manual-floor-observer-after-explicit-map-choice");
+                    "hidden-S1-timer-uses-manual-observer-only-in-the-explicit-manual-session");
             }
             finally{capture.Foreground=false;manualHold.Release.TrySetResult();}
             await page.DrainAsync();
             check(page.ReadRender() is { } manual && manual.Stamp!=candidate!.Stamp && page.State?.Context.MapId=="107012",
                 "manual-S1-observer-current-pixels-reach-real-WPF-workspace-consumer");
+            pickerWindow.Hide();
             capture.Select("batch02-event-000401",false);capture.Foreground=true;
             try{await Until(()=>page.State?.MapOpen==false);}finally{capture.Foreground=false;}
             await page.DrainAsync();
             check(page.State is {Reason:"s1-map-closed",Context.MapId:"107012"} && !input.OpenIntent && page.ReadRender() is null,
                 "single-S1-negative-reconciles-the-physical-G-edge-and-retains-manual-identity");
+            pickerWindow.Show();await Until(()=>fitManual.IsVisible && fitManual.IsEnabled);
+            capture.Select("batch02-event-000323",false);before=capture.Calls;
+            fitManual.RaiseEvent(new(System.Windows.Controls.Button.ClickEvent));await page.DrainAsync();
+            check(capture.Calls==before+1 && page.State is {ManualAlignmentSession:true,MapOpen:true,Context.FloorId:"-2"}
+                && input.OpenIntent && page.ReadRender() is not null,
+                "actual-fit-current-frame-button-restores-a-fresh-manual-opening-after-passive-close");
+            pickerWindow.Hide();before=capture.Calls;page.HandleShortcut("map");await page.DrainAsync();
+            check(capture.Calls==before && !input.OpenIntent && page.State is {ManualAlignmentSession:true,MapOpen:false,Context.MapId:"107012"},
+                "manual-session-G-close-preserves-mode-and-selected-identity-without-acquiring-pixels");
             capture.Select("batch02-event-000319",false);page.HandleShortcut("map");await page.DrainAsync();
-            check(input.OpenIntent && page.State?.MapOpen==true && page.ReadRender() is not null,
-                "G-after-S1-passive-close-opens-and-fits-a-fresh-cycle");
+            check(input.OpenIntent && page.State is {ManualAlignmentSession:true,MapOpen:true,Context.FloorId:"-1"}
+                && page.SessionView?.LastReceipt?.Action=="fit_manual_frame" && page.ReadRender() is not null,
+                "manual-session-G-open-routes-through-fit-manual-frame-and-observes-the-new-floor");
             await page.CloseAsync(); before = capture.Calls; capture.Foreground = true; await Task.Delay(250);
             check(capture.Calls == before && page.State is null, "closed-background-observation-timer-does-not-acquire-another-frame");
         }
-        finally { host?.Dispose(); await page.CloseAsync(); }
+        finally { if(pickerWindow is not null){pickerWindow.Content=null;pickerWindow.Close();}host?.Dispose(); await page.CloseAsync(); }
     }
 
     static T Field<T>(object owner, string name) => (T)owner.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(owner)!;

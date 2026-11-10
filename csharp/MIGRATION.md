@@ -17,7 +17,7 @@
 | 楼层/开图准备 | client_live_runtime.py / map_open_preparation.py / floor_contract.py | 37 项真实/合成边界及全部 S0 251 张原始客户区的观察结果与原 Python 严格一致；S1 当前真实输入由全 154 张组件回放及连续 Runtime 样本覆盖。map/foreground-return 准备沿原 1.05s/50ms/最多 21 probe；普通 capture_now 单次观察。超时未知楼层的正地图帧仍供人工修正，晚到可用楼层不绕过期限；有原 Runtime 真实晚采集对照及 C# 修前失败/修后回归。不是实机准备延迟验收 |
 | 身份与入口竞争 | map_identity_engine.py / difficult_entry_identity.py / difficult_side_entry_identity.py / front_door_recognition.py | S0 完整 passport/main/side/source-advisory/native/登记组/最终行消费者已接，全部 251 张当前原图严格零差异；S1 正支持候选始终不充当唯一身份。组内成员选择已接独立目标贴合、WPF 素材回执与同锁提交，手选跨层保留。实际调用已按原 Runtime 纠正：有选中参考时不额外重排；无地图且有实际条件先验时以完整 cohort 竞争。强冲突观测及配置 source store 时的 SIFT producer 仍缺 |
 | prepare/grid/refine/propose/验证 | fast_structure_alignment.py / single_map_structure.py / nightmare_candidate.py / idvb0059_steady.py | 共用数值内核与 S0 Host 冷流程/拒绝顺序、S1 目标楼层 Fit 已接；S0 当前 285 次候选 Fit 与原程序零差异，另有禁用 fast 的 6 次真实原 Host 对照。0059 数值流程和 coverage refresh、S0 established 几何组局部/全局/native recall 与 entry producer 已接；S1 原 explicit-full-frame 路径继续跳过0059及 established 几何恢复。准备/观察数组有逐位对照，标量有严格差异报告。pose-index、tracking 与强冲突 producer 尚缺 |
-| 会话/取消/缓存/恢复 | client_session.py / client_coordinator.py / client_live_runtime.py | SessionService 单写者/单 worker/取消/资源 lease/真实回调重入与 Python 纯状态 43 项通过；Runtime 原图回放覆盖显隐、组内选择、canonical/material 与恢复。几何组复用现有 Core RoundLayerGroup，由同一提交包发布；无关系新层成功建新根，失败保留旧组。S0 的0059仅在实际 WPF 素材就绪、Session 已收取结果后记录实际组 owner 的目标层尺度/coverage；新 owner ACK 清旧层缓存，作者重投影保留 owner 且不新建学习回执。S1 素材不请求0059学习。开图准备失败后已接原 8 次/200ms 间隔/2s 有界恢复，每次单帧复用同一求解链；票据绑定本局、输入、资源、作者代际和稳定窗口绑定。隐藏页面的独立 timer/Session 已接默认 S0 被动刷新及两次负帧关图，以及 S1 专用候选/手选地图楼层观察；确认关图同步同一物理输入相位。窗口/几何上下文有效期与最新采集帧分开，求解仍验证最新帧。S0 当前姿态与 S1 手选地图的同层新帧残差续期已接，稳定素材与当前帧记忆 proposal 分开；点击意图策略、保留观测的组内拟合及人工确认重新采集仍缺；Recorded 始终不授予 LiveAuthorization |
+| 会话/取消/缓存/恢复 | client_session.py / client_coordinator.py / client_live_runtime.py | SessionService 单写者/单 worker、取消、资源 lease、真实回调重入及有界开图恢复已接。Core 几何组/目标层尺度与素材 ACK 的 owner 分离；S1 不请求0059学习。隐藏页面 timer 经 Session 执行 S0 刷新与 S1 专用楼层观察，同姿态续期重新测当前帧残差。人工确认先发布身份，开图周期中同操作重采集，失败保留选择；确认关图同步原 G 相位。S1 独立手动准备/当前画面贴合入口已接；点击意图、保留观测的组内拟合和 S0 人工确认标签的持久化学习仍待接。以下分节记录实际接线与证据范围；Recorded 始终不授予 LiveAuthorization |
 | 结构/作者/浮窗/穿透/DPI | client_windows.py / ClientAligned.qml / ClientReference.qml / author_display_policy.py / nightmare_author_coordinate_adapter.py | 显示桥当前 391 adapters/391 bridges/5 native corners/1 非单位校准零差异，完整选择 233 项和素材 261 项通过。Runtime 已接 canonical/material 提交、偏好替换与撤销；浮层已有真实 WPF 主机和离屏几何/票据回归。完整作者交互、参考窗及实机穿透/多屏 DPI 仍缺；素材不授权身份或结构位姿 |
 | 账号/路线广场/投稿 | account_service.py / client_route_plaza.py / ClientAccount.qml | 待迁；不以演示数据或按钮提示冒称接入 |
 | 教程/公告/帮助/诊断/更新 | client_info.py / update_service.py / ClientHelp.qml 等 | 待迁；关闭/后台恢复、状态与错误路径需覆盖 |
@@ -59,9 +59,23 @@ S0 默认尚无已记忆0059素材、或公开关闭0059时，`refresh_map` 会�
 
 索引拒绝的低链观测可保留到该次操作结束，最多沿用现有32区域准备范围；复用不表示峰值内存降低，RSS/原生句柄尚未测量。诊断的ComponentCacheEntries含null缓存，ChainCacheEntries表示已有链缓存的组件数。后台复核/算法并行尚未由这次串行共享实现。
 
+### 人工确认与新截图
+
+`confirm_route` 的显式地图选择和无 payload 候选确认共用异步 owner：先锁定并发布身份、撤销旧姿态，再在已有开图周期时调用现有捕获→观察→目标层拟合→canonical/material 链。开始新采集前清除旧 `_frame`，避免 Session 把捕获端自身更新 stamp 误判为外部上下文失效；已有开图意图保留，不拿旧像素续期。普通会话闭图时仍只锁身份、等待后续开图。入口楼层种子读取实际 pack 的 defaultEntryFloor（沿用原 legacy 缺字段规则），只作显示意图，不能授予观测/姿态。
+
+采集失败或异常保留已选身份及已有开图周期，并撤销像素；新截图未观察到地图才结束该周期。未知楼层不能继承种子来拟合；取消、资源或窗口失效、关闭后的迟到结果仍被现有 epoch/绑定/帧校验拒绝。确认结果参与原 G 输入相位回读，不生成按键。原 Python 的19组真实截图/资源/solver 操作覆盖四上下文、跨层/视口变化、未知/负帧、采集异常及闭图 pending；仅替换 OS 捕获与 memory 路径，S1 native-preview 组合搭配录制 fixture 不代表实机。
+
+无 payload 确认在当前楼层未知但开图周期仍有效时也会重新采集：这是相对原入口缺少楼层即拒绝的明确扩展，使候选确认遵守身份立即锁定、随后重试对齐的要求。普通模式的两秒手动楼层保持不被地图确认清除；新截图高亮与保持目标矛盾时，在索引/拟合前拒绝 `current-frame-floor-conflict`，不把错误楼层写入候选池或姿态。
+
+S1 的 `prepare_manual_alignment` 建立独立会话标志，初始不捕获、不填地图或楼层；`fit_manual_frame` 只对已选地图重新采集。专用会话的首次确认即使没有旧帧也采集；关闭保留模式与身份，显式贴合可再次开图。普通会话中的手选身份不改变会话模式或楼层保持策略。结束本局/资源或模式切换清除此标志，重选地图/换作者保持它。G 开图在该会话有身份时调度 `fit_manual_frame`，仍沿用输入序号、准备/恢复与迟到隔离；关图不捕获。
+
+确认与专用手动会话共用采集失败收束：非取消异常撤销姿态/素材；专用会话还清当前楼层和帧，但保留已经观察到的开图周期与身份，下一次被动观察可以重试。生产捕获端把部分错误转为 null-frame，专用会话的这种失败也进入同一收束。明确负帧、关闭输入与外部上下文失效仍关闭周期。原 Python 两种 S1 模式各自的显式贴合/被动观察异常及随后恢复均已用真实 PNG/资源执行；C# 定向回归分别保留修前异常停止后台观察、null-frame保留旧楼层的失败结果。该行为不授予 S0 确认样本的持久化学习，后者仍是迁移缺口。
+
+工作台验证经真实资源列表的 SetMaps、非激活的屏幕外 WPF 窗口、页面内容加载、准备手动贴合/地图选择/贴合当前画面按钮事件、Session 和 Runtime 消费。页面隐藏时仍按原规则不更新内容；按钮与 G 入口由程序路由，未发送原生鼠标/键盘，也不代表可见像素或游戏验收。
+
 ### S1 专用被动楼层观察
 
-隐藏页面的既有 timer 按原 0.5 秒间隔，经 Session 调度 `observe_candidate_floor` / `observe_manual_floor`。候选同层探测保留原 packet/帧/图片，不借新截图续期旧姿态；变层或无可显示姿态时再采一次并走原求解。手选身份的观察用一次当前截图，未知楼层撤销姿态但保留地图身份；有效高亮立即清理旧手动楼层，不套用 S0 的两秒 hold。显式负帧立即关图，并同步既有 G 输入相位。
+隐藏页面的既有 timer 按原 0.5 秒间隔，经 Session 调度 `observe_candidate_floor` / `observe_manual_floor`。普通会话同层探测保留原 packet/帧/图片，不借新截图续期旧姿态；变层或无可显示姿态时再采一次并走原求解。独立手动贴合会话的观察用一次当前截图，未知楼层撤销姿态但保留地图身份；有效高亮立即清理旧手动楼层，不套用普通会话的两秒 hold。显式负帧立即关图，并同步既有 G 输入相位。
 
 手选地图同层复用现有 Core 续期提交，S1 以完整客户区 `Geometry.Current` 和对应参考 validation mask 复核原矩阵，保留源图片；失败回到真实目标层独立贴合。该路径不进入 S0 几何组/尺度学习，也不改变跨层候选池。候选探测、手选观察和 S0 刷新共用 worker 的非排队合并；取消、过期输入、窗口/资源失效和迟到结果仍由 Runtime owner 校验。
 

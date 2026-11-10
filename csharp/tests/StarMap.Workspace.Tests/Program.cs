@@ -406,7 +406,7 @@ internal static class Program
         finally
         {
             shell?.Close();
-            File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new { exit, checks, scope = "Real WPF construction/navigation and settings save/control/serialization/IO race. Only the existing document serialization semaphore is held to arrange the interleaving. No Show, UI automation, HWND capture or GUI acceptance." }, new JsonSerializerOptions { WriteIndented = true }));
+            File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new { exit, checks, scope = "Real WPF construction/navigation, Runtime/Session confirmation and settings save/control/serialization/IO race. The picker loads real resources through SetMaps in a shown offscreen nonactivating window; clicks are routed programmatically. Capture/foreground use recorded fixtures, no native input/capture/game or visual acceptance. The existing document serialization semaphore arranges IO interleaving." }, new JsonSerializerOptions { WriteIndented = true }));
             app.Shutdown(exit);
         }
         return exit;
