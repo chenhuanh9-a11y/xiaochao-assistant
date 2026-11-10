@@ -4,6 +4,7 @@ An empty store is ordinary unavailable data. In particular, a component root
 must not enter a legacy loader that assumes trusted IDs and nested paths.
 Presence is reported separately from algorithm readiness.
 """
+from copy import deepcopy
 import re
 
 from season_context import SeasonContext, context_key, is_retired_mode
@@ -11,7 +12,7 @@ from client_providers import EngineFactories, ProviderResourceBinding, ProviderU
 
 
 # Capabilities are granted by completed program decoders, never package claims.
-SUPPORTED_CAPABILITIES = frozenset({'native-s0-nightmare-base-v1', 's0-signed-templates-v1',
+SUPPORTED_CAPABILITIES = frozenset({'native-s0-nightmare-base-v1', 'native-s0-difficult-base-v1', 's0-signed-templates-v1',
     'native-s1-difficult-base-v1', 'native-s1-nightmare-base-v1', 's1-signed-column-geometry-v1'})
 
 
@@ -23,16 +24,19 @@ class ImportedProviderUnavailable(ProviderUnavailable):
             self.resource_revision = resource_revision
 
 
-def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='nightmare'):
+def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='nightmare', require_rank=True):
     """Use the same decoded views for prospective and active construction.
 
     Callers own their operation/catalog lifetime. This function never resolves
     another catalog, publishes selection or writes personal learning data.
+    Data activation may set require_rank=False; the decoded rank capability is
+    still installed on the engine and checked by every ranking entry.
     """
     from difficult_native_identity import NativeDifficultCandidateEngine
     from imported_controls_profile import S0ControlsProfile
     from imported_s1_controls_profile import S1ControlsProfile
     from imported_s1_native_context import ImportedS1NativeContext
+    from imported_difficult_native_context import ImportedDifficultNativeContext
     from imported_native_base import decode_native_base
     from nightmare_candidate import NightmareMemoryStore
     from s0_vertical_controls import observe_s0_map
@@ -41,7 +45,8 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
     bundle = decode_native_base(base_view, season=season, mode=mode)
     if not bundle.ready:
         raise ImportedProviderUnavailable('native-base-incomplete', bundle.gaps)
-    if not bundle.rank_ready:
+    rank_ready = bundle.rank_ready
+    if require_rank and not rank_ready:
         raise ImportedProviderUnavailable('native-base-rank-unavailable', ('native-base-rank-unavailable',))
     if controls_view.component['dependencies']:
         raise ImportedProviderUnavailable('controls-dependencies-unsupported', ('controls-dependencies-unsupported',))
@@ -51,7 +56,12 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
     if context is None or set(context.contract.floor_ids) != set(pack.floors):
         raise ImportedProviderUnavailable('controls-base-floors-mismatch', ('controls-base-floors-mismatch',))
 
-    native = ImportedS1NativeContext(base_view, bundle, controls) if season == 's1' else None
+    if season == 's1':
+        native = ImportedS1NativeContext(base_view, bundle, controls)
+    elif mode == 'difficult':
+        native = ImportedDifficultNativeContext(base_view, bundle, controls)
+    else:
+        native = None
 
     def check_current():
         if native is not None:
@@ -67,14 +77,20 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
         except (OSError, ValueError):
             return False
 
-    memory = (_build_memory_store(pack, paths.memory_root(mode, season), root, season=season, controls=controls)
-        if season == 's1' else NightmareMemoryStore(pack, paths.memory_root(mode, season), portable_seed_path=None,
-            sample_validator=lambda frame: observe_s0_map(frame, mode, season=season, controls=controls)[0].get('detected') is True))
-    provider = SharedReferenceProvider(root, bundle.resources, bundle.versions, check_current=check_current)
+    if season == 's1':
+        memory = _build_memory_store(pack, paths.memory_root(mode, season), root, season=season, controls=controls)
+    else:
+        sample_validator = ((lambda frame: observe_s0_map(frame, mode, season=season, controls=controls)[0].get('detected') is True)
+                            if rank_ready else (lambda frame: False))
+        memory = NightmareMemoryStore(pack, paths.memory_root(mode, season), portable_seed_path=None,
+                                      sample_validator=sample_validator)
+    provider = SharedReferenceProvider(root, bundle.resources, bundle.versions,
+        native=native if bundle.legacy_references is not None else None, check_current=check_current)
     engine = NativeDifficultCandidateEngine(pack, identity_root=root / interfaces['identityEntries'],
         identity_profile_id=interfaces['identityProfile'], identity_floors=pack.floors,
-        exit_icon_path=base_view.path(interfaces['exitIcon']) if native is None else None,
-        entry_semantic_side_entries=native is None,
+        exit_icon_path=base_view.path(interfaces['exitIcon']) if bundle.semantic_side_entries else None,
+        entry_semantic_side_entries=bundle.semantic_side_entries,
+        entry_passport_source_available=bundle.passport_source_available,
         entry_structure_store=bundle.resources, entry_shared_reference_provider=provider,
         entry_read_resource=bundle.reader, entry_typed_index_path=base_view.path(interfaces['typedIndex']),
         shared_reference_loader=provider, entry_context_is_current=entry_current,
@@ -84,8 +100,13 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
     local = engine.side_entry_identity
     if (engine.entry_identity.error is not None or local is None
             or any(error is not None for error in
-                   (local.side_door_error, local.side_search_error, local.passport_error))):
+                   (local.side_door_error, local.side_search_error))
+            or (local.passport_error is not None if bundle.passport_source_available else
+                local.passport_error != 'entry-passports-source-unavailable')):
         raise ImportedProviderUnavailable('native-entry-construction-failed', ('native-entry-construction-failed',))
+    if bundle.legacy_passports is not None:
+        local.passports.extend(deepcopy(bundle.legacy_passports['entries']))
+        local.entry_coverage.extend(deepcopy(bundle.legacy_passports['coverage']))
     engine.qt_native_base = bundle
     engine.qt_assert_resource_current = check_current
     engine.qt_shared_provider = provider
@@ -96,12 +117,15 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
     engine.qt_native_context = native
     engine.qt_logical_group_registry = None
     engine.qt_live_gaps = tuple(native.live_gaps) if native is not None else ()
-    engine.qt_live_ready = not engine.qt_live_gaps
+    engine.qt_rank_ready = rank_ready
+    engine.qt_rank_gaps = () if rank_ready else ('native-base-rank-unavailable',)
+    engine.qt_live_ready = rank_ready and not engine.qt_live_gaps
     engine.qt_season = season
     engine.qt_resource_inventory = dict(typedLayers=len(bundle.versions),
+        legacyLayers=len(bundle.legacy_references.bindings) if bundle.legacy_references is not None else 0,
         mainEntries=len(engine.entry_identity.entries), sideEntries=len(engine.side_entry_identity.entries),
         semanticSideEntries=local.semantic_side_entries)
-    if native is not None:
+    if season == 's1':
         from s1_structure_selection import StructureCatalog
         engine.qt_s1_index_resource_root = root
         engine.qt_s1_private_coordinate_prepare = engine.qt_s1_pose_prior = None
@@ -143,7 +167,7 @@ class ImportedEngineFactories(EngineFactories):
                 resource_revision=revision) from error
         if resources.gaps:
             raise ImportedProviderUnavailable(';'.join(resources.gaps), resources.gaps, resource_revision=revision)
-        if (season, mode) not in {('s0', 'nightmare'), ('s1', 'difficult'), ('s1', 'nightmare')}:
+        if (season, mode) not in {('s0', 'nightmare'), ('s0', 'difficult'), ('s1', 'difficult'), ('s1', 'nightmare')}:
             raise ImportedProviderUnavailable('recognition-decoder-unavailable',
                 ('recognition-decoder-unavailable',), resource_revision=revision)
         return resources, revision
@@ -188,7 +212,8 @@ class ImportedEngineFactories(EngineFactories):
 
     def _build(self, mode, *, season='s0'):
         resources, _ = self._context_resources(mode, season)
-        engine = build_native_engine(resources.base, resources.controls, self.paths, season=season, mode=mode)
+        engine = build_native_engine(resources.base, resources.controls, self.paths,
+                                     season=season, mode=mode, require_rank=False)
         engine.qt_resource_inventory['optionalResourceGaps'] = list(resources.optional_gaps) + (
             ['display-decoder-unavailable'] if resources.displays else []) + (
             ['reviewed-groups-decoder-unavailable'] if resources.groups is not None else [])

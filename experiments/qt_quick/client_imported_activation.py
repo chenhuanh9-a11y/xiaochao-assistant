@@ -61,7 +61,7 @@ def _validate_proposal(root, paths, resolver, base_ref, controls_ref, *, season,
         controls_view = inspected.views.get(controls_ref)
         if base_view is None or controls_view is None:
             raise catalog.ResourceCatalogError('resource-component-not-selected')
-        engine = build_native_engine(base_view, controls_view, paths, season=season, mode=mode)
+        engine = build_native_engine(base_view, controls_view, paths, season=season, mode=mode, require_rank=False)
         try:
             operation_current()
             engine.qt_assert_resource_current()
@@ -78,10 +78,10 @@ def activate_context(resolver, paths, base_ref, controls_ref, *, season='s0', mo
 
     The caller must already hold its Session idle resource lease. The catalog
     write lock here serializes this operation with package/catalog writers.
-    Only the implemented native S0 nightmare and S1 difficult/nightmare base/control
-    pairs are admitted; no legacy factory or builtin fallback is consulted.
+    All four implemented base/control data contexts are admitted. Data admission
+    does not grant rank or live capability; no legacy factory is consulted.
     """
-    if (season, mode) not in {('s0', 'nightmare'), ('s1', 'difficult'), ('s1', 'nightmare')}:
+    if (season, mode) not in {('s0', 'nightmare'), ('s0', 'difficult'), ('s1', 'difficult'), ('s1', 'nightmare')}:
         raise catalog.ResourceCatalogError('native-base-context-unsupported')
     if not isinstance(base_ref, ComponentRef) or not isinstance(controls_ref, ComponentRef):
         raise catalog.ResourceCatalogError('resource-catalog-reference-invalid')

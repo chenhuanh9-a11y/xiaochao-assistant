@@ -1,6 +1,6 @@
 # 四模式识别、贴合与资源导入统一方案
 
-核查日期：2026-11-11。状态：**P0 调查/设计完成；P1 空资源默认入口、P2 保存基础、S0 噩梦启用及 S1 两模式数据启用已接资源页；S0 困难基础数据已可独立解码，默认工厂/启用、作者显示与四模式回放尚未完成**。本文件同时作为现状清单、设计和实施台账，不另建重复任务说明。第 2–4 节现状引用绑定原核查 commit，后续实施状态另见第 8 节。
+核查日期：2026-11-11。状态：**P0 调查/设计完成；P1 空资源默认入口及 P2 四组合基础数据保存/选择已接资源页；S0 困难识别仍关闭，S1 保留观测资格限制；作者显示、登记来源角色与四模式回放尚未完成**。本文件同时作为现状清单、设计和实施台账，不另建重复任务说明。第 2–4 节现状引用绑定原核查 commit，后续实施状态另见第 8 节。
 
 ## 1. 范围与基线
 
@@ -400,19 +400,19 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 
 ### S0 困难导入前置接缝
 
-- 真实源需保留 30 图、58 native typed 层与 map29 两个 `legacy-clean-working-draft` 竞争层；native source/version 视图仍为 29 图，不把两层改成已绑定 game-layout 或已验收 native。混合入口已含 30 main/60 local，不重复追加 legacy entries。map29 的非零坐标桥、根相对 entry 引用、静态出口 marker、缺 native passport/anchors/search 与仅两条 legacy passport 资料须分别处理，不能套 S0 噩梦或 S1 空 gates 合同。metadata-free legacy NPZ 有界读取接缝见后段；当前 S0 困难 decoder 已支持基础数据，默认工厂尚未放行（见后段）。
+- 真实源需保留 30 图、58 native typed 层与 map29 两个 `legacy-clean-working-draft` 竞争层；native source/version 视图仍为 29 图，不把两层改成已绑定 game-layout 或已验收 native。混合入口已含 30 main/60 local，不重复追加 legacy entries。map29 的非零坐标桥、根相对 entry 引用、静态出口 marker、缺 native passport/anchors/search 与仅两条 legacy passport 资料须分别处理，不能套 S0 噩梦或 S1 空 gates 合同。metadata-free legacy NPZ 有界读取接缝见后段；当前 S0 困难 decoder 与默认工厂只接入基础数据，识别尚未放行（见后段）。
 - 已修正实时资格消费者：factory report、运行状态/命令列表、主页状态及输入/控件前置检查、实时意图与实际 `_get_engine(require_live=True)` 均尊重显式 `qt_live_ready=False`。旧可信 S0 未声明该字段时保留原默认；显式 true 行为保留，S1 已有候选资格例外不扩大到 S0。`require_live=False` 仍可读取数据。本项只处理已有能力字段的消费，不授予困难数据、旧 rank 或 legacy fit 资格。
 - 新回归 5 项修前有 8 处失败：S0 false 被报告为 true、实际 require-live 未拒绝、开始本局成功且采集被启用。修后连同 factory/season/S1/runtime 合计 102 项通过（3.625 秒）；含无解释 gap 时仍拒绝、状态与意图阻断、采集和 rank 均未执行，以及旧 S0 默认/true 保持。测试以 engine DTO 替换重资源构造、以 fixture 替换采集；真实 factory report、offline adapter、runtime snapshot/dispatch/getter 执行，不能迁作真实资源或游戏验收。
 - 主页 coordinator 的同类前置反例另有定向回归：runtime 已拒绝开始时，主页仍曾显示可以开始，并先调用输入启用和控件更新。困难/噩梦两处修前失败，修后真实 coordinator→Session 链会先提示一次资源未就绪，不派发开始、不尝试启用输入或更新控件；资源反馈/coordinator/前述 5 项合计 65 项通过（0.552 秒，包含与前组重复的 5 项）。窗口/输入 API 和 engine 为 fixture，未操作用户程序。
 - `AuthorStructureResourceStore` 的外置分支现要求显式 index/root，JSON 和实际文件经 reader，不回退磁盘或环境默认路径；调用方可绑定 `check_current`，构造、cache 命中、route/shared-reference 及迟到结果均核对，失效清 cache 并传播。独立 metadata-free legacy 头预检复用原 NPZ 成员解析和大小预算，不把 typed 的必需 metadata 改成可选；已有正文二值/墙段解码保留，未用 edge/distance 不膨胀分配。两个实际正文损坏反例分别覆盖普通 load 和 typed shared-reference 委托：header 通过后 DEFLATE 解码失败，外置分支返回 None，可信直接分支保留原异常；当前性异常仍传播。
 - 新 legacy reader 与原 typed/shared IO 合计 25 项通过，含真实 PackageView、越界/未声明不回退、cache/迟到结果失效及确定性坏压缩正文。另以真实旧 index 与两份原 NPZ 在私有临时 PackageView 中加载：F1 2379×2894/296 墙段、F2 1491×2894/277 墙段，原 source class/未验收状态及 null layout 保留；同字节 manifest 实际替换后拒绝 cache 并清空。该临时组件仅检验 3 文件 IO，不是完整 native base，未执行 decoder、factory、catalog 启用、identity/fit、GUI、游戏或 Setup。
 
-### S0 困难基础数据解码（默认工厂尚未启用）
+### S0 困难基础数据解码
 
 - 公共 `decode_native_base` 新增 S0 困难数据合同。完整 identity/混合入口保留 30 图、30 main/60 local；typed/source/version 视图仅含原生 29 图/58 层，map29 两层由独立 metadata-free legacy 引用适配，不伪造 layout、typed metadata 或 source version。源 index、NPZ、merged entries 与旧 passport 原样保留；旧结构的草稿状态、空 layout、非零 crop→canonical 桥和反向矩阵分别核对。
 - Native main 仍为无身份/位姿授权的 proposal；local 的静态出口 marker 不变成门宽、状态或向外方向。源缺少 native passport 时显式跳过读取，保留 `entry-passports-source-unavailable`；两条真实 legacy glyph passport 都在 F1，F2 coverage 明确 incomplete，不补空 native 文件或扩大完整性。bundle 的 `rank_ready`、语义侧门和 native passport 可用性均为 false；直接 engine builder 在数据解码后明确返回 `native-base-rank-unavailable`，不把数据可读当作旧 S0 rank 资格。
 - 制包器通过声明的 S0 manifest 和库存选择基础结构，转换 identity DTO、补实际组件引用、移除作者图显示依赖；控件复用完整 720 模板/12 类，仅按困难的 1/2 层合同配置。真实测试 ZIP：`s0-difficult-native-2.104.3034860-p2-export-v1.zip`，4,046,049 bytes，SHA256 `d1bcc98cdfdb105ae0324d0915ef7d28cff041081bafe63fa1ab0419a8ddf54f`。源 71 文件、输出 73 数据文件；67 份原样文件逐个匹配 855 项库存中的真实原件，其他基础数据为三份明确转换的 JSON 与新 context。真实 ZIP 保存至私有临时资源根并从公共 decoder 回读 30/58/2/30/60，15.543 秒，未创建 catalog 或 engine。
-- 新微型合成资源测试保留完整 30 图竞争池、两个旧二值产品和多 glyph/F2 缺口，验证缺候选/缺 legacy、提权 proposal/marker、根相对引用错配、草稿/坐标资格篡改及 passport 错绑/重复拒绝。旧结构适配器另经 5 项及独立审阅；完整公共入口与受影响回归按本次实际结果记录。默认工厂、资源页启用、识别/贴合、GUI、游戏和统一架构 Setup 仍未验证，不将数据往返称为 P2 或四模式验收完成。
+- 新微型合成资源测试保留完整 30 图竞争池、两个旧二值产品和多 glyph/F2 缺口，验证缺候选/缺 legacy、提权 proposal/marker、根相对引用错配、草稿/坐标资格篡改及 passport 错绑/重复拒绝。旧结构适配器另经 5 项及独立审阅；后续默认工厂和资源页的数据接入见下段。这些解码测试本身不证明识别/贴合、完整 GUI、游戏或统一架构 Setup，不将数据往返称为 P2 或四模式验收完成。
 
 ### 数据就绪与识别资格的消费
 
@@ -424,3 +424,10 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 
 - S1 原有的 base/reader/root/ref、controls 和楼层合同校验集中为共享数据上下文；S1 保留原错误类别与观测资格，不复制生命周期逻辑。S0 困难的独立适配器复用这些检查，提供 native/legacy 引用与真实 pending native bindings；两种引用不合并成一种 native 资格，不读取旧 author/RGB 磁盘上下文，也不在此接入 rank 或启用入口。
 - S0 控件对象新增当前性检查，缓存合同在 catalog 或同字节 manifest 替换后也会拒绝，不仅在初次读取时校验。定向反例修前未抛失效异常；修后 S0 控件/观测 15 项、共享逻辑提取后的原 S1 上下文 6 项、新困难上下文 4 项通过。困难用完整 30 图微型合成 ZIP、公用 decoder 和真实 SharedReferenceProvider 验证两类引用、实际 manifest 替换失效、跨安装 base 拒绝及返回元数据不回写；这些是数据和组件引用证据，不是完整客户端、默认 S0 困难 factory 或游戏验收。
+
+### S0 困难默认工厂与数据选择
+
+- 默认构造器仍要求 rank 可用；数据工厂与 prospective activation 显式请求数据构造，沿用同一 decoder/context/engine，不临时复制困难 scanner。两类结构引用通过同一 provider，semantic/passport 行为按 bundle 实际能力设置；仅追加原有 legacy passport/coverage，保留缺 native passport 的错误，不重复 merged entries。D engine 具有 `dataReady=True`，rank/available/live 均为 false，不挂 S1 scanner，不启用学习或便携种子。
+- 资源页固定选项增加“启用 S0 困难数据”，稳定 suffix 为 `-s0-difficult`；新启用与重复启用均明确说明识别功能尚未开放。保存不写 catalog，选择沿用 Session 租约、prospective 包视图、事务提交/取消恢复与一次通知；重复不改 generation。四种已登记的数据组合现在都受支持，原“不支持 S0D”负例改为未知 S2 上下文，仍保留支持组合之间包错配的拒绝与 catalog 不变检查。
+- 完整 30 图微型合成 ZIP 经真实服务导入→租约→helper/catalog→默认数据工厂、native/legacy 底图及缓存资格检查，2 项修前失败，修后通过；直接 rank/实时 getter/开始本局仍拒绝，未采集、未创建学习目录。旧 helper/服务/默认 builder 拒绝回归 16 项，以及旧 S0N 工厂、构造后读取失败、S1 实际扫描 3 项分别通过。资源页组件交互与真实包证据单独记录，不冒充完整 QtClient、实帧识别/贴合、游戏或 Setup 验收。
+- 新离屏 QML 测试通过实际鼠标点击启用按钮，保存阶段通过服务 API，不经过文件选择器；核对忙时 Session 租约、按钮/模型实例、一次通知、重复选择与全部数据资格。微型包 1 项通过（67.340 秒），同一测试链换真实 `d1bcc98c…f54f` 包 1 项通过（79.879 秒）：保存 4.319 秒、指针到选择完成 26.600 秒，0 错误/首次与重复均总计 1 次通知，30 图 60 层 RGBA 实际尺寸分别记录；data=true、rank/live/candidate/available=false，未学习或采集。以上为一次离屏诊断，含短暂可控等待以观察租约，不是识别延时或物理首像素测量。650×470 与 1000×720 的保存态截图已核对，新按钮与不可识别提示无裁切；完整 QtClient/原生输入/游戏仍未测。

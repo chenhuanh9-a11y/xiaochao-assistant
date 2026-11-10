@@ -15,6 +15,8 @@ from backend import ResourceRows
 _ACTIVATION_CONTEXTS = {
     ('s0', 'nightmare'): dict(label='启用 S0 噩梦', objectSuffix='', notice='',
         activatedMessage='S0 噩梦基础结构与楼层控件已启用。'),
+    ('s0', 'difficult'): dict(label='启用 S0 困难数据', objectSuffix='-s0-difficult',
+        notice='识别功能尚未开放，启用后仍不能开始识别。', activatedMessage='S0 困难基础数据已启用。'),
     ('s1', 'difficult'): dict(label='启用 S1 困难数据', objectSuffix='-s1-difficult',
         notice='自动楼层识别尚未验证，启用后仍不可用。', activatedMessage='S1 困难基础数据已启用。'),
     ('s1', 'nightmare'): dict(label='启用 S1 噩梦数据', objectSuffix='-s1-nightmare',
@@ -291,6 +293,8 @@ class ImportedResourceService(QObject):
                                  else _ACTIVATION_CONTEXTS[context]['activatedMessage'])
                 if context[0] == 's1':
                     self._message += ' 自动楼层识别尚未验证，暂不可用。'
+                elif context == ('s0', 'difficult'):
+                    self._message += ' 识别功能尚未开放，暂不能开始识别。'
                 if inventory is None:
                     self._message += ' 列表暂时无法读取，请重新核对。'
                 elif inventory.generation != outcome['generation']:
