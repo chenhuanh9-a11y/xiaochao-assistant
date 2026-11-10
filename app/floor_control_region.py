@@ -45,6 +45,39 @@ def _unread(reason: str, **extra) -> dict:
     return dict(selectedFloor=None, reason=reason, confidence=0., **extra)
 
 
+def _reader_spec(mode: str, season: str, controls):
+    """Return the one detector contract/order/bank/search pair for this read.
+
+    The legacy path deliberately keeps its reviewed static values. An imported
+    profile supplies every detector input together; a missing profile context
+    never inherits the static S0 reader.
+    """
+    if controls is None:
+        contract = floor_contract(mode, season=season)
+        if contract is None or season != "s0":
+            return None
+        return (contract, tuple(reversed(contract.observed_values)), None,
+                VERTICAL_SEARCH_AREA, AUTO_VERTICAL_SEARCH_AREA)
+    try:
+        context = controls.for_context(season, mode)
+        contract = context.contract
+        order = tuple(context.visual_order)
+        templates = controls.templates
+        fixed = tuple(controls.fixed_search_region)
+        expanded = tuple(controls.expanded_search_region)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    values = contract.observed_values
+    if (contract.season != season or contract.mode != mode
+            or contract.control_axis != "vertical"
+            or not values or len(set(values)) != len(values)
+            or len(order) != len(values) or set(order) != set(values)
+            or templates is None or not isinstance(getattr(templates, "family", None), str)
+            or normalized_region(fixed) is None or normalized_region(expanded) is None):
+        return None
+    return contract, order, templates, fixed, expanded
+
+
 def _candidate_tiles(gray: np.ndarray, kernel: int, min_height: float, max_height: float, limit: int = 8):
     """Dense, tile-shaped bright fills, largest first."""
     mask = (gray > FILL_LEVEL).astype(np.uint8)
@@ -169,7 +202,8 @@ def _read_axis(gray: np.ndarray, floors, tiles, origin, size, reason: str) -> di
                 pitch=pitch / fw)
 
 
-def _vertical_label_evidence(gray, points, bounds, order, selected, origin, size):
+def _vertical_label_evidence(gray, points, bounds, order, selected, origin, size,
+                             templates=None):
     """Score the whole signed column and measure its actual numeral centers.
 
     A weak glyph can be supported by the other rows and the measured highlight;
@@ -186,12 +220,19 @@ def _vertical_label_evidence(gray, points, bounds, order, selected, origin, size
         y0, y1 = int(y - th * .30), int(y + th * .30)
         if x0 < 0 or y0 < 0 or x1 > gray.shape[1] or y1 > gray.shape[0]:
             return None
-        match = classify_label(gray[y0:y1,x0:x1], selected=floor==selected)
+        if templates is None:
+            match = classify_label(gray[y0:y1,x0:x1], selected=floor==selected)
+        else:
+            match = classify_label(gray[y0:y1,x0:x1], selected=floor==selected,
+                                   templates=templates)
         if match is None or match["label"] != floor:
             return None
         score = match["scores"][floor]
-        evidence.append(dict(floor=floor, negative=floor<0,
-            digitAspect=match["digitAspect"], score=score))
+        row = dict(floor=floor, negative=floor<0,
+                   digitAspect=match["digitAspect"], score=score)
+        if templates is not None:
+            row["templateFamily"] = match["family"]
+        evidence.append(row)
         # Fill edges change with exposure; the recognized numeral does not.
         # Pitch from the fill only proposes the crop. Keep the actual glyph's
         # center for comparing columns and binding current click geometry.
@@ -203,7 +244,7 @@ def _vertical_label_evidence(gray, points, bounds, order, selected, origin, size
     return evidence, measured_points
 
 
-def _read_vertical(gray, floors, origin, size, reason):
+def _read_vertical(gray, floors, origin, size, reason, *, visual_order=None, templates=None):
     """Template-qualified whole columns, with observed 2D click geometry.
 
     Filled tiles propose columns; they do not decide numeral identity. Verify
@@ -213,7 +254,7 @@ def _read_vertical(gray, floors, origin, size, reason):
     width = size[0]
     transposed = np.ascontiguousarray(gray.T)
     tiles = _candidate_tiles(transposed, round(width * .0036), width * .010, width * .06)
-    order = tuple(reversed(floors))
+    order = tuple(reversed(floors)) if visual_order is None else tuple(visual_order)
     accepted, first_failure = [], None
     for tile in tiles:
         read = _read_axis(transposed, order, [tile], origin[::-1], size[::-1], reason)
@@ -225,7 +266,8 @@ def _read_vertical(gray, floors, origin, size, reason):
         before, after = read.pop("left"), read.pop("right")
         points = [[x + w / 2, cy] for cy in centers]
         labels = _vertical_label_evidence(gray, points, [x,y,w,h], order,
-                                          read["selectedFloor"], origin, size)
+                                          read["selectedFloor"], origin, size,
+                                          templates=templates)
         if labels is None:
             first_failure = first_failure or _unread("vertical-labels-unverified")
             continue
@@ -263,19 +305,23 @@ def _column_background(gray, read, origin, size):
     return float(np.median(pixels)) if pixels.size else None
 
 
-def _read_vertical_contrast(gray, floors, origin, size, reason):
+def _read_vertical_contrast(gray, floors, origin, size, reason, *,
+                            visual_order=None, templates=None):
     """Compare complete column proofs at bounded, ROI-independent exposures.
 
     Darkening separates a raised panel from its fill; brightening restores a
     dim highlight's extent. Every exposure proves the full signed column on
     its own. No rows are combined and any complete contradiction is retained.
     """
-    original = _read_vertical(gray, floors, origin, size, reason)
+    original = _read_vertical(gray, floors, origin, size, reason,
+                              visual_order=visual_order, templates=templates)
     if original.get("reason") == "columns-ambiguous":
         return original
     accepted = [(original, 1.)] if original.get("selectedFloor") is not None else []
     for exposure in (2. / 3., 1.5):
-        read = _read_vertical(cv2.convertScaleAbs(gray, alpha=exposure), floors, origin, size, reason)
+        read = _read_vertical(cv2.convertScaleAbs(gray, alpha=exposure), floors,
+                              origin, size, reason, visual_order=visual_order,
+                              templates=templates)
         if read.get("reason") == "columns-ambiguous":
             return _unread("columns-ambiguous", controlExposure=exposure)
         if read.get("selectedFloor") is None:
@@ -313,32 +359,50 @@ def _crop(frame, box):
     return cv2.cvtColor(frame[y0:y1, x0:x1, :3], cv2.COLOR_BGR2GRAY), (x0, y0)
 
 
-def read_floor_in_region(frame: np.ndarray, region, mode: str, *, season="s0") -> dict:
+def read_floor_in_region(frame: np.ndarray, region, mode: str, *, season="s0",
+                         controls=None) -> dict:
     """Read the complete current vertical selector inside a normalized region."""
-    contract = floor_contract(mode, season=season)
-    if contract is None or season != "s0":
+    spec = _reader_spec(mode, season, controls)
+    if spec is None:
+        if controls is not None:
+            return _unread("controls-profile-context-unavailable", season=season, mode=mode)
+        contract = floor_contract(mode, season=season)
         return _unread("vertical-floor-detector-unvalidated" if contract else "floor-contract-unavailable")
+    contract, order, templates, _fixed_area, _expanded_area = spec
     box = normalized_region(region)
     if frame is None or getattr(frame, "ndim", 0) != 3 or box is None:
         return _unread("region-invalid")
     gray, origin = _crop(frame, box)
     if gray is None:
         return _unread("region-too-small")
-    read = _read_vertical_contrast(gray, contract.observed_values, origin, frame.shape[1::-1], "region-highlight-read")
+    read = _read_vertical_contrast(gray, contract.observed_values, origin,
+                                   frame.shape[1::-1], "region-highlight-read",
+                                   visual_order=order, templates=templates)
+    if controls is not None:
+        read["controlProfileFamily"] = templates.family
     return dict(read, controlSearchRegion=list(box))
 
 
-def locate_vertical_floor_controls(frame: np.ndarray, mode: str, *, season="s0", expanded=False) -> dict:
+def locate_vertical_floor_controls(frame: np.ndarray, mode: str, *, season="s0",
+                                   expanded=False, controls=None) -> dict:
     """Read only the new S0 column; never infer a season from button count."""
-    contract = floor_contract(mode, season=season)
-    if season != "s0" or contract is None:
+    spec = _reader_spec(mode, season, controls)
+    if spec is None:
+        if controls is not None:
+            return _unread("controls-profile-context-unavailable", season=season, mode=mode)
+        contract = floor_contract(mode, season=season)
         return _unread("vertical-floor-detector-unvalidated" if contract else "floor-contract-unavailable")
+    contract, order, templates, fixed_area, expanded_area = spec
     if frame is None or getattr(frame, "ndim", 0) != 3:
         return _unread("region-invalid")
-    area = AUTO_VERTICAL_SEARCH_AREA if expanded else VERTICAL_SEARCH_AREA
+    area = expanded_area if expanded else fixed_area
     column, origin = _crop(frame, area)
-    result = (_read_vertical_contrast(column, contract.observed_values, origin, frame.shape[1::-1], "auto-located")
+    result = (_read_vertical_contrast(column, contract.observed_values, origin,
+                                      frame.shape[1::-1], "auto-located",
+                                      visual_order=order, templates=templates)
               if column is not None else _unread("region-too-small"))
+    if controls is not None:
+        result["controlProfileFamily"] = templates.family
     if not expanded:
         return dict(result, controlSearchRegion=list(area))
     # The broad search domain is metadata, never an automatic screenshot ROI.
@@ -379,18 +443,20 @@ def region_for_client(setting, size) -> tuple[float, float, float, float] | None
     return rect
 
 
-def _auto(mode, frame, floor_read: dict, source: str, **extra) -> dict:
+def _auto(mode, frame, floor_read: dict, source: str, *, season="s0", controls=None,
+          **extra) -> dict:
     """Keep a current read or contradiction; expand only genuine no-reads."""
     if (floor_read.get("selectedFloor") is not None
             or floor_read.get("reason") == "columns-ambiguous"):
         return dict(floor_read, floorSource=source, **extra)
-    located = locate_vertical_floor_controls(frame, mode, expanded=True)
+    located = locate_vertical_floor_controls(frame, mode, season=season,
+                                              expanded=True, controls=controls)
     if located["selectedFloor"] is None:
         return dict(floor_read, floorSource=source + "-auto-unread", autoRead=located, **extra)
     return _merge_region_read(floor_read, located, "auto-located", autoRead=located, **extra)
 
 
-def apply_floor_region(settings, mode, frame, floor_read: dict) -> dict:
+def apply_floor_region(settings, mode, frame, floor_read: dict, *, controls=None) -> dict:
     """Apply fixed/default-column or player-region preferences to S0 evidence.
 
     A framed region can replace the observation, never the declared mode or
@@ -400,6 +466,10 @@ def apply_floor_region(settings, mode, frame, floor_read: dict) -> dict:
     # Reject even a stale positive fixed-detector reading in an unregistered
     # season. Legacy callers without gameSeason retain the exact S0 path.
     season = settings.get("gameSeason", "s0")
+    spec = _reader_spec(mode, season, controls)
+    if controls is not None and spec is None:
+        return dict(_unread("controls-profile-context-unavailable", season=season, mode=mode),
+                    floorSource="unavailable")
     if season != "s0":
         contract = floor_contract(mode, season=season)
         return dict(_unread("vertical-floor-detector-unvalidated" if contract is not None else "floor-contract-unavailable"), floorSource="unavailable")
@@ -407,13 +477,15 @@ def apply_floor_region(settings, mode, frame, floor_read: dict) -> dict:
     if choice == "fixed":
         return dict(floor_read, floorSource="fixed")
     if choice != "region":
-        return _auto(mode, frame, floor_read, "fixed")
+        return _auto(mode, frame, floor_read, "fixed", season=season, controls=controls)
     rect = region_for_client(settings.get("floorControlRegion"), frame.shape[1::-1])
     if rect is None:
-        return _auto(mode, frame, floor_read, "fixed-region-unavailable")
-    read = read_floor_in_region(frame, rect, mode)
+        return _auto(mode, frame, floor_read, "fixed-region-unavailable",
+                     season=season, controls=controls)
+    read = read_floor_in_region(frame, rect, mode, season=season, controls=controls)
     if read.get("reason") == "columns-ambiguous":
         return _merge_region_read(floor_read, read, "region", regionRead=read)
     if read["selectedFloor"] is None:
-        return _auto(mode, frame, floor_read, "fixed-region-unread", regionRead=read)
+        return _auto(mode, frame, floor_read, "fixed-region-unread", season=season,
+                     controls=controls, regionRead=read)
     return _merge_region_read(floor_read, read, "region", regionRead=read)

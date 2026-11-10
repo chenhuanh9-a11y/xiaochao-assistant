@@ -15,20 +15,54 @@ def _number(value):
     return type(value) in (int, float) and math.isfinite(value)
 
 
-def validated_control_rects(read):
+def _control_context(mode, season, controls):
+    """Resolve the active reviewed contract and the detector's declared order."""
+    if controls is None:
+        contract = floor_contract(mode, season=season)
+        order = S0_VERTICAL_ORDERS.get(mode)
+        if contract is None or season != "s0" or order is None:
+            return None
+        return contract, tuple(order), None
+    try:
+        context = controls.for_context(season, mode)
+        contract = context.contract
+        order = tuple(context.visual_order)
+        templates = controls.templates
+    except (AttributeError, TypeError, ValueError):
+        return None
+    values = contract.observed_values
+    if (contract.season != season or contract.mode != mode
+            or contract.control_axis != "vertical"
+            or not values or len(set(values)) != len(values)
+            or len(order) != len(values) or set(order) != set(values)
+            or templates is None or not isinstance(getattr(templates, "family", None), str)):
+        return None
+    return contract, order, templates
+
+
+def validated_control_rects(read, *, controls=None):
     """Strictly validate a complete same-frame layout before click admission."""
     if not isinstance(read, dict):
         return None
     if not isinstance(read.get("mode"), str):
         return None
-    order = S0_VERTICAL_ORDERS.get(read.get("mode"))
-    contract = floor_contract(read.get("mode"), season=read.get("season"))
-    if (read.get("season") != "s0" or order is None or contract is None
-            or set(order) != set(contract.observed_values)
+    resolved = _control_context(read.get("mode"), read.get("season"), controls)
+    if resolved is None:
+        return None
+    contract, order, templates = resolved
+    if (set(order) != set(contract.observed_values)
             or read.get("layout") != LAYOUT or read.get("controlAxis") != "vertical"
             or read.get("mapOpen") is not True or read.get("controlGeometryVerified") is not True
             or type(read.get("selectedFloor")) is not int or read["selectedFloor"] not in order):
         return None
+    if controls is not None:
+        if (read.get("controlProfileFamily") != templates.family
+                or not isinstance(read.get("labelEvidence"), (list, tuple))
+                or len(read["labelEvidence"]) != len(order)
+                or any(not isinstance(glyph, dict)
+                       or glyph.get("templateFamily") != templates.family
+                       for glyph in read["labelEvidence"])):
+            return None
     visual = read.get("observedOrder")
     if not isinstance(visual, (list, tuple)) or any(type(v) is not int for v in visual) or tuple(visual) != order:
         return None
@@ -56,7 +90,7 @@ def validated_control_rects(read):
     return tuple(zip(order, rectangles))
 
 
-def bind_control_geometry(read, mode, frame_size, *, map_open):
+def bind_control_geometry(read, mode, frame_size, *, map_open, controls=None):
     """Bind detector output to independent map-open evidence and current pixels.
 
     Click regions are conservative interiors, smaller than both the measured
@@ -68,7 +102,9 @@ def bind_control_geometry(read, mode, frame_size, *, map_open):
         out.pop(key, None)
     out.update(season="s0", mode=mode, mapOpen=map_open is True,
                layout="vertical-floor-read-only", controlGeometryVerified=False)
-    order = S0_VERTICAL_ORDERS.get(mode)
+    resolved = _control_context(mode, "s0", controls)
+    order = resolved[1] if resolved is not None else None
+    templates = resolved[2] if resolved is not None else None
     try:
         points, evidence = read["centerPoints"], read["labelEvidence"]
         x, y, w, h = read["tileBounds"]
@@ -76,7 +112,9 @@ def bind_control_geometry(read, mode, frame_size, *, map_open):
         if (map_open is not True or order is None or read.get("controlAxis") != "vertical"
                 or ("season" in read and read["season"] != "s0")
                 or ("mode" in read and read["mode"] != mode)
+                or resolved is None
                 or tuple(read.get("observedOrder", ())) != order
+                or (controls is not None and read.get("controlProfileFamily") != templates.family)
                 or type(read.get("selectedFloor")) is not int or read["selectedFloor"] not in order
                 or len(points) != len(order) or len(evidence) != len(order)
                 or not all(_number(v) for v in (x, y, w, h))
@@ -86,7 +124,8 @@ def bind_control_geometry(read, mode, frame_size, *, map_open):
             if (len(point) != 2 or not all(_number(v) and 0 < v < 1 for v in point)
                     or not isinstance(glyph, dict)
                     or type(glyph.get("floor")) is not int or glyph["floor"] != floor
-                    or glyph.get("negative") is not (floor < 0)):
+                    or glyph.get("negative") is not (floor < 0)
+                    or (controls is not None and glyph.get("templateFamily") != templates.family)):
                 raise ValueError("unverified label")
         if any(abs(point[0] - (x+w/2)) > w*.1 for point in points):
             raise ValueError("not one column")
@@ -101,7 +140,7 @@ def bind_control_geometry(read, mode, frame_size, *, map_open):
                 for floor,(cx,cy) in zip(order,points)]
         out.update(layout=LAYOUT, controlGeometryVerified=True,
                    controlFrameSize=list(size), controlRects=rows)
-        if validated_control_rects(out) is None:
+        if validated_control_rects(out, controls=controls) is None:
             raise ValueError("invalid rectangles")
         return out
     except (KeyError, TypeError, ValueError, IndexError):
@@ -111,8 +150,8 @@ def bind_control_geometry(read, mode, frame_size, *, map_open):
         return out
 
 
-def control_hit(cursor, client_bounds, read):
-    rows = validated_control_rects(read)
+def control_hit(cursor, client_bounds, read, *, controls=None):
+    rows = validated_control_rects(read, controls=controls)
     if rows is None:
         return None
     try:
@@ -131,7 +170,7 @@ def control_hit(cursor, client_bounds, read):
         return None
 
 
-def _observe_s0_map_geometry(frame, mode, read, observation):
+def _observe_s0_map_geometry(frame, mode, read, observation, *, controls=None):
     """Alternate proof for a revealed/bright map, never a texture relaxation.
 
     Only the caller's current detector output is eligible. The shared geometric
@@ -152,8 +191,9 @@ def _observe_s0_map_geometry(frame, mode, read, observation):
     if observation.get("detected") is True or observation.get("shapeAccepted") is not True:
         return observation
     height, width = frame.shape[:2]
-    candidate = bind_control_geometry(read, mode, (width, height), map_open=True)
-    if validated_control_rects(candidate) is None:
+    candidate = bind_control_geometry(read, mode, (width, height), map_open=True,
+                                      controls=controls)
+    if validated_control_rects(candidate, controls=controls) is None:
         return observation
 
     # Remove the complete measured column, including unselected signed labels,
@@ -196,23 +236,35 @@ def _observe_s0_map_geometry(frame, mode, read, observation):
                 mapUiGeometry=geometry)
 
 
-def observe_s0_map(frame, mode, *, settings=None, season="s0"):
+def observe_s0_map(frame, mode, *, settings=None, season="s0", controls=None):
     """Compose same-frame signed controls, canvas proof and calibrated geometry."""
     from floor_control_region import apply_floor_region, locate_vertical_floor_controls
     from map_interface_observation import detect_map_interface
-    contract = floor_contract(mode, season=season)
-    if season != "s0" or contract is None:
-        reason = "floor-control-detector-unvalidated" if contract else "floor-contract-unavailable"
-        read = dict(selectedFloor=None, season=season, mode=mode, controlAxis="vertical",
-                    controlGeometryVerified=False, floorSource="unavailable", reason=reason)
-        return dict(detected=False, mapOpen=None, reason=reason), read
-    current = locate_vertical_floor_controls(frame, mode, season=season)
+    if controls is None:
+        contract = floor_contract(mode, season=season)
+        if season != "s0" or contract is None:
+            reason = "floor-control-detector-unvalidated" if contract else "floor-contract-unavailable"
+            read = dict(selectedFloor=None, season=season, mode=mode, controlAxis="vertical",
+                        controlGeometryVerified=False, floorSource="unavailable", reason=reason)
+            return dict(detected=False, mapOpen=None, reason=reason), read
+    else:
+        resolved = _control_context(mode, season, controls)
+        if resolved is None:
+            reason = "controls-profile-context-unavailable"
+            read = dict(selectedFloor=None, season=season, mode=mode, controlAxis="vertical",
+                        controlGeometryVerified=False, floorSource="unavailable", reason=reason)
+            return dict(detected=False, mapOpen=None, reason=reason), read
+        contract = resolved[0]
+    current = locate_vertical_floor_controls(frame, mode, season=season, controls=controls)
     read = dict(current, season=season, mode=mode,
                 layout="vertical-floor-read-only", controlGeometryVerified=False)
-    read = apply_floor_region(dict(settings or {}, gameSeason=season), mode, frame, read)
+    read = apply_floor_region(dict(settings or {}, gameSeason=season), mode, frame,
+                              read, controls=controls)
     observation = detect_map_interface(frame, floor_read=read)
-    observation = _observe_s0_map_geometry(frame, mode, read, observation)
+    observation = _observe_s0_map_geometry(frame, mode, read, observation,
+                                           controls=controls)
     opened = observation.get("detected") is True
-    read = bind_control_geometry(read, mode, frame.shape[1::-1], map_open=opened)
+    read = bind_control_geometry(read, mode, frame.shape[1::-1], map_open=opened,
+                                 controls=controls)
     return dict(observation, mapOpen=opened, floor=contract.floor_id_for(read.get("selectedFloor")),
                 layoutFamily="s0-vertical", controlAxis="vertical"), read
