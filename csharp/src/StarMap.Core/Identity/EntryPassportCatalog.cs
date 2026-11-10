@@ -13,6 +13,7 @@ public sealed class EntryPassportCatalog
     public string Mode { get; }
     public string ProfileId { get; }
     public string ResourceRoot { get; }
+    public string PackId { get; }
     public IReadOnlySet<(string MapId, string Floor)> PackFloors { get; }
     public IReadOnlySet<(string MapId, string Floor)> UnavailablePackFloors { get; }
     public string ModeRoot { get; }
@@ -75,6 +76,7 @@ public sealed class EntryPassportCatalog
         }
         EntryRoot = Local(ModeRoot, entryRelative);
         var pack = Read(Local(ModeRoot, packRelative), declaredFiles);
+        PackId=String(pack,"packId");
         if ((!legacyNightmare && pack.GetProperty("schemaVersion").GetInt32() != 1) ||
             (!legacyNightmare && String(pack, "mode") != mode) || (season == "s1" && String(pack, "season") != season))
             throw new InvalidDataException("Identity pack context mismatch.");

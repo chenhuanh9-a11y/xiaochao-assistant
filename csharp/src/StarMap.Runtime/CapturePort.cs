@@ -55,6 +55,8 @@ public sealed record ClientCaptureResult(CapturedClientFrame? Frame, string Reas
 public interface ICapturePort
 {
     bool IsBound { get; }
+    // Composition-owned provenance, never supplied by an action payload.
+    CaptureEvidenceKind EvidenceKind => CaptureEvidenceKind.Unspecified;
     // Ports without a stable binding identity cannot authorize background recovery.
     CaptureBindingScope? BindingScope => null;
     // Published observations can survive a subsequent passive acquisition.

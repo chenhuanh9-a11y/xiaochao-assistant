@@ -17,7 +17,7 @@
 | 楼层/开图准备 | client_live_runtime.py / map_open_preparation.py / floor_contract.py | 37 项真实/合成边界及全部 S0 251 张原始客户区的观察结果与原 Python 严格一致；S1 当前真实输入由全 154 张组件回放及连续 Runtime 样本覆盖。map/foreground-return 准备沿原 1.05s/50ms/最多 21 probe；普通 capture_now 单次观察。超时未知楼层的正地图帧仍供人工修正，晚到可用楼层不绕过期限；有原 Runtime 真实晚采集对照及 C# 修前失败/修后回归。不是实机准备延迟验收 |
 | 身份与入口竞争 | map_identity_engine.py / difficult_entry_identity.py / difficult_side_entry_identity.py / front_door_recognition.py | S0 完整 passport/main/side/source-advisory/native/登记组/最终行消费者已接，全部 251 张当前原图严格零差异；S1 正支持候选始终不充当唯一身份。组内成员选择已接独立目标贴合、WPF 素材回执与同锁提交，手选跨层保留。实际调用已按原 Runtime 纠正：有选中参考时不额外重排；无地图且有实际条件先验时以完整 cohort 竞争。强冲突观测及配置 source store 时的 SIFT producer 仍缺 |
 | prepare/grid/refine/propose/验证 | fast_structure_alignment.py / single_map_structure.py / nightmare_candidate.py / idvb0059_steady.py | 共用数值内核与 S0 Host 冷流程/拒绝顺序、S1 目标楼层 Fit 已接；S0 当前 285 次候选 Fit 与原程序零差异，另有禁用 fast 的 6 次真实原 Host 对照。0059 数值流程和 coverage refresh、S0 established 几何组局部/全局/native recall 与 entry producer 已接；S1 原 explicit-full-frame 路径继续跳过0059及 established 几何恢复。准备/观察数组有逐位对照，标量有严格差异报告。pose-index、tracking 与强冲突 producer 尚缺 |
-| 会话/取消/缓存/恢复 | client_session.py / client_coordinator.py / client_live_runtime.py | SessionService 单写者/单 worker、取消、资源 lease、真实回调重入及有界开图恢复已接。Core 几何组/目标层尺度与素材 ACK 的 owner 分离；S1 不请求0059学习。隐藏页面 timer 经 Session 执行 S0 刷新与 S1 专用楼层观察，同姿态续期重新测当前帧残差。人工确认先发布身份，开图周期中同操作重采集，失败保留选择；确认关图同步原 G 相位。S1 独立手动准备/当前画面贴合入口已接；点击意图、保留观测的组内拟合和 S0 人工确认标签的持久化学习仍待接。以下分节记录实际接线与证据范围；Recorded 始终不授予 LiveAuthorization |
+| 会话/取消/缓存/恢复 | client_session.py / client_coordinator.py / client_live_runtime.py | SessionService 单写者/单 worker、取消、资源 lease、真实回调重入及有界开图恢复已接。Core 几何组/目标层尺度与素材 ACK 的 owner 分离；S1 不请求0059学习。隐藏页面 timer 经 Session 执行 S0 刷新与 S1 专用楼层观察，同姿态续期重新测当前帧残差。人工确认先发布身份，开图周期中同操作重采集，失败保留选择；确认关图同步原 G 相位。S1 独立手动准备/当前画面贴合及 S0 人工标签持久化已接；点击意图、保留观测的组内拟合仍待接。以下分节记录实际接线与证据范围；Recorded 始终不授予 LiveAuthorization |
 | 结构/作者/浮窗/穿透/DPI | client_windows.py / ClientAligned.qml / ClientReference.qml / author_display_policy.py / nightmare_author_coordinate_adapter.py | 显示桥当前 391 adapters/391 bridges/5 native corners/1 非单位校准零差异，完整选择 233 项和素材 261 项通过。Runtime 已接 canonical/material 提交、偏好替换与撤销；浮层已有真实 WPF 主机和离屏几何/票据回归。完整作者交互、参考窗及实机穿透/多屏 DPI 仍缺；素材不授权身份或结构位姿 |
 | 账号/路线广场/投稿 | account_service.py / client_route_plaza.py / ClientAccount.qml | 待迁；不以演示数据或按钮提示冒称接入 |
 | 教程/公告/帮助/诊断/更新 | client_info.py / update_service.py / ClientHelp.qml 等 | 待迁；关闭/后台恢复、状态与错误路径需覆盖 |
@@ -69,9 +69,21 @@ S0 默认尚无已记忆0059素材、或公开关闭0059时，`refresh_map` 会�
 
 S1 的 `prepare_manual_alignment` 建立独立会话标志，初始不捕获、不填地图或楼层；`fit_manual_frame` 只对已选地图重新采集。专用会话的首次确认即使没有旧帧也采集；关闭保留模式与身份，显式贴合可再次开图。普通会话中的手选身份不改变会话模式或楼层保持策略。结束本局/资源或模式切换清除此标志，重选地图/换作者保持它。G 开图在该会话有身份时调度 `fit_manual_frame`，仍沿用输入序号、准备/恢复与迟到隔离；关图不捕获。
 
-确认与专用手动会话共用采集失败收束：非取消异常撤销姿态/素材；专用会话还清当前楼层和帧，但保留已经观察到的开图周期与身份，下一次被动观察可以重试。生产捕获端把部分错误转为 null-frame，专用会话的这种失败也进入同一收束。明确负帧、关闭输入与外部上下文失效仍关闭周期。原 Python 两种 S1 模式各自的显式贴合/被动观察异常及随后恢复均已用真实 PNG/资源执行；C# 定向回归分别保留修前异常停止后台观察、null-frame保留旧楼层的失败结果。该行为不授予 S0 确认样本的持久化学习，后者仍是迁移缺口。
+确认与专用手动会话共用采集失败收束：非取消异常撤销姿态/素材；专用会话还清当前楼层和帧，但保留已经观察到的开图周期与身份，下一次被动观察可以重试。生产捕获端把部分错误转为 null-frame，专用会话的这种失败也进入同一收束。明确负帧、关闭输入与外部上下文失效仍关闭周期。原 Python 两种 S1 模式各自的显式贴合/被动观察异常及随后恢复均已用真实 PNG/资源执行；C# 定向回归分别保留修前异常停止后台观察、null-frame保留旧楼层的失败结果。S0 人工标签的独立收束见下节，不由几何成功授予。
 
 工作台验证经真实资源列表的 SetMaps、非激活的屏幕外 WPF 窗口、页面内容加载、准备手动贴合/地图选择/贴合当前画面按钮事件、Session 和 Runtime 消费。页面隐藏时仍按原规则不更新内容；按钮与 G 入口由程序路由，未发送原生鼠标/键盘，也不代表可见像素或游戏验收。
+
+### S0 人工标签与原存储兼容
+
+原 Qt 生产 provider 的 S0 `MapIdentityEngine` / `NativeDifficultCandidateEngine` 不读取人工 exemplar 来排名，`preload_memory` 明确无操作；样本匹配与 memoryBoost 属于旧基类路径。当前迁移保留真实的人工标签/JPEG 写入、读取与刷新接口，不把保存成功解释为识别自适应，也不把独立 source-feature 索引混成同一机制。
+
+只有显式确认进入标签提交；S1、未注册捕获来源和 Recorded/Synthetic 均跳过，action payload 不能提升证据等级。生产捕获端固定声明 LiveClient，并仍要求实际帧同级、当前绑定/stamp、epoch、资源、模式、本局、地图、目标楼层和开图状态均相符。新采集失败不借旧帧保存；贴合拒绝而当前人工确认上下文仍有效时可保存。接受后保留不可变客户区像素和物理屏幕 bounds，在状态锁外写入；随后关闭不撤销已接受的写入，也不能由旧写入恢复场景或新局状态。
+
+WPF 主机将已有 `ExperimentalDataRoot` 显式传入，存储为 `work/<mode>-memory/confirmations.jsonl` 与 `samples/<map>/<floor>/<JPEG-SHA256前20位>.jpg`，不发现或修改正式 Python 数据。沿原宽屏裁剪及 JPEG quality92、完整 JPEG 摘要、labelSource/state/runtimeDisplayEnabled/sampleEvidenceAccepted/clientBounds 等字段；摘要用于原文件格式与样本去重，未增加提交 gate。写入与刷新错误分别保留 saved/reloaded 状态，WPF 独立显示标签错误并保留贴合，自动开图不重试人工写入。
+
+兼容 reader 保留 append-only 标签；相同 JPEG/标签取最后一条，冲突地图/楼层标签的整组摘要不作 exemplar。每地图楼层保留最多六张可用 exemplar 及磁盘最新十二张样本的并集；清理候选需有原 JSONL 的精确路径和完整摘要声明，删除前用已有摘要复核当前内容，保留未知/被修改文件。缓存不在 Git 中，文件名/主键也不能证明内容未被替换，此处沿用既有摘要处理具体删除边界，不建立新摘要格式或冻结 gate。路径必须位于显式根内，所有祖先至盘根均不经过符号链接。原先没有 evidence 标记的记录按原模式地图观察重新校验，已明确拒绝的截图不重新提升。读取这些记录仍不授予身份、姿态、显示或 0059 权限。
+
+原 Python 的13组实际资源/solver 操作覆盖两种 S0 模式、1F/2F/B1、保存、Recorded、闭图、采集失败及错误地图拟合拒绝；地图标签是显式模拟人工输入，不是唯一图像真值。测试捕获端只在隔离目录显式模拟 LiveClient 来源，不是实机。额外回归覆盖写入前失效、接受后关闭、真实文件锁及刷新失败、去重/冲突/保留和实际 WPF 选择按钮→Session→存储→错误文案。无换行的截断尾保留原字节并补行边界；标签 Flush 后的整理错误独立报告 Saved=true/retention，不能倒推为未保存。四组真实文件恢复/未知内容/父目录 junction 反例保留修前失败和修后结果。最终通过项以对应提交的验证回执为准。
 
 ### S1 专用被动楼层观察
 

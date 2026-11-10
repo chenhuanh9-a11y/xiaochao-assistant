@@ -18,6 +18,8 @@ internal sealed class RecordedCapture(Dictionary<string, JsonObject> index) : IC
     public void ThrowNext(Exception error)=>nextError=error;
     public int Calls { get; private set; }
     public bool IsBound => true;
+    // Explicitly changed only by isolated provenance-boundary tests.
+    public CaptureEvidenceKind EvidenceKind {get;set;}=CaptureEvidenceKind.RecordedClient;
     public CaptureBindingScope? BindingScope => new("recorded-only", generation);
     public bool Foreground { get; set; }
     public bool IsForeground => Foreground;
@@ -54,6 +56,6 @@ internal sealed class RecordedCapture(Dictionary<string, JsonObject> index) : IC
         current = new("recorded-only", generation, "recorded-frame-" + ++sequence);
         acquiredGeometry = Geometry()!;
         return new ClientCaptureResult(new(pixels, width, height, stride, current, captured,
-            new(CaptureEvidenceKind.RecordedClient, acquiredGeometry, "preserved-client-png")));
+            new(EvidenceKind, acquiredGeometry, "preserved-client-png")));
     }
 }

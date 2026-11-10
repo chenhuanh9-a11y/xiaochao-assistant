@@ -128,7 +128,7 @@ public partial class WorkspaceWindow : Window
     FrameworkElement BuildHome()
     {
         var panel = new StackPanel();
-        runtimePage = new RuntimePage(runtimeCapture, message => Status.Text = message);
+        runtimePage = new RuntimePage(runtimeCapture, message => Status.Text = message,dataRoot);
         connectionPage = new ConnectionPage(message => Status.Text = message, runtimeCapture);
         connectionPage.BindingChanged += runtimePage.BindingChanged;
         connectionPage.BindingChanged += RefreshInputScope;

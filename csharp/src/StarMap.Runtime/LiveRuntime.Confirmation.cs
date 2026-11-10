@@ -8,6 +8,7 @@ public sealed partial class LiveRuntime
     private async ValueTask<RuntimeOperationResult> ConfirmMap(SessionRuntimeRequest request,long epoch,CancellationToken token)
     {
         bool recapture;
+        ConfirmationLabelOwner labelOwner;
         lock(_sync)
         {
             RequireCurrent(epoch,token);
@@ -27,11 +28,23 @@ public sealed partial class LiveRuntime
             // An open cycle was established by a real observation, even if
             // its current floor is unknown or a previous capture failed.
             recapture=_manualAlignmentSession || _mapOpen;
+            labelOwner=new(epoch,_resources,_selection,_roundId!,map,_floor,_capture.EvidenceKind);
+            _manualLearning=null;
             if(recapture)_frame=null;
             _workActive=recapture;_reason="identity-locked-pose-pending";Publish();
         }
-        if(!recapture)return Receipt(request,true,"identity-locked-pose-pending");
-        return await CaptureAndSolve(request,epoch,token).ConfigureAwait(false);
+        RuntimeOperationResult result;
+        try{result=recapture?await CaptureAndSolve(request,epoch,token).ConfigureAwait(false):Receipt(request,true,"identity-locked-pose-pending");}
+        catch(OperationCanceledException){result=Receipt(request,false,"cancelled-or-obsolete");}
+        var learning=PersistConfirmationLabel(labelOwner,token);
+        lock(_sync)
+        {
+            if(_epoch==epoch && _roundId==labelOwner.Round && _mapId==labelOwner.Map)
+            {_manualLearning=learning;Publish();result=result with {Snapshot=ReadSnapshot()};}
+        }
+        if(learning.Status=="error")result=result with {Receipt=result.Receipt with {
+            Message=result.Receipt.Message+"；"+learning.ErrorMessage()}};
+        return result;
     }
 
     private RuntimeOperationResult ConfirmationProbeMiss(SessionRuntimeRequest request,long epoch,CancellationToken token,

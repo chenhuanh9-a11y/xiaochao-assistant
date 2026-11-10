@@ -752,7 +752,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         _mapId = mapId; _s1ProvisionalMapId = null; _identitySource = source;
     }
     private void ClearIdentity()
-    { ResetSteady(); _geometryGroup = null; ClearGroupChoice(); _mapId = null; _s1ProvisionalMapId = null; _identitySource = ""; _nativeIdentity = null; _structureSession?.EndRound(); _structureSession = null; _structureTicket = null; _alignment = null; _roundFitOwner = new(); }
+    { ResetSteady(); _geometryGroup = null; ClearGroupChoice(); _mapId = null; _s1ProvisionalMapId = null; _identitySource = ""; _nativeIdentity = null; _structureSession?.EndRound(); _structureSession = null; _structureTicket = null; _alignment = null; _roundFitOwner = new(); _manualLearning=null; }
     private void ClearFloor()
     { _floor = _manualFloor = _observedFloor = null; _manualFloorStarted = null; _manualAlignmentSession=false; }
     private void AdvanceOwnedEpoch() { _epoch++; _progressEpoch = _epoch; }
@@ -836,7 +836,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             RemainingMapIds = _structurePool?.Remaining ?? Array.Empty<string>(),
             EliminatedMapIds = _structurePool?.Eliminated ?? Array.Empty<string>(), RecognitionPath = _recognitionPath,
             ProvisionalMapId = _s1ProvisionalMapId,
-            ProbeMisses = _probeMisses,ManualAlignmentSession=_manualAlignmentSession,
+            ProbeMisses = _probeMisses,ManualAlignmentSession=_manualAlignmentSession,ManualLearning=_manualLearning,
             IdentityKind = _identitySource == "group-default" ? "group" : IsStructureProvisional ? "candidate" : _mapId is null ? "unresolved" : "map",
             MapDisplayName = _resources?.Passports.Maps.FirstOrDefault(map => map.MapId == EffectiveMapId)?.Name,
             IdentityGroupId = HasRegisteredGroup ? _nativeIdentity!.GroupId : null,

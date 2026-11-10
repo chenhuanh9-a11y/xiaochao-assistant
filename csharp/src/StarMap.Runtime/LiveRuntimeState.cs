@@ -1,5 +1,6 @@
 using System.Text.Json;
 using StarMap.Core.Session;
+using StarMap.Core.Identity;
 using StarMap.Vision;
 
 namespace StarMap.Runtime;
@@ -18,6 +19,13 @@ public sealed record LiveRuntimeOptions
     public bool Idvb0059Enabled { get; init; } = true;
     public string StructureIndexAssetDirectory { get; init; } = Path.Combine(AppContext.BaseDirectory, "s1-private-assets");
     public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
+    public Func<EntryPassportCatalog,IManualConfirmationMemory>? ConfirmationMemoryFactory {get;init;}
+}
+
+public sealed record ManualLearningStatus(string Status,string Reason="",bool Saved=false,bool Reloaded=false,
+    bool? HasSample=null,string? Error=null,string? Season=null,string? Mode=null,string? RoundId=null,string? MapId=null,string? Floor=null,string? FailureStage=null)
+{
+    public string ErrorMessage()=>(Saved?FailureStage=="retention"?"标签已存，但样本整理失败":"标签已存，但记忆刷新失败":"人工标签保存失败")+"："+Error;
 }
 
 public sealed record RuntimeCandidate(string MapId, string IdentityProfileId, double Score,
@@ -53,6 +61,7 @@ public sealed record LiveRuntimeState(RuntimeContext Context, bool ResourcesBoun
     public MapOpenRecoveryStatus MapOpenRecovery { get; init; } = new(false);
     public int ProbeMisses { get; init; }
     public bool ManualAlignmentSession { get; init; }
+    public ManualLearningStatus? ManualLearning {get;init;}
     public IReadOnlyList<string> RemainingMapIds { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> EliminatedMapIds { get; init; } = Array.Empty<string>();
     public string RecognitionPath { get; init; } = "ordinary";

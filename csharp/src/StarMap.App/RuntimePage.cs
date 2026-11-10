@@ -56,9 +56,10 @@ internal sealed class RuntimePage : UserControl
         set { toggleVisibilityRequested = value; UpdateVisibilityControl(); }
     }
 
-    internal RuntimePage(ICapturePort capture, Action<string> status)
+    readonly ExperimentalDataRoot? dataRoot;
+    internal RuntimePage(ICapturePort capture, Action<string> status,ExperimentalDataRoot? dataRoot=null)
     {
-        this.capture = capture; this.status = status;
+        this.capture = capture; this.status = status;this.dataRoot=dataRoot;
         foreach (var text in new[] { detail, resourceCaption, candidateCaption })
             text.SetResourceReference(TextBlock.ForegroundProperty, "StarMap.Muted");
         var panel = new StackPanel { Name = "RuntimeOverview" };
@@ -248,7 +249,7 @@ internal sealed class RuntimePage : UserControl
                 // Bind the proposed resource/settings context before replacing
                 // the idle current runtime. A failed bind leaves it available.
                 var nextRuntime = new LiveRuntime(capture, root, new() { FloorSettings = controls, SheetVisibilityEnabled = alignedVisible,
-                    Idvb0059Enabled = steadyEnabled });
+                    Idvb0059Enabled = steadyEnabled,ConfirmationMemoryFactory=dataRoot is null?null:catalog=>new StarMap.Vision.ManualConfirmationMemoryStore(dataRoot,catalog) });
                 var nextSession = new SessionService(new SynchronizationContextSessionDispatcher(new DispatcherSynchronizationContext(Dispatcher)), nextRuntime);
                 proposedRuntime = nextRuntime; proposedSession = nextSession;
                 bool proposedAccepted = nextSession.Reconfigure(settings.GameMode, settings.RouteProfileId, settings.GameSeason);
@@ -460,6 +461,8 @@ internal sealed class RuntimePage : UserControl
         detail.Text = configuring || loadingResources ? "正在读取资源或应用设置，请稍候。"
             : working ? "正在识别，可随时取消。" : state.MapOpenRecovery.Pending
                 ? "地图尚未就绪，正在短暂等待画面，可随时取消。" : Reason(state.Reason);
+        if(!working && state.ManualLearning is {Status:"error"} learning)
+            detail.Text+="；"+learning.ErrorMessage();
         rendering = true;
         try
         {

@@ -14,6 +14,7 @@ public sealed record ClientPreviewFrame(BitmapSource Image, ClientGeometry Geome
 /// <summary>One binding owner and one capture lane shared by preview and the real runtime.</summary>
 public sealed class WindowsRuntimeCapturePort : ICapturePort, IDisposable
 {
+    public CaptureEvidenceKind EvidenceKind=>CaptureEvidenceKind.LiveClient;
     readonly object sync = new();
     readonly SemaphoreSlim captureLane = new(1, 1);
     readonly WindowsClientCapture bindingOwner = new();
