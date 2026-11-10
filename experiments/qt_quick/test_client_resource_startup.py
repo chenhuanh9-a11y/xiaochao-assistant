@@ -135,7 +135,7 @@ class ResourceStartupTests(unittest.TestCase):
         error = ImportError('example module unavailable', name='owned_fixture_module')
         with patch('qt_startup_diagnostics.report_startup_failure') as report:
             self.assertEqual(self.run_main(Mock(side_effect=error)), 1)
-        report.assert_called_once_with(error, stage='create-client')
+        report.assert_called_once_with(error, stage='create-client', show_dialog=True)
         with resource_runtime_lease(self.root):
             pass
 
