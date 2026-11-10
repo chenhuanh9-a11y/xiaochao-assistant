@@ -447,3 +447,11 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 - 两次语义核验和重复选择复用原 callback；事务 pending 阶段仍使用当前操作/取消 guard，不套旧 catalog snapshot。解码失败或第二次作者解码后的取消均保留原 catalog，沿用原恢复流程，不增加事务或状态写者。
 - 提权作者样本经实际 `activate_context` 修前 1 项失败（47.042 秒，未抛拒绝），修后连同双次实际解码/一次幂等重验、重 profile 拒绝共 3 项通过（129.135 秒）；第二次真实作者解码后的取消另 1 项通过（49.284 秒），核原字节恢复及无 pending marker。仅用 wraps/取消时机回调记录生产解码，没有替换 base、图片、catalog 或事务。
 - 原 S0/S1 helper 共 10 项通过（131.217 秒）。原 S0 正例曾用同上下文的 `{}` 作为 inert display，新语义检查正确拒绝，8 项旧首轮保留 1 个 error；正例改用实际 S0N reference 和 PNG 的完整 ZIP，原 `{}` 输入另保留为明确拒绝且 catalog 不变的负例，没有移除失败样本或减弱断言。新增作者模块接入候选 runtime CI。以上仍是 fixture 组件/事务证据，不含作者启用按钮、图库、真实素材或 GUI/游戏验收。
+
+### 作者版本的正常选择与更新
+
+- 新 `activate_display` 从真实声明确定单一上下文，只使用该上下文已经选中的 base/controls，不自动切换基础资源。按 catalog 中精确的 `(packageId, componentId)` 找至多一个旧版本并原位替换；版本号不排序，其他 display 的顺序和所有 contexts 保留。更新保持 profile/context，作者名称、显示名称、图片及配准可变。同一上下文的 profile 歧义拒绝，不新增跨上下文的全局作者限制。
+- codec 与启用层共用有界 `read_display_identity`，此头只用于路由和确认替换范围，不读取旧图片/旧 base，不授予显示资格。故旧图片损坏可以换有效新版；旧 manifest 或绑定头不可读时保留原 catalog，明确返回 `resource-previous-display-metadata-unavailable` 及旧精确引用，不用新声明猜测旧作用域。暂不提供未知范围的强制退役/替换动作。
+- 初次检查及两次 prospective callback 均核旧/新声明；候选仍经原 selection 依赖闭包、真实 engine/provider 和完整 display 解码。幂等选择重验当前上下文的所有作者一次，generation 和 catalog 字节不变。正常更新后旧 engine/cache 拒绝旧 catalog，默认工厂取得新版实际像素，身份/楼层/rank/live 不因作者更新改变。
+- `test_client_imported_author_selection` 当时 6 项通过（379.885 秒），覆盖添加/替换/幂等、新版 BGRA 与透明度、其他作者/上下文、坏旧图片修复、坏旧元数据拒绝、身份改变/歧义拒绝、有效历史 base 不得自选、坏新图片/提权/错依赖、第二次检查取消恢复。后补旧绑定头在两次检查间被改坏 1 项通过（57.824 秒）：恢复原 catalog、清 pending，并保留外部制造的坏头，不擅自还原原件。两组为 7 个不同用例，未称同一次全量运行。共享头提取后的原 codec 6 项通过（145.956 秒）。首轮两处测试构造错误及失败日志保留：一次 callback 会重验两个作者；改写 manifest 后原 PackageView 本就应过期，下一故障通过预先取得的 fixture 路径注入，未放宽生产当前性。
+- 作者 codec/显示/启用前验证/版本选择四模块移入独立 `packaging-imported-display` 候选组；原资源 60 模块与新选择模块的精确多重集保持为 61 项，按 legacy/data/runtime/display 分成 10/31/16/4。保留每模块进程、失败汇总、25 分钟上限和历史 baseline；避免新增的数分钟作者往返重新挤进原运行组。新分组的实际远端耗时仍待核。作者 UI、图库、多依赖联合启用及真实四模式作者验收仍未完成。

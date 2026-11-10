@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [features, core, diagnostics, packaging, packaging-imported-data, packaging-imported-runtime, tutorials, map-defaults, season-ui, next-version-contracts, author-snapshots, installer-reset, fit-simulation, main-baseline, released-baseline]
+        group: [features, core, diagnostics, packaging, packaging-imported-data, packaging-imported-runtime, packaging-imported-display, tutorials, map-defaults, season-ui, next-version-contracts, author-snapshots, installer-reset, fit-simulation, main-baseline, released-baseline]
     env:
       PYTHONPATH: 'app;tests;tools;experiments/qt_quick'
       QT_QPA_PLATFORM: offscreen
@@ -228,7 +228,7 @@ jobs:
                 'test_imported_native_base',
                 'test_imported_s1_native_base', 'test_imported_s1_controls_profile',
                 'test_entry_semantic_capability', 'test_imported_s1_native_context',
-                'test_imported_difficult_native_context', 'test_imported_author_display'
+                'test_imported_difficult_native_context'
               )
             }
             # Provider/startup/activation tests retain the independent-process
@@ -243,8 +243,15 @@ jobs:
                 'test_client_imported_controls',
                 'test_client_imported_activation', 'test_client_imported_activation_ui',
                 'test_client_imported_s1_activation', 'test_client_imported_s1_activation_ui',
-                'test_client_imported_resources', 'test_client_imported_resource_startup',
-                'test_imported_author_displays', 'test_client_imported_author_activation'
+                'test_client_imported_resources', 'test_client_imported_resource_startup'
+              )
+            }
+            # Author display roundtrips use complete native fixtures too. Keep
+            # these independent modules out of the already long runtime shard.
+            'packaging-imported-display' {
+              $modules = @(
+                'test_imported_author_display', 'test_imported_author_displays',
+                'test_client_imported_author_activation', 'test_client_imported_author_selection'
               )
             }
             'season-ui' { $modules = @('test_s1_builtin_resources', 'test_probe_resource_context', 'test_season_settings', 'test_season_catalog', 'test_season_selector', 'test_season_selector_layout', 'test_season_gallery', 'test_season_resources', 'test_season_session', 'test_client_season_preparation', 'test_client_context_failure', 'test_settings_accessibility', 'test_client_gallery_actions', 'test_client_gallery_layout', 'test_client_gallery_resource_refresh') }

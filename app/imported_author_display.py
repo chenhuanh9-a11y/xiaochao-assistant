@@ -31,6 +31,13 @@ def _reject(reason):
 
 
 @dataclass(frozen=True)
+class AuthorDisplayIdentity:
+    profile_id: str
+    season: str
+    mode: str
+
+
+@dataclass(frozen=True)
 class AuthorDisplayLayer:
     map_id: str
     floor: str
@@ -111,15 +118,47 @@ class ImportedAuthorDisplay:
         return self._view.path(layer.image.path) if layer is not None else None
 
 
+def _component_context(component, expected=None):
+    contexts = component.get('contexts')
+    if (component.get('type') != 'display' or component.get('schemaVersion') != 1
+            or not isinstance(contexts, list) or len(contexts) != 1
+            or (expected is not None and contexts != [expected])):
+        _reject('component-context-invalid')
+    return contexts[0]
+
+
+def _identity(context, document):
+    if not isinstance(document, dict) or document.get('schema') != SCHEMA:
+        _reject('schema-invalid')
+    if (not is_generic_profile(document.get('profileId'))
+            or (document.get('season'), document.get('mode')) != (context['season'], context['mode'])):
+        _reject('context-invalid')
+    return AuthorDisplayIdentity(document['profileId'], context['season'], context['mode'])
+
+
+def read_display_identity(view):
+    """Read routing identity only; this grants no display or base permission.
+
+    A replacement may repair old pixels or a stale base dependency. Its old
+    profile/context must still come from the exact registered manifest/header.
+    """
+    if not isinstance(view, PackageView):
+        _reject('validated-components-required')
+    component = view.component
+    context = _component_context(component)
+    reader = ComponentResourceReader(view)
+    identity = _identity(context, reader.json(component['entrypoint']))
+    view.root
+    return identity
+
+
 def _decode(view, base, reference_provider):
     if not isinstance(view, PackageView) or not isinstance(base, NativeBaseBundle):
         _reject('validated-components-required')
     base.assert_current()
     component = view.component
     wanted_context = dict(season=base.season, mode=base.mode)
-    if (component.get('type') != 'display' or component.get('schemaVersion') != 1
-            or component.get('contexts') != [wanted_context]):
-        _reject('component-context-invalid')
+    context = _component_context(component, wanted_context)
     if not base.ready or not callable(reference_provider):
         _reject('base-reference-unavailable')
     reader = ComponentResourceReader(view)
@@ -127,9 +166,9 @@ def _decode(view, base, reference_provider):
     if (not isinstance(document, dict) or set(document) - (_FIELDS | {'provenance'})
             or not _FIELDS <= set(document) or document.get('schema') != SCHEMA):
         _reject('schema-invalid')
-    if (not is_generic_profile(document['profileId']) or not _label(document['authorName'])
+    _identity(context, document)
+    if (not _label(document['authorName'])
             or not _label(document['displayName'])
-            or (document['season'], document['mode']) != (base.season, base.mode)
             or ('provenance' in document and not isinstance(document['provenance'], dict))):
         _reject('context-invalid')
     validate_display_authority(document, reject=_reject)

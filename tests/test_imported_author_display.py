@@ -73,9 +73,10 @@ class _AuthorDisplayFixture(unittest.TestCase):
             matrixDisplayToReference=[[.8,.2,1],[.1,1.2,2],[0,0,1]],
             **{key:reference.metadata[key] for key in ('structureVersionKey','sourceVersion','baseSnapshot')})
 
-    def package(self, edit=None, *, extra=None, payloads=None, dependency=None, context=None, layers=None):
+    def package(self, edit=None, *, extra=None, payloads=None, dependency=None, context=None, layers=None,
+                package_id=None, resource_version='v1', component_id='art', profile_id='author-fixture'):
         self.counter += 1
-        document = dict(schema=SCHEMA, profileId='author-fixture', authorName='测试作者', displayName='独立路线',
+        document = dict(schema=SCHEMA, profileId=profile_id, authorName='测试作者', displayName='独立路线',
             season=self.base.season, mode=self.base.mode, baseDependency='base',
             layers=deepcopy(layers) if layers is not None else [self.layer()],
             identityAuthority=False, structureValidationAuthority=False, crossFloorProjectionAllowed=False,
@@ -89,18 +90,18 @@ class _AuthorDisplayFixture(unittest.TestCase):
         if extra:
             members.update(extra)
         manifest = dict(schema='xingtu-resource-package', formatVersion=1,
-            packageId=f'author-display-fixture-{self.counter}', resourceVersion='v1',
+            packageId=package_id or f'author-display-fixture-{self.counter}', resourceVersion=resource_version,
             clientCompatibility=dict(resourceProtocol=1, requiredCapabilities=[]),
-            components=[dict(componentId='art', type='display', schemaVersion=1,
+            components=[dict(componentId=component_id, type='display', schemaVersion=1,
                 contexts=[context or dict(season=self.base.season,mode=self.base.mode)], entrypoint='display.json',
                 dependencies={'base':dependency or self.wire(self.base.component_ref)})],
-            files=[dict(componentId='art', path=path, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+            files=[dict(componentId=component_id, path=path, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
                 for path,raw in sorted(members.items())])
         archive_path = self.root/f'author-{self.counter}.zip'
         with zipfile.ZipFile(archive_path, 'x', compression=zipfile.ZIP_DEFLATED) as archive:
             archive.writestr('manifest.json', encoded(manifest))
             for path,raw in members.items():
-                archive.writestr('data/art/'+path, raw)
+                archive.writestr('data/'+component_id+'/'+path, raw)
         saved = save_archive(archive_path, self.resources)
         return PackageView(self.resources, saved.component_refs[0]), document, members
 
