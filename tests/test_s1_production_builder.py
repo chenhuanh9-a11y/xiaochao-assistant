@@ -31,7 +31,7 @@ class ProductionS1BuilderTests(unittest.TestCase):
         self.enterContext(patch.object(purpose, "_PRODUCTION_S1_CANDIDATE_ROLLOUT_ENABLED", False))
         temporary = tempfile.TemporaryDirectory(prefix='production-s1-builder-fixture-')
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        self.root = Path(temporary.name).resolve()
         self.resources = self.root / 'resources'; self.resources.mkdir()
         fixture = private_fixture.PrivatePackagingTests()
         fixture.root, fixture.resources = self.root, self.resources

@@ -48,14 +48,31 @@ class ComponentResourceReader:
     def __init__(self, view):
         self.view = view
         self.root = view.root
+        # Cache the canonical directory once. Windows may return a short-name
+        # root from PackageView and a long-name path from a consumer calling
+        # Path.resolve(); both identify the same directory.
+        self._canonical_root = self.root.resolve()
         # The immutable view pins this manifest. Cached declarations cannot
         # authorize bytes: every content read still calls view.read again.
         self._inventory = view.inventory
 
     def __call__(self, path):
         try:
-            relative = Path(path).relative_to(self.root).as_posix()
-        except (TypeError, ValueError) as error:
+            candidate = Path(path)
+            if not candidate.is_absolute():
+                raise ValueError('resource path must be absolute')
+            try:
+                relative_path = candidate.relative_to(self.root)
+            except ValueError:
+                # Resolve only the mismatched candidate path. Check its
+                # lexical ancestors first so a symlink/junction cannot be
+                # normalized into the component boundary.
+                files._no_links(candidate)
+                relative_path = candidate.resolve().relative_to(self._canonical_root)
+            relative = relative_path.as_posix()
+        except files.ImportRejected:
+            raise
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
             raise files.ImportRejected('imported-reader-path-outside-component',
                                        code='imported-reader-path-outside-component') from error
         extension = Path(relative).suffix.casefold()
