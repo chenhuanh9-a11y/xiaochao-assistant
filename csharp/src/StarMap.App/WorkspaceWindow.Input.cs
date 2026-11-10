@@ -53,7 +53,9 @@ public partial class WorkspaceWindow
             && (focus is TextBoxBase or PasswordBox || focus is ComboBox { IsEditable: true });
         bool editing = scope.ForegroundIsAssistant && (hotkey.IsKeyboardFocusWithin || actionHotkeys.Any(editor => editor.IsKeyboardFocusWithin));
         return new(scope with { GameWindowExists = valid, TextEntryActive = ownText, EditingBindings = editing },
-            BindingGeneration: binding?.Generation ?? 0, LocalPanelWindow: new WindowInteropHelper(this).Handle.ToInt64());
+            BindingGeneration: binding?.Generation ?? 0, LocalPanelWindow: new WindowInteropHelper(this).Handle.ToInt64(),
+            PointerTarget:valid && !settingsBusy && !resourcesBusy && runtimePage?.GamePointerContextSlot is { } slot
+                ?new(scope.GameWindow,"runtime-slot",0,slot):null,AllowPointerIntentPress:true);
     }
 
     bool ValidInputBinding()
@@ -148,13 +150,14 @@ public partial class WorkspaceWindow
         if (closed || closing) return;
         switch (delivery.Notification.Kind)
         {
-            case GlobalInputNotificationKind.Started: inputState.Text = "快捷键已启用，原按键继续交给游戏。"; UpdateInputControls(); break;
+            case GlobalInputNotificationKind.Started: runtimePage?.ResetPointerInputOrder();inputState.Text = "快捷键已启用，原按键继续交给游戏。"; UpdateInputControls(); break;
             case GlobalInputNotificationKind.Warning: inputState.Text = "快捷键提示：" + delivery.Notification.Message; break;
             case GlobalInputNotificationKind.Failed:
             case GlobalInputNotificationKind.Stopped:
                 inputWanted = false; runtimePage?.SuspendInput("input-stopped");
                 inputState.Text = "快捷键已停止：" + delivery.Notification.Message; UpdateInputControls(); break;
         }
+        if(delivery.PointerIntentPress is { } press)runtimePage?.HandleGamePointerIntent(press);
         foreach (var action in delivery.Dispatch.Actions)
         {
             if (action == "toggle-panel") { TogglePanel(); continue; }

@@ -8,12 +8,12 @@ namespace StarMap.App.Platform;
 /// PickerKeys contains only the keys of the currently visible picker.</summary>
 public sealed record WpfGlobalInputContext(GlobalInputScope Scope,
     IReadOnlyList<string>? PickerKeys = null, long BindingGeneration = 0,
-    GlobalInputPointerTarget? PointerTarget = null, long LocalPanelWindow = 0);
+    GlobalInputPointerTarget? PointerTarget = null, long LocalPanelWindow = 0,bool AllowPointerIntentPress=false);
 
 /// <summary>Business consumers use Dispatch and Pointer. Notification retains source metadata;
 /// Notification.Pointer alone is not permission to perform a pointer action.</summary>
 public sealed record WpfGlobalInputDelivery(GlobalInputNotification Notification,
-    GlobalInputDispatch Dispatch, GlobalInputPointerEvent? Pointer = null);
+    GlobalInputDispatch Dispatch, GlobalInputPointerEvent? Pointer = null,GlobalInputPointerEvent? PointerIntentPress=null);
 
 /// <summary>
 /// UI owner for the existing pass-through input policy. Construction installs nothing.
@@ -197,14 +197,14 @@ public sealed class WpfGlobalInputController : IAsyncDisposable
             // after typing ends, a picker opens, or listening intent is restored.
         }
         if (uiGuardChanged) scopeEventsAfter = source.NowSeconds;
-        if (bindingChanged || resumed) gameEventsAfter = source.NowSeconds;
+        if (bindingChanged || resumed || !ReferenceEquals(previousContext?.PointerTarget?.ContextSlot,context.PointerTarget?.ContextSlot)) gameEventsAfter = source.NowSeconds;
         previousContext = context with { PickerKeys = (context.PickerKeys ?? []).ToArray() };
         policy.SetPickerKeys(context.PickerKeys ?? []);
         var pointer = listeningRequested && scope.GameEnabled && scope.GameWindowExists
             && !scope.TextEntryActive && !scope.EditingBindings && context.PointerTarget?.Window == scope.GameWindow
             ? context.PointerTarget : null;
         source.SetPointerTarget(pointer);
-        if (gesture is { } active && (pointer is null || active.ContextId != pointer.ContextId
+        if (gesture is { } active && (pointer is null || active.ContextId != pointer.ReadContext()?.ContextId
             || active.TargetWindow != pointer.Window || bindingChanged))
             CancelGesture("ui-input-context-changed");
         return context with { Scope = scope with {
@@ -297,9 +297,14 @@ public sealed class WpfGlobalInputController : IAsyncDisposable
                 && GlobalInputDispatcher.HasApplicationLocalPanelOwner(key.VirtualKey))
                 result = result with { Actions = Array.AsReadOnly(result.Actions.Where(action => action != "toggle-panel").ToArray()) };
         }
+        GlobalInputPointerEvent? intentPress=null;
         if (notification.Pointer is { } pointer)
-            acceptedPointer = AcceptPointer(pointer, ReadCurrentContext());
-        Publish(new(notification, result, acceptedPointer));
+        {
+            var context=ReadCurrentContext();
+            intentPress=AcceptPointerIntentPress(pointer,context);
+            acceptedPointer = AcceptPointer(pointer,context);
+        }
+        Publish(new(notification, result, acceptedPointer,intentPress));
     }
 
     WpfGlobalInputContext ReadCurrentContext()
@@ -335,14 +340,33 @@ public sealed class WpfGlobalInputController : IAsyncDisposable
         if (!scope.GameEnabled || !scope.GameWindowExists || scope.TextEntryActive || scope.EditingBindings
             || pointer.TargetWindow != scope.GameWindow || pointer.ForegroundWindow != scope.GameWindow
             || scope.CurrentForegroundWindow != scope.GameWindow || context.PointerTarget is not { } target
-            || pointer.ContextId != target.ContextId || pointer.TargetWindow != target.Window
-            || pointer.CreatedAtSeconds < Math.Max(scopeEventsAfter, Math.Max(scope.GameEventsAfterSeconds, target.ObservationCreatedAtSeconds))
+            || target.ReadContext() is not { } snapshot || pointer.ContextId != snapshot.ContextId || pointer.TargetWindow != target.Window
+            || pointer.CreatedAtSeconds < Math.Max(scopeEventsAfter, Math.Max(scope.GameEventsAfterSeconds, snapshot.ObservationCreatedAtSeconds))
             || !double.IsFinite(age) || age < 0 || age > GlobalInputDispatcher.MaximumEventAgeSeconds)
         { CancelGesture("ui-pointer-scope-rejected"); return null; }
         if (pointer.Phase != "down" && (gesture is not { } previous || previous.GestureId != pointer.GestureId
             || previous.PointerGeneration != pointer.PointerGeneration || pointer.Sequence <= previous.Sequence)) return null;
         if (pointer.Phase == "down") CancelGesture("ui-pointer-replaced");
         gesture = pointer.Phase == "up" ? null : pointer;
+        return pointer;
+    }
+
+    // This does not grant the strict Pointer/gesture channel. It only permits
+    // a runtime to revalidate a physical down against its immutable press scope.
+    GlobalInputPointerEvent? AcceptPointerIntentPress(GlobalInputPointerEvent pointer,WpfGlobalInputContext context)
+    {
+        var scope=context.Scope;var target=context.PointerTarget;
+        var press=pointer.PressContextSnapshot;var current=target?.ReadContext();
+        double age=source.NowSeconds-pointer.CreatedAtSeconds;
+        if(!context.AllowPointerIntentPress || pointer.Phase!="down" || pointer.Sequence<=0 || pointer.GestureId<=0
+            || !scope.GameEnabled || !scope.GameWindowExists || scope.TextEntryActive || scope.EditingBindings
+            || target is null || current is null || press is null || press.DownIntentSnapshot is null || current.DownIntentSnapshot is null
+            || !double.IsFinite(press.ObservationCreatedAtSeconds) || !double.IsFinite(current.ObservationCreatedAtSeconds)
+            || string.IsNullOrEmpty(press.DownIntentScopeId) || press.DownIntentScopeId!=current.DownIntentScopeId
+            || pointer.ContextId!=press.ContextId || pointer.TargetWindow!=target.Window || pointer.TargetWindow!=scope.GameWindow
+            || pointer.ForegroundWindow!=scope.GameWindow || scope.CurrentForegroundWindow!=scope.GameWindow
+            || pointer.CreatedAtSeconds<Math.Max(scopeEventsAfter,Math.Max(scope.GameEventsAfterSeconds,press.ObservationCreatedAtSeconds))
+            || !double.IsFinite(age) || age<0 || age>GlobalInputDispatcher.MaximumEventAgeSeconds)return null;
         return pointer;
     }
 

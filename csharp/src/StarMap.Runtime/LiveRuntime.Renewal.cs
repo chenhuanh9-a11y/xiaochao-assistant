@@ -61,6 +61,7 @@ public sealed partial class LiveRuntime
             if (authorization is null || !_alignment.Commit(authorization, persistPose: false))
             { RevokeDisplay("refresh-core-commit-rejected"); return Receipt(request, false, verdict.Reason); }
             _frameGeneration = generation; _frame = captured; _floor = floor; _probeMisses = 0;
+            RememberPointerObservation(captured,read);
             _pose = new(previous.MapId, floor, bound.Id, captured.Stamp.FrameId, canonical.NativeToClient.ToArray());
             _canonical = canonical with { Stamp = captured.Stamp, Authorization = authorization, ProposedCoverage = null };
             _render = new(previous, captured, authorization, generation, _epoch); _display = display;

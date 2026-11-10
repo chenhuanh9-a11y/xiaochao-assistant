@@ -62,6 +62,8 @@ public sealed record LiveRuntimeState(RuntimeContext Context, bool ResourcesBoun
     public int ProbeMisses { get; init; }
     public bool ManualAlignmentSession { get; init; }
     public ManualLearningStatus? ManualLearning {get;init;}
+    public GameFloorIntent? FloorClickIntent {get;init;}
+    public string FloorPolicyReason {get;init;}="";
     public IReadOnlyList<string> RemainingMapIds { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> EliminatedMapIds { get; init; } = Array.Empty<string>();
     public string RecognitionPath { get; init; } = "ordinary";

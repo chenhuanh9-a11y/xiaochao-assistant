@@ -119,7 +119,7 @@ public sealed class WindowsGlobalInput : IDisposable, IAsyncDisposable
         {
             ObjectDisposedException.ThrowIf(disposed || disposing, this);
             if (pointerTarget == target) return;
-            var targetChanged = pointerTarget?.Window != target?.Window;
+            var targetChanged = pointerTarget?.Window != target?.Window || !ReferenceEquals(pointerTarget?.ContextSlot,target?.ContextSlot);
             pointerTarget = target;
             if (!targetChanged) return;
             pointerGeneration++;
@@ -416,21 +416,24 @@ public sealed class WindowsGlobalInput : IDisposable, IAsyncDisposable
     {
         GlobalInputPointerTarget? target; long pointerVersion;
         lock (gate) { target = pointerTarget; pointerVersion = pointerGeneration; }
-        if (target is null || target.Window != foreground || run.StopRequested)
+        var snapshot=target?.ReadContext();
+        if (target is null || snapshot is null || target.Window != foreground || run.StopRequested)
         { CancelPointer(run, "pointer-context-unavailable"); return; }
         var previous = run.Gesture;
         if (phase != "down" && previous is null) return;
-        if (phase == "down" && created < target.ObservationCreatedAtSeconds)
+        if (phase == "down" && created < snapshot.ObservationCreatedAtSeconds)
         { CancelPointer(run, "pointer-press-before-current-frame"); return; }
         if (phase != "down" && (run.GestureTarget?.Window != target.Window || previous?.PointerGeneration != pointerVersion))
         { CancelPointer(run, "pointer-target-changed"); return; }
         var sequence = ++run.PointerSequence;
         if (phase == "down") { run.StartX = x; run.StartY = y; previous = null; run.GestureTarget = target; }
         var pressTarget = run.GestureTarget!;
+        var pressSnapshot=phase=="down"?snapshot:previous?.PressContextSnapshot??pressTarget.ReadContext();
+        if(pressSnapshot is null){CancelPointer(run,"pointer-context-unavailable");return;}
         var item = new GlobalInputPointerEvent(phase, x, y, created, foreground, target.Window, run.State.Generation,
-            pointerVersion, ContextId: pressTarget.ContextId, Sequence: sequence, GestureId: previous?.GestureId ?? sequence,
+            pointerVersion, ContextId: pressSnapshot.ContextId, Sequence: sequence, GestureId: previous?.GestureId ?? sequence,
             DeltaX: previous is null ? 0 : x - previous.X, DeltaY: previous is null ? 0 : y - previous.Y,
-            TotalDeltaX: x - run.StartX, TotalDeltaY: y - run.StartY);
+            TotalDeltaX: x - run.StartX, TotalDeltaY: y - run.StartY,PressContextSnapshot:pressSnapshot);
         run.Gesture = phase == "up" ? null : item;
         Queue(run, new(GlobalInputNotificationKind.Pointer, item.Generation, Pointer: item));
     }

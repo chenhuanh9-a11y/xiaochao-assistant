@@ -66,10 +66,16 @@ public sealed record GlobalInputKeyEvent(int VirtualKey, int PhysicalVirtualKey,
 public sealed record GlobalInputPointerEvent(string Phase, int X, int Y, double CreatedAtSeconds,
     long ForegroundWindow, long TargetWindow, long Generation, long PointerGeneration, string? Reason = null,
     string? ContextId = null, long Sequence = 0, long GestureId = 0,
-    int DeltaX = 0, int DeltaY = 0, int TotalDeltaX = 0, int TotalDeltaY = 0);
+    int DeltaX = 0, int DeltaY = 0, int TotalDeltaX = 0, int TotalDeltaY = 0,
+    GlobalInputPointerContextSnapshot? PressContextSnapshot=null);
 
 /// <summary>Identity of a cached immutable runtime context; no business callback runs on the native thread.</summary>
-public sealed record GlobalInputPointerTarget(long Window, string ContextId, double ObservationCreatedAtSeconds);
+public sealed record GlobalInputPointerTarget(long Window, string ContextId, double ObservationCreatedAtSeconds,
+    GlobalInputPointerContextSlot? ContextSlot=null)
+{
+    public GlobalInputPointerContextSnapshot? ReadContext()=>ContextSlot is null
+        ?new(ContextId,ObservationCreatedAtSeconds):ContextSlot.Read();
+}
 
 /// <summary>Read-only dispatch-time window facts and explicitly granted listening intent.</summary>
 public sealed record GlobalInputScope(long GameWindow = 0, bool GameWindowExists = false,

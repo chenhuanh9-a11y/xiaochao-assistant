@@ -311,6 +311,31 @@ internal sealed class RuntimePage : UserControl
     internal void BindingChanged()
         => SuspendInput("window-binding-changed");
 
+    internal GlobalInputPointerContextSlot? GamePointerContextSlot=>closed || configuring || loadingResources?null:runtime?.PointerContextSlot;
+    long pointerSourceGeneration=-1,pointerSequence;
+    internal void ResetPointerInputOrder(){pointerSourceGeneration=-1;pointerSequence=0;}
+    internal GameFloorClickResult HandleGamePointerIntent(GlobalInputPointerEvent press)
+    {
+        var view=session?.Read();
+        if(closed || configuring || loadingResources || session is null || runtime is null || runtime.ReadState().RoundActive!=true
+            || view is {ResourceLocked:true} or {ContextPending:true}
+            || view?.PendingAction is "start_round" or "prepare_manual_alignment" or "end_round" or "stop_round" or "reset_round" or "set_context" or "close_map")
+            return new(false,"floor-click-not-active");
+        if(press.Phase!="down" || press.Generation<pointerSourceGeneration || press.Sequence<=0)return new(false,"floor-click-sequence-stale");
+        if(press.Generation!=pointerSourceGeneration){pointerSourceGeneration=press.Generation;pointerSequence=0;}
+        if(press.Sequence<=pointerSequence)return new(false,"floor-click-sequence-stale");
+        pointerSequence=press.Sequence;
+        var accepted=runtime.ObserveGameFloorClick(press,view!.Sequence);
+        if(!accepted.Success)return accepted;
+        CancelDelay();
+        // Do not CancelPending/SuspendInput: their recovery cancellation is a
+        // hard map close. The accepted intent already retired older tickets.
+        session.RefreshRuntime();
+        Dispatch("refresh_map",new {floorClickSourceGeneration=press.Generation,floorClickSequence=press.Sequence,
+            floorClickCreatedAt=press.CreatedAtSeconds,floorIntentRevision=accepted.IntentRevision});
+        Render();return accepted;
+    }
+
     internal void SuspendInput(string reason)
     {
         if (closed) return;
@@ -512,6 +537,7 @@ internal sealed class RuntimePage : UserControl
     static string FloorLabel(string? value) => value is null ? "楼层待确认" : value == "B1" ? "地下 1 层" : value.StartsWith('-') ? $"地下 {value[1..]} 层" : value + "F";
     static string ModeLabel(string value) => value switch { "nightmare" => "噩梦", "difficult" => "困难", "difficulty2" => "普通（历史）", _ => value };
     static string Reason(string reason) => reason switch {
+        "game-floor-control-intent" or "pending-click-mismatch" => "已记录切层点击，等待游戏当前楼层高亮确认。",
         "context-bound" => "资源已就绪，开始本局不会自动开图或采集。", "round-started" => "请在游戏中打开地图，再读取画面。",
         "entry-neighborhood-candidates" or "candidates-awaiting-confirmation" => "画面尚不能唯一确认地图，可选择候选或手动选图。", "window-binding-changed" => "窗口连接已改变，请重新读取。",
         "map-closed" => "地图已关闭，已确认的地图选择保留。", "cancelled" => "识别已取消。",

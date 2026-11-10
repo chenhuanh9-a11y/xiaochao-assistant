@@ -75,6 +75,7 @@ public sealed partial class LiveRuntime
             RequireCurrent(epoch,token,captured,bound);
             if(read?.MapOpen==false)return CloseS1Observation(request,"s1-map-closed");
             _frame=captured;_floor=_observedFloor=null;_pose=null;
+            if(captured is not null && read is not null)RememberPointerObservation(captured,read);
             ResetSteady();_geometryGroup=null;RevokeDisplay("s1-floor-unknown");
             _structureSession?.RevokeCurrent();_structureTicket=null;
             _reason="s1-current-floor-unavailable";_diagnostics=JsonSerializer.SerializeToElement(diagnostic,Json);

@@ -54,6 +54,7 @@ internal static class Program
         await LocalPanelOwnership(ui);
         await StopAndBackpressure(ui);
         await PointerContext(ui);
+        await PointerIntentContext(ui);
     }
 
     static async Task BasicAndStartOrdering(Dispatcher ui)
@@ -331,5 +332,34 @@ internal static class Program
             Pointer: down with { Phase = "up", Sequence = 2 }));
         await Until(() => observed.Any(item => item.Notification.Pointer?.Phase == "up"), "old pointer up");
         Check(observed[^1].Pointer is null, "pointer/old-context-release-not-authorized-for-new-frame");
+    }
+
+    sealed record IntentContext(int Observation):IGlobalInputPointerIntentContext;
+    static async Task PointerIntentContext(Dispatcher ui)
+    {
+        var bindings=Bind();var source=new FixtureInputSource(bindings);var slot=new GlobalInputPointerContextSlot();
+        var original=new GlobalInputPointerContextSnapshot("intent-a",100,"scope-a",new IntentContext(1));slot.Publish(original);
+        var context=new WpfGlobalInputContext(new(42,true,42,false,true,true),BindingGeneration:1,
+            PointerTarget:new(42,"static-fallback-is-not-an-observation",0,slot),AllowPointerIntentPress:true);
+        var observed=new List<WpfGlobalInputDelivery>();
+        await using var host=new WpfGlobalInputController(ui,bindings,()=>context,observed.Add,source);await host.StartAsync();
+        var down=new GlobalInputPointerEvent("down",10,20,100.005,42,42,source.Generation,1,
+            ContextId:original.ContextId,Sequence:1,GestureId:1,PressContextSnapshot:original);
+        slot.Publish(new("intent-b",100.01,"scope-a",new IntentContext(2)));source.NowSeconds=100.02;
+        source.Post(new(GlobalInputNotificationKind.Pointer,source.Generation,Pointer:down));
+        await Until(()=>observed.Any(item=>ReferenceEquals(item.Notification.Pointer,down)),"queued intent press");
+        Check(observed[^1].Pointer is null && observed[^1].PointerIntentPress==down,"pointer/advanced-observation-only-reaches-opted-in-intent-channel");
+        slot.Publish(new("intent-c",100.03,"scope-b",new IntentContext(3)));source.NowSeconds=100.04;
+        var stale=down with {Sequence=2,GestureId=2};source.Post(new(GlobalInputNotificationKind.Pointer,source.Generation,Pointer:stale));
+        await Until(()=>observed.Any(item=>ReferenceEquals(item.Notification.Pointer,stale)),"hard scope replacement");
+        Check(observed[^1].Pointer is null && observed[^1].PointerIntentPress is null,"pointer/hard-scope-replacement-rejects-old-intent-context");
+        slot.Publish(null);var noObservation=down with {Sequence=3,GestureId=3};source.Post(new(GlobalInputNotificationKind.Pointer,source.Generation,Pointer:noObservation));
+        await Until(()=>observed.Any(item=>ReferenceEquals(item.Notification.Pointer,noObservation)),"empty pointer slot");
+        Check(observed[^1].Pointer is null && observed[^1].PointerIntentPress is null && source.PointerTarget?.ReadContext() is null,
+            "pointer/null-slot-does-not-fallback-to-static-context");
+        slot.Publish(new("intent-d",100.01,"scope-a",new IntentContext(4)));context=context with {AllowPointerIntentPress=false};
+        var disabled=down with {Sequence=4,GestureId=4};source.Post(new(GlobalInputNotificationKind.Pointer,source.Generation,Pointer:disabled));
+        await Until(()=>observed.Any(item=>ReferenceEquals(item.Notification.Pointer,disabled)),"non-opted intent");
+        Check(observed[^1].Pointer is null && observed[^1].PointerIntentPress is null,"pointer/default-strict-consumer-does-not-inherit-intent-permission");
     }
 }

@@ -25,7 +25,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         "locked-canvas-floor-reuse-unavailable", "native-identity-strong-conflict-producer-unavailable",
         "pose-index-candidate-provider-unavailable",
         "retained-group-fit-context-unavailable",
-        "floor-click-intent-policy-unavailable"];
+        "game-map-close-pointer-policy-unavailable", "game-map-drag-policy-unavailable", "foreground-loss-return-plan-unavailable"];
     private readonly object _sync = new();
     private readonly SemaphoreSlim _worker = new(1, 1);
     private readonly ICapturePort _capture;
@@ -175,13 +175,14 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         long operation, epoch;
         lock (_sync)
         {
+            if(PointerRetired(request)){ReleaseRuntimeWorker();return Receipt(request,false,"request-retired-by-floor-intent");}
             operation = ++_operation; epoch = _epoch;
             _progressRequest = null;
         }
         using var registration = cancellationToken.Register(() =>
         {
             lock (_sync)
-                if (!_closed && _operation == operation && _progressRequest == request.Context)
+                if (!_closed && _operation == operation && _progressRequest == request.Context && _progressEpoch==_epoch && !PointerRetired(request))
                 {
                     if (request.Action == "select_group_member") DiscardGroupMaterial("group-choice-cancelled");
                     else { _epoch++; RevokeFrame("cancelled"); }
@@ -232,6 +233,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 if (_closed) return Receipt(request, false, "runtime-closed");
                 if (!RequestMatches(request)) return Receipt(request, false, "request-runtime-context-mismatch");
                 RequireCurrent(epoch, cancellationToken);
+                if(PointerRetired(request))return Receipt(request,false,"request-retired-by-floor-intent");
                 _progressRequest = request.Context; _progressEpoch = epoch; _progressCancellation = cancellationToken;
                 if ((request.Action is "capture_now" or "observe_manual_floor") && !AcceptObservationSequence(request.Payload))
                     return Receipt(request, false, "map-input-sequence-expired");
@@ -362,7 +364,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             lock (_sync)
             {
                 RequireCurrent(epoch, token);
-                if (!_manualAlignmentSession && request.Action != "confirm_route") throw;
+                if (!_manualAlignmentSession && request.Action != "confirm_route" && floorClickEpochSpan is null) throw;
                 return FailCaptureObservation(request, epoch, "runtime-error:" + error.GetType().Name + ":" + error.Message);
             }
         }
@@ -372,6 +374,15 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     {
         lock (_sync)
         {
+            if(_epoch==epoch && floorClickEpochSpan is not null)
+            {
+                // A failed current capture is not a map-close observation.
+                // End the click lifetime and revoke pose, keeping the actual
+                // observed opening just as the original runtime-error path.
+                _epoch++;_progressRequest=null;ClearFloorClickIntent(preservePolicy:true);
+                _mapRecovery=null;_structureSession?.RevokeCurrent();_structureTicket=null;_entryCandidates.Clear();
+                return FailCurrent(request,_epoch,reason,diagnostic);
+            }
             // The capture adapter can report a null frame or throw. Neither
             // supplies map-close evidence; both retire the manual observation.
             if (_epoch == epoch && _manualAlignmentSession)
@@ -406,7 +417,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             s1Manual=S1FloorObserverAvailable && _manualAlignmentSession;
             captureBinding = _capture.BindingScope;
             wasOpen = _mapOpen;
-            if (_manualAlignmentSession || request.Action is "refresh_map" or "observe_manual_floor" or "confirm_route")
+            if (_manualAlignmentSession || request.Action is "refresh_map" or "observe_manual_floor" or "confirm_route" || _mapOpen && request.Action=="capture_now")
             {
                 if(_manualAlignmentSession && request.Action!="observe_manual_floor")
                 {RevokeDisplay("s1-current-floor-fit");_frame=null;}
@@ -571,6 +582,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             if (observedFloor is not null) _probeMisses = 0;
             if (!wasOpen) _mapCycle++;
             _frame = captured; _mapOpen = true; _floor = floor; _pose = null;
+            RememberPointerObservation(captured,floorRead);
             _diagnostics = floorConflict
                 ? JsonSerializer.SerializeToElement(new {stage="floor-conflict",map=floorRead.MapObservation,floor=floorRead.FloorRead,
                     targetFloor=floor,observedFloor,fitAttempted=false,preparation},Json)
@@ -584,6 +596,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         }
         // A reliable current sensor may veto the target before ranking/index
         // exclusion or fitting; an unknown sensor supplies no contradiction.
+        if(floorPolicyReason=="pending-click-mismatch")return Receipt(request,false,"pending-click-mismatch");
         if(floorConflict)return Receipt(request,false,"current-frame-floor-conflict");
         if (floor is null) return Receipt(request, false, s1Manual?"s1-current-floor-unavailable":"current-floor-unavailable");
         using var current = ToBgr(captured);
@@ -755,7 +768,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
     { ResetSteady(); _geometryGroup = null; ClearGroupChoice(); _mapId = null; _s1ProvisionalMapId = null; _identitySource = ""; _nativeIdentity = null; _structureSession?.EndRound(); _structureSession = null; _structureTicket = null; _alignment = null; _roundFitOwner = new(); _manualLearning=null; }
     private void ClearFloor()
     { _floor = _manualFloor = _observedFloor = null; _manualFloorStarted = null; _manualAlignmentSession=false; }
-    private void AdvanceOwnedEpoch() { _epoch++; _progressEpoch = _epoch; }
+    private void AdvanceOwnedEpoch() { _epoch++; _progressEpoch = _epoch; ClearFloorClickIntent(); }
 
     // Called under _sync. An observation may share the last physical edge;
     // MapInput separately requires new inputSequence edges to increase.
@@ -770,17 +783,24 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
 
     private string? ResolveObservedFloor(FloorObservationResult read)
     {
+        if(ResolveGameFloorIntent(read) is { } intended)return intended;
         _observedFloor = read.AutomaticEligible ? read.FloorId : null;
         // floor_observation_policy.py: an unknown latest read neither fills
         // from history nor ends an explicit manual override. Fresh valid
         // evidence releases the non-hard-locked override after two seconds.
-        if (_observedFloor is not null && _manualFloor is not null && _manualFloorStarted is { } started
+        if (_observedFloor is not null && _manualFloorStarted is { } started
             && _options.TimeProvider.GetElapsedTime(started) >= TimeSpan.FromSeconds(2))
         { _manualFloor = null; _manualFloorStarted = null; }
-        return _manualFloor ?? _observedFloor;
+        // A game click clears the explicit assistant hint when it changes the
+        // target, but an earlier manual hold still protects that current target.
+        string? target=_manualFloor ?? (_manualFloorStarted is not null?_floor:_observedFloor);
+        floorPolicyReason=target is null?"insufficient-stable-evidence":_manualFloorStarted is not null && _observedFloor is not null && target!=_observedFloor
+            ?"manual-hold-deferred":target==_floor?"already-current-floor":"floor-state-applied";
+        return target;
     }
     private void RevokeFrame(string reason, bool retainRecovery = false)
     { _frame = null; _pose = null; _mapOpen = false; _workActive = false; _candidates = []; _selected = -1; _reason = reason;
+        ClearPointerObservation();
         if (!retainRecovery) _mapRecovery = null;
         RevokeDisplay(reason);
         _entryCandidates.Clear();
@@ -836,12 +856,13 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             RemainingMapIds = _structurePool?.Remaining ?? Array.Empty<string>(),
             EliminatedMapIds = _structurePool?.Eliminated ?? Array.Empty<string>(), RecognitionPath = _recognitionPath,
             ProvisionalMapId = _s1ProvisionalMapId,
-            ProbeMisses = _probeMisses,ManualAlignmentSession=_manualAlignmentSession,ManualLearning=_manualLearning,
+            ProbeMisses = _probeMisses,ManualAlignmentSession=_manualAlignmentSession,ManualLearning=_manualLearning,FloorClickIntent=gameFloorIntent,FloorPolicyReason=floorPolicyReason,
             IdentityKind = _identitySource == "group-default" ? "group" : IsStructureProvisional ? "candidate" : _mapId is null ? "unresolved" : "map",
             MapDisplayName = _resources?.Passports.Maps.FirstOrDefault(map => map.MapId == EffectiveMapId)?.Name,
             IdentityGroupId = HasRegisteredGroup ? _nativeIdentity!.GroupId : null,
             IdentityMemberIds = HasRegisteredGroup ? _nativeIdentity!.MemberIds : Array.Empty<string>(), GroupChoice = ReadGroupChoice() };
         _publishedSnapshot = Snapshot(_publishedState);
+        PublishPointerObservation();
         _publishedBindingState = _capture.IsBound;
     }
     private RuntimeSnapshot Snapshot(LiveRuntimeState state)
