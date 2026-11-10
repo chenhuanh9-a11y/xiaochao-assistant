@@ -431,3 +431,12 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 - 资源页固定选项增加“启用 S0 困难数据”，稳定 suffix 为 `-s0-difficult`；新启用与重复启用均明确说明识别功能尚未开放。保存不写 catalog，选择沿用 Session 租约、prospective 包视图、事务提交/取消恢复与一次通知；重复不改 generation。四种已登记的数据组合现在都受支持，原“不支持 S0D”负例改为未知 S2 上下文，仍保留支持组合之间包错配的拒绝与 catalog 不变检查。
 - 完整 30 图微型合成 ZIP 经真实服务导入→租约→helper/catalog→默认数据工厂、native/legacy 底图及缓存资格检查，2 项修前失败，修后通过；直接 rank/实时 getter/开始本局仍拒绝，未采集、未创建学习目录。旧 helper/服务/默认 builder 拒绝回归 16 项，以及旧 S0N 工厂、构造后读取失败、S1 实际扫描 3 项分别通过。资源页组件交互与真实包证据单独记录，不冒充完整 QtClient、实帧识别/贴合、游戏或 Setup 验收。
 - 新离屏 QML 测试通过实际鼠标点击启用按钮，保存阶段通过服务 API，不经过文件选择器；核对忙时 Session 租约、按钮/模型实例、一次通知、重复选择与全部数据资格。微型包 1 项通过（67.340 秒），同一测试链换真实 `d1bcc98c…f54f` 包 1 项通过（79.879 秒）：保存 4.319 秒、指针到选择完成 26.600 秒，0 错误/首次与重复均总计 1 次通知，30 图 60 层 RGBA 实际尺寸分别记录；data=true、rank/live/candidate/available=false，未学习或采集。以上为一次离屏诊断，含短暂可控等待以观察租约，不是识别延时或物理首像素测量。650×470 与 1000×720 的保存态截图已核对，新按钮与不可识别提示无裁切；完整 QtClient/原生输入/游戏仍未测。
+
+### 独立作者显示组件与默认显示接缝
+
+- 新 display payload 使用 `xingtu-author-display-component-v1`，不复用旧安装目录或收据发现。共享提取原 V2 的图像、权限、仿射、画布和引用校验，保留旧 V2 错误类别及旧 S1 审批名单；不新增逐包批准表。图像归 display 组件，结构引用归唯一声明的当前 base 依赖；公共 decoder 经实际 provider 核对引用文件、地图/楼层/variant/profile、尺寸、坐标空间及版本。PNG alpha、JPEG 与完整仿射保留；包自报 reviewed 始终只得到 `user-provided-unreviewed`。
+- 默认 imported 工厂只合成选中的 display views。矩阵按实际 reference→canonical 的 `S` 与作者 display→reference 的 `M` 组成 `S @ M`，显示消费者再桥回 reference；基础 adapter、身份、楼层、scanner 和 rank/live 资格不变。私有 adapter 的画布元数据来自实际 reference，不从作者声明补权威。非 native 的 legacy 引用保留 `reference-role-unavailable`，不以作者图补 native layout 或结构资格。
+- 可选组件损坏、重 profile 冲突、缺层或注册失效只使作者显示不可用，回退实际同层结构与单位显示桥。注册和图片使用组件 reader，cache 命中也重读；BGRA 只读像素缓存限制 6 项/96 MiB。解码后及 cache 锁释放后核当前组件/catalog，`prepare_display_layer` 的全部成功返回均再核 engine；目录换代须拒绝，不能改回旧结构继续返回。owned optional 缺 binding 不走普通磁盘图片读取。
+- 主任务执行 `python -u -m unittest -v test_imported_author_display test_imported_author_displays`，当时 11 项通过（321.416 秒），使用微型完整 S1D ZIP、公用保存/解码器、真实默认工厂与显示入口；旧 map29 另用完整 S0D fixture 核其角色缺口。非单位 `S` 一项仅替换数学基准返回值，没有替换结构 provider 或求解器。后补 cache 发布切换回归：仅移除最后两次 current 检查时 1 项失败（44.396 秒），当前实现同项通过（46.060 秒）；其中仅以 cache 锁回调模拟切换时机，catalog、reader 和像素链均实际执行。两个模块分别加入候选 data/runtime CI 分组，不加入历史 baseline。
+- 旧通用作者包/仿射 15 项、旧 S1 作者/透明图 23 项及原显示偏好/消费者 24 项回归通过。原偏好测试的中文路径 `cv2.imread` 预期读取在 HEAD 旧实现上独立复现为 None，改为比较 fixture 的已知完整像素，未降低像素断言。首轮新 runtime 的两处测试构造错误与中间失败日志均保留，未计入通过结果。
+- 本切片尚未提供新作者包 producer、作者启用按钮、prospective display 语义验证或图库消费。当前 `load_imported_browse_context` 仍返回空图库与提示，不能把默认显示适配称为 GUI 作者导入已完成。四模式作者 runtime 联合回放、真实作者素材、完整客户端/实帧/物理像素/游戏与统一架构 Setup 未验收；P2 来源/登记角色及 S0N 完整池资格边界、P3–P5 仍待完成。

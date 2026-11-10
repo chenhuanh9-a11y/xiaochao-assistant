@@ -214,9 +214,18 @@ class ImportedEngineFactories(EngineFactories):
         resources, _ = self._context_resources(mode, season)
         engine = build_native_engine(resources.base, resources.controls, self.paths,
                                      season=season, mode=mode, require_rank=False)
+        if resources.displays:
+            from imported_author_displays import ImportedAuthorDisplays
+            optional = ImportedAuthorDisplays(resources.displays, engine.qt_native_base,
+                engine.qt_shared_provider, check_current=engine.qt_assert_resource_current)
+            engine.qt_optional_displays = optional
+            engine.qt_catalog, engine.qt_adapters = optional.catalog, optional.adapters
+        else:
+            optional = None
         engine.qt_resource_inventory['optionalResourceGaps'] = list(resources.optional_gaps) + (
-            ['display-decoder-unavailable'] if resources.displays else []) + (
+            list(optional.errors.values()) if optional is not None else []) + (
             ['reviewed-groups-decoder-unavailable'] if resources.groups is not None else [])
+        engine.qt_assert_resource_current()
         return engine
 
 

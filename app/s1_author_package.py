@@ -11,6 +11,8 @@ import math
 import re
 from pathlib import Path
 
+from author_display_validation import MAX_IMAGE_PIXELS as MAX_PIXELS, valid_display_shape
+
 PACKAGE_ID = "s1-jiaye-handnotes"
 PROFILE_ID = PACKAGE_ID
 TITLE = "爱吃醋 · S1 原图（旧包）"
@@ -29,7 +31,6 @@ BINDINGS_PATH = f"_internal/references/author-packs/{PROFILE_ID}/display-binding
 IMAGE_PREFIX = f"_internal/assets/authors/{PROFILE_ID}/"
 MODES = ("difficult", "nightmare")
 FLOORS = ("-1", "-2", "-3")
-MAX_PIXELS = 16 * 1024 * 1024
 # Filled only after the offline source/native registration and independent review.
 # This is a coordinate approval, not a publisher signature or provenance claim.
 APPROVED_BINDINGS = frozenset({
@@ -128,9 +129,7 @@ def receipt_rows(receipt):
 
 
 def _shape(value):
-    return (isinstance(value, list) and len(value) == 2
-            and all(type(x) is int and 0 < x <= 8192 for x in value)
-            and value[0] * value[1] <= MAX_PIXELS)
+    return valid_display_shape(value)
 
 
 def _matrix(value):

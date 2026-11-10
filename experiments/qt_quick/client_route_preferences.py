@@ -114,11 +114,18 @@ def prepare_display_layer(engine, map_id, floor, preferred, *, variant_id="varia
     from author_display_policy import shared_route_validation_spec
     from nightmare_candidate import imread_unicode
 
+    def check_current():
+        check = getattr(engine, 'qt_assert_resource_current', None)
+        if callable(check):
+            check()
+
+    check_current()
     reference = engine.qt_shared_provider("shared-structure", map_id, floor)
     if reference is None:
         raise ValueError("display-reference-unavailable")
 
     def metadata(layer, *, author_status="none", fallback_reason=""):
+        check_current()
         actual = "shared-structure" if preferred.startswith("custom:") else layer["routeProfileId"]
         return dict(layer, preferredProfileId=preferred, effectiveProfileId=actual,
             authorStatus=author_status, fallback=bool(preferred != actual and not preferred.startswith("custom:")),
@@ -149,7 +156,9 @@ def prepare_display_layer(engine, map_id, floor, preferred, *, variant_id="varia
     version = matching[0] if len(matching) == 1 else {}
     if not coffin:
         binding = optional.binding(effective, map_id, floor) if optional is not None else None
-    available = binding.get("usable") is True if binding is not None else not version.get("authorError")
+    owned_optional = effective in getattr(optional, 'profiles', ())
+    available = (binding.get("usable") is True if binding is not None else
+                 not owned_optional and not version.get("authorError"))
     if effective != "shared-structure":
         profile = catalog.profiles.get(effective) if catalog is not None else None
         path = (catalog.route_path(effective, map_id, str(floor),
@@ -174,6 +183,7 @@ def prepare_display_layer(engine, map_id, floor, preferred, *, variant_id="varia
                     referencePath=str(path), routeProfileId=effective,
                     variantId=variant_id if coffin else None), fallback_reason=failure)
             except (OSError, ValueError, KeyError, TypeError, cv2.error):
+                check_current()
                 failure = "author-display-load-or-bridge-error"
         elif not available:
             failure = "author-registration-or-version-unavailable"
