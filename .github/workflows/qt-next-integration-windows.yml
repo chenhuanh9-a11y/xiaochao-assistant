@@ -202,7 +202,26 @@ jobs:
             'released-baseline' { $modules = $core }
             'main-baseline' { $modules = $core }
             'diagnostics' { $modules = @('test_map_attempt_correlation', 'test_diagnostic_log_budget', 'test_client_problems', 'test_client_problem_history', 'test_client_info', 'test_client_season_failure_export', 'test_client_diagnostic_integration', 'test_client_joint_diagnostic_schema', 'test_field_failure_samples', 'test_async_event_log', 'test_automatic_failure_samples', 'test_storage_retention', 'test_memory_retention_links', 'test_runtime_environment_diagnostics'); $modules += @(Get-ChildItem tests/test_diagnostic*.py | ForEach-Object { $_.BaseName }) }
-            'packaging' { $modules = @('test_runtime_exclusions', 'test_s1_private_packaging', 'test_preview_windows_notice', 'test_qt_installer_directory', 'test_live_author_import', 'test_legacy_import_recovery', 'test_package_dependency_upgrade', 'test_receipt_dependency_contract', 'test_map_package_removal', 'test_client_resources') }
+            'packaging' {
+              $modules = @('test_runtime_exclusions', 'test_s1_private_packaging', 'test_preview_windows_notice', 'test_qt_installer_directory', 'test_live_author_import', 'test_legacy_import_recovery', 'test_package_dependency_upgrade', 'test_receipt_dependency_contract', 'test_map_package_removal', 'test_client_resources')
+              # New imported resources use the same independent-process runner.
+              # These are parser/store/Qt regressions, never Setup or game acceptance.
+              $modules += @(
+                'test_s0_predecessor_closure', 'test_s0_staged_closure',
+                'test_resource_zip_io', 'test_imported_resource_archive',
+                'test_imported_resource_packages', 'test_imported_resource_catalog',
+                'test_imported_resource_selection', 'test_imported_resource_activation',
+                'test_imported_resource_inventory', 'test_owned_directory_publication',
+                'test_imported_array_archive', 'test_imported_resource_reader',
+                'test_imported_structure_declarations', 'test_imported_controls_profile',
+                'test_imported_s0_observation', 'test_identity_metadata_package_io',
+                'test_shared_structure_package_io', 'test_shared_version_package_io',
+                'test_entry_resource_io', 'test_export_native_base_package',
+                'test_imported_native_base', 'test_client_shared_reference_context',
+                'test_client_imported_providers', 'test_client_imported_controls',
+                'test_client_imported_resources', 'test_client_imported_resource_startup'
+              )
+            }
             'season-ui' { $modules = @('test_s1_builtin_resources', 'test_probe_resource_context', 'test_season_settings', 'test_season_catalog', 'test_season_selector', 'test_season_selector_layout', 'test_season_gallery', 'test_season_resources', 'test_season_session', 'test_client_season_preparation', 'test_client_context_failure', 'test_settings_accessibility', 'test_client_gallery_actions', 'test_client_gallery_layout', 'test_client_gallery_resource_refresh') }
             'author-snapshots' { $modules = @('test_author_deferred_decode', 'test_s1_author_loading_work', 'test_author_snapshot_removal', 'test_client_snapshot_removal', 'test_author_resource_snapshots', 'test_author_snapshot_history', 'test_client_author_history', 'test_client_author_history_page', 'test_generic_author_package', 'test_generic_author_affine', 'test_generic_author_windows_paths', 'test_resource_transaction', 'test_map_package_upgrade', 'test_map_package_summary', 'test_client_author_snapshots', 'test_client_author_snapshot_recovery', 'test_client_author_snapshot_page', 'test_client_package_manager', 'test_star_map_recovery_helper', 'test_client_resource_recovery_lease', 'test_client_resource_startup_recovery', 'test_client_additions_recovery', 'test_client_import_upgrade_parity', 'test_generic_author_consumers', 'test_generic_author_startup') }
             # Real temporary files and native lease probes; no Setup execution,

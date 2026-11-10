@@ -57,6 +57,7 @@ class NativeBaseExporterTests(unittest.TestCase):
             pairs = np.array([[0, 1], [1, 2], [2, 3], [3, 0]])
             local = dict(mapId=self.mid, floor=floor, profileId=exporter.PROFILE,
                 variantId='variant-01', unit=12., sourceKind='game-rendered-shared-structure',
+                material='fixture-stone', region='fixture-region',
                 sourceProduct=Path(resource).name, structureResource=Path(resource).name,
                 sourceIndex='../nightmare-shared-structure-index.json', canvas=canvas,
                 turns=[dict(point=point.tolist(), rays=ray.tolist(), next=int(pair[1]))
