@@ -241,6 +241,7 @@ jobs:
                 'test_client_imported_providers', 'test_client_native_base_provider',
                 'test_client_imported_s1_provider', 'test_client_imported_s1_nightmare_provider',
                 'test_client_imported_difficult_provider', 'test_client_imported_difficult_activation_ui',
+                  'test_client_imported_fast_structure',
                 'test_client_imported_controls',
                 'test_client_imported_activation', 'test_client_imported_activation_ui',
                 'test_client_imported_s1_activation', 'test_client_imported_s1_activation_ui',

@@ -64,7 +64,7 @@ S1_PROFILE = 'shared-structure'
 S1_INTERFACES = dict(identityPack=S1_PACK, typedIndex=S1_INDEX,
     coordinatePack=S1_COORDINATES, neutralDisplay=S1_NEUTRAL,
     identityEntries=S1_ENTRIES, identityProfile=S1_PROFILE,
-    entryEvidenceRole='proposal-only')
+    entryEvidenceRole='proposal-only', fastStructureIndex='references/fast-structure/index.json')
 
 
 def _reject(reason):
@@ -612,6 +612,16 @@ def _s1_base_payloads(source, mode='difficult'):
         original = next(row['resourcePath'] for row in typed.values()
                         if row['resourcePath'].casefold() == path)
         payloads[original] = _s1_checked_read(source, original, manifest_files, 'typed-product', mode=mode)
+    from imported_fast_structure import INDEX_KIND
+    fast_rows = []
+    for (mid, floor), row in sorted(typed.items()):
+        original = row['resourcePath']
+        prepared = 'references/fast-structure/' + Path(original).stem + '-fast.npz'
+        payloads[prepared] = _s1_checked_read(source, prepared, manifest_files, 'fast-prepared', mode=mode)
+        fast_rows.append(dict(binding=dict(profile=S1_PROFILE, mapId=mid, floor=floor, variant='variant-01'),
+                              referenceResource=original, preparedResource=prepared))
+    payloads[S1_INTERFACES['fastStructureIndex']] = _encoded(
+        dict(schemaVersion=1, resourceKind=INDEX_KIND, entries=fast_rows))
     payloads['resource-context.json'] = _encoded(dict(schema='xingtu-native-recognition-base-v1',
         season='s1', mode=mode, runtimeInterfaces=S1_INTERFACES))
     return payloads, len(ids)
@@ -659,10 +669,16 @@ def _round_trip_s1(path, destination, mode):
             != {(row.id, floor) for row in bundle.pack.maps for floor in bundle.pack.floors}):
         _reject('roundtrip-s1-controls-or-typed-inventory')
     bundle.assert_current()
+    # Data-only consumer round trip; full derivation belongs to this explicit
+    # producer boundary and activation, never ordinary engine construction.
+    def provider(profile, map_id, floor):
+        bundle.assert_current()
+        return bundle.resources.load(profile, map_id, floor, variant='variant-01')
+    bundle.fast_structure_source.validate_all(provider, compare_derived=True)
     return dict(mapCount=len(bundle.pack.maps), typedLayerCount=len(bundle.resources.entries),
         mainEntries=len(bundle.entry_identity.entries), localEntries=len(bundle.side_entry_identity.entries),
         controlsDetector=controls.detector_id, controlsFloors=list(context.contract.floor_ids),
-        proposalOnly=True, mode=mode)
+        proposalOnly=True, mode=mode, fastPreparedLayerCount=len(bundle.fast_structure_source.entries))
 
 
 def _round_trip(path, destination, *, season='s0', mode='nightmare'):

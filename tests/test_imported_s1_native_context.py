@@ -106,7 +106,11 @@ class ImportedS1NativeContextTests(unittest.TestCase):
         self.assertEqual(display['routeProfileId'], 'shared-structure')
         self.assertEqual(display['resourceIdentity']['path'], str(reference.path))
         self.assertEqual(display['resourceIdentity']['binding'], reference.metadata['binding'])
-        self.assertEqual(display['fallbackReason'], 's1-native-display-not-installed')
+        self.assertFalse(display['fallback'])
+        self.assertEqual(display['fallbackReason'], '')
+        fallback = prepare_display_layer(engine, mid, '-2', 'missing-author')
+        self.assertTrue(fallback['fallback'])
+        self.assertIn('s1-native-display-not-installed', fallback['fallbackReason'])
         np.testing.assert_array_equal(display['matrixDisplayToReference'], np.eye(3))
         np.testing.assert_array_equal(display['pixels'][..., 3] != 0, reference.clean_mask != 0)
 

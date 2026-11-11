@@ -1,5 +1,6 @@
 """S1D native producer round trips over registered 14-map synthetic resources."""
 import hashlib
+from io import BytesIO
 import json
 from pathlib import Path
 import tempfile
@@ -29,7 +30,7 @@ class S1NativeBaseSourceFixture:
     typed canvases stay tiny so tests exercise the real archive/readers cheaply.
     """
 
-    def __init__(self, root, *, mode='difficult', package_id=None, resource_version='fixture-v1'):
+    def __init__(self, root, *, mode='difficult', package_id=None, resource_version='fixture-v1', include_fast=True):
         if mode not in ('difficult', 'nightmare'):
             raise ValueError('unsupported S1 fixture mode')
         self.root = Path(root)
@@ -51,6 +52,8 @@ class S1NativeBaseSourceFixture:
         self.neutral_path = exporter.S1_NEUTRAL
         self.entries_path = exporter.S1_ENTRIES
         self.resources = {}
+        self.prepared_resources = {}
+        self.include_fast = include_fast
         self._build()
 
     def _write_bytes(self, relative, raw):
@@ -76,6 +79,9 @@ class S1NativeBaseSourceFixture:
         typed_rows, version_rows, neutral_rows = [], [], []
         pack_maps, coordinate_maps, shared_maps = [], {}, {}
         identity_profiles = {}
+        if self.include_fast:
+            from fast_structure_alignment import prepare
+            prepared = prepare(np.ones((8, 8), np.uint8))
         for mid in self.ids:
             raw_hash = hashlib.sha256(('fixture-structure:' + mid).encode()).hexdigest()
             identity_profiles[mid] = 'shared-structure'
@@ -97,6 +103,14 @@ class S1NativeBaseSourceFixture:
                 np.savez_compressed(target, metadata=np.asarray(json.dumps(metadata, ensure_ascii=False)),
                                     shared_mask=np.ones((8, 8), np.uint8))
                 self.resources[mid, floor] = resource
+                if self.include_fast:
+                    fast_path = f'references/fast-structure/{Path(resource).stem}-fast.npz'
+                    target_fast = self.prefixRoot / fast_path
+                    target_fast.parent.mkdir(parents=True, exist_ok=True)
+                    np.savez_compressed(target_fast, distance=prepared.distance, chains=prepared.chains,
+                        rays=prepared.rays, pitch=prepared.pitch, shape=prepared.shape,
+                        sourceMetadata=np.asarray(json.dumps(metadata, ensure_ascii=False, sort_keys=True)))
+                    self.prepared_resources[mid, floor] = fast_path
                 typed_rows.append(dict(binding, resourcePath=resource, **common))
                 neutral_rows.append(dict(mapId=mid, floor=floor, binding=binding,
                     referenceResource=resource, canvas=canvas, **common))
@@ -278,6 +292,8 @@ class S1NativeBaseExporterTests(unittest.TestCase):
         self.assertEqual(len(decoded.resources.entries), 56)
         self.assertIsNone(decoded.exit_recognizer)
         self.assertEqual(decoded.gaps, ())
+        self.assertEqual(len(decoded.fast_structure_source.entries), 56)
+        self.assertEqual(result['fastPreparedLayerCount'], 56)
         self.assertEqual(decoded.side_entry_identity.side_doors, {})
         self.assertEqual(decoded.side_entry_identity.side_search, {})
         self.assertEqual(decoded.side_entry_identity.passports, [])
@@ -306,6 +322,24 @@ class S1NativeBaseExporterTests(unittest.TestCase):
         self.assertEqual(base.read(exporter.S1_PACK), (self.fixture.prefixRoot / self.fixture.pack_path).read_bytes())
         self.assertEqual(base.read(exporter.S1_INDEX), (self.fixture.prefixRoot / self.fixture.index_path).read_bytes())
         self.assertEqual(base.read(exporter.S1_NEUTRAL), (self.fixture.prefixRoot / self.fixture.neutral_path).read_bytes())
+
+    def test_missing_preparations_and_wrong_derived_arrays_cannot_be_exported(self):
+        relative = self.fixture.prepared_resources[self.fixture.ids[0], '-3']
+        path = self.fixture.prefixRoot / relative
+        raw = path.read_bytes()
+        path.unlink()  # Only this test's temporary source fixture.
+        self.fixture.refresh_after_source_edit()
+        with self.assertRaisesRegex(ValueError, 's1-required-source-unavailable'):
+            self.fixture.export()
+        self.assertFalse(self.fixture.output.exists())
+        with np.load(BytesIO(raw), allow_pickle=False) as archive:
+            arrays = {name:archive[name] for name in archive.files}
+        arrays['distance'] = np.ones((8,8),np.uint16)
+        np.savez_compressed(path, **arrays)
+        self.fixture.refresh_after_source_edit()
+        with self.assertRaisesRegex(ValueError, 'imported-fast-structure-derived-mismatch'):
+            self.fixture.export()
+        self.assertFalse(self.fixture.output.exists())
 
     def test_s1_competition_floor_and_required_source_fail_closed(self):
         mutations = ('missing-map', 'bad-floor', 'missing-required')

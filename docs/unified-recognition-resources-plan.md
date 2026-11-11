@@ -1,6 +1,6 @@
 # 四模式识别、贴合与资源导入统一方案
 
-核查日期：2026-11-11。状态：**P0 调查/设计完成；P1 空资源默认入口及 P2 四组合基础数据保存/选择已接资源页；S0 困难识别仍关闭，S1 保留观测资格限制；作者显示、登记来源角色与四模式回放尚未完成**。本文件同时作为现状清单、设计和实施台账，不另建重复任务说明。第 2–4 节现状引用绑定原核查 commit，后续实施状态另见第 8 节。
+核查日期：2026-11-11。状态：**P0 调查/设计完成；P1 空资源默认入口及 P2 四组合基础/controls、作者与结构显示、S1 预处理已接线；S0 困难识别仍关闭，S1 保留观测资格限制；登记来源角色、完整资源池及四模式实帧回放尚未完成**。本文件同时作为现状清单、设计和实施台账，不另建重复任务说明。第 2–4 节现状引用绑定原核查 commit，后续实施状态另见第 8 节。
 
 ## 1. 范围与基线
 
@@ -536,3 +536,13 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 - 数据装配抽取后的 S0D 2 项（45.867 秒）和 S1N 2 项（37.761 秒）通过；加入最终 renderer 后又测 S0D 实际默认工厂/正确草稿标签与显式结构无 fallback 1 项（29.399 秒）、S1D 默认 factory/实际 scanner/缓存代际 3 项（75.615 秒）。旧 route preferences 14 项（0.486 秒）、旧图库布局/操作 15 项（13.964 秒）通过。发现 S0D/S1N 旧测试漏适配只读准备阶段：前者原 2 项失败（7.722 秒），现等待真实提交阶段再保留原租约断言，不改变 rank/live 拒绝、取消恢复或源码消费者；远端 `2e16c95` runtime 组也仅这两模块失败，display-integration 已通过，原失败保留。
 - 默认 `client.main` 旅程新增真实结构选择→偏好保存/Session applied `shared-structure`→结构来源像素与两种窗口→切回作者→原作者精确像素/正常退出，全模块 2 项通过（63.553 秒，另 1 项仍为最小 harness）。结构来源为真实 provider 的 8×8 合成 reference，作者仍为 5×3 色块；每图记录实际来源、650×470/1000×720 窗口及 grab/DPR1 尺寸与精确像素，主任务已集中检查两尺寸结构图片。初次连续切换失败时作者点击落在 compact clip 外；改用真实滚轮露出控件、等几何及滚动稳定，一次实际作者点击完成保存，未改 Settings/Session 或原 60 秒交互预算。另保留 helper 变量顺序错误和 resize 暂态负宽度的失败；首个错误命名“小窗”实际大窗图片未作为验证。最终图像与输入几何均来自修正后的同一入口，不把这些 harness 错误称为生产修复。
 - 模块仍为 71，未改 CI 分片、时限或历史 baseline。结构首页及四模式像素均为完整 synthetic 组件证据，新增默认完整 GUI 只验 S1D，不能称四模式真实 GUI、实帧、物理显示或游戏通过。P2 来源/登记角色、S0N 完整池及预处理迁移仍未完成；S1D/N -3 用户故障须绑定实际安装与失败帧，侧任务原 87 份可加载/29 份重建同原及两个全黑负例不能证明其根因已修。
+
+### S1 预处理的显式组件读取
+
+- `e434bc83` 的五个远端 workflow 中四个成功，联合回归 17/18 组成功；runtime 与 display-integration 均已通过，唯一失败为 data 组 `test_imported_s1_native_context` 的显式结构旧预期：要求 `s1-native-display-not-installed`，实际为空。补为显式结构 `fallback=False`，另以缺作者偏好保留真实回退原因断言，资源身份、矩阵和 alpha 检查不减。精确日志留于 `work/startup-performance-20261110/ci-e434-data-job-130287887725-excerpt.log`。
+- S1 producer 现从原 inventory/native manifest 核验并复制全部困难 56、噩梦 60 份 prepared，生成可选 `runtimeInterfaces.fastStructureIndex`，以 binding 和同组件 reference/prepared FileRef 精确关联。原生 decoder 只核完整声明、版本和所有权；六角色 NPZ 在分配前核 dtype/shape/元数据边界，再读全成员检查 CRC、有限值与实际 reference metadata。制包 round trip 和现有启用 callback 的两次 prospective 验证才用实际 `fast.prepare` 逐数组比较，不在普通 factory、图库或每帧重新生成。
+- 所有 imported engine 都显式装入 source，包括旧包无 index 的空 source；缺预处理仅报告 `fast-prepared-not-provided`，不改变基础 ready/rank 或授予 floor/live/learning 资格。实际 `_AlignmentHost` 调同一 Fast 求解内核并传 source，旧 standalone/legacy 无 source 的行为保持。缓存仍由原 Fast 的 4 项/512 MiB 所有者维护，source 不另缓存数组；冷热读取均核 reference、prepared 和 index 内容、manifest/catalog/取消。可选 prepared 损坏可回常规求解，基础 reference 损坏、取消和换代须传播；缓存写入后取消撤销本次条目，Fast 返回验证通过的提案前再次核资源，正式位姿提交仍归原状态所有者。
+- 实际入口红回归为两模式全黑 B3 的 `fast-prepared-unavailable`（1 项、2 子例失败，43.534 秒），初步接线后变为正确消费 prepared 并仍拒绝全黑的 `fast-observation-unavailable`（1 项通过，92.228 秒）。第一批边界 5 项通过（215.232 秒）；最终完整模块 7 项通过（294.149 秒），加入 cache 发布后取消/精确完整 index、旧包 reference 损坏，并证明激活实际逐层计算两次、普通工厂/每帧不重新 prepare。制包/原生上下文 15 项通过（98.114 秒），含缺 prepared 与有限但错误派生数组不导出、上述结构显式选择/真实回退。S0N/S0D/S1N provider、原缓存预算及诊断等 55 项通过（183.239 秒），S1/S0N 启用生命周期 10 项通过（101.348 秒）。独立 Reviewer 的取消/index 两项通过（94.795 秒），hook 只在真实 cache trim 后设取消，不替代 producer/reader/数组校验。
+- 真实源为只读 recovery resource-root、sourceVersion `2.104.3099014`，855 文件 inventory；只用 `PYTHONPATH=app;tools` 的公开 producer 已完成全部 116 层派生比较。输出资源版本 `2.104.3099014-fast-v1`，困难 ZIP 28,252,843 B / SHA256 `ac0ae15582630790b48cddb6e19578652ce55da07cbdf9c7f637cb70cb6a92cc`，噩梦 ZIP 30,646,052 B / SHA256 `0f1d76a685a1e4b1ae80d36e484bd9279b4b4fabc7c4ccf670a3d5c6cf59db73`，均在 `work/native-base-export-20261111-fast-v1`，非 Setup，未在用户目录启用或发布。第一次调用未建立输出父目录，在完整 round trip 后独占发布失败；修正调用目录后重试通过，原失败日志保留，未为此改 exporter 的覆盖保护。
+- 上述两个新 ZIP 又在隔离临时资源目录经过公开保存、实际双次 prospective 启用、默认 factory 和 `_AlignmentHost.fit`：困难 `106001/-3`、噩梦 `107012/-3` 各读 prepared 一次，真实 reference 分别 1920×2100、2100×1860；输入均为明确构造的 1920×1200 全黑帧，结果仍 `initial-structure-query-unavailable` / `fast-observation-unavailable`，无 live 许可、无 memory 写入。一次启用分别 38,980 / 40,132 ms；单次 fit 计算 630 / 562 ms，在并行测试期间采样各 n=1，不是成功贴合、分位数或启动基准。未产生正确可见像素，无错层真值。脚本、原日志和 receipt 均在 `work/startup-performance-20261110`，没有操作用户安装或游戏。
+- CI 原 71 模块全保留，只加入实际 Host/缓存边界模块，共 72；六组 10/32/17/3/3/7，18 matrix、25 分钟上限与历史 baseline 不变。独立复核确认三个 PowerShell block AST 无错误。实帧真值、正向贴合、首个正确可见像素和用户 B3 故障根因尚未建立，不将全黑负例或静态逐数组相等称为游戏验收。

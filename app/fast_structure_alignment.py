@@ -95,7 +95,9 @@ def prepared_path_for(reference):
     return directory / (path.stem + '-fast.npz')
 
 
-def load_prepared(reference):
+def load_prepared(reference, *, source=None, cancelled=None):
+    if source is not None:
+        return _load_imported_prepared(reference, source, cancelled)
     prepared_path = prepared_path_for(reference)
     if not prepared_path.is_file():
         return None
@@ -129,6 +131,46 @@ def load_prepared(reference):
         return result
     except (OSError, ValueError, KeyError):
         return None
+
+
+def _load_imported_prepared(reference, source, cancelled):
+    payload = source.read(reference, cancelled=cancelled)
+    if payload is None:
+        return None
+    raw, identity = payload
+    key = ('imported', identity)
+    with _prepared_lock:
+        entry = _prepared.get(key)
+        if entry is not None:
+            _prepared.move_to_end(key)
+    result = entry[1] if entry is not None else None
+    if result is None:
+        try:
+            result = source.decode(raw, reference)
+        except (OSError, ValueError):
+            # Optional arrays can be unavailable, but their owner/reference
+            # must still be current before returning to the normal solver.
+            source.read(reference, cancelled=cancelled)
+            return None
+    if source.read(reference, cancelled=cancelled) is None:
+        return None
+    published = None
+    if entry is None:
+        with _prepared_lock:
+            published = (reference, result)
+            _prepared[key] = published
+            _prepared.move_to_end(key)
+            trim_prepared_cache(_prepared, max_entries=4,
+                max_bytes=PREPARED_CACHE_MAX_BYTES, arrays_for=_prepared_arrays)
+    try:
+        source.assert_current(cancelled)
+    except (OSError, ValueError):
+        if published is not None:
+            with _prepared_lock:
+                if _prepared.get(key) is published:
+                    _prepared.pop(key)
+        raise
+    return result
 
 
 def sample_edges(edge, limit):
@@ -462,7 +504,9 @@ def _try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_see
     reference = assistant._shared_structure_reference('shared-structure', map_id, floor)
     if reference is None:
         return None
-    prepared = load_prepared(reference)
+    source = getattr(getattr(assistant, 'engine', None), 'qt_fast_structure_source', None)
+    prepared = (load_prepared(reference) if source is None else
+                load_prepared(reference, source=source, cancelled=cancelled))
     if prepared is None:
         if getattr(assistant, 'collect_fit_diagnostics', False):
             assistant._log('experimental-fast-alignment', mapId=map_id, floor=floor,
@@ -544,6 +588,8 @@ def _try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_see
                 proposal_details['residual'] = residual
             from alignment_observation import rendered_profile_residual_is_verified
             if rendered_profile_residual_is_verified(residual) and not (cancelled and cancelled()):
+                if source is not None and source.read(reference, cancelled=cancelled) is None:
+                    return None
                 diagnostics.update(totalMs=(time.perf_counter()-started)*1000, accepted=True)
                 assistant._log('experimental-fast-alignment', mapId=map_id, floor=floor,
                     searchKind='local-prior' if _external_prior is not None else 'global-search',

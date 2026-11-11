@@ -128,6 +128,7 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
     engine.qt_native_base = bundle
     engine.qt_assert_resource_current = check_current
     engine.qt_shared_provider = provider
+    engine.qt_fast_structure_source = bundle.fast_structure_source
     engine.qt_adapters = bundle.adapters
     engine.qt_controls_profile = controls
     engine.qt_resource_root = root
@@ -142,7 +143,9 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
     engine.qt_resource_inventory = dict(typedLayers=len(bundle.versions),
         legacyLayers=len(bundle.legacy_references.bindings) if bundle.legacy_references is not None else 0,
         mainEntries=len(engine.entry_identity.entries), sideEntries=len(engine.side_entry_identity.entries),
-        semanticSideEntries=local.semantic_side_entries)
+        semanticSideEntries=local.semantic_side_entries,
+        fastPreparedLayers=len(bundle.fast_structure_source.entries),
+        fastPreparedGaps=list(bundle.fast_structure_source.gaps))
     if season == 's1':
         from s1_structure_selection import StructureCatalog
         engine.qt_s1_index_resource_root = root

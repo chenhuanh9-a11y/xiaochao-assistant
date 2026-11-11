@@ -65,6 +65,9 @@ class NativeBaseBundle:
     def __init__(self, view, **values):
         self._view, self._root = view, view.root
         self._values = values
+        from imported_fast_structure import ImportedFastStructureSource
+        self._values['fast_structure_source'] = ImportedFastStructureSource(
+            view, values['reader'], interfaces=values['interfaces'], versions=values['versions'])
 
     def assert_current(self):
         if self._view.root != self._root:  # Actual bounded manifest/root load.
@@ -93,6 +96,7 @@ class NativeBaseBundle:
     passport_source_available = property(lambda self: self._cached('passport_source_available'))
     rank_ready = property(lambda self: self._cached('rank_ready'))
     gaps = property(lambda self: self._cached('gaps'))
+    fast_structure_source = property(lambda self: self._cached('fast_structure_source'))
     ready = property(lambda self: not self.gaps)
 
 
@@ -403,12 +407,15 @@ def _decode(view, season, mode):
     interfaces = context.get('runtimeInterfaces')
     interface_fields = (_INTERFACES - {'exitIcon'}) | {'entryEvidenceRole'} if proposal_only else _INTERFACES
     if (set(context) != {'schema', 'season', 'mode', 'runtimeInterfaces'}
-            or not isinstance(interfaces, dict) or set(interfaces) != interface_fields
+            or not isinstance(interfaces, dict)
+            or set(interfaces) - {'fastStructureIndex'} != interface_fields
             or interfaces.get('identityProfile') != profile
             or proposal_only and interfaces.get('entryEvidenceRole') != 'proposal-only'):
         _reject('interfaces-invalid')
     paths = {name: _reference(view, interfaces[name], '.json') for name in
              ('identityPack', 'typedIndex', 'coordinatePack', 'neutralDisplay')}
+    if 'fastStructureIndex' in interfaces:
+        _reference(view, interfaces['fastStructureIndex'], '.json')
     if not proposal_only:
         paths['exitIcon'] = _reference(view, interfaces['exitIcon'], '.json')
     directory = interfaces['identityEntries']

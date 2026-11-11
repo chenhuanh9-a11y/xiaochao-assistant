@@ -80,6 +80,9 @@ def _validate_proposal(root, paths, resolver, base_ref, controls_ref, *, season,
                 if not display.layers:
                     raise catalog.ResourceCatalogError('resource-display-no-usable-layers')
             operation_current()
+            engine.qt_fast_structure_source.validate_all(
+                engine.qt_shared_provider, compare_derived=True, cancelled=cancelled)
+            operation_current()
             engine.qt_assert_resource_current()
         finally:
             # The prospective engine has no lifetime beyond semantic admission.

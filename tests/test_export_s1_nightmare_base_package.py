@@ -63,6 +63,8 @@ class S1NightmareNativeBaseExporterTests(unittest.TestCase):
         self.assertEqual(len(decoded.pack.maps), 15)
         self.assertEqual({row.id for row in decoded.pack.maps}, set(MODE_LAYOUTS['nightmare']))
         self.assertEqual(len(decoded.resources.entries), 60)
+        self.assertEqual(len(decoded.fast_structure_source.entries), 60)
+        self.assertEqual(result['fastPreparedLayerCount'], 60)
         self.assertEqual(len(decoded.entry_identity.entries), 15)
         self.assertEqual(len(decoded.side_entry_identity.entries), 60)
         self.assertIsNone(decoded.exit_recognizer)
