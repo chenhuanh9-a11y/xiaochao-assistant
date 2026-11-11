@@ -9,6 +9,7 @@ from pathlib import Path
 
 import star_map_import as files
 from imported_array_archive import validate_npz_bytes
+from imported_resource_packages import FileRef
 
 
 MAX_JSON_BYTES = 16 * 1024 * 1024
@@ -53,10 +54,10 @@ class ComponentResourceReader:
         # Path.resolve(); both identify the same directory.
         self._canonical_root = self.root.resolve()
         # The immutable view pins this manifest. Cached declarations cannot
-        # authorize bytes: every content read still calls view.read again.
+        # authorize bytes: single and batch reads still enter the actual view.
         self._inventory = view.inventory
 
-    def __call__(self, path):
+    def relative_path(self, path):
         try:
             candidate = Path(path)
             if not candidate.is_absolute():
@@ -75,16 +76,40 @@ class ComponentResourceReader:
         except (OSError, RuntimeError, TypeError, ValueError) as error:
             raise files.ImportRejected('imported-reader-path-outside-component',
                                        code='imported-reader-path-outside-component') from error
+        return relative
+
+    def _check_size(self, relative):
         extension = Path(relative).suffix.casefold()
         row = self._inventory.get(relative)
         if extension == '.json' and row is not None and row['bytes'] > MAX_JSON_BYTES:
             _reject('json-size')
-        raw = self.view.read(relative)
+        return extension
+
+    @staticmethod
+    def _check_payload(raw, extension):
         if extension == '.json':
             decode_resource_json(raw)
         elif extension == '.npz':
             validate_npz_bytes(raw)
         return raw
+
+    def __call__(self, path):
+        relative = self.relative_path(path)
+        extension = self._check_size(relative)
+        return self._check_payload(self.view.read(relative), extension)
+
+    def read_many(self, paths):
+        relatives = tuple(self.relative_path(path) for path in paths)
+        extensions = tuple(self._check_size(relative) for relative in relatives)
+        payloads = self.view.read_many(relatives)
+        result = []
+        for relative, raw, extension in zip(relatives, payloads, extensions):
+            try:
+                result.append(self._check_payload(raw, extension))
+            except (OSError, ValueError) as error:
+                error.resource_file_ref = FileRef(self.view.component_ref, relative)
+                raise
+        return tuple(result)
 
     def json(self, relative):
         return decode_resource_json(self(self.view.path(relative)))

@@ -12,6 +12,7 @@ from unittest.mock import patch
 import numpy as np
 
 import fast_structure_alignment as fast
+import resource_snapshot_io
 from alignment_observation import canonical_residual_evidence
 from client_providers import SharedReferenceProvider
 from imported_native_base import decode_native_base
@@ -53,6 +54,72 @@ class StructurePoseResourceTests(unittest.TestCase):
     def preparation_path(self):
         entry = self.engine.qt_fast_structure_source.entries[('zhan10-speed', self.map_id, 'variant-01', '1')]
         return self.view.path(entry[1].path)
+
+    def test_source_reads_required_and_optional_bytes_in_one_component_scope(self):
+        source = self.engine.qt_fast_structure_source
+        reference = self.provider('shared-structure', self.map_id, '1')
+        manifest = self.view.root.parent.parent / 'manifest.json'
+        with patch.object(resource_snapshot_io, 'read_stable_file',
+                          wraps=resource_snapshot_io.read_stable_file) as read:
+            raw, _ = source.read(reference)
+        self.assertIsNotNone(source.decode(raw, reference))
+        # Source ownership before/after plus one shared manifest pair for its
+        # index, typed reference and prepared arrays. All payloads are real.
+        self.assertEqual(sum(Path(call.args[0]) == manifest for call in read.call_args_list), 4)
+
+    def test_optional_failure_rechecks_required_inputs_before_returning_none(self):
+        source = self.engine.qt_fast_structure_source
+        reference = self.provider('shared-structure', self.map_id, '1')
+        self.preparation_path().write_bytes(b'broken-optional-preparation')
+        real_read = resource_snapshot_io.read_stable_file
+        def change_after_reference(path, *args, **kwargs):
+            result = real_read(path, *args, **kwargs)
+            if Path(path) == reference.path:
+                reference.path.write_bytes(b'changed-required-reference')
+            return result
+        with patch.object(resource_snapshot_io, 'read_stable_file', change_after_reference):
+            with self.assertRaisesRegex(ValueError, 'file-integrity-mismatch'):
+                source.read(reference)
+
+    def test_first_required_read_failure_is_not_an_optional_miss(self):
+        source = self.engine.qt_fast_structure_source
+        reference = self.provider('shared-structure', self.map_id, '1')
+        for failed_path in (reference.path, source.root / source.index_path):
+            attempts = []
+            real_read = resource_snapshot_io.read_stable_file
+            def fail_once(path, *args, **kwargs):
+                if Path(path) == failed_path:
+                    attempts.append(path)
+                    if len(attempts) == 1:
+                        raise OSError('one-shot required read failure')
+                return real_read(path, *args, **kwargs)
+            with self.subTest(path=failed_path), \
+                 patch.object(resource_snapshot_io, 'read_stable_file', fail_once):
+                with self.assertRaisesRegex(ValueError, 'file-unavailable'):
+                    source.read(reference)
+                self.assertEqual(len(attempts), 1)
+
+    def test_first_optional_read_failure_keeps_the_existing_fallback(self):
+        source = self.engine.qt_fast_structure_source
+        reference = self.provider('shared-structure', self.map_id, '1')
+        failed_path = self.preparation_path()
+        for strict in (False, True):
+            attempts = []
+            real_read = resource_snapshot_io.read_stable_file
+            def fail_once(path, *args, **kwargs):
+                if Path(path) == failed_path:
+                    attempts.append(path)
+                    if len(attempts) == 1:
+                        raise OSError('one-shot optional read failure')
+                return real_read(path, *args, **kwargs)
+            with self.subTest(strict=strict), \
+                 patch.object(resource_snapshot_io, 'read_stable_file', fail_once):
+                if strict:
+                    with self.assertRaisesRegex(ValueError, 'file-unavailable'):
+                        source.read(reference, strict=True)
+                else:
+                    self.assertIsNone(source.read(reference))
+                self.assertEqual(len(attempts), 1)
 
     def regions(self, *, after=None, cancelled=lambda: False):
         islands = [(self.frame[10:40, x:x+30], (x, 10, x+30, 40), dict(area=900))

@@ -267,6 +267,68 @@ class ImportedResourcePackageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'manifest-replaced'):
                 view.read('index.json')
 
+    def batch_fixture(self, *, assert_current=None):
+        raw = b'second resource'
+        (self.base_root / 'second.bin').write_bytes(raw)
+        self.manifest['files'].append(dict(componentId='base', path='second.bin',
+            bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()))
+        self.write_manifest()
+        return packages.PackageView(self.resource_root, self.base_ref,
+                                    assert_current=assert_current), raw
+
+    def test_selected_batch_reads_actual_payloads_without_repeating_manifest_io(self):
+        view, second = self.batch_fixture()
+        manifest_path = self.package_root / 'manifest.json'
+        real_read = resource_snapshot_io.read_stable_file
+        with patch.object(packages.resource_snapshot_io, 'read_stable_file', wraps=real_read) as read:
+            self.assertEqual(view.read_many(('index.json', 'second.bin')),
+                             (self.base_bytes, second))
+        # The operation still checks the real manifest before and after its
+        # selected payloads; it does not re-enter one scope for every file.
+        self.assertEqual(sum(Path(call.args[0]) == manifest_path for call in read.call_args_list), 2)
+        path = self.base_root / 'second.bin'
+        stamp = path.stat()
+        path.write_bytes(b'x' * len(second))
+        os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        with self.assertRaisesRegex(ValueError, 'file-integrity-mismatch'):
+            view.read_many(('index.json', 'second.bin'))
+
+    def test_batch_rejects_manifest_replacement_and_selection_change_mid_read(self):
+        for action in ('replace-manifest', 'change-selection', 'change-component'):
+            with self.subTest(action=action):
+                current = [True]
+                def guard():
+                    if not current[0]:
+                        raise ValueError('selection-superseded')
+                view, _ = self.batch_fixture(assert_current=guard)
+                manifest_path = self.package_root / 'manifest.json'
+                real_read = resource_snapshot_io.read_stable_file
+                def change_after_first(path, *args, **kwargs):
+                    result = real_read(path, *args, **kwargs)
+                    if Path(path) == self.base_root / 'index.json':
+                        if action == 'replace-manifest':
+                            replacement = self.package_root / 'replacement-manifest.json'
+                            replacement.write_bytes(manifest_path.read_bytes())
+                            replacement.replace(manifest_path)
+                        elif action == 'change-component':
+                            view.component_ref = self.display_ref
+                        else:
+                            current[0] = False
+                    return result
+                with patch.object(packages.resource_snapshot_io, 'read_stable_file', change_after_first):
+                    with self.assertRaisesRegex(ValueError,
+                            'manifest-replaced|selection-superseded|component-reference-changed'):
+                        view.read_many(('index.json', 'second.bin'))
+                # Keep this loop's fixture inventory independent.
+                self.manifest['files'].pop()
+
+    def test_batch_never_returns_partial_or_cross_component_data(self):
+        view, _ = self.batch_fixture()
+        for paths in (('index.json', 'missing.bin'), ('index.json', '../display/poster.webp'),
+                      ('index.json', 'poster.webp')):
+            with self.subTest(paths=paths), self.assertRaises(ValueError):
+                view.read_many(paths)
+
     def test_manifest_rejects_casefold_collisions_unknown_components_and_traversal(self):
         self.manifest['files'].append(dict(self.manifest['files'][0], path='INDEX.json'))
         self.write_manifest()

@@ -120,30 +120,32 @@ class ImportedFastStructureSource:
 
     def read(self, reference, *, cancelled=None, strict=False):
         self.assert_current(cancelled)
-        if self.index_path is not None:
-            self.reader(self.view.path(self.index_path))
         # Even an old package without preparations must not reuse a damaged
         # cached reference in the normal solver after this optional miss.
-        self.reader(reference.path)
+        required = ([self.root / self.index_path] if self.index_path is not None else [])
+        required.append(reference.path)
         binding = reference.metadata.get('binding', {})
         key = (binding.get('profile'), binding.get('mapId'), binding.get('variant'), binding.get('floor'))
         entry = self.entries.get(key)
         if entry is None:
+            self.reader.read_many(required)
             if self.entries:
                 _reject('reference-not-declared')
             self.assert_current(cancelled)
             return None
         reference_ref, prepared_ref = entry
-        if self.view.path(reference_ref.path).resolve() != Path(reference.path).resolve():
+        if self.reader.relative_path(reference.path) != reference_ref.path:
+            self.reader.read_many(required)
             _reject('reference-mismatch')
         try:
-            raw = self.reader(self.view.path(prepared_ref.path))
-        except (OSError, ValueError):
+            raw = self.reader.read_many((*required, self.root / prepared_ref.path))[-1]
+        except (OSError, ValueError) as error:
+            if getattr(error, 'resource_file_ref', None) != prepared_ref:
+                raise
             # Only the optional preparation may fail open. Recheck the view,
             # index and reference so obsolescence/cancellation never does.
             self.assert_current(cancelled)
-            self.reader(self.view.path(self.index_path))
-            self.reader(reference.path)
+            self.reader.read_many(required)
             self.assert_current(cancelled)
             if strict:
                 raise

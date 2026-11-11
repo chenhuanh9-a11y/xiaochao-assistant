@@ -782,3 +782,5 @@ python -m unittest test_client_progressive_display test_client_progressive_pixel
 本地真实临时 archive/export/decode/provider/prepared loader 的六项资源回归控制数值 fit，仅验证生命周期；坏参考、坏准备、首显前损坏、取消与下一帧不会沿用旧输入均覆盖，其中“未使用 fast 时参考损坏”的新负例先失败后修复。三片相关回归分别为 34、89、71 项通过，生产 S1 两模式实际导入 fast 入口一项通过，最后资源/渐进显示/区域仲裁 35 项通过；并不据此证明实帧速度、位姿或游戏验收。新的资源回归加入原联合 workflow，保留原模块、分组和时限。
 
 该片未完成观察域与先验策略拆分：scanner 的全客户区边界仍可能触发多区域搜索，扫描实例尚未完整接入 runtime 的 group/settings/steady。S0 困难及导入 S1 的资格缺口也未因此解除。需继续整理实际编排，再绑定同提交实帧回放判断性能阶段是否达到。
+
+同一准备来源的索引、typed reference 和 prepared arrays 现由 `PackageView.read_many` 在一次组件读取中处理。单文件与批量读取共享同一 payload 实现；每个文件仍检查路径归属、无链接、常规文件、稳定读取、实际字节数与既有摘要，整批返回前重查 manifest 内容/文件身份及当前选择。`ComponentResourceReader` 对两条入口沿用相同 JSON/NPZ 预检查。可选准备失败时仍重读必需索引与参考；取消、资源替换和必需文件损坏不能降为普通准备缺失。这只合并重复资源操作，不改变求解顺序、预算、候选、位姿或显示资格，性能收益须另以同提交回放记录。

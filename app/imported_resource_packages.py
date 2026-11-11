@@ -436,18 +436,42 @@ class PackageView:
         return FileRef(self.component_ref, relative)
 
     def read(self, relative):
+        return self.read_many((relative,))[0]
+
+    def read_many(self, relatives):
+        """Read selected payloads under one current component/manifest scope.
+
+        Each payload retains its stable-file and declared byte checks. Nothing
+        is returned until the manifest identity and selection are checked again.
+        Payload errors retain their type and name their resource_file_ref so
+        consumers can distinguish required inputs from optional preparations.
+        """
+        ref = self.component_ref
         package_root, _, _, _, inventory, stamp, digest = self._load()
-        try:
-            normalized = files._relative(relative)
-        except (TypeError, ValueError) as error:
-            raise files.ImportRejected('resource-package-invalid-file-path') from error
-        if normalized != relative:
-            _reject('invalid-file-path')
-        row = inventory.get((self.component_ref.component_id, relative))
+        result = []
+        for relative in relatives:
+            file_ref = FileRef(ref, relative)
+            try:
+                result.append(self._read_payload(package_root, inventory, ref.component_id, relative))
+            except (OSError, ValueError) as error:
+                error.resource_file_ref = file_ref
+                raise
+        # Compare both contents and stable-file identity after all payloads.
+        _, current_stamp, current_digest = self._read_manifest_bytes(package_root)
+        if current_digest != digest or current_stamp['identity'] != stamp['identity']:
+            _reject('manifest-replaced')
+        self._assert_current()
+        if self.component_ref != ref:
+            _reject('component-reference-changed')
+        return tuple(result)
+
+    @staticmethod
+    def _read_payload(package_root, inventory, component_id, relative):
+        row = inventory.get((component_id, relative))
         if row is None:
             _reject('file-not-declared')
         target = files._target(package_root,
-                               'data/' + self.component_ref.component_id + '/' + relative)
+                               'data/' + component_id + '/' + relative)
         try:
             info = target.lstat()
         except OSError as error:
@@ -462,9 +486,4 @@ class PackageView:
             raise files.ImportRejected('resource-package-file-unavailable') from error
         if len(raw) != row['bytes'] or hashlib.sha256(raw).hexdigest() != row['sha256']:
             _reject('file-integrity-mismatch')
-        # Compare both contents and stable-file identity after the payload read.
-        _, current_stamp, current_digest = self._read_manifest_bytes(package_root)
-        if current_digest != digest or current_stamp['identity'] != stamp['identity']:
-            _reject('manifest-replaced')
-        self._assert_current()
         return raw
