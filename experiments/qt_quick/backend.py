@@ -258,7 +258,7 @@ class Backend(QObject):
                                    "runtimeProfileId": "shared-structure" if p.profile_id == "s1-native-structure" else p.profile_id,
                                    "available": p.available_layers,
                                    "availableMaps": p.available_maps, "mapCount": p.map_count,
-                                   "userProvided": self.resource_resolver is not None,
+                                   "userProvided": self.resource_resolver is not None and p.profile_id not in {"shared-structure", "s1-native-structure"},
                                    "previewUrl": self._image_url(p.first_preview[2])
                                        if p.first_preview else ""} for p in context.profiles
                                   if p.available_layers > 0])
@@ -270,7 +270,9 @@ class Backend(QObject):
                                 f"S1 图库 · 已读取 {self.mapCount} 份图"
                                  if season == "s1" else self._import_notice or f"已读取 {self.mapCount} 份图")
                 if self.resource_resolver is not None and self._profiles:
-                    self._message += '\n' + '\n'.join((*context.warnings, '配准由作者提供，尚未复核。'))
+                    notice = ('配准由作者提供，尚未复核。',) if any(p['userProvided'] for p in self._profiles) else ()
+                    if context.warnings or notice:
+                        self._message += '\n' + '\n'.join((*context.warnings, *notice))
             self.changed.emit()
             if self.viewKey != initial_view:
                 self.viewChanged.emit(self.viewKey)

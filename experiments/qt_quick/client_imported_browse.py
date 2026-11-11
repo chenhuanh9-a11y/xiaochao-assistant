@@ -14,8 +14,9 @@ from map_resource_model import ResourceMap, ResourceVariant, floor_label
 
 
 class ImportedBrowseAssets:
-    """Only validated, selected author layers; no arbitrary file-path reader."""
-    def __init__(self, displays, layers, signature, check_current, retain_snapshot):
+    """Selected structure/author layers; no arbitrary file-path reader."""
+    def __init__(self, base, provider, displays, layers, signature, check_current, retain_snapshot):
+        self._base, self._provider = base, provider
         self._displays, self._layers = displays, MappingProxyType(dict(layers))
         self._keys = frozenset(layers.values())
         self.signature, self.assert_current = signature, check_current
@@ -30,6 +31,18 @@ class ImportedBrowseAssets:
         if key not in self._keys:
             raise ValueError('imported-gallery-layer-unregistered')
         profile, map_id, floor = key
+        if profile in {'shared-structure', 's1-native-structure'}:
+            from shared_structure_display import structure_display_layer
+            reference = self._provider('shared-structure', map_id, floor)
+            if reference is None:
+                raise ValueError('imported-gallery-layer-unavailable')
+            # The provider's warm reference cache must not authorize changed
+            # NPZ bytes. Reuse the exact component reader before/after drawing.
+            self._base.reader(reference.path)
+            pixels = structure_display_layer(reference)['pixels']
+            self._base.reader(reference.path)
+            self.assert_current()
+            return pixels
         binding = self._displays.binding(profile, map_id, floor)
         if binding is None or not binding['usable']:
             raise ValueError('imported-gallery-layer-unavailable')
@@ -59,20 +72,18 @@ def load_imported_browse_context(resolver, mode, *, season='s0', cancelled=lambd
 
     if resources.base is None:
         message = '尚未启用本模式的基础结构，请前往本地资源页。'
-    elif not resources.displays:
-        message = ('已选作者显示当前无法读取，请检查资源文件。' if 'display-unavailable' in resources.optional_gaps
-                   else '尚未启用作者显示资源，识别能力请查看当前模式状态。')
+    elif resources.controls is None:
+        message = '本模式的楼层控件尚未启用或无法读取，请检查配套资源。'
     else:
-        from client_providers import SharedReferenceProvider
+        from client_imported_providers import load_native_resources
         from imported_author_displays import ImportedAuthorDisplays
-        from imported_native_base import decode_native_base
         from imported_resource_packages import PackageView
         # Bind cancellation to the same production readers used by decoding,
         # not just to the beginning/end of a potentially large author package.
         base_view = PackageView(resolver.root, resources.base.component_ref, assert_current=check)
-        base = decode_native_base(base_view, season=season, mode=mode)
-        provider = SharedReferenceProvider(base_view.root, base.resources, base.versions,
-                                           check_current=check)
+        controls_view = PackageView(resolver.root, resources.controls.component_ref, assert_current=check)
+        base, _controls, _native, provider, _current = load_native_resources(
+            base_view, controls_view, season=season, mode=mode)
         views, unavailable = [], False
         for view in resources.displays:
             try:
@@ -82,6 +93,33 @@ def load_imported_browse_context(resolver, mode, *, season='s0', cancelled=lambd
                 unavailable = True
         displays = ImportedAuthorDisplays(views, base, provider, check_current=check)
         profiles, stamps, layers = [], {}, {}
+        structure_id = 's1-native-structure' if season == 's1' else 'shared-structure'
+        maps, first, count = [], None, 0
+        for item in base.pack.maps:
+            paths, draft = {}, False
+            for floor in base.pack.floors:
+                floor = str(floor)
+                check()
+                binding = provider.binding_metadata('shared-structure', item.id, floor)
+                if binding is None:
+                    continue
+                path = Path(binding['path'])
+                stat = path.stat()
+                stamps[path] = (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns,
+                                stat.st_dev, stat.st_ino, base.component_ref.manifest_sha256)
+                layers[path] = (structure_id, item.id, floor)
+                paths[floor] = path
+                count += 1
+                first = first or (item.id, floor, path)
+                draft |= binding['metadata'].get('sourceClass') == 'legacy-clean-working-draft'
+            if paths:
+                variant = ResourceVariant('variant-01', '历史结构草稿' if draft else '结构底图', paths)
+                maps.append(ResourceMap(item.id, item.name, (variant,)))
+        total = len(base.pack.maps)
+        expected_layers = total * len(base.pack.floors)
+        profiles.append(ProfileSummary(structure_id, '结构底图', base.component_ref.package_id,
+            total, len(maps), total - len(maps), expected_layers - count,
+            expected_layers, count, first, tuple(maps)))
         for profile_id, profile in displays.catalog.profiles.items():
             maps, first, count, package_id = [], None, 0, None
             for map_id, variants in profile.maps.items():
@@ -114,11 +152,9 @@ def load_imported_browse_context(resolver, mode, *, season='s0', cancelled=lambd
         check()
         signature = (snapshot.generation, base.component_ref,
                      tuple(view.component_ref for view in views), tuple(stamps.items()))
-        assets = ImportedBrowseAssets(displays, layers, signature, check, retained.set)
+        assets = ImportedBrowseAssets(base, provider, displays, layers, signature, check, retained.set)
         warnings = (('部分作者显示无法读取，已保留可用内容。',) if displays.errors or unavailable or
                     'display-unavailable' in resources.optional_gaps else ())
-        if not any(profile.available_layers for profile in profiles):
-            warnings = ('已选作者显示当前不可用，请检查配套基础版本与作者文件。',)
         floors = MappingProxyType({str(floor):MappingProxyType(dict(
             label=f'B{abs(int(floor))}' if season == 's1' else floor_label(str(floor)))) for floor in base.pack.floors})
         return ImportedBrowseContext(mode, resolver.root, base.pack, displays.catalog, None,
@@ -130,16 +166,19 @@ def load_imported_browse_context(resolver, mode, *, season='s0', cancelled=lambd
 
 
 def imported_home_rows(resolver, mode, profile_id, season='s0', *, cancelled=lambda: False):
-    from generic_author_package import is_generic_profile
-    if not is_generic_profile(profile_id):
-        return []
     context = load_imported_browse_context(resolver, mode, season=season, cancelled=cancelled)
-    profile = next((profile for profile in context.profiles if profile.profile_id == profile_id), None)
+    browse_profile = 's1-native-structure' if season == 's1' and profile_id == 'shared-structure' else profile_id
+    profile = next((profile for profile in context.profiles
+                    if profile.profile_id == browse_profile and profile.available_layers), None)
+    if profile is None:
+        profile = next((profile for profile in context.profiles
+                        if profile.profile_id in {'shared-structure', 's1-native-structure'}), None)
     if profile is None or context.assets is None:
         return []
     import base64
     import cv2
     rows = []
+    structure = profile.profile_id in {'shared-structure', 's1-native-structure'}
     floors = tuple(dict.fromkeys((str(context.pack.default_entry_floor), *context.pack.floors)))
     for item in profile.maps:
         variant, floor, path = next((variant, floor, variant.layers[floor])
@@ -153,9 +192,10 @@ def imported_home_rows(resolver, mode, profile_id, season='s0', *, cancelled=lam
         ok, encoded = cv2.imencode('.png', pixels)
         if not ok:
             raise ValueError('imported-home-preview-encoding-failed')
-        rows.append(dict(key=f'{season}/{mode}/{profile_id}/{item.id}/{variant.id}/{floor}',
+        rows.append(dict(key='' if structure else f'{season}/{mode}/{profile_id}/{item.id}/{variant.id}/{floor}',
             title=item.name, floor=str(floor), floorLabel=context.floor_metadata[str(floor)]['label'],
-            mode=mode, season=season, profileId=profile_id, structure=False, displayLabel='',
+            mode=mode, season=season, profileId=profile_id, structure=structure,
+            displayKind=variant.name if structure else '',
             imageUrl='data:image/png;base64,' + base64.b64encode(encoded).decode('ascii')))
         context.assets.assert_current()
         if len(rows) == 3:

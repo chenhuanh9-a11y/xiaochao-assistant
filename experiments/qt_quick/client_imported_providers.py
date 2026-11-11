@@ -24,23 +24,19 @@ class ImportedProviderUnavailable(ProviderUnavailable):
             self.resource_revision = resource_revision
 
 
-def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='nightmare', require_rank=True):
-    """Use the same decoded views for prospective and active construction.
+def load_native_resources(base_view, controls_view, *, season='s0', mode='nightmare', require_rank=False):
+    """Decode one base/control context and its guarded reference provider.
 
-    Callers own their operation/catalog lifetime. This function never resolves
-    another catalog, publishes selection or writes personal learning data.
-    Data activation may set require_rank=False; the decoded rank capability is
-    still installed on the engine and checked by every ranking entry.
+    This data assembly creates no engine, memory store or scanner. Callers own
+    its operation/catalog lifetime; images use the same real legacy references
+    as ranking consumers without receiving ranking or live permission.
     """
-    from difficult_native_identity import NativeDifficultCandidateEngine
     from imported_controls_profile import S0ControlsProfile
     from imported_s1_controls_profile import S1ControlsProfile
     from imported_s1_native_context import ImportedS1NativeContext
     from imported_difficult_native_context import ImportedDifficultNativeContext
     from imported_native_base import decode_native_base
-    from nightmare_candidate import NightmareMemoryStore
-    from s0_vertical_controls import observe_s0_map
-    from client_providers import SharedReferenceProvider, _build_memory_store, attach_structure_scanner
+    from client_providers import SharedReferenceProvider
 
     bundle = decode_native_base(base_view, season=season, mode=mode)
     if not bundle.ready:
@@ -52,7 +48,7 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
         raise ImportedProviderUnavailable('controls-dependencies-unsupported', ('controls-dependencies-unsupported',))
     controls = S1ControlsProfile(controls_view) if season == 's1' else S0ControlsProfile(controls_view)
     context = controls.for_context(season, mode)
-    pack, root, interfaces = bundle.pack, base_view.root, bundle.interfaces
+    pack, root = bundle.pack, base_view.root
     if context is None or set(context.contract.floor_ids) != set(pack.floors):
         raise ImportedProviderUnavailable('controls-base-floors-mismatch', ('controls-base-floors-mismatch',))
 
@@ -70,6 +66,30 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
         bundle.assert_current()
         controls_view.root  # Check the controls manifest as well as its catalog.
 
+    provider = SharedReferenceProvider(root, bundle.resources, bundle.versions,
+        native=native if bundle.legacy_references is not None else None, check_current=check_current)
+    check_current()
+    return bundle, controls, native, provider, check_current
+
+
+def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='nightmare', require_rank=True):
+    """Use the same decoded views for prospective and active construction.
+
+    Callers own their operation/catalog lifetime. This function never resolves
+    another catalog, publishes selection or writes personal learning data.
+    Data activation may set require_rank=False; the decoded rank capability is
+    still installed on the engine and checked by every ranking entry.
+    """
+    from difficult_native_identity import NativeDifficultCandidateEngine
+    from nightmare_candidate import NightmareMemoryStore
+    from s0_vertical_controls import observe_s0_map
+    from client_providers import _build_memory_store, attach_structure_scanner
+
+    bundle, controls, native, provider, check_current = load_native_resources(
+        base_view, controls_view, season=season, mode=mode, require_rank=require_rank)
+    pack, root, interfaces = bundle.pack, base_view.root, bundle.interfaces
+    rank_ready = bundle.rank_ready
+
     def entry_current():
         try:
             check_current()
@@ -84,8 +104,6 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
                             if rank_ready else (lambda frame: False))
         memory = NightmareMemoryStore(pack, paths.memory_root(mode, season), portable_seed_path=None,
                                       sample_validator=sample_validator)
-    provider = SharedReferenceProvider(root, bundle.resources, bundle.versions,
-        native=native if bundle.legacy_references is not None else None, check_current=check_current)
     engine = NativeDifficultCandidateEngine(pack, identity_root=root / interfaces['identityEntries'],
         identity_profile_id=interfaces['identityProfile'], identity_floors=pack.floors,
         exit_icon_path=base_view.path(interfaces['exitIcon']) if bundle.semantic_side_entries else None,

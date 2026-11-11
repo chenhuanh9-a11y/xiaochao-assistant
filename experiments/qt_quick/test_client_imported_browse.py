@@ -40,8 +40,8 @@ class ImportedBrowseTests(source_fixture._AuthorSelectionFixture):
         display, _, members = self.package(package_id='author-browse')
         self.seed(displays=[display.component_ref])
         context = load_imported_browse_context(self.resolver(), 'difficult', season='s1')
-        self.assertEqual([profile.profile_id for profile in context.profiles], ['author-fixture'])
-        summary = context.profiles[0]
+        self.assertEqual([profile.profile_id for profile in context.profiles], ['s1-native-structure', 'author-fixture'])
+        summary = context.profiles[1]
         self.assertEqual(summary.package_id, display.component_ref.package_id)
         self.assertEqual((summary.map_count, summary.available_maps, summary.available_layers), (14, 1, 1))
         self.assertEqual(summary.missing_floors, 55)
@@ -78,11 +78,58 @@ class ImportedBrowseTests(source_fixture._AuthorSelectionFixture):
         cancelled = threading.Event()
         context = load_imported_browse_context(self.resolver(), 'difficult', season='s1',
                                                cancelled=cancelled.is_set)
-        self.assertEqual([profile.profile_id for profile in context.profiles], ['author-good'])
+        self.assertEqual([profile.profile_id for profile in context.profiles], ['s1-native-structure', 'author-good'])
         self.assertTrue(context.warnings)
         cancelled.set()
         with self.assertRaises(CancelledError):
-            context.assets.pixels(context.assets.key(context.profiles[0].first_preview[2]))
+            context.assets.pixels(context.assets.key(context.profiles[1].first_preview[2]))
+
+    def test_structure_home_and_warm_pixels_use_actual_base_without_author_or_ranking(self):
+        import client_imported_providers as providers
+        self.seed()
+        before = self.resolver().snapshot().catalog_stamp
+        with patch.object(providers, 'build_native_engine', wraps=providers.build_native_engine) as engines:
+            context = load_imported_browse_context(self.resolver(), 'difficult', season='s1')
+            self.assertEqual([profile.profile_id for profile in context.profiles], ['s1-native-structure'])
+            summary = context.profiles[0]
+            self.assertEqual((summary.map_count, summary.available_maps, summary.available_layers), (14, 14, 56))
+            home = imported_home_rows(self.resolver(), 'difficult', 'shared-structure', 's1')
+            fallback = imported_home_rows(self.resolver(), 'difficult', 'author-missing', 's1')
+            self.assertEqual(engines.call_count, 0)
+        for rows, preferred in ((home, 'shared-structure'), (fallback, 'author-missing')):
+            self.assertEqual(len(rows), 3)
+            self.assertEqual(len({row['title'] for row in rows}), 3)
+            for row in rows:
+                self.assertTrue(row['structure'])
+                self.assertEqual(row['key'], '')
+                self.assertEqual(row['profileId'], preferred)
+                self.assertEqual(row['floorLabel'], 'B1')
+                self.assertEqual(row['displayKind'], '结构底图')
+                image = QImage.fromData(base64.b64decode(row['imageUrl'].split(',', 1)[1]))
+                self.assertFalse(image.isNull())
+                self.assertLessEqual(image.width(), 400)
+                self.assertLessEqual(image.height(), 250)
+        path = summary.first_preview[2]
+        key = context.assets.key(path)
+        pixels = context.assets.pixels(key).copy()
+        original = path.read_bytes()
+        path.write_bytes(b'broken after structure reference cache was warmed')
+        with self.assertRaises(ValueError):
+            context.assets.pixels(key)
+        path.write_bytes(original)
+        np.testing.assert_array_equal(context.assets.pixels(key), pixels)
+        self.assertEqual(self.resolver().snapshot().catalog_stamp, before)
+        self.assertFalse(self.paths.memory_root('difficult', 's1').exists())
+        provider = ImportedGalleryImages()
+        provider.publish(context.assets)
+        url = provider.url(path)
+        manifest = self.base_view.root.parent.parent/'manifest.json'
+        replacement = manifest.with_name('test-identical-manifest.json')
+        replacement.write_bytes(manifest.read_bytes())
+        os.replace(replacement, manifest)
+        with self.assertRaises(ValueError):
+            context.assets.pixels(key)
+        self.assertTrue(provider.requestImage(url.split('image://importedgallery/', 1)[1], QSize(), QSize()).isNull())
 
     def test_backend_refresh_keeps_content_instances_and_resource_change_revokes_old_urls(self):
         display, _, _ = self.package(package_id='author-browse')
@@ -103,11 +150,15 @@ class ImportedBrowseTests(source_fixture._AuthorSelectionFixture):
             self.assertFalse(backend.busy, backend.message)
             self.assertFalse(backend.hasError, backend.message)
         wait()
-        self.assertEqual([row['id'] for row in backend.profiles], ['author-fixture'])
+        self.assertEqual([row['id'] for row in backend.profiles], ['s1-native-structure', 'author-fixture'])
+        self.assertFalse(backend.profiles[0]['userProvided'])
+        self.assertEqual(backend.profiles[0]['runtimeProfileId'], 'shared-structure')
+        self.assertTrue(backend.profiles[0]['runtimeSelectable'])
+        backend.setProfile('author-fixture')
         self.assertEqual({row['value']:row['name'] for row in backend.floorOptions},
             {'':'全部楼层', '-1':'B1', '-2':'B2', '-3':'B3', '-4':'B4'})
         self.assertTrue(all(row['imageUrl'].startswith('image://importedgallery/') for row in backend.model.rows))
-        self.assertTrue(backend.profiles[0]['userProvided'])
+        self.assertTrue(backend.profiles[1]['userProvided'])
         backend.select(backend.model.rows[0]['key'])
         key, url = backend.selectedKey, backend.selectedImage
         row_mutations, profile_mutations = backend.model.mutations, backend.gallery_profiles.mutations
@@ -174,7 +225,7 @@ class ImportedBrowseTests(source_fixture._AuthorSelectionFixture):
         context = load_imported_browse_context(self.resolver(), 'difficult', season='s1')
         provider = ImportedGalleryImages()
         provider.publish(context.assets)
-        path = context.profiles[0].first_preview[2]
+        path = context.profiles[1].first_preview[2]
         url = provider.url(path)
         provider.publish(context.assets)
         self.assertEqual(provider.url(path), url, 'idle unchanged publication must preserve the URL')

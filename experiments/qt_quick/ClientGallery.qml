@@ -43,6 +43,7 @@ Item {
     }
     readonly property bool sameMode: backend.mode === session.currentMode && backend.season === session.currentSeason
     readonly property string selectedRuntimeProfile: selectedProfile.runtimeProfileId || selectedProfile.id || ""
+    readonly property bool selectedStructure: selectedRuntimeProfile === "shared-structure"
     readonly property bool selectableAuthor: selectedProfile.runtimeSelectable === true
     readonly property bool currentAuthor: sameMode && selectedRuntimeProfile === session.currentProfile
     readonly property bool canUseAuthor: selectableAuthor && sameMode && selectedProfile.available > 0 && !currentAuthor
@@ -291,7 +292,7 @@ Item {
                         }
                     }
                     Label { id: detailCoverage; text: "本地覆盖 " + page.selectedProfile.availableMaps + " / " + page.selectedProfile.mapCount + " 份图"; color: "#526785"; font.pixelSize: 11 }
-                    AppButton { id: detailUseAuthor; objectName: "galleryUseAuthor"; text: !page.selectableAuthor ? "此图包仅供预览" : !page.sameMode ? "请先切换游戏赛季与难度" : page.currentAuthor ? "正在使用此作者" : "使用此作者"; Layout.fillWidth: true; primary: true; enabled: page.canUseAuthor; onClicked: clientCoordinator.useGalleryAuthor(backend.season, backend.mode, backend.profileId) }
+                    AppButton { id: detailUseAuthor; objectName: "galleryUseAuthor"; text: !page.selectableAuthor ? "此图包仅供预览" : !page.sameMode ? "请先切换游戏赛季与难度" : page.currentAuthor ? (page.selectedStructure ? "正在使用结构底图" : "正在使用此作者") : (page.selectedStructure ? "使用结构底图" : "使用此作者"); Layout.fillWidth: true; primary: true; enabled: page.canUseAuthor; onClicked: clientCoordinator.useGalleryAuthor(backend.season, backend.mode, backend.profileId) }
                     RowLayout {
                         id: detailActions
                         Layout.fillWidth: true; spacing: 8
@@ -305,7 +306,7 @@ Item {
                             onClicked: page.removeSelectedPackage()
                         }
                     }
-                    Label { id: detailDisclaimer; text: "作者图仅用于显示，不参与识别。预览不会自动更换作者。"; color: "#526785"; font.pixelSize: 11; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                    Label { id: detailDisclaimer; text: page.selectedStructure ? "当前预览来自基础结构。选择显示方式不改变识别位置或楼层。" : "作者图仅用于显示，不参与识别。预览不会自动更换作者。"; color: "#526785"; font.pixelSize: 11; Layout.fillWidth: true; wrapMode: Text.WordWrap }
                         }
                 }
             }

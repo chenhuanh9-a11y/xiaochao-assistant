@@ -113,6 +113,7 @@ def prepare_display_layer(engine, map_id, floor, preferred, *, variant_id="varia
     import numpy as np
     from author_display_policy import shared_route_validation_spec
     from nightmare_candidate import imread_unicode
+    from shared_structure_display import structure_display_layer
 
     def check_current():
         check = getattr(engine, 'qt_assert_resource_current', None)
@@ -130,6 +131,9 @@ def prepare_display_layer(engine, map_id, floor, preferred, *, variant_id="varia
         return dict(layer, preferredProfileId=preferred, effectiveProfileId=actual,
             authorStatus=author_status, fallback=bool(preferred != actual and not preferred.startswith("custom:")),
             fallbackReason=fallback_reason)
+
+    if preferred == "shared-structure":
+        return metadata(structure_display_layer(reference))
 
     custom = getattr(engine, "qt_custom_display", None)
     if callable(custom):
@@ -206,13 +210,8 @@ def prepare_display_layer(engine, map_id, floor, preferred, *, variant_id="varia
         if result.layer is not None:
             return metadata(result.layer, author_status=status, fallback_reason=failure)
         failure = result.reason or "s1-native-display-unavailable"
-    pixels = np.zeros((*reference.shape, 4), np.uint8)
-    pixels[reference.clean_mask != 0] = (218, 228, 238, 255)
-    pixels.setflags(write=False)
-    return metadata(dict(pixels=pixels, matrixDisplayToReference=np.eye(3),
-        resourceIdentity=dict(path=str(reference.path), binding=reference.metadata["binding"],
-            structureVersionKey=reference.metadata.get("structureVersionKey")),
-        displayKind="shared-structure", displayLabel=("结构底图（作者路线版本不匹配）"
+    layer = structure_display_layer(reference)
+    layer['displayLabel'] += ("（作者路线版本不匹配）"
             if version.get("authorError") == "author-structure-version-or-base-snapshot-mismatch"
-            else "结构底图（作者路线不可用）"),
-        routeProfileId="shared-structure"), author_status=status, fallback_reason=failure or "selected-author-layer-missing")
+            else "（作者路线不可用）")
+    return metadata(layer, author_status=status, fallback_reason=failure or "selected-author-layer-missing")

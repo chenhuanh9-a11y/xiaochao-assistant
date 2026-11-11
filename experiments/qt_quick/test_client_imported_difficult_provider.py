@@ -63,6 +63,11 @@ class ImportedDifficultProviderTests(unittest.TestCase):
 
     def activate(self):
         self.assertTrue(self.service.activatePackage(self.key, 's0', 'difficult'))
+        self.assertFalse(self.service.pendingWrites)
+        deadline = time.monotonic()+90
+        while not self.service.pendingWrites and self.service.busy and time.monotonic() < deadline:
+            self.app.processEvents(); time.sleep(.005)
+        self.assertTrue(self.service.pendingWrites, self.service.message)
         self.assertEqual(self.session.acquireResourceLease(), '')
         self.wait()
         self.assertFalse(self.errors, self.errors)
@@ -105,6 +110,10 @@ class ImportedDifficultProviderTests(unittest.TestCase):
                                    (source_fixture.LEGACY, '2', (6,10,4))):
             display = prepare_display_layer(engine, mid, floor, 'shared-structure')
             self.assertEqual(display['displayKind'], 'shared-structure')
+            self.assertEqual(display['displayLabel'], '历史结构草稿' if mid == source_fixture.LEGACY else '结构底图')
+            self.assertFalse(display['fallback'])
+            self.assertEqual(display['authorStatus'], 'none')
+            self.assertEqual(display['fallbackReason'], '')
             self.assertEqual(display['pixels'].shape, shape)
             np.testing.assert_array_equal(display['matrixDisplayToReference'], np.eye(3))
         with self.assertRaisesRegex(ValueError, 'native-base-rank-unavailable'):

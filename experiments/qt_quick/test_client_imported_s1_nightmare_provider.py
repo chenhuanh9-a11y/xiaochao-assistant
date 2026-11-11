@@ -82,6 +82,11 @@ class ImportedS1NightmareProviderTests(unittest.TestCase):
         self.assertIn('不可用', option['notice'])
         model = self.service.packageModel
         self.assertTrue(self.service.activatePackage(self.key, 's1', 'nightmare'))
+        self.assertFalse(self.service.pendingWrites)
+        deadline = time.monotonic()+90
+        while not self.service.pendingWrites and self.service.busy and time.monotonic() < deadline:
+            self.app.processEvents(); time.sleep(.005)
+        self.assertTrue(self.service.pendingWrites, self.service.message)
         self.assertEqual(self.session.acquireResourceLease(), '')
         self.wait()
         self.assertFalse(self.errors, self.errors)

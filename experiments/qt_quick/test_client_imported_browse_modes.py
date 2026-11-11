@@ -12,7 +12,7 @@ import numpy as np
 import export_author_display_component as display_exporter
 import generic_author_package
 import imported_resource_archive as archives
-from client_imported_browse import load_imported_browse_context
+from client_imported_browse import imported_home_rows, load_imported_browse_context
 from client_imported_providers import SUPPORTED_CAPABILITIES
 from difficult_entry_identity import MapEntryGeometryIdentity
 from difficult_side_entry_identity import MapLocalEntryIdentity
@@ -83,7 +83,7 @@ class ImportedBrowseModeTests(unittest.TestCase):
         catalog = dict(schema=SCHEMA, generation=str(uuid4()),
             contexts={context_key:dict(recognitionBase=self._wire(info['ref']),
                 controls=self._wire(self._control_ref(info)), reviewedGroups=None)},
-            displays=[self._wire(selected_display_ref)])
+            displays=[self._wire(selected_display_ref)] if selected_display_ref is not None else [])
 
         def validate(document):
             return inspect_selection(root, document, supported_capabilities=SUPPORTED_CAPABILITIES)
@@ -93,7 +93,7 @@ class ImportedBrowseModeTests(unittest.TestCase):
             activate_catalog_locked(root, catalog,
                 expected_catalog_stamp=previous.catalog_stamp, validate=validate)
         snapshot = resolver.snapshot()
-        self.assertEqual(snapshot.displays, (selected_display_ref,))
+        self.assertEqual(snapshot.displays, (selected_display_ref,) if selected_display_ref is not None else ())
         self.assertEqual(snapshot.contexts[context_key]['recognitionBase'], info['ref'])
         self.assertEqual(snapshot.contexts[context_key]['controls'], self._control_ref(info))
         return resolver
@@ -155,8 +155,10 @@ class ImportedBrowseModeTests(unittest.TestCase):
         self.assertEqual(context.model, None)
         self.assertEqual(context.assets.signature[1], info['ref'])
         self.assertEqual(context.assets.signature[2], (selected_ref,))
-        self.assertEqual([row.profile_id for row in context.profiles], [profile_id])
-        summary = context.profiles[0]
+        structure_id = 's1-native-structure' if info['season'] == 's1' else 'shared-structure'
+        self.assertEqual([row.profile_id for row in context.profiles], [structure_id, profile_id])
+        self.assertEqual(context.profiles[0].available_layers, len(base.pack.maps) * len(base.pack.floors))
+        summary = context.profiles[1]
         self.assertEqual(summary.name, '合成浏览路线')
         self.assertEqual(summary.package_id, selected_ref.package_id)
         route_profile = context.catalog.profiles[profile_id]
@@ -237,12 +239,58 @@ class ImportedBrowseModeTests(unittest.TestCase):
                 resource_version='browse-synthetic-v1')
         self.assertFalse(output.exists())
 
+    def test_selected_s0d_without_author_exposes_structure_and_real_legacy_pixels(self):
+        info = self.bases['s0d']
+        resolver = self._seed_catalog(info, None)
+        before = resolver.snapshot().catalog_stamp
+        context = load_imported_browse_context(resolver, 'difficult', season='s0')
+        self.assertEqual([profile.profile_id for profile in context.profiles], ['shared-structure'])
+        profile = context.profiles[0]
+        self.assertEqual((profile.map_count, profile.available_maps, profile.available_layers), (30, 30, 60))
+        legacy = next(item for item in profile.maps if item.id == 'difficult-map-29')
+        self.assertEqual(len(legacy.variants), 1)
+        self.assertEqual(set(legacy.variants[0].layers), {'1', '2'})
+        for floor, path in legacy.variants[0].layers.items():
+            with self.subTest(floor=floor):
+                reference = info['base'].legacy_references.reference(legacy.id, floor)
+                metadata = reference.metadata.copy()
+                self.assertEqual(path, reference.path)
+                self.assertEqual(context.assets.key(path), ('shared-structure', legacy.id, floor))
+                pixels = context.assets.pixels(context.assets.key(path))
+                self.assertEqual(pixels.shape, (*reference.shape, 4))
+                np.testing.assert_array_equal(pixels[..., 3] != 0, reference.clean_mask != 0)
+                self.assertEqual(tuple(pixels[reference.clean_mask != 0][0]), (218, 228, 238, 255))
+                self.assertFalse(pixels.flags.writeable)
+                self.assertEqual(reference.metadata, metadata)
+                self.assertEqual(metadata['sourceKind'], 'legacy-shared-binary')
+                self.assertIsNone(metadata['sourceLayout'])
+                self.assertEqual(metadata['staticAcceptance'], 'working-draft-not-batch-accepted')
+                self.assertFalse(metadata['authorizesMapIdentity'])
+                self.assertFalse(metadata['authorizesStructureValidation'])
+        self.assertFalse(info['base'].rank_ready)
+        self.assertEqual(resolver.snapshot().catalog_stamp, before)
+
+    def test_remaining_modes_without_author_return_real_structure_home_rows(self):
+        for mode_key in ('s0n', 's0d', 's1n'):
+            with self.subTest(mode=mode_key):
+                info = self.bases[mode_key]
+                resolver = self._seed_catalog(info, None)
+                before = resolver.snapshot().catalog_stamp
+                rows = imported_home_rows(resolver, info['mode'], 'shared-structure', info['season'])
+                self.assertEqual(len(rows), min(3, len(info['base'].pack.maps)))
+                self.assertEqual(len({row['title'] for row in rows}), len(rows))
+                self.assertTrue(all(row['structure'] and row['key'] == '' for row in rows))
+                self.assertTrue(all(row['profileId'] == 'shared-structure' for row in rows))
+                self.assertTrue(all(row['displayKind'] == '结构底图' for row in rows))
+                self.assertTrue(all(row['imageUrl'].startswith('data:image/png;base64,') for row in rows))
+                self.assertEqual(resolver.snapshot().catalog_stamp, before)
+
     def test_s1_nightmare_browse_preserves_negative_floor_label_and_pixels(self):
         info = self.bases['s1n']
         map_id = next(iter(info['base'].pack.by_id))
         context, _info, selected_ref, view = self._browse_success('s1n', map_id, '-4')
         self.assertEqual(context.floor_metadata['-4']['label'], 'B4')
-        self.assertTrue(str(context.profiles[0].first_preview[2]).startswith(str(view.root)))
+        self.assertTrue(str(context.profiles[1].first_preview[2]).startswith(str(view.root)))
 
 
 if __name__ == '__main__':

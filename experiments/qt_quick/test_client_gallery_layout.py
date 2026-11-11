@@ -285,10 +285,11 @@ class GalleryLayoutTests(unittest.TestCase):
         self.assertFalse(self.item("galleryUseAuthor").isEnabled())
         row.update(runtimeSelectable=True, runtimeProfileId="shared-structure")
         self.backend.changed.emit()
-        self.assertEqual(self.item("galleryUseAuthor").property("text"), "正在使用此作者")
+        self.assertEqual(self.item("galleryUseAuthor").property("text"), "正在使用结构底图")
         self.assertFalse(self.item("galleryUseAuthor").isEnabled())
         self.state._profile = "another"
         self.state.changed.emit()
+        self.assertEqual(self.item("galleryUseAuthor").property("text"), "使用结构底图")
         self.assertTrue(self.item("galleryUseAuthor").isEnabled())
         for owner in (self.backend, self.state):
             owner._busy = True

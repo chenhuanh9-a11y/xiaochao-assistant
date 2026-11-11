@@ -1,8 +1,8 @@
-"""Default QtClient author choice reaches the imported gallery image consumer.
+"""Default QtClient structure/author choices reach the actual image consumer.
 
 The resource fixture supplies an isolated S1D base and user author PNG. Only
 the starting game context is seeded through SettingsService; no route profile
-is seeded. The author is chosen with the real Gallery QML button.
+is seeded. Both display choices use the real Gallery QML button.
 """
 from contextlib import ExitStack
 import json
@@ -12,6 +12,7 @@ import tempfile
 import time
 import traceback
 import unittest
+import numpy as np
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
@@ -20,7 +21,7 @@ from io import BytesIO
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
-from PySide6.QtCore import QObject, QPointF, QSize, Qt, QTimer, QUrl
+from PySide6.QtCore import QObject, QPoint, QPointF, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QGuiApplication, QFontDatabase
 from PySide6.QtQml import QQmlEngine, QQmlExpression
 from PySide6.QtQuick import QQuickItem
@@ -145,7 +146,7 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
         guard = Mock()
         guard.start.return_value = True
         holder = {"phase": "startup", "errors": [], "profileId": PROFILE_ID,
-                  "journeyStarted": time.monotonic(), "phaseHistory": []}
+                  "journeyStarted": time.monotonic(), "phaseHistory": [], "captures": {}}
 
         constructor = client.QtClient
 
@@ -192,6 +193,57 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
             collect_names(instance.main.contentItem())
             return sorted(names)
 
+        def reveal_in_clip(target, name):
+            if "failurePhase" in holder:
+                return False
+            instance = holder["client"]
+            clips = []
+            ancestor = target.parentItem()
+            while ancestor is not None:
+                if ancestor.property('moving'):
+                    return False
+                if ancestor.clip():
+                    local = ancestor.mapFromScene(target.mapToScene(QPointF(0, 0)))
+                    clips.append(dict(name=ancestor.objectName(), left=local.x(), top=local.y(),
+                        width=ancestor.width(), height=ancestor.height(), contentY=ancestor.property('contentY')))
+                ancestor = ancestor.parentItem()
+            origin = target.mapToScene(QPointF(0, 0))
+            layout = dict(name=name, phase=holder['phase'], x=origin.x(), y=origin.y(),
+                          width=target.width(), height=target.height(), clips=clips)
+            holder['lastLayout'] = layout
+            previous = holder.setdefault('layoutPositions', {})
+            key = (holder['phase'], name)
+            stable = previous.get(key) == layout
+            previous[key] = layout
+            # Compact panes are resized and polished asynchronously. A loaded
+            # Image can retain its old width while its new viewport is negative.
+            # Wait for two matching observations before evaluating hit geometry.
+            if not stable or any(clip['width'] <= 0 or clip['height'] <= 0 for clip in clips):
+                return False
+            ancestor = target.parentItem()
+            while ancestor is not None:
+                if ancestor.property('moving'):
+                    return False
+                if ancestor.clip():
+                    local = ancestor.mapFromScene(target.mapToScene(QPointF(0, 0)))
+                    self.assertTrue(-1 <= local.x() and local.x() + target.width() <= ancestor.width() + 1,
+                        dict(name=name, clip=ancestor.objectName(), left=local.x(),
+                             width=target.width(), viewport=ancestor.width()))
+                    if local.y() < 0 or local.y() + target.height() > ancestor.height() + 1:
+                        holder['lastScroll'] = dict(name=name, phase=holder['phase'], clip=ancestor.objectName(),
+                            top=local.y(), height=target.height(), viewport=ancestor.height(),
+                            contentY=ancestor.property('contentY'))
+                        if ancestor.property('contentY') is not None:
+                            counts = holder.setdefault('clipScrollCounts', {})
+                            self.assertLess(counts.get(name, 0), 8, holder['lastScroll'])
+                            counts[name] = counts.get(name, 0) + 1
+                            center = ancestor.mapToScene(QPointF(ancestor.width()/2, ancestor.height()/2))
+                            QTest.wheelEvent(instance.main, center, QPoint(0, 120 if local.y() < 0 else -120))
+                            QTest.qWait(25)
+                        return False
+                ancestor = ancestor.parentItem()
+            return True
+
         def click(name):
             if "failurePhase" in holder:
                 return False
@@ -206,12 +258,17 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
                     size=(target.width(), target.height()) if isinstance(target, QQuickItem) else None,
                     matchingNames=visible_navigation_names(instance))
                 return False
+            if not reveal_in_clip(target, name):
+                return False
             point = target.mapToScene(QPointF(target.width() / 2, target.height() / 2)).toPoint()
             if not (0 <= point.x() < instance.main.width() and 0 <= point.y() < instance.main.height()):
                 holder['lastClick'] = dict(name=name, point=(point.x(), point.y()),
                     windowSize=(instance.main.width(), instance.main.height()), outsideWindow=True)
                 return False
             QTest.mouseClick(instance.main, Qt.LeftButton, Qt.NoModifier, point, 10)
+            if 'failurePhase' not in holder:
+                holder.setdefault('clickEvidence', []).append(dict(name=name, phase=holder['phase'],
+                    center=(point.x(), point.y()), layout=holder['lastLayout']))
             return "failurePhase" not in holder
 
         def choose_s1(name):
@@ -260,6 +317,11 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
                 "session": dict(holder.get("session", {})),
                 "backend": dict(holder.get("backend", {})),
                 "lastClick": holder.get("lastClick"),
+                "lastScroll": holder.get('lastScroll'),
+                "clipScrollCounts": dict(holder.get('clipScrollCounts', {})),
+                "lastLayout": holder.get('lastLayout'),
+                "clickEvidence": list(holder.get('clickEvidence', [])),
+                "captures": dict(holder['captures']),
                 "phaseHistory": list(holder["phaseHistory"]),
                 "qmlWarnings": list(getattr(instance, "warnings", ())) if instance else [],
                 "window": dict(page=instance.main.property('page'), width=instance.main.width(),
@@ -354,9 +416,104 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
                     return
                 if not instance.backend.model.rows or instance.backend.selectedImage == "":
                     return
+                if not holder.get('structureDone'):
+                    if click('galleryViewAuthor_s1-native-structure'):
+                        holder['phase'] = 'structure-image'
+                    return
                 if not click("galleryViewAuthor_" + PROFILE_ID):
                     return
                 holder["phase"] = "gallery-image"
+                return
+            if phase == 'structure-image':
+                image = item('galleryLargePreview')
+                if (image is None or not image.isVisible() or instance.backend.busy
+                        or not qml(instance, image, 'status === Image.Ready')):
+                    return
+                self.assertEqual(instance.backend.profileId, 's1-native-structure')
+                structure = next(row for row in instance.backend.profiles if row['id'] == 's1-native-structure')
+                self.assertFalse(structure['userProvided'])
+                self.assertEqual(structure['runtimeProfileId'], 'shared-structure')
+                self.assertEqual(item('galleryUseAuthor').property('text'), '使用结构底图')
+                context = instance.backend.context
+                selected = next(row for row in instance.backend.model.rows if row['key'] == instance.backend.selectedKey)
+                reference = context.assets._provider('shared-structure', selected['mapId'], selected['floor'])
+                source = instance.backend.selectedImage.split('image://importedgallery/', 1)[1]
+                pixels = instance.gallery_images.requestImage(source, QSize(), QSize())
+                self.assertFalse(pixels.isNull())
+                self.assertEqual((pixels.width(), pixels.height()), (reference.shape[1], reference.shape[0]))
+                holder['structureSourceSize'] = (reference.shape[1], reference.shape[0])
+                ys, xs = np.nonzero(reference.clean_mask)
+                self.assertGreater(len(ys), 0)
+                self.assertEqual(pixels.pixelColor(int(xs[len(xs)//2]), int(ys[len(ys)//2])).getRgb(),
+                                 (238, 228, 218, 255))
+                holder['structureCatalogBefore'] = (fixture.resources/'catalog.json').read_bytes()
+                if click('galleryUseAuthor'):
+                    holder['phase'] = 'structure-applied'
+                return
+            if phase == 'structure-applied':
+                if (instance.settings.busy or instance.session.busy
+                        or instance.settings.persistedValues['contextRouteProfiles'].get('s1:difficult') != 'shared-structure'
+                        or (instance.session.appliedSeason, instance.session.appliedMode,
+                            instance.session.appliedProfile) != ('s1', 'difficult', 'shared-structure')):
+                    return
+                self.assertEqual((fixture.resources/'catalog.json').read_bytes(), holder['structureCatalogBefore'])
+                self.assertEqual(instance.session.snapshot['mapId'], '')
+                self.assertFalse(instance.session.snapshot['identityLocked'])
+                self.assertEqual(item('galleryUseAuthor').property('text'), '正在使用结构底图')
+                instance.main.resize(650, 470)
+                holder['captureDeadline'] = time.monotonic() + .18
+                holder['phase'] = 'structure-small'
+                return
+            if phase == 'structure-small':
+                if time.monotonic() < holder['captureDeadline']:
+                    return
+                image = item('galleryLargePreview')
+                if image is None or not image.isVisible():
+                    if not click('galleryViewAuthor_s1-native-structure'):
+                        return
+                holder['phase'] = 'structure-small-image'
+                return
+            if phase == 'structure-small-image':
+                image = item('galleryLargePreview')
+                if (image is None or not image.isVisible() or not qml(instance, image, 'status === Image.Ready')
+                        or not reveal_in_clip(image, 'galleryLargePreview')):
+                    return
+                name = 'structure-650x470.png'
+                holder['captures'][name] = self._capture_image_evidence(instance, image, evidence_dir/name,
+                    expected_window_size=(650, 470), expected_source_size=holder['structureSourceSize'],
+                    expected_pixel=(238, 228, 218, 255))
+                if 'failurePhase' in holder:
+                    return
+                instance.main.resize(1000, 720)
+                holder['captureDeadline'] = time.monotonic() + .18
+                holder['phase'] = 'structure-large'
+                return
+            if phase == 'structure-large':
+                if time.monotonic() < holder['captureDeadline']:
+                    return
+                image = item('galleryLargePreview')
+                if (image is None or not image.isVisible() or not qml(instance, image, 'status === Image.Ready')
+                        or not reveal_in_clip(image, 'galleryLargePreview')):
+                    return
+                name = 'structure-1000x720.png'
+                holder['captures'][name] = self._capture_image_evidence(instance, image, evidence_dir/name,
+                    expected_window_size=(1000, 720), expected_source_size=holder['structureSourceSize'],
+                    expected_pixel=(238, 228, 218, 255))
+                if 'failurePhase' in holder:
+                    return
+                instance.main.resize(650, 470)
+                holder['structureDone'] = True
+                holder['captureDeadline'] = time.monotonic() + .18
+                holder['phase'] = 'structure-author-list'
+                return
+            if phase == 'structure-author-list':
+                if time.monotonic() < holder['captureDeadline']:
+                    return
+                image = item('galleryLargePreview')
+                if image is not None and image.isVisible():
+                    if not click('galleryBackToList'):
+                        return
+                holder['phase'] = 'gallery-mode'
                 return
             if phase == "gallery-image":
                 image = item("galleryLargePreview")
@@ -427,8 +584,10 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
                 self.assertFalse(capabilities['liveReady'])
                 self.assertFalse(capabilities['floorObservation']['automaticFloorEligible'])
                 self.assertFalse(capabilities['candidateObservation']['candidateReady'])
-                if not click("galleryViewAuthor_" + PROFILE_ID):
-                    return
+                image = item('galleryLargePreview')
+                if image is None or not image.isVisible():
+                    if not click("galleryViewAuthor_" + PROFILE_ID):
+                        return
                 instance.main.resize(650, 470)
                 holder["captureDeadline"] = time.monotonic() + 0.18
                 holder["phase"] = "small-layout"
@@ -448,9 +607,12 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
                 return
             if phase == "small-image":
                 image = item("galleryLargePreview")
-                if image is None or not image.isVisible() or not qml(instance, image, "status === Image.Ready"):
+                if (image is None or not image.isVisible() or not qml(instance, image, "status === Image.Ready")
+                        or not reveal_in_clip(image, 'galleryLargePreview')):
                     return
-                self._capture_image_evidence(instance, image, evidence_dir / "gallery-650x470.png")
+                name = 'gallery-650x470.png'
+                holder['captures'][name] = self._capture_image_evidence(instance, image, evidence_dir/name,
+                    expected_window_size=(650, 470))
                 if "failurePhase" in holder:
                     return
                 instance.main.resize(1000, 720)
@@ -463,9 +625,12 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
                 if time.monotonic() < holder["captureDeadline"]:
                     return
                 image = item("galleryLargePreview")
-                if image is None or not image.isVisible() or not qml(instance, image, "status === Image.Ready"):
+                if (image is None or not image.isVisible() or not qml(instance, image, "status === Image.Ready")
+                        or not reveal_in_clip(image, 'galleryLargePreview')):
                     return
-                self._capture_image_evidence(instance, image, evidence_dir / "gallery-1000x720.png")
+                name = 'gallery-1000x720.png'
+                holder['captures'][name] = self._capture_image_evidence(instance, image, evidence_dir/name,
+                    expected_window_size=(1000, 720))
                 if "failurePhase" in holder:
                     return
                 holder["galleryFinishedAtSeconds"] = time.monotonic() - holder["journeyStarted"]
@@ -573,13 +738,20 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
         repair.assert_not_called()
         self.assertTrue((evidence_dir / "gallery-650x470.png").is_file())
         self.assertTrue((evidence_dir / "gallery-1000x720.png").is_file())
+        self.assertTrue(holder['structureDone'])
+        self.assertTrue((evidence_dir / 'structure-650x470.png').is_file())
+        self.assertTrue((evidence_dir / 'structure-1000x720.png').is_file())
         self.assertFalse((instance.paths.memory_root('difficult', 's1') / 'samples').exists())
         (evidence_dir / "journey.json").write_text(json.dumps(dict(
             resourceReadyAtSeconds=holder["resourceReadyAtSeconds"],
             galleryDurationSeconds=holder["galleryFinishedAtSeconds"] - holder["resourceReadyAtSeconds"],
+            clipScrollCounts=holder.get('clipScrollCounts', {}), lastScroll=holder.get('lastScroll'),
+            clickEvidence=holder.get('clickEvidence', []),
+            captures=holder['captures'],
             phaseHistory=holder["phaseHistory"]), ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def _capture_image_evidence(self, instance, image, path):
+    def _capture_image_evidence(self, instance, image, path, *, expected_window_size,
+                                expected_source_size=(5, 3), expected_pixel=AUTHOR_PIXEL):
         from PySide6.QtQuick import QQuickWindow
         self.assertIsInstance(instance.main, QQuickWindow)
         source = image.property("source")
@@ -589,13 +761,17 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
         identifier = url.path().lstrip("/")
         returned = instance.gallery_images.requestImage(identifier, QSize(), QSize())
         self.assertFalse(returned.isNull(), identifier)
-        self.assertEqual(tuple(returned.pixelColor(0, 0).getRgb()), AUTHOR_PIXEL)
+        self.assertEqual((returned.width(), returned.height()), expected_source_size)
+        self.assertEqual(tuple(returned.pixelColor(0, 0).getRgb()), expected_pixel)
+        self.assertEqual((instance.main.width(), instance.main.height()), expected_window_size)
         # Image.Ready describes loading; allow the own window's scene graph to
         # paint the newly opened compact pane before checking its output.
         instance.main.requestUpdate()
         QTest.qWait(80)
         shot = instance.main.grabWindow()
         self.assertFalse(shot.isNull())
+        self.assertEqual((shot.width(), shot.height()),
+                         tuple(round(value * shot.devicePixelRatio()) for value in expected_window_size))
         self.assertTrue(shot.save(str(path)), str(path))
         geometry, current = [], image
         while current is not None:
@@ -603,12 +779,19 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
             geometry.append(dict(name=current.objectName(), type=type(current).__name__,
                 x=point.x(), y=point.y(), width=current.width(), height=current.height(), clip=current.clip()))
             current = current.parentItem()
-        path.with_suffix('.json').write_text(json.dumps(geometry, ensure_ascii=False, indent=2), encoding='utf-8')
         origin = image.mapToScene(QPointF(image.width() / 2, image.height() / 2)).toPoint()
         sample_x = round(origin.x() * shot.devicePixelRatio())
         sample_y = round(origin.y() * shot.devicePixelRatio())
         self.assertTrue(0 <= sample_x < shot.width() and 0 <= sample_y < shot.height())
-        self.assertEqual(tuple(shot.pixelColor(sample_x, sample_y).getRgb()), AUTHOR_PIXEL)
+        self.assertEqual(tuple(shot.pixelColor(sample_x, sample_y).getRgb()), expected_pixel)
+        evidence = dict(source=source_text,
+            sourceDimensions=dict(width=returned.width(), height=returned.height()),
+            windowDimensions=dict(width=instance.main.width(), height=instance.main.height()),
+            screenshotDimensions=dict(width=shot.width(), height=shot.height()),
+            devicePixelRatio=shot.devicePixelRatio(), samplePoint=(sample_x, sample_y),
+            samplePixel=tuple(shot.pixelColor(sample_x, sample_y).getRgb()), geometry=geometry)
+        path.with_suffix('.json').write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding='utf-8')
+        return evidence
 
 
 if __name__ == "__main__":
