@@ -113,7 +113,7 @@ class ManagedRuntimeReuseTests(unittest.TestCase):
                 managedBaseManifest=managed.CANDIDATE + '/manifest.json',
                 managedBaseManifestSha256=build.sha256(candidate), managedBaseBundleId=manifest['bundleId']),
             releaseReport=dict(file=report.name, sha256=build.sha256(report), executableSha256=release['executableSha256']))
-        for kind in ('recovery', 'import', 'reset'):
+        for kind in ('recovery', 'import', 'reset', 'uninstall'):
             product = 'star-map-' + kind + '-helper'
             runtime = '_star_map_' + kind + '_runtime'
             inventory = {}

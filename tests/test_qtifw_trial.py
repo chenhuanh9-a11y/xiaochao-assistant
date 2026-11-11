@@ -37,7 +37,7 @@ def program_only_stage(folder):
         '_internal/' + build.BRAND_ICON: b'synthetic icon',
         '_internal/assets/brand/xingtu-round.png': b'synthetic brand image'}
     record = dict(source=source, compiledPayloadSourceCommit=source['commit'], product='星图', version=version)
-    for kind in ('import', 'recovery', 'reset'):
+    for kind in ('import', 'recovery', 'reset', 'uninstall'):
         exe, runtime = 'star-map-' + kind + '-helper.exe', '_star_map_' + kind + '_runtime'
         values = {exe: b'synthetic helper, never executed', runtime + '/python313.dll': b'synthetic runtime'}
         payload.update(values)
