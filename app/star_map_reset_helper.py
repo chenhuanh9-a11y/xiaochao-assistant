@@ -225,7 +225,7 @@ def run(args):
     return code
 
 
-def main(argv=None):
+def main(argv=None, *, maintenance_provider=None):
     arguments = list(sys.argv[1:] if argv is None else argv)
     if arguments and arguments[0] == 'legacy-prepare':
         from installer_legacy_bridge import main as prepare_legacy
@@ -254,7 +254,17 @@ def main(argv=None):
     for name in ('restore-watcher', 'group-enabled', 'desktop-enabled'):
         parser.add_argument('--' + name, action='store_true')
     try:
-        return run(parser.parse_args(argv))
+        args = parser.parse_args(argv)
+        from installer_uninstall import _baked_profile, _profile_identity
+        from installer_uninstall_recovery import hold_maintenance
+        profile = _baked_profile()
+        if _profile_identity(profile)[0] != 'production':
+            raise ValueError('production-windows-helper-required')
+        # Keep the same object as Setup and the uninstall helper through the
+        # entire operation, including its final receipt. If Setup disappears,
+        # a second Setup must still see the active maintenance object.
+        with (maintenance_provider or hold_maintenance)(profile):
+            return run(args)
     except Exception:
         return 3  # no trustworthy result receipt; Setup must not infer success
 
