@@ -272,7 +272,8 @@ class InnoLegacyEventContractTests(unittest.TestCase):
         legacy = (root / 'tools/qt-legacy-migration.iss').read_text('utf-8-sig')
         reset = (root / 'tools/qt-resource-reset.iss').read_text('utf-8-sig')
         self.assertIn("InstallerInspectLegacyTarget := LegacyMigrationSelected", setup)
-        self.assertIn("FileExists(ResourceResetRoot + '\\work\\pending-installer-upgrade.json') then begin", legacy)
+        self.assertIn("FileExists(ResourceResetRoot + '\\work\\pending-installer-upgrade.json') or", legacy)
+        self.assertIn("FileExists(ResourceResetRoot + '\\work\\installer-upgrades\\legacy-recovery.json') then begin", legacy)
         self.assertIn('if LegacyMigrationPrepared then begin\n      if not StartLegacyNative', setup)
         self.assertIn('CompleteLegacyNative(WatcherReason)', setup)
         for action in ('prepare', 'start-native', 'native-complete', 'commit', 'resume', 'cancel'):

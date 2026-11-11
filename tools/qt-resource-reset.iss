@@ -171,9 +171,12 @@ begin
     Log('RESOURCE_RESET_STEP ' + Action + ' plan=' + ResourceResetPlanHash + ' transaction=' + ResourceResetTransaction);
     if not RunBoundedUninstallProcess(ResourceResetExtractRoot + '\star-map-reset-helper.exe', Params,
       ResourceResetExtractRoot, 125000, Code) then begin
-      Reason := '资源升级步骤 ' + Action + ' 的检查程序未能启动（Windows 错误 ' + IntToStr(Code) + '）。' + #13#10 +
-        SysErrorMessage(Code);
-      Log('RESOURCE_RESET_LAUNCH_FAILED ' + Action + ' result-directory=' + ResultDir);
+      if InstallerWorkerExitUncertain then
+        Reason := '资源升级检查程序尚未确认退出。请保留恢复记录，现在不要重试或启动星图。'
+      else
+        Reason := '资源升级步骤 ' + Action + ' 的检查程序未能完成（Windows 错误 ' + IntToStr(Code) + '）。' + #13#10 +
+          SysErrorMessage(Code);
+      Log('RESOURCE_RESET_WORKER_FAILED ' + Action + ' result-directory=' + ResultDir);
       Log(Reason);
       Exit;
     end;

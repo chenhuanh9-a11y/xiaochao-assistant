@@ -748,13 +748,28 @@ class InstallerUpgradeJournal:
     def finish_complete(self, *, verify_native, verify_resource):
         if self.resource_action == 'legacy':
             # Asset publication alone cannot prove historical QtIFW retirement.
-            # No current caller has a verified retirement implementation.
+            # The legacy owner must use finish_legacy with its own verifier.
             _fail('legacy-retirement-unverified')
         current = self._load()
         if current[0]['status'] not in {'native-complete', 'completed'}:
             _fail('native-completion-evidence-required')
         self._verify(current, verify_native, native=True)
         self._verify(current, verify_resource)
+        if current[0]['status'] != 'completed':
+            self._append(current, status='completed')
+            current = self._load()
+        return self._clear(current)
+
+    def finish_legacy(self, *, verify_native, verify_resource, verify_retirement):
+        """Only the legacy owner may clear its pending after actual retirement."""
+        if self.resource_action != 'legacy':
+            _fail('legacy-resource-action-required')
+        current = self._load()
+        if current[0]['status'] not in {'native-complete', 'completed'}:
+            _fail('native-completion-evidence-required')
+        self._verify(current, verify_native, native=True)
+        self._verify(current, verify_resource)
+        self._verify(current, verify_retirement)
         if current[0]['status'] != 'completed':
             self._append(current, status='completed')
             current = self._load()

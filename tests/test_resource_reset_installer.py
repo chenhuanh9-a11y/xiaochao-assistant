@@ -4,6 +4,7 @@ The lease tests label their Windows boundary explicitly. Python protocol tests
 do not execute an EXE or replace any installed product.
 """
 import configparser
+from contextlib import nullcontext
 import ctypes
 import hashlib
 import json
@@ -24,6 +25,7 @@ import resource_transaction as lease
 import resource_upgrade_reset as reset
 import build_qt_client as build
 import test_resource_upgrade_reset as fixtures
+from packaged_product_identity import PRODUCTION_APP_ID, PRODUCTION_PRODUCT
 
 
 class InstallerLeaseProtocolTests(unittest.TestCase):
@@ -98,8 +100,13 @@ class ResourceResetHelperTests(unittest.TestCase):
                 '--source-commit', 'b' * 40, '--display-version', '1.1.2', '--numeric-version', '1.0.0.24',
                 '--parent-created', '1', '--parent-executable', 'fixture-parent', '--parent-sha256', 'c' * 64,
                 '--parent-pid', '1', '--lock-handle', '1', '--group-shortcut', 'group']
-        with patch.object(helper, 'run', return_value=0) as execute:
-            self.assertEqual(helper.main(argv), 0)
+        profile = dict(product=PRODUCTION_PRODUCT,
+            installerInstance=dict(id='production', product=PRODUCTION_PRODUCT, appId=PRODUCTION_APP_ID))
+        # This test covers parsing only; package/parent/maintenance behavior is
+        # exercised by the real helper-route and named-object regressions.
+        with patch.object(helper, 'run', return_value=0) as execute, \
+             patch('installer_uninstall._baked_profile', return_value=profile):
+            self.assertEqual(helper.main(argv, maintenance_provider=lambda _: nullcontext()), 0)
         args = execute.call_args.args[0]
         self.assertIsNone(args.uninstall_exe)
         self.assertEqual(args.group_shortcut, 'group')
@@ -334,12 +341,23 @@ class ResourceResetSourceContracts(unittest.TestCase):
     def test_exec_launch_error_is_distinct_from_helper_exit_and_missing_detail(self):
         source = (ROOT / 'tools/qt-resource-reset.iss').read_text('utf-8-sig')
         call = source.split('function CallResourceReset(', 1)[1].split('function ReviewResourceReset(', 1)[0]
-        launch = call.split('if not Exec(', 1)[1].split('if Code <> 0 then begin', 1)[0]
+        launch = call.split('if not RunBoundedUninstallProcess(', 1)[1].split('if Code <> 0 then begin', 1)[0]
+        self.assertIn('125000, Code)', launch)
         self.assertNotIn('or (Code <> 0)', launch)
         self.assertIn('Windows 错误', launch)
         self.assertIn('SysErrorMessage(Code)', launch)
-        self.assertIn('RESOURCE_RESET_LAUNCH_FAILED ', launch)
+        self.assertIn('RESOURCE_RESET_WORKER_FAILED ', launch)
+        self.assertIn('if InstallerWorkerExitUncertain then', launch)
+        self.assertIn('尚未确认退出', launch)
+        self.assertNotIn('未能启动', launch)
         self.assertIn('Exit;', launch)
+        worker = (ROOT / 'tools/qt-uninstall-data.iss').read_text('utf-8-sig')
+        self.assertIn('Result := UninstallProcessUncertain;', worker)
+        worker = worker.split('function RunBoundedUninstallProcess(', 1)[1].split('function UninstallSafeAbsolute', 1)[0]
+        creation = worker.split('if not UninstallCreateProcess(', 1)[1].split('UninstallProcessUncertain := True', 1)[0]
+        self.assertLess(creation.index('Code := Integer(UninstallLastError)'), creation.index('Exit;'))
+        timeout = worker.split('if UninstallTicks - Started >= Timeout then begin', 1)[1].split('end;', 1)[0]
+        self.assertIn('Code := 1460;', timeout)
         helper_failure = call.split('if Code <> 0 then begin', 1)[1].split("if GetIniString('result', 'action'", 1)[0]
         self.assertIn('程序退出码', helper_failure)
         self.assertIn("ResetReadText(ResultDir + '\\error.txt')", helper_failure)
@@ -360,8 +378,13 @@ class ResourceResetSourceContracts(unittest.TestCase):
         cleanup = source.split('procedure DeinitializeSetup', 1)[1].split('function ExecutableAvailable', 1)[0]
         self.assertNotIn('FileCopy(', cleanup)
         self.assertNotIn('DeleteFile(', cleanup)
-        self.assertLess(cleanup.index('ResolveResourceResetCommit'), cleanup.index('RollbackResourceReset'))
-        self.assertLess(cleanup.index('RollbackResourceReset'), cleanup.index('ReleaseResourceLock'))
+        legacy, normal = cleanup.split('SafeToRestore := not ResourceResetStarted;', 1)
+        self.assertIn('if LegacyMigrationPrepared then begin', legacy)
+        self.assertLess(legacy.index('CancelLegacyBeforeNative'), legacy.index('ReleaseResourceLock'))
+        self.assertLess(legacy.index('ReleaseResourceLock'), legacy.index('Exit;'))
+        self.assertNotIn('RollbackResourceReset', legacy)
+        self.assertLess(normal.index('ResolveResourceResetCommit'), normal.index('RollbackResourceReset'))
+        self.assertLess(normal.index('RollbackResourceReset'), normal.index('ReleaseResourceLock'))
         self.assertIn('not ResourceResetNativeStarted and not ResourceResetNativeCompleted', cleanup)
         self.assertIn('if SafeToRestore then', cleanup)
         self.assertNotIn('then RaiseException(WatcherReason)', events.split('if CurStep = ssPostInstall')[1])
@@ -393,7 +416,7 @@ class ResourceResetSourceContracts(unittest.TestCase):
     def test_packaged_helper_extraction_and_lease_are_not_an_unlock_bypass(self):
         source = (ROOT / 'tools/qt-resource-reset.iss').read_text()
         for token in ("ExtractTemporaryFiles('{app}\\star-map-reset-helper.exe')", 'VerifyResetInputs;',
-                      'ewWaitUntilTerminated', 'MB_YESNO or MB_DEFBUTTON2', 'if WizardSilent',
+                      'RunBoundedUninstallProcess', '125000, Code)', 'MB_YESNO or MB_DEFBUTTON2', 'if WizardSilent',
                       '--parent-created ', '--lock-handle ', 'ResetHelperInventorySHA256'):
             self.assertIn(token, source)
         self.assertNotIn('ReleaseResourceLock', source)

@@ -212,6 +212,7 @@ function InstallerFileAttributes(lpFileName: String): LongWord;
   external 'GetFileAttributesW@kernel32.dll stdcall';
 function RunBoundedUninstallProcess(const Executable, Params, Directory: String;
   Timeout: LongWord; var Code: Integer): Boolean; forward;
+function InstallerWorkerExitUncertain: Boolean; forward;
 #include "qt-game-watcher-lifecycle.iss"
 #include "qt-installer-target.iss"
 function OwnedAssistantShortcut(const Path: String): Boolean;
