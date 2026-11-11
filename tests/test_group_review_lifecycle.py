@@ -16,11 +16,14 @@ class GroupReviewTests(unittest.TestCase):
         engine.entry_shared_reference_provider=self.f.provider;calls=[]
         engine.rank=lambda *a,**kw:(calls.append(kw) or [])
         prior=h.native_similarity_state.context_snapshot()
+        self.assertEqual(set(engine.established_candidate_scope(prior=prior)),set(IDS))
+        self.assertEqual(calls,[])  # Scope inspection never starts a rank.
         engine.rank_established_group(h.current_frame,'1',prior=prior,budget_seconds=.2)
         self.assertEqual(set(calls[0]['_established_members']),set(IDS))
         calls.clear()
         for bad in (None,('difficult',*prior[1:]),(prior[0],prior[1],'wrong',prior[3]),
                     (*prior[:3],(('unknown',(0,)),))):
+            self.assertIsNone(engine.established_candidate_scope(prior=bad))
             self.assertEqual(engine.rank_established_group(h.current_frame,'1',prior=bad,budget_seconds=.2),[])
         self.assertEqual(calls,[])
 
@@ -47,6 +50,7 @@ class GroupReviewTests(unittest.TestCase):
             engine._rank_source_structure_candidates=lambda *a,**kw:self.fail('global source discovery')
             engine.entry_advisory=lambda *a:self.fail('global icon advice')
             engine.front_gate_prefilter=SimpleNamespace(select=lambda *a:self.fail('must not narrow group again'))
+            self.assertEqual(set(engine.established_candidate_scope(prior=prior)),set(expected))
             rows=engine.rank_established_group(h.current_frame,'1',prior=prior,budget_seconds=1)
             self.assertEqual({r['mapId'] for r in rows},set(expected))
             self.assertTrue(all(scope==set(expected) for scope in calls))

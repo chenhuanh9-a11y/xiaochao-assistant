@@ -226,7 +226,8 @@ jobs:
                 'test_imported_controls_profile',
                 'test_imported_s0_observation', 'test_identity_metadata_package_io',
                 'test_shared_structure_package_io', 'test_shared_version_package_io',
-                'test_entry_resource_io', 'test_export_native_base_package',
+                'test_entry_resource_io', 'test_main_entry_jobs', 'test_passport_entry_jobs', 'test_side_entry_jobs',
+                'test_export_native_base_package',
                 'test_export_s0_difficult_native_base_package',
                 'test_export_s1_native_base_package', 'test_export_s1_nightmare_base_package',
                 'test_imported_native_base',
@@ -243,7 +244,7 @@ jobs:
             'packaging-imported-runtime' {
               $modules = @(
                 'test_s1_floor_observation', 'test_s1_map_ui_geometry',
-                'test_client_shared_reference_context',
+                'test_client_shared_reference_context', 'test_client_structure_unification', 'test_group_review_lifecycle',
                 'test_client_imported_providers', 'test_client_native_base_provider',
                 'test_client_imported_s1_provider',
                 'test_client_imported_difficult_provider', 'test_client_imported_difficult_activation_ui',
