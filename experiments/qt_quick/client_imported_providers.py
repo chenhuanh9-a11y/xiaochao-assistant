@@ -134,7 +134,7 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
     engine.qt_resource_root = root
     engine.qt_catalog = engine.qt_optional_displays = None
     engine.qt_native_context = native
-    engine.qt_logical_group_registry = None
+    engine.qt_logical_group_registry = bundle.reviewed_front_groups
     engine.qt_live_gaps = tuple(native.live_gaps) if native is not None else ()
     engine.qt_rank_ready = rank_ready
     engine.qt_rank_gaps = () if rank_ready else ('native-base-rank-unavailable',)
@@ -145,7 +145,11 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
         mainEntries=len(engine.entry_identity.entries), sideEntries=len(engine.side_entry_identity.entries),
         semanticSideEntries=local.semantic_side_entries,
         fastPreparedLayers=len(bundle.fast_structure_source.entries),
-        fastPreparedGaps=list(bundle.fast_structure_source.gaps))
+        fastPreparedGaps=list(bundle.fast_structure_source.gaps),
+        reviewedGroupCount=len(bundle.reviewed_front_groups.groups) if bundle.reviewed_front_groups is not None else 0,
+        reviewedGroupReviewSource=(bundle.reviewed_front_groups.review_source if bundle.reviewed_front_groups is not None else None),
+        reviewedGroupGaps=(dict(bundle.reviewed_front_groups.group_gaps) if bundle.reviewed_front_groups is not None else
+                           {'registration': ('reviewed-front-groups-not-provided',)}))
     if season == 's1':
         from s1_structure_selection import StructureCatalog
         engine.qt_s1_index_resource_root = root

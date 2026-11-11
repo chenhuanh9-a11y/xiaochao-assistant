@@ -84,6 +84,7 @@ class SessionService(QObject):
     changed = Signal()
     actionRequested = Signal(str, dict)
     contextFinished = Signal(object)
+    siblingRegistryValidated = Signal(str, dict)
 
     def __init__(self, runtime=None, parent=None):
         super().__init__(parent)
@@ -398,17 +399,19 @@ class SessionService(QObject):
         self.changed.emit()
 
     def dispatchMaintenance(self, action, payload):
-        """Bounded serial cache work, independent of the visible command receipt.
+        """Bounded serial material work, independent of the visible command receipt.
 
         The runtime seals/validates its material token. This lane never replaces
-        a foreground command, publishes its snapshot, or grants a display pose.
+        a foreground command or grants a display pose. Registry validation
+        reports back for the UI owner's existing final material ACK.
         """
         if (self._closed or self._runtime is None or self._leases
-                or action != "remember_render_material"
+                or action not in {'remember_render_material', 'validate_sibling_registry'}
                 or len(self._maintenance) >= 2):
             return False
         token = payload.get("renderToken")
-        if not token or any(job.payload.get("renderToken") == token for job in self._maintenance.values()):
+        if not token or any(job.action == action and job.payload.get("renderToken") == token
+                            for job in self._maintenance.values()):
             return False
         work = _RuntimeWork(self._runtime, action, {"renderToken": token},
                             self._context(), threading.Event())
@@ -419,7 +422,15 @@ class SessionService(QObject):
 
     @Slot(object, object, object, object)
     def _complete_maintenance(self, key, context, value, error):
-        self._maintenance.pop(key, None)
+        work = self._maintenance.pop(key, None)
+        if work is None or self._closed:
+            return
+        if work.action == 'validate_sibling_registry':
+            current = (work.runtime is self._runtime and not work.cancelled.is_set()
+                       and context == self._context())
+            receipt = value[0] if current and not error and value is not None else dict(
+                success=False, reason='sibling-context-expired' if not current else 'registered-group-resource-unavailable')
+            self.siblingRegistryValidated.emit(str(work.payload['renderToken']), dict(receipt))
         # A failed/stale cache warmup cannot replace an actual recognition
         # receipt or its error. The runtime retains its bounded diagnostics.
 

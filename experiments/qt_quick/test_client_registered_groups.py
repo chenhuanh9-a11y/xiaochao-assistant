@@ -104,7 +104,8 @@ class RegisteredRuntimeTests(unittest.TestCase):
         self.assertEqual(self.runtime.snapshot()["provisionalMapId"],B)
         self.assertEqual(ranked,original)
         structural_index.condition_index.validate_domains.assert_not_called()
-        self.engine.qt_logical_group_registry.validate.assert_called_once()
+        # Discovery and the worker's final proposal both validate the family.
+        self.assertEqual(self.engine.qt_logical_group_registry.validate.call_count, 2)
 
     def test_overlapping_dynamic_native_candidates_never_become_manual_group(self):
         import test_client_similarity_protocol as groups
@@ -150,7 +151,7 @@ class RegisteredRuntimeTests(unittest.TestCase):
         self.assertFalse(self.runtime.snapshot()["identityLocked"])
         self.assertFalse(self.runtime.snapshot()["manualGroupMemberHeld"])
         self.assertEqual(self.runtime.render_payload(result["renderToken"])["mapId"],B)
-        index.validate.assert_called_once()
+        self.assertEqual(index.validate.call_count, 2)
 
 class ActualV1RegistryTests(unittest.TestCase):
     def test_real_registered_hash_binding_checks_and_runtime_without_condition_domains(self):

@@ -302,6 +302,9 @@ class ClientCoordinator(QObject):
         if context_finished is not None:
             context_finished.connect(self._context_finished)
         session.actionRequested.connect(self._action_requested)
+        registry_validated = getattr(session, 'siblingRegistryValidated', None)
+        if registry_validated is not None:
+            registry_validated.connect(self._sibling_registry_validated)
         resources.resourcesChanged.connect(self._resources_changed)
         resources.changed.connect(self._resource_readiness_changed)
         native_input.actionTriggered.connect(self._native_action)
@@ -487,22 +490,51 @@ class ClientCoordinator(QObject):
         acknowledge = getattr(self.runtime, "acknowledge_sibling", None)
         if not callable(acknowledge):
             return
+        requires_validation = getattr(self.runtime, 'sibling_requires_registry_validation', None)
+        if accepted and callable(requires_validation) and requires_validation(token):
+            if pending.get('registryCheckPending'):
+                return
+            pending['registryCheckPending'] = True
+            maintenance = getattr(self.session, 'dispatchMaintenance', None)
+            if callable(maintenance) and maintenance('validate_sibling_registry', {'renderToken': token}):
+                return
+            self._finish_sibling_material(token, False, reason='registered-group-validation-unavailable')
+            return
+        self._finish_sibling_material(token, bool(accepted), reason=(
+            'target-material-ready' if accepted else 'target-material-rejected'))
+
+    @Slot(str, dict)
+    def _sibling_registry_validated(self, token, receipt):
+        pending = self._pending_aligned
+        if (self._closed or self._closing or not pending or pending.get('token') != token
+                or not pending.get('registryCheckPending')):
+            return
+        self._finish_sibling_material(token, bool(receipt.get('success')),
+                                     reason=receipt.get('reason', 'registered-group-resource-unavailable'))
+
+    def _finish_sibling_material(self, token, accepted, *, reason):
+        pending = self._pending_aligned
+        if self._closed or self._closing or not pending or pending.get('token') != token:
+            return
+        acknowledge = getattr(self.runtime, 'acknowledge_sibling', None)
+        if not callable(acknowledge):
+            return
         self._material_timer.stop()
-        result = acknowledge(token, bool(accepted), reason="target-material-ready" if accepted else "target-material-rejected")
+        result = acknowledge(token, bool(accepted), reason=reason)
         self._pending_aligned = {}
         committed = bool(accepted and isinstance(result, dict) and result.get("success"))
         if committed:
             self._accepted_material = pending
             self._present_runtime_state(self.runtime.snapshot(), trigger="sibling-material-accepted")
-            if not self.session.busy:
-                self.session.refreshRuntime()
         else:
             self._trace("sibling-material-rejected", payload=pending,
                         reason=(result or {}).get("reason", "target-material-rejected"))
-            if not accepted:
+            if not accepted and reason == 'target-material-rejected':
                 self._report_display_failure(pending, "target-material-rejected", "Target Image rejected the route material")
             if isinstance(result, dict) and not result.get("sourceRetained"):
                 self._present_runtime_state(self.runtime.snapshot(), trigger="sibling-source-expired")
+        if not self.session.busy:
+            self.session.refreshRuntime()
         finish = getattr(self.images, "finish_staging", None)
         if callable(finish):
             finish(token, committed)

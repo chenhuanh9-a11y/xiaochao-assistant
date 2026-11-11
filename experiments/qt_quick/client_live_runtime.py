@@ -22,7 +22,8 @@ if str(APP_ROOT) not in sys.path:
 from alignment_core_v2 import AlignmentCoreV2
 from season_context import normalize_season, context_key
 from client_engine import (EngineAdapter, clone_similarity_state, stage_similarity_rank, automatic_identity_candidates, registered_logical_family, ranked_entrance_kind, similarity_evidence_summary, initial_group_display_member, is_registered_identity_group,
-                           INITIAL_IDENTITY_BUDGET_SECONDS)
+                           INITIAL_IDENTITY_BUDGET_SECONDS, registered_family_identity,
+                           validate_established_registered_family)
 from floor_observation_policy import (MANUAL_FLOOR_HOLD_SECONDS,
                                       read_floor_evidence, decide_floor_transition, game_floor_control_hit)
 from client_manual_map import manual_map_thumbnail_source
@@ -1959,6 +1960,9 @@ class LiveRuntime:
             and (staged is None or self._transient_drag is None and self._staged_choice_current(staged)))
         if not common:
             return False
+        registered = registered_family_identity(pending.get('identity'))
+        if registered is not None and registered != registered_family_identity(self._identity_native):
+            return False
         if pending.get("projection"):
             return bool(self._transient_cycle_current() and pending["group"] is self._group)
         plan = pending.get("manualChoice")
@@ -2023,6 +2027,43 @@ class LiveRuntime:
         if committed:self._notify("render-ready",token=token,reason=outcome,unchanged=False)
         return dict(success=committed,reason=outcome,token=token,sourceRetained=retained,projectionOnly=True)
 
+    def sibling_requires_registry_validation(self, token):
+        """Pure query for the UI; file-backed declarations are checked by a worker."""
+        with self._lock:
+            pending = self._pending_sibling
+            if pending is None or pending['render']['token'] != token:
+                return False
+            state = pending.get('identity') or self._identity_native
+            registry = getattr(self._engine, 'qt_logical_group_registry', None)
+            return bool(registered_family_identity(state) is not None
+                        and getattr(registry, 'file_ref', None) is not None)
+
+    def _validate_sibling_registry(self, token, payload, cancelled):
+        action = 'validate_sibling_registry'
+        with self._lock:
+            pending = self._pending_sibling
+            if (pending is None or pending['render']['token'] != token or self._cancelled(cancelled)
+                    or not self._pending_sibling_current(pending)):
+                return self._receipt(action, payload, success=False, reason='sibling-context-expired')
+            state = clone_similarity_state(pending.get('identity') or self._identity_native)
+            engine, scope = self._engine, self._sibling_scope()
+        failure = None
+        try:
+            validate_established_registered_family(engine, state)
+        except (OSError, ValueError) as error:
+            failure = str(error)[:512]
+        with self._lock:
+            if (self._pending_sibling is not pending or engine is not self._engine
+                    or scope != self._sibling_scope() or self._cancelled(cancelled)
+                    or not self._pending_sibling_current(pending)):
+                return self._receipt(action, payload, success=False, reason='sibling-context-expired')
+            if failure is not None:
+                self.invalidate('registered-group-resource-unavailable', source=action)
+                return self._receipt(action, payload, success=False, reason='registered-group-resource-unavailable',
+                                     messageDetail=failure)
+            pending['registryVerified'] = registered_family_identity(state)
+            return self._receipt(action, payload, success=True, reason='registered-group-resource-verified')
+
     def acknowledge_sibling(self, token, accepted, reason=""):
         """Commit original sibling identity only after Image.Ready acceptance.
 
@@ -2032,6 +2073,10 @@ class LiveRuntime:
         """
         with self._lock:
             pending = self._pending_sibling
+            if (accepted is True and self.sibling_requires_registry_validation(token)
+                    and pending.get('registryVerified') != registered_family_identity(
+                        pending.get('identity') or self._identity_native)):
+                accepted, reason = False, 'registered-group-validation-required'
             if pending is not None and pending.get("projection") and pending["render"]["token"]==token:
                 return self._acknowledge_projection(token,accepted,reason)
             if pending is None or pending["render"]["token"] != token:
@@ -2561,6 +2606,26 @@ class LiveRuntime:
                         self._group_choice_inflight = None
                     return self._receipt(action, payload, success=False, reason="group-choice-context-expired", stale=True)
                 state = clone_similarity_state(self._identity_native)
+                engine = self._engine
+            try:
+                validate_established_registered_family(engine, state)
+            except (OSError, ValueError) as error:
+                with self._lock:
+                    if self._group_choice_inflight and self._group_choice_inflight[0] == intent:
+                        self._group_choice_inflight = None
+                    if (not self._cancelled(cancelled) and intent == self._group_intent_generation
+                            and request_scope == self._sibling_scope()):
+                        self.invalidate('registered-group-resource-unavailable', source=action)
+                return self._receipt(action, payload, success=False, reason='registered-group-resource-unavailable',
+                                     messageDetail=str(error)[:512])
+            with self._lock:
+                current = self.snapshot(); current['groupMemberSelectionPending'] = False
+                if (self._cancelled(cancelled) or intent != self._group_intent_generation
+                        or request_scope != self._sibling_scope() or not group_member_choice_is_current(plan, current)
+                        or registered_family_identity(state) != registered_family_identity(self._identity_native)):
+                    if self._group_choice_inflight and self._group_choice_inflight[0] == intent:
+                        self._group_choice_inflight = None
+                    return self._receipt(action, payload, success=False, reason='group-choice-context-expired', stale=True)
                 observation = self._last_observation
                 if (not self._map_open or self._floor_required or observation is None
                         or observation["frame_id"] != self._frame_id
@@ -4492,6 +4557,8 @@ class LiveRuntime:
                     return self._probe_map_after_drag(payload, cancelled)
                 if action == "remember_render_material":
                     return self._remember_render_material(str(payload.get("renderToken", "")), payload, cancelled)
+                if action == 'validate_sibling_registry':
+                    return self._validate_sibling_registry(str(payload.get('renderToken', '')), payload, cancelled)
                 if action == "bind_capture":
                     if self._capture is None:
                         raise RuntimeError("capture-provider-unavailable")
@@ -5768,6 +5835,7 @@ class LiveRuntime:
         with self._lock:
             provisional_operation = self._s1_provisional_enabled()
             operation_settings_generation = self._settings_generation
+            registered_state = clone_similarity_state(identity_stage or self._identity_native)
         obsolete = lambda: (self._cancelled(cancelled) or epoch != self._epoch
             or structure_current is not None and not structure_current()
             or provisional_operation and operation_settings_generation != self._settings_generation
@@ -5941,7 +6009,17 @@ class LiveRuntime:
             raise ValueError("shared-reference-canonical-basis-unavailable")
         canonical = source_matrix @ np.linalg.inv(np.asarray(basis))
         render_matrix = source_matrix @ display["matrixDisplayToReference"]
+        try:
+            validate_established_registered_family(engine, registered_state)
+        except (OSError, ValueError) as error:
+            with self._lock:
+                if not obsolete() and frame_current() and engine is self._engine:
+                    self.invalidate('registered-group-resource-unavailable', source=action)
+            return self._receipt(action, payload, success=False, reason='registered-group-resource-unavailable',
+                                 messageDetail=str(error)[:512])
         with self._lock:
+            if registered_family_identity(registered_state) != registered_family_identity(self._identity_native):
+                return self._receipt(action, payload, success=False, reason='registered-group-context-changed', stale=True)
             previous_group = copy.deepcopy(group) if group is not None else None
         target_group = self._stage_round_group_commit(engine, previous_group, map_id, floor, canonical,
             render_matrix, display, frame, captured, cycle, frame_generation, residual,

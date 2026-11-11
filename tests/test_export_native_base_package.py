@@ -72,10 +72,12 @@ class NativeBaseExporterTests(unittest.TestCase):
                 authorDisplay=dict(resource='assets/author.png', baseResourceKey=resource_key,
                                    registration='producer-provenance-only')))
             self.coordinate_floors[floor] = dict(referenceResource=resource,
-                structureVersionKey=version_key, sourceVersion=self.version)
+                structureVersionKey=version_key, sourceVersion=self.version,
+                coordinateWidth=8, coordinateHeight=8)
             self.shared_floors[floor] = dict(structureVersionKey=version_key,
                 matrixProfileToCanonical=np.eye(3).tolist(), usableForCurrentFrameRendering=True,
-                crossFloorProjectionAllowed=False)
+                crossFloorProjectionAllowed=False,
+                evidence=dict(method='same-typed-shared-native-reference-canvas', algebraicallyExact=True))
         self.map_row = dict(id=self.mid, name='Fixture map', direction='unknown', doorCount=0,
             shape='unknown', resourceBase='resource-root', sourceLayout='104001',
             structureContentSha256=self.raw_hash, sourceVersion=self.version,
@@ -104,6 +106,7 @@ class NativeBaseExporterTests(unittest.TestCase):
             canonicalCrossFloorSearchCandidates={}))
         main = dict(self.local[0], floor='1', structureResource=Path(self.rows[0]['resourcePath']).name,
                     sourceProduct=Path(self.rows[0]['resourcePath']).name,
+                    center=[2., 2.], kind='main',
                     outline=[[2., 2.], [3., 2.], [3., 3.]],
                     chains=[dict(points=[[1., 1.], [2., 2.], [3., 3.]], rays=[[1., 0.], [0., 1.]])])
         self.write(exporter.ENTRIES + '/entries.json', dict(schemaVersion=1, mode='nightmare',
@@ -153,7 +156,8 @@ class NativeBaseExporterTests(unittest.TestCase):
         views = {ref.component_id: PackageView(installed, ref) for ref in saved.component_refs}
         reader = ComponentResourceReader(views['base'])
         context = reader.json('resource-context.json')
-        self.assertEqual(context['runtimeInterfaces'], exporter.INTERFACES)
+        self.assertEqual(context['runtimeInterfaces'], dict(exporter.INTERFACES,
+            reviewedFrontGroups='references/reviewed-front-groups.json'))
         pack = reader.json(exporter.PACK)
         self.assertEqual(pack['schemaVersion'], 1)
         self.assertEqual(pack['sourceIdentitySchemaVersion'], 2)
@@ -169,7 +173,9 @@ class NativeBaseExporterTests(unittest.TestCase):
                         'side-door-anchors.json', 'side-entry-search.npz')),
                      *(row['resourcePath'] for row in self.rows)):
             self.assertEqual(views['base'].read(path), original[path])
-        self.assertFalse(any('assets/' in path or 'groups' in path or 'source-candidate' in path
+        self.assertFalse(any('assets/' in path
+                             or 'groups' in path and path != 'references/reviewed-front-groups.json'
+                             or 'source-candidate' in path
                              or 'portable-layout' in path for path in views['base'].inventory))
         controls = S0ControlsProfile(views['controls'])
         self.assertEqual(len(controls.templates.label_values), 12)

@@ -681,6 +681,73 @@ def _round_trip_s1(path, destination, mode):
         proposalOnly=True, mode=mode, fastPreparedLayerCount=len(bundle.fast_structure_source.entries))
 
 
+def _embed_front_groups(payloads, *, season, mode, registration=None):
+    """Initial legacy-table conversion or an explicit project-reviewed update.
+
+    The imported runtime never reads this conversion seed. Updated membership
+    can be supplied as data, without editing the program's member constants.
+    """
+    from confirmed_front_groups import ConfirmedFrontGroups
+    from imported_group_registry import (INTERFACE, RESOURCE_PATH, SCHEMA as GROUP_SCHEMA,
+                                         validate_front_group_members)
+    from types import SimpleNamespace
+    if season != 's0' and registration is None:
+        return
+    if registration is None:
+        old = ConfirmedFrontGroups(SimpleNamespace(mode=mode, by_id={}), season=season)
+        rows = [dict(groupId=row['groupId'], floor=row['floor'], entranceKind=row['entranceKind'],
+                     memberIds=list(row['memberIds'])) for row in old.groups]
+        review_source = 'legacy CONFIRMED_FRONT_GROUPS at cc5100c6: project-confirmed S0 F1/front table'
+    else:
+        raw, _ = read_stable_file(Path(registration).absolute(), 16 * 1024 * 1024,
+            no_links=files._no_links, reject=lambda reason: _reject('group-registration-' + reason))
+        declaration = decode_resource_json(raw)
+        fields = {'schema', 'season', 'mode', 'groups'}
+        if (not isinstance(declaration, dict) or set(declaration) not in (fields, fields | {'reviewSource'})
+                or declaration['schema'] != GROUP_SCHEMA or declaration['season'] != season
+                or declaration['mode'] != mode or not isinstance(declaration['groups'], list)):
+            _reject('group-registration-context')
+        rows = declaration['groups']
+        review_source = declaration.get('reviewSource', 'supplied-registration-data')
+    if len(rows) > 768:
+        _reject('group-registration-count')
+    context = decode_resource_json(payloads['resource-context.json'])
+    index = decode_resource_json(payloads[context['runtimeInterfaces']['typedIndex']])
+    typed = {row['mapId']:row for row in index['entries'] if row['floor'] == '1'}
+    groups = []
+    for row in rows:
+        fields = {'groupId', 'floor', 'entranceKind', 'memberIds'}
+        if (not isinstance(row, dict) or set(row) not in (fields, fields | {'bindings'})
+                or row['floor'] != '1' or row['entranceKind'] != 'front'):
+            _reject('group-registration-scope')
+        members = validate_front_group_members(row)
+        bindings = [dict(mapId=mid, referenceResource=typed[mid]['resourcePath'],
+                         structureVersionKey=typed[mid]['structureVersionKey'])
+                    for mid in members if mid in typed]
+        if 'bindings' in row and row['bindings'] != bindings:
+            _reject('group-registration-binding')
+        groups.append(dict(groupId=row['groupId'], floor=row['floor'], entranceKind=row['entranceKind'],
+                           memberIds=list(row['memberIds']), bindings=bindings))
+    payloads[RESOURCE_PATH] = _encoded(dict(schema=GROUP_SCHEMA, season=season, mode=mode,
+                                         groups=groups, reviewSource=review_source))
+    context['runtimeInterfaces'][INTERFACE] = RESOURCE_PATH
+    payloads['resource-context.json'] = _encoded(context)
+
+
+def _group_report(bundle):
+    registry = bundle.reviewed_front_groups
+    if registry is None:
+        return dict(reviewedGroupCount=0, reviewedGroupGaps={})
+    def provider(_profile, map_id, floor):
+        keys = [key for key in bundle.versions if key[1] == map_id and key[3] == str(floor)]
+        if len(keys) != 1:
+            return None
+        profile, mid, variant, layer = keys[0]
+        return bundle.resources.load(profile, mid, layer, variant=variant)
+    registry.validate_available(provider)
+    return dict(reviewedGroupCount=len(registry.groups), reviewedGroupGaps=dict(registry.group_gaps))
+
+
 def _round_trip(path, destination, *, season='s0', mode='nightmare'):
     """Exercise the real container, installed views and current data consumers."""
     if season == 's1' and mode in {'difficult', 'nightmare'}:
@@ -702,7 +769,7 @@ def _round_trip(path, destination, *, season='s0', mode='nightmare'):
             mainEntries=len(bundle.entry_identity.entries), localEntries=len(bundle.side_entry_identity.entries),
             controlsTemplates=len(controls.templates.labels), controlsLabels=list(controls.templates.label_values),
             rankReady=bundle.rank_ready, nativePassportsAvailable=bundle.passport_source_available,
-            semanticSideEntries=bundle.semantic_side_entries)
+            semanticSideEntries=bundle.semantic_side_entries, **_group_report(bundle))
     if (season, mode) != ('s0', 'nightmare'):
         _reject('context-unsupported')
     from difficult_entry_identity import MapEntryGeometryIdentity
@@ -749,10 +816,12 @@ def _round_trip(path, destination, *, season='s0', mode='nightmare'):
     controls = S0ControlsProfile(PackageView(destination, refs['controls']))
     if set(controls.for_context('s0', 'nightmare').contract.floor_ids) != set(pack.floors):
         _reject('roundtrip-controls-floors')
+    from imported_native_base import decode_native_base
+    bundle = decode_native_base(base, season='s0', mode='nightmare')
     return dict(mapCount=len(pack.maps), typedLayerCount=len(resources.entries),
                 mainEntries=len(main.entries), localEntries=len(local.entries),
                 controlsTemplates=len(controls.templates.labels),
-                controlsLabels=list(controls.templates.label_values))
+                controlsLabels=list(controls.templates.label_values), **_group_report(bundle))
 
 
 def _discard_owned_temporary(path, identity):
@@ -801,7 +870,7 @@ def _publish_output(staged, output, digest, *, before_move=None):
 
 
 def export_package(source_root, output, *, package_id, resource_version, source_inventory=None,
-                   season='s0', mode='nightmare'):
+                   season='s0', mode='nightmare', group_registration=None):
     """Validate and exclusively create the requested ZIP; never alter source."""
     output = Path(output).absolute()
     files._no_links(output)
@@ -823,6 +892,7 @@ def export_package(source_root, output, *, package_id, resource_version, source_
     else:
         base, map_count = _s1_base_payloads(source, mode=mode)
         controls = _s1_controls_payloads(mode=mode)
+    _embed_front_groups(base, season=season, mode=mode, registration=group_registration)
     payloads = {'base': base, 'controls': controls}
     context = [dict(season=season, mode=mode)]
     manifest = dict(schema='xingtu-resource-package', formatVersion=1,
@@ -870,12 +940,14 @@ def main():
     parser.add_argument('--package-id', default='s0-nightmare-native')
     parser.add_argument('--resource-version', required=True)
     parser.add_argument('--source-inventory', type=Path)
+    parser.add_argument('--group-registration', type=Path,
+                        help='Explicit project-reviewed group data for this base context')
     parser.add_argument('--season', choices=('s0', 's1'), default='s0')
     parser.add_argument('--mode', choices=('nightmare', 'difficult'), default='nightmare')
     args = parser.parse_args()
     print(json.dumps(export_package(args.source_root, args.output, package_id=args.package_id,
         resource_version=args.resource_version, source_inventory=args.source_inventory,
-        season=args.season, mode=args.mode),
+        season=args.season, mode=args.mode, group_registration=args.group_registration),
         ensure_ascii=False, sort_keys=True))
 
 

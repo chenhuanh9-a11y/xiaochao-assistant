@@ -82,6 +82,8 @@ def _validate_proposal(root, paths, resolver, base_ref, controls_ref, *, season,
             operation_current()
             engine.qt_fast_structure_source.validate_all(
                 engine.qt_shared_provider, compare_derived=True, cancelled=cancelled)
+            if engine.qt_logical_group_registry is not None:
+                engine.qt_logical_group_registry.validate_available(engine.qt_shared_provider)
             operation_current()
             engine.qt_assert_resource_current()
         finally:

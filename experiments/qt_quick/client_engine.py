@@ -173,6 +173,37 @@ def registered_logical_family(engine, map_id, floor, *, entrance_kind="unknown",
         return dict(status="unavailable",reason=str(error))
 
 
+def registered_family_identity(state):
+    """Pure state identity, also usable by the UI-side material ACK."""
+    if state is None or getattr(state, 'condition_reason', None) != 'registered-logical-family':
+        return None
+    return (state.group_id, state.resource_key, tuple(sorted(state.member_ids)))
+
+
+def validate_established_registered_family(engine, state):
+    """Recheck the original declaration; the current pose may be on F2.
+
+    This performs resource reads and belongs on the existing runtime worker.
+    It does not discover a new family or alter identity, membership or pose.
+    """
+    identity = registered_family_identity(state)
+    if identity is None:
+        return
+    registry = getattr(engine, 'qt_logical_group_registry', None)
+    if (registry is None or getattr(registry, 'error', None)
+            or getattr(registry, 'mode', None) != engine.pack.mode
+            or getattr(registry, 'condition_index', None) is not None):
+        raise ValueError('registered-family-resource-unavailable')
+    group_id, resource_key, members = identity
+    if not group_id or not resource_key or len(members) < 2 or len(set(members)) != len(members):
+        raise ValueError('registered-family-state-invalid')
+    group = registry.group_for(members[0], floor='1', entrance_kind='front')
+    if (group is None or group['groupId'] != group_id or resource_key != registry.index_digest
+            or tuple(sorted(group['memberIds'])) != members):
+        raise ValueError('registered-family-resource-changed')
+    registry.validate(group, engine.qt_shared_provider)
+
+
 def automatic_identity_candidates(rows, state):
     """Expose an established family once, never member-vs-member verdicts.
 

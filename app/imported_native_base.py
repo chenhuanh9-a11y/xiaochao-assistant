@@ -68,6 +68,9 @@ class NativeBaseBundle:
         from imported_fast_structure import ImportedFastStructureSource
         self._values['fast_structure_source'] = ImportedFastStructureSource(
             view, values['reader'], interfaces=values['interfaces'], versions=values['versions'])
+        from imported_group_registry import ImportedFrontGroups, INTERFACE as GROUP_INTERFACE
+        group_path = values['interfaces'].get(GROUP_INTERFACE)
+        self._values['reviewed_front_groups'] = ImportedFrontGroups(self, group_path) if group_path else None
 
     def assert_current(self):
         if self._view.root != self._root:  # Actual bounded manifest/root load.
@@ -97,6 +100,7 @@ class NativeBaseBundle:
     rank_ready = property(lambda self: self._cached('rank_ready'))
     gaps = property(lambda self: self._cached('gaps'))
     fast_structure_source = property(lambda self: self._cached('fast_structure_source'))
+    reviewed_front_groups = property(lambda self: self._cached('reviewed_front_groups'))
     ready = property(lambda self: not self.gaps)
 
 
@@ -408,7 +412,7 @@ def _decode(view, season, mode):
     interface_fields = (_INTERFACES - {'exitIcon'}) | {'entryEvidenceRole'} if proposal_only else _INTERFACES
     if (set(context) != {'schema', 'season', 'mode', 'runtimeInterfaces'}
             or not isinstance(interfaces, dict)
-            or set(interfaces) - {'fastStructureIndex'} != interface_fields
+            or set(interfaces) - {'fastStructureIndex', 'reviewedFrontGroups'} != interface_fields
             or interfaces.get('identityProfile') != profile
             or proposal_only and interfaces.get('entryEvidenceRole') != 'proposal-only'):
         _reject('interfaces-invalid')
@@ -416,6 +420,8 @@ def _decode(view, season, mode):
              ('identityPack', 'typedIndex', 'coordinatePack', 'neutralDisplay')}
     if 'fastStructureIndex' in interfaces:
         _reference(view, interfaces['fastStructureIndex'], '.json')
+    if 'reviewedFrontGroups' in interfaces:
+        _reference(view, interfaces['reviewedFrontGroups'], '.json')
     if not proposal_only:
         paths['exitIcon'] = _reference(view, interfaces['exitIcon'], '.json')
     directory = interfaces['identityEntries']

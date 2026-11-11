@@ -168,9 +168,9 @@ class S0DifficultSourceFixture:
         self.inventory.write_bytes(exporter._encoded(dict(files={p:dict(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
             for p, raw in self.payloads.items()})))
 
-    def export(self):
+    def export(self, **kwargs):
         return exporter.export_package(self.sourceRoot, self.output, package_id='fixture-s0-difficult',
-            resource_version='v1', source_inventory=self.inventory, season='s0', mode='difficult')
+            resource_version='v1', source_inventory=self.inventory, season='s0', mode='difficult', **kwargs)
 
 
 class S0DifficultNativeBaseTests(unittest.TestCase):
