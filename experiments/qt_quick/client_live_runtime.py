@@ -628,11 +628,13 @@ class LiveRuntime:
 
 
     def _observation_stream_enabled(self, engine):
+        # Cancellation polls this predicate. Use prepared capabilities here;
+        # the scanner and fit publication boundaries own resource revalidation.
         scan = getattr(engine, 'qt_structure_scan', None) or getattr(engine, 'qt_s1_structure_scan', None)
         return bool(callable(scan) and (
             self._season == 's1' and not self._manual_alignment
             or self._season == 's0' and getattr(engine, 'qt_native_base', None) is not None
-            and (getattr(engine, 'qt_rank_ready', False) or self._structure_candidate_available(engine=engine))))
+            and (getattr(engine, 'qt_rank_ready', False) or getattr(engine, 'qt_structure_scan_ready', False))))
 
     def _stream_observation(self, action, payload, cancelled, engine, epoch,
                                captured, frame, floor, digest, capture_generation,

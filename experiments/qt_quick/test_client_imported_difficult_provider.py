@@ -126,6 +126,7 @@ class ImportedDifficultProviderTests(unittest.TestCase):
             state = self.runtime.snapshot()
             self.assertFalse(state['identityLocked'])
             self.assertFalse(state['displayAuthorized'])
+
             row = state['candidateRows'][0]
             selected = self.runtime.dispatch('select_candidate', dict(index=0,
                 **{key: row[key] for key in ('mapId', 'structureFrameId',
@@ -140,6 +141,23 @@ class ImportedDifficultProviderTests(unittest.TestCase):
             self.assertEqual(state['mapId'], row['mapId'])
             self.assertEqual(state['identitySource'], 'manual')
             self.assertFalse(state['displayAuthorized'])
+
+    def test_stream_eligibility_is_read_only_and_scanner_rejects_replaced_manifest(self):
+        self.activate()
+        engine = self.factories.get_engine('difficult')
+        context = engine.qt_native_context
+        manifest = context.root.parent.parent/'manifest.json'
+        with patch.object(context, 'assert_current', wraps=context.assert_current) as check:
+            for _ in range(20):
+                self.assertTrue(self.runtime._observation_stream_enabled(engine))
+            check.assert_not_called()
+        replacement = manifest.with_suffix('.replacement')
+        replacement.write_bytes(manifest.read_bytes())
+        replacement.replace(manifest)
+        with patch.object(_AlignmentHost, 'fit', side_effect=AssertionError('stale fit')) as fit:
+            with self.assertRaises(ValueError):
+                engine.qt_structure_scan(self.capture.frame, floor='1')
+            fit.assert_not_called()
 
     def test_service_and_default_factory_preserve_complete_data_without_rank_or_learning(self):
         row = self.service.packageRows[0]
