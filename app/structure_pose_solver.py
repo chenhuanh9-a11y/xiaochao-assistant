@@ -67,8 +67,9 @@ class StructurePoseSolver:
         if self._fit_resources is not None:
             return self._fit_resources.prepared(reference, cancelled=cancelled)
         from fast_structure_alignment import load_prepared
-        return load_prepared(reference, source=getattr(self.engine, 'qt_fast_structure_source', None),
-                             cancelled=cancelled)
+        source = getattr(self.engine, 'qt_fast_structure_source', None)
+        return (load_prepared(reference) if source is None else
+                load_prepared(reference, source=source, cancelled=cancelled))
 
     def _active_round_layer_group(self, map_id):
         return self.group if self.group is not None and self.group.map_id == map_id else None

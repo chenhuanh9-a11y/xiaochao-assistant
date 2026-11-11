@@ -53,15 +53,18 @@ class StructureFitResources:
         return self.references[key]
 
     def prepared(self, reference, *, cancelled=None):
-        from fast_structure_alignment import load_prepared
         key = id(reference)
         if key not in self.preparations:
-            value = load_prepared(reference, source=self.source, cancelled=cancelled)
+            value = self._load_prepared(reference, cancelled=cancelled)
             self.preparations[key] = (reference, value)
         return self.preparations[key][1]
 
-    def check_current(self):
+    def _load_prepared(self, reference, *, cancelled=None):
         from fast_structure_alignment import load_prepared
+        return (load_prepared(reference) if self.source is None else
+                load_prepared(reference, source=self.source, cancelled=cancelled))
+
+    def check_current(self):
         self._assert_current()
         reader = getattr(self.source, 'reader', None)
         for key, reference in self.references.items():
@@ -74,7 +77,7 @@ class StructureFitResources:
             if reference is not None and id(reference) not in self.preparations and reader is not None:
                 reader(reference.path)
         for reference, prepared in self.preparations.values():
-            current = load_prepared(reference, source=self.source)
+            current = self._load_prepared(reference)
             if prepared is not None and (current is None or current.shape != prepared.shape
                     or current.pitch != prepared.pitch
                     or any(not _same_array(getattr(current, name), getattr(prepared, name))
