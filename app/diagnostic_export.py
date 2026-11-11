@@ -19,15 +19,22 @@ def prune_diagnostic_logs(live_root: Path, keep: int = DIAGNOSTIC_LOG_LIMIT) -> 
 
     Historical files predate ownership journals and cannot safely be adopted or
     unlinked. New writers use bounded owned slots instead. Export reports this
-    compatibility difference; this function never promises a whole-directory cap.
+    compatibility difference; expiry only considers registered originals; there is no whole-directory cap.
     """
-    return None
+    from diagnostic_storage import prune_owned_logs
+    for root in (Path(live_root), Path(live_root) / 'watchdog'):
+        try:
+            prune_owned_logs(root)
+        except OSError:
+            pass  # Ownership/handle failure preserves existing files.
 
 
 def diagnostic_log_retention_status():
     import os
     return dict(legacyHistory="preserved-unowned-not-pruned", legacyGrowth="no-new-legacy-writes",
         newLogs="bounded-owned-fixed-slots" if os.name == "nt" else "bounded-owned-refuse-at-capacity",
+        retentionDays=7, managedBytes=16*1024*1024, managedFiles=32,
+        rootAccounting="registered-roots-in-current-process",
         budgetScope="new-managed-logs-only-not-all-historical-files")
 
 
@@ -299,6 +306,10 @@ def export_safe_diagnostic_bundle(
     moment = exported_at or datetime.now().astimezone()
     selected_destination = destination is not None
     destination_root = Path(destination).parent if selected_destination else app_root / "outputs" / "诊断日志"
+    failure_roots = tuple(failure_roots)
+    internal_roots = (Path(live_root), *map(Path, failure_roots))
+    if any(destination_root.resolve().is_relative_to(root.resolve()) for root in internal_roots):
+        raise ValueError('Diagnostic destination must be outside internal cache directories')
     destination_root.mkdir(parents=True, exist_ok=True)
     base_name = f"第五人格小抄助手-诊断日志-{moment:%Y%m%d-%H%M%S}"
     destination = Path(destination) if selected_destination else destination_root / f"{base_name}.zip"

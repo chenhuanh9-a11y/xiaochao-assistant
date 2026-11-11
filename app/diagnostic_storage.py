@@ -1,8 +1,8 @@
 """Byte-bounded diagnostic storage with explicit verified ownership.
 
-One root has a 16 MiB / 32-file owned-log budget, in addition to each
+Registered roots share a 16 MiB / 32-file owned-log budget, including each
 stream's two fixed 1 MiB slots. Windows named ring slots recycle only through
-verified exclusive handles. POSIX and legacy names never recycle. Unknown, changed, linked and external objects are
+verified exclusive handles. POSIX never deletes/recycles; legacy names are never adopted. Unknown, changed, linked and external objects are
 never removed/adopted. Interrupted writes fail closed rather than claiming
 ownership. Callers account unconfirmed writes as loss; this is not business IO.
 """
@@ -56,6 +56,8 @@ def _safe(path):
 
 _local=threading.local()
 _root_guards={}
+_known_roots=set()
+_root_usage={}
 
 
 def _windows_open(path, flags, directory=False):
@@ -79,6 +81,7 @@ def _windows_open(path, flags, directory=False):
 
 @contextmanager
 def _pinned_root(root):
+    previous=(getattr(_local,'root',None),getattr(_local,'root_fd',None))
     handles=[]
     try:
         if os.name=='nt':
@@ -102,6 +105,7 @@ def _pinned_root(root):
         yield
     finally:
         for fd in reversed(handles):os.close(fd)
+        _local.root,_local.root_fd=previous
 
 
 def _open_fd(path,flags):
@@ -166,6 +170,7 @@ def _read(root):
             if not LOG_NAME.fullmatch(name) or len(name)>180 or not isinstance(r,dict):raise ValueError()
             if type(r['bytes']) is not int or not 0<=r['bytes']<=FILE_BYTES:raise ValueError()
             if not re.fullmatch(r'[a-f0-9]{64}',r['sha256']) or type(r['writtenAt']) not in (int,float):raise ValueError()
+            if type(r.get('createdAt',r['writtenAt'])) not in (int,float):raise ValueError()
             if type(r.get('generation',0)) is not int or not 0<=r.get('generation',0)<2**63:raise ValueError()
         return files
     except (ValueError,KeyError,TypeError):raise DiagnosticStorageError('diagnostic-registry-invalid') from None
@@ -211,7 +216,8 @@ def _append(path,data):
         else:os.lseek(fd,0,os.SEEK_END)
         if os.write(fd,data)!=len(data):raise DiagnosticStorageError('diagnostic-short-write')
         return dict(bytes=len(before)+len(data),sha256=hashlib.sha256(before+data).hexdigest(),
-                    writtenAt=_local.now,identity=_identity(fd),generation=_local.generation)
+                    writtenAt=_local.now,createdAt=(expected.get('createdAt',expected['writtenAt']) if expected and not getattr(_local,'recycle',False) else _local.now),
+                    identity=_identity(fd),generation=_local.generation)
     finally:os.close(fd)
 
 
@@ -231,6 +237,106 @@ class BatchStorageError(DiagnosticStorageError):
     def __init__(self, failure, completed):
         super().__init__(str(failure))
         self.completed = completed
+
+
+def _retire_log(root, name, entry):
+    """Windows deletes the verified object, never a possibly replaced pathname.
+
+    POSIX cannot supply this contract; offline tests inject the retirement IO.
+    """
+    if os.name != 'nt':
+        raise DiagnosticStorageError('diagnostic-safe-retirement-unsupported')
+    from failure_sampling import _open_delete_image, _mark_delete_image, _image_info
+    fd = _open_delete_image(root / name)
+    try:
+        _image_info(fd)
+        data = _read_fd(fd)
+        if (_identity(fd) != entry.get('identity') or len(data) != entry['bytes']
+                or hashlib.sha256(data).hexdigest() != entry['sha256']):
+            raise DiagnosticStorageError('diagnostic-ownership-unavailable')
+        _mark_delete_image(fd)
+    finally:
+        os.close(fd)
+
+
+def _prune_owned(root, files, *, now, max_age, incoming=0, root_limit=ROOT_BYTES,
+                 max_files=ROOT_FILES, new_file=False, protect=()):
+    files = dict(files)
+    for name, entry in sorted(files.copy().items(), key=lambda item:item[1].get('createdAt',item[1]['writtenAt'])):
+        expired = now - entry.get('createdAt',entry['writtenAt']) >= max_age
+        crowded = (sum(r['bytes'] for r in files.values()) + incoming > root_limit
+                   or len(files) + new_file > max_files)
+        if not expired and (not crowded or name in protect):
+            continue
+        if not _verified(root, name, entry):
+            # Missing is recoverable after a successful delete / failed journal.
+            if not (root / name).exists():
+                del files[name]
+            continue
+        _retire_log(root, name, entry)
+        del files[name]
+        # Publish each retirement before proceeding; interrupted journal IO fails closed.
+        _save(root, files)
+    return files
+
+
+def prune_owned_logs(root, *, now=None):
+    root = Path(root).absolute()
+    if not root.exists():
+        return
+    with _transaction(root):
+        files = _read(root)
+        remaining = _prune_owned(root, files, now=time.time() if now is None else now,
+                                 max_age=MAX_AGE)
+        if remaining != files:
+            _save(root, remaining)
+        with _guard:
+            _known_roots.add(root)
+            _root_usage[root]=(sum(e['bytes'] for e in remaining.values()),len(remaining))
+
+    _prune_registered_log_budget()
+
+
+def _prune_registered_log_budget():
+    """Snapshot registered journals; revalidate oldest victims under root locks.
+
+    Disk IO never holds the reservation guard or two root transactions together.
+    """
+    with _guard:
+        roots = tuple(_known_roots)
+    candidates = []
+    totals = {}
+    for root in roots:
+        if not root.exists():
+            with _guard:
+                _known_roots.discard(root)
+                _root_usage.pop(root, None)
+            continue
+        with _transaction(root):
+            files = _read(root)
+            totals[root] = (sum(e['bytes'] for e in files.values()), len(files))
+            candidates.extend((e.get('createdAt', e['writtenAt']), root, n, e)
+                              for n, e in files.items())
+    size = sum(n for n, _ in totals.values())
+    count = sum(n for _, n in totals.values())
+    for _, root, name, expected in sorted(candidates, key=lambda row: row[0]):
+        if size <= ROOT_BYTES and count <= ROOT_FILES:
+            break
+        with _transaction(root):
+            files = _read(root)
+            if files.get(name) != expected:
+                continue
+            if not _verified(root, name, expected):
+                if (root / name).exists():
+                    continue
+            else:
+                _retire_log(root, name, expected)
+            del files[name]
+            _save(root, files)
+            size -= expected['bytes']
+            count -= 1
+            with _guard:
+                _root_usage[root] = (sum(e['bytes'] for e in files.values()), len(files))
 
 
 def _append_owned(root,path,previous,files,data,file_limit,root_limit,max_files,max_age,now):
@@ -271,9 +377,15 @@ def append_records(path,rows,*,file_limit=FILE_BYTES,root_limit=ROOT_BYTES,max_f
         rows=[dict(dict(stream.stamp(),timestampUTC=_moment()),**row) if 'sessionId' not in row else row for row in rows]
     payloads=[encode_record(row,file_limit) for row in rows]
     now=time.time() if now is None else now
+    max_age=min(max_age,MAX_AGE)
     previous=path.with_name(path.stem+'-previous'+path.suffix)
     with _transaction(root):
-        files=_read(root);original=dict(files);completed=0
+        files=_read(root)
+        with _guard:
+            _known_roots.add(root)
+            _root_usage[root]=(sum(e['bytes'] for e in files.values()),len(files))
+        files=_prune_owned(root, files, now=now, max_age=max_age)
+        original=dict(files);completed=0
         # Before using a cross-session pair, reject either changed/unknown slot.
         # This check does not authorize mutation: _append revalidates its handle.
         if _cyclic(path):
@@ -288,9 +400,29 @@ def append_records(path,rows,*,file_limit=FILE_BYTES,root_limit=ROOT_BYTES,max_f
                         os.close(fd);raise DiagnosticStorageError('diagnostic-ownership-unavailable')
         try:
             for data in payloads:
-                files=_append_owned(root,path,previous,files,data,file_limit,root_limit,max_files,max_age,now)
+                # Reserve pessimistically under a short memory-only lock.
+                # A blocked event writer must never block watchdog disk IO.
+                with _guard:
+                    registered=tuple(_known_roots)
+                absent={r for r in registered if r!=root and not r.exists()}
+                with _guard:
+                    _known_roots.difference_update(absent)
+                    others=[_root_usage.get(r,(0,0)) for r in _known_roots if r!=root]
+                    available_bytes=min(root_limit,max(0,ROOT_BYTES-sum(n for n,_ in others)))
+                    available_files=min(max_files,max(0,ROOT_FILES-sum(n for _,n in others)))
+                    current_bytes=sum(e['bytes'] for e in files.values())
+                    _root_usage[root]=(max(current_bytes,min(available_bytes,current_bytes+len(data))),
+                        max(len(files),min(available_files,len(files)+1)))
+                files=_prune_owned(root, files, now=now, max_age=max_age,
+                    incoming=len(data), root_limit=available_bytes, max_files=available_files,
+                    new_file=path.name not in files, protect=(path.name,previous.name))
+                files=_append_owned(root,path,previous,files,data,file_limit,available_bytes,available_files,max_age,now)
+                with _guard:
+                    _root_usage[root]=(sum(e['bytes'] for e in files.values()),len(files))
                 completed+=1
         except Exception as failure:
+            with _guard:
+                _root_usage[root]=(sum(e['bytes'] for e in files.values()),len(files))
             # A clean failure can publish the verified successful prefix. A
             # partial/changed object is never adopted or silently truncated.
             valid=(not path.exists() or path.name in files) and all(_verified(root,n,e) for n,e in files.items())

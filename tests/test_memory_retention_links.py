@@ -105,7 +105,8 @@ except OSError:
             except OSError:
                 pass
         self.assertTrue(own.exists())
-        self.assertEqual(own.read_bytes(), b'new evidence')
+        self.assertEqual(own.read_bytes(), b'old')  # No legacy enumeration or callback.
+        self.assertFalse((failures / 'saved.jpg').exists())
 
     def test_sample_cleanup_preserves_linked_floor_and_user_evidence(self):
         pack = SimpleNamespace(pack_id='p', by_id={'m': SimpleNamespace(id='m')},
@@ -173,8 +174,9 @@ except OSError:
         journal = self.root / 'alignment-failures.jsonl'
         journal.write_bytes(b'{}\n')
         store._failure_sampling.max_disk_bytes = 4
-        store._reserve_failure_bytes(1)
-        self.assertEqual(store._failure_disk_bytes, 4)
+        with self.assertRaisesRegex(OSError, 'ownership-unavailable'):
+            store._reserve_failure_bytes(1)
+        self.assertIsNone(store._failure_disk_bytes)
         self.assertTrue((failures / 'linked.jpg').is_symlink())
         self.assertEqual(journal.read_bytes(), b'{}\n')
         self.assertEqual(self.sentinel.read_bytes(), b'outside evidence')

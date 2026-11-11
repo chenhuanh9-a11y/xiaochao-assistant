@@ -1,4 +1,4 @@
-"""Real failure writer -> bounded ZIP -> decoded pixels; no GUI or game capture."""
+"""Full-frame writer/export policies; temporary POSIX IO doubles, no native/GUI claim."""
 import copy
 from datetime import datetime
 import io
@@ -18,6 +18,7 @@ APP = Path(__file__).parents[1] / 'app'
 sys.path.insert(0, str(APP))
 from diagnostic_evidence import export_failure_evidence
 from map_identity_engine import entry_rank_diagnostics
+from retention_io_fixture import image_io
 from nightmare_candidate import NightmareMemoryStore
 
 
@@ -32,6 +33,7 @@ class DiagnosticEvidenceTests(unittest.TestCase):
                 process_integrity=dict(level='test')))
 
     def setUp(self):
+        self.enterContext(image_io())
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
@@ -90,7 +92,7 @@ class DiagnosticEvidenceTests(unittest.TestCase):
         report,archive=self.export()
         with archive:
             self.assertEqual(report['imageCount'],0)
-            self.assertEqual(report['cases'][0]['files'][0]['status'],'sample-file-missing')
+            self.assertEqual(report['cases'][0]['files'][0]['status'],'automatic-image-retired')
             self.assertIn(report['cases'][0]['metadataPath'],archive.namelist())
 
 
@@ -110,7 +112,7 @@ class DiagnosticEvidenceTests(unittest.TestCase):
     def test_corrupt_frame_keeps_measured_failure_and_reports_hash_mismatch(self):
         row=self.save();path=self.store.root/row['samplePath'];path.write_bytes(path.read_bytes()+b'changed')
         report,archive=self.export()
-        with archive:self.assertEqual(report['cases'][0]['files'][0]['status'],'sample-sha256-mismatch')
+        with archive:self.assertEqual(report['cases'][0]['files'][0]['status'],'ownership-changed')
 
     def test_budget_and_count_omissions_are_explicit(self):
         self.save(cycle=9)
@@ -122,19 +124,36 @@ class DiagnosticEvidenceTests(unittest.TestCase):
             self.assertEqual(report['cases'][0]['cycleId'],10)
             self.assertEqual(report['cases'][0]['files'][0]['status'],'export-image-budget-exhausted')
 
-    def test_unrelated_session_excluded_and_partial_journal_line_counted(self):
+    def test_unrelated_session_excluded(self):
         row=self.save();row['diagnostic']['eventPath']='events-other.jsonl';row['diagnostic']['buildFingerprint']='OTHER'
-        self.store.alignment_failure_path.write_text(json.dumps(row)+'\n{partial',encoding='utf-8')
+        (self.store.root/'failures/full-v2/automatic-failures.jsonl').write_text(json.dumps(row)+'\n',encoding='utf-8')
         report,archive=self.export()
         with archive:
             self.assertEqual(report['matchingCases'],0)
-            self.assertEqual(report['journals'][0]['invalidLines'],1)
+            self.assertEqual(report['journals'][0]['fullFrameStatus'],'ready')
 
     def test_path_escape_is_never_exported(self):
         row=self.save();row['samplePath']='failures/../../secret.png'
-        self.store.alignment_failure_path.write_text(json.dumps(row)+'\n',encoding='utf-8')
+        (self.store.root/'failures/full-v2/automatic-failures.jsonl').write_text(json.dumps(row)+'\n',encoding='utf-8')
         report,archive=self.export()
-        with archive:self.assertEqual(report['cases'][0]['files'][0]['status'],'invalid-sample-path')
+        with archive:self.assertEqual(report['cases'][0]['files'][0]['status'],'invalid-automatic-sample-path')
+
+    def test_legacy_frame_and_partial_journal_remain_read_only(self):
+        payload=cv2.imencode('.png',self.pixels)[1].tobytes()
+        image=self.store.root/'failures/legacy/frame.png'
+        image.parent.mkdir(parents=True)
+        image.write_bytes(payload)
+        row=dict(event='alignment-failure-sample-written',recordedAt='2026-10-28T16:21:00+00:00',
+            capturedAt='2026-10-28T16:21:00+00:00',samplePath='failures/legacy/frame.png',
+            diagnostic={'eventPath':self.log})
+        original=json.dumps(row)+'\n{partial'
+        self.store.alignment_failure_path.write_text(original)
+        report,archive=self.export()
+        with archive:
+            self.assertEqual(report['imageCount'],1)
+            self.assertEqual(report['journals'][0]['invalidLines'],1)
+        self.assertEqual(image.read_bytes(),payload)
+        self.assertEqual(self.store.alignment_failure_path.read_text(),original)
 
     def test_no_samples_is_explicit(self):
         report,archive=self.export()

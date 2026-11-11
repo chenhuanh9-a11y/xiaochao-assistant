@@ -26,6 +26,11 @@ class FailureSamplingContracts(unittest.TestCase):
         cls.app = QCoreApplication.instance() or QCoreApplication([])
 
     def setUp(self):
+        if os.name != 'nt':
+            import sys
+            sys.path.insert(0, str(Path(__file__).resolve().parents[2]/'tests'))
+            from retention_io_fixture import image_io
+            self.enterContext(image_io())
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -125,7 +130,7 @@ class FailureSamplingContracts(unittest.TestCase):
         result = self.capture_failure()
         self.assertEqual(result["reason"], self.f.fit["reason"])
         self.assertEqual(self.f.capture.count, before+1)
-        rows = [json.loads(s) for s in self.store.alignment_failure_path.read_text().splitlines()]
+        rows = [json.loads(s) for s in (self.store.root/'failures/full-v2/automatic-failures.jsonl').read_text().splitlines()]
         self.assertEqual(len(rows), 1)
         row = rows[0]
         self.assertEqual(row["diagnostic"]["fit"]["diagnostics"]["seedCount"], 2)
@@ -137,7 +142,7 @@ class FailureSamplingContracts(unittest.TestCase):
         with patch.object(_AlignmentHost, "_shared_structure_reference", side_effect=AssertionError("cooldown must skip preparation")) as prepare:
             self.capture_failure()
         prepare.assert_not_called()
-        self.assertEqual(len(self.store.alignment_failure_path.read_text().splitlines()), 1)
+        self.assertEqual(len((self.store.root/'failures/full-v2/automatic-failures.jsonl').read_text().splitlines()), 1)
         self.assertIsNone(self.store._failure_writer)
         deadline = time.monotonic() + 3
         while self.problems._job is not None or self.problems._queue:
@@ -212,7 +217,7 @@ class FailureSamplingContracts(unittest.TestCase):
         self.f.runtime.set_failure_sampling_enabled(True)
         result = self.capture_failure()
         self.assertEqual(result["reason"], self.f.fit["reason"])
-        row = json.loads(engine.memory_store.alignment_failure_path.read_text().splitlines()[0])
+        row = json.loads((engine.memory_store.root/'failures/full-v2/automatic-failures.jsonl').read_text().splitlines()[0])
         self.assertEqual(row["diagnostic"]["mode"], "difficult")
         self.assertEqual(row["diagnostic"]["evidenceKind"], "synthetic")
 
@@ -236,7 +241,7 @@ class FailureSamplingContracts(unittest.TestCase):
                 self.assertGreater(session._pool.activeThreadCount(), 0)
                 release.set()
                 self.assertTrue(session._pool.waitForDone(3000))
-            self.assertTrue(self.store.alignment_failure_path.exists())
+            self.assertTrue((self.store.root/'failures/full-v2/automatic-failures.jsonl').exists())
             self.assertIsNone(self.store._failure_writer)
             self.app.processEvents()
         finally:

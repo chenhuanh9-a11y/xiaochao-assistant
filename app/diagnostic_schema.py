@@ -1575,3 +1575,11 @@ CODES = CODES | frozenset({"locked-map-resource-unavailable"})
 
 # Explicit cleanup receipt keys; never permit arbitrary paths or context keys.
 FIELDS = FIELDS | frozenset({'s1:nightmare', 's1:difficult'})
+
+# Fixed retention codes only: no free text, window titles or other-program data.
+FIELDS = FIELDS | frozenset({'fullFrame', 'fullFrameCleanup', 'fullFrameStatus',
+    'retentionDays', 'managedBytes', 'managedFiles', 'rootAccounting'})
+CODES = CODES | frozenset({'full-v2', 'automatic-image-retired-capacity',
+    'automatic-image-retired-expired', 'automatic-shared-budget-exhausted',
+    'full-frame-ownership-unavailable', 'diagnostic-safe-retirement-unsupported',
+    'registered-roots-in-current-process'})
