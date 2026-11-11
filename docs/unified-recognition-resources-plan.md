@@ -470,3 +470,8 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 - 幂等同时比较目标 base/controls 和拟选 displays，故仅改作者也会换 generation。最终 proposal 的现有依赖闭包决定能否提交：活动 B1/D1 与新 B2/D2 可一次切换；遗漏仍依赖 B1 的 E1 时明确拒绝，原选择保留。退出集合的旧图片或旧 base 正文无需再次解码，旧作者头仍重读并确认 scope；若其他保留依赖仍指向旧包，整包库存检查不会跳过。
 - 新联合入口 3 项通过（273.076 秒）：用同一完整 synthetic 源建立 B/C 新容器版本，旧 NPZ/作者 PNG 损坏后仍能切到 B2/C2/D2，默认 factory 显示新版像素、旧 engine 拒绝；只改 D 和完整重复请求分别验证新/原 generation。另含遗漏作者依赖拒绝、重复更新键拒绝、第二次实际解码后取消恢复整个 B/C/D catalog。源内容并非真实游戏地图升级，不把容器版本切换说成游戏新版识别。
 - 共享生命周期改动后的原作者真实像素/坏旧头修复/两检查间坏头及原 S0 helper 合计 12 项通过（314.863 秒）；未替换 engine/provider/reader/事务，hook 只制造取消或输入损坏时机。新联合模块加入候选 display lifecycle 组，资源模块总数为 63、五组 10/31/16/2/4；所有原模块和既有检查保留。作者资源页与图库、任意四上下文联合启用、真实素材/实帧/GUI/游戏及 P2 全阶段仍未验收。
+
+### 作者制包的其余模式边界
+
+- 新增独立模式模块，以完整 synthetic S0N、S0D native、S1N 源各导出一次，再执行实际 producer → inspect/save → decode/runtime；4 项通过（93.143 秒）。核对默认 componentId、实际结构引用/画布/版本、原 PNG bytes、完整仿射及 BGRA alpha，作者始终为 user-provided-unreviewed，base 身份、入口、rank 和坐标桥不变。S0D 的实际 legacy map29/floor1 返回 typed-reference-unavailable，ZIP 未发布，不补假 native 绑定。
+- 原 S1D producer 证据保留；新增模块加入 display-data 组，资源模块精确总数为 64，五组 10/31/16/3/4。首轮 fixture 准备错误日志保留，未改 producer 或放宽断言。这是四种上下文的合成组件证据，真实作者素材、GUI/文件选择、实帧与游戏仍未验证。
