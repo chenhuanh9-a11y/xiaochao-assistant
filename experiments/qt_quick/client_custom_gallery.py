@@ -16,6 +16,8 @@ from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QTimer, Qt
 from client_paths import APP_ROOT, runtime_paths, editor_library_usable, _no_links
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
+from route_scopes import SCOPES
+from scoped_route_library import ScopedRouteLibrary
 from custom_maps import (COLORS, DEFAULT_COLOR, DEFAULT_GALLERY_FILE, FLOORS, FLOOR_LABELS,
                          GALLERY_SCHEMA, MAX_POINTS, CustomMapLibrary, GalleryStore,
                          RouteError, insertion_index, marker_groups)
@@ -46,16 +48,20 @@ class CustomGalleryService(QObject):
     """All writes stay in the explicitly marked Qt sandbox, on one worker."""
     changed = Signal()
     galleriesChanged = Signal()
+    scopeChanged = Signal()
     confirmationRequested = Signal(str, str)
 
     def __init__(self, sandbox, *, library=None, default_path=DEFAULT_GALLERY_FILE):
         super().__init__()
+        self._scope_id = "legacy-nightmare"
+        self._scope_snapshots = {}
         self.paths = runtime_paths(sandbox)
         self.sandbox = self.paths.installation_root
         self.path = self.paths.custom_galleries_path
         self.exports = self.sandbox / "exports"
         self.library = library or CustomMapLibrary(self.paths.editor_base_root)
         self._injected_library = library is not None
+        self._legacy_library_root = self.library.root
         self._library_root = self.library.root
         self._committed_lock = threading.RLock()
         self._committed = {}
@@ -91,7 +97,9 @@ class CustomGalleryService(QObject):
         QTimer.singleShot(0, self.refresh)
 
     def _snapshot(self):
-        return dict(deepcopy(self._state), busy=self._busy, message=self._message,
+        scope = SCOPES[self._scope_id]
+        return dict(deepcopy(self._state), scopeId=scope.id, scenario=scope.scenario, mode=scope.mode,
+                    scopeOptions=[dict(id=x.id, name=x.label) for x in SCOPES.values()], busy=self._busy, message=self._message,
                     pendingKind=self._pending["kind"] if self._pending else "",
                     color=self._color, colors=[dict(value=c, name=n) for c, n in COLORS],
                     newStart=self._start, editing=self._editing,
@@ -122,16 +130,51 @@ class CustomGalleryService(QObject):
                 data = json.loads(self.path.read_text(encoding="utf-8-sig"))
                 if not isinstance(data, dict) or data.get("schema") != GALLERY_SCHEMA or not isinstance(data.get("galleries"), list):
                     raise ValueError("图库文件格式不兼容")
+                if data.get("routeCatalogId") != (self._scope_id if self._scope_id != "legacy-nightmare" else None):
+                    raise ValueError("图库文件的场景或难度不一致")
         except (OSError, ValueError) as error:
             self._data_error = f"{error}；原文件已保留，当前仅浏览地图。请备份并检查 custom-galleries.json 后刷新。"
         store_path = self.path / "read-only" if self._data_error else self.path
-        self._store = GalleryStore(store_path, self.default_path,
+        self._store = GalleryStore(store_path, self.default_path if self._scope_id == "legacy-nightmare" else self.path.parent / "no-bundled-default.json",
+            scope=SCOPES[self._scope_id] if self._scope_id != "legacy-nightmare" else None,
             legacy_path=(self.paths.settings_path.with_name("custom-routes.json") if self.paths.production
                          else self.sandbox / "qt-no-implicit-legacy-import.json"))
-        self.library = CustomMapLibrary(self._library_root)
+        self.library = (CustomMapLibrary(self._library_root) if self._scope_id == "legacy-nightmare"
+                        else ScopedRouteLibrary(self._library_root, self._scope_id))
         self._cache_map_metadata()
         self._digest = None if self._data_error else _file_digest(self.path)
         self._publish_committed()
+        if self._scope_id == "legacy-nightmare":
+            self._restore_scoped_snapshots()
+
+    def _restore_scoped_snapshots(self):
+        """Restore saved game selections without requiring an editor-page visit."""
+        root = self.paths.resource_root / "assets/android-route-editor"
+        if not root.exists():
+            from client_paths import RESOURCE_ROOT
+            root = RESOURCE_ROOT / "assets/android-route-editor"
+        for scope in SCOPES.values():
+            if scope.id == "legacy-nightmare":
+                continue
+            path = self.paths.settings_path.parent / "route-galleries" / scope.id / "galleries.json"
+            try:
+                _no_links(path)
+                if path.exists():
+                    if path.stat().st_size > 4 * 1024 * 1024:
+                        continue
+                    raw = json.loads(path.read_text("utf-8-sig"))
+                    if raw.get("schema") != GALLERY_SCHEMA or raw.get("routeCatalogId") != scope.id:
+                        continue
+                library = ScopedRouteLibrary(root, scope.id)
+                store = GalleryStore(path, path.parent / "no-bundled-default.json", scope=scope)
+                if store.load_error:
+                    continue
+                rows = {gid: store.export(gid) for gid, _name, _ro in store.galleries()}
+                with self._committed_lock:
+                    self._scope_snapshots[scope.id] = dict(library=library, galleries=rows,
+                        digest=_file_digest(path), path=path, revision=store.revision, error="")
+            except (OSError, ValueError, TypeError, AttributeError):
+                continue
 
     def _cache_map_metadata(self):
         """Verify thumbnails once per library refresh, never per route write."""
@@ -139,8 +182,11 @@ class CustomGalleryService(QObject):
         for mid, name in self.library.maps():
             row = dict(id=mid, name=name, thumbnailUrl="", thumbnailError="")
             try:
-                graph = self.library.graph(mid)
-                floor = next(f for f in FLOORS if f in graph.floors)
+                if isinstance(self.library, ScopedRouteLibrary):
+                    floor = self.library.floor_ids[0]
+                else:
+                    graph = self.library.graph(mid)
+                    floor = next(f for f in FLOORS if f in graph.floors)
                 asset = self.library.floor(mid, floor)
                 row["thumbnailUrl"] = QUrl.fromLocalFile(str(asset.image_path)).toString()
             except (OSError, ValueError, KeyError, TypeError, StopIteration) as error:
@@ -155,27 +201,66 @@ class CustomGalleryService(QObject):
             self._committed_library = self.library
             self._committed_digest = self._digest
             self._committed_revision = self._store.revision
+            self._scope_snapshots[self._scope_id] = dict(library=self.library, galleries=deepcopy(galleries),
+                digest=self._digest, path=self.path, revision=self._store.revision, error=self._data_error)
 
     def base_display_library(self):
         """Worker-safe immutable library snapshot for the original base renderer."""
         with self._committed_lock:
-            return self._committed_library
+            return self._scope_snapshots.get("legacy-nightmare", {}).get("library", self._committed_library)
 
     def display_snapshot(self, gallery_id, map_id=None):
         """Pure worker-safe committed data; never exposes a mutating store/Qt property."""
-        if self._data_error:
-            return None
+        scope_id, gid = self.splitGalleryId(gallery_id)
         with self._committed_lock:
-            row = self._committed.get(str(gallery_id))
+            saved = self._scope_snapshots.get(scope_id)
+            if saved is None or saved["error"]:
+                return None
+            row = saved["galleries"].get(gid)
             if row is None:
                 return None
-            result = dict(galleryId=row["id"], galleryName=row["name"],
+            result = dict(galleryId=str(gallery_id), galleryName=row["name"],
                 points=deepcopy(row.get("maps", {}).get(str(map_id), {}).get("points", [])),
-                library=self._committed_library, revision=self._committed_revision,
-                diskDigest=self._committed_digest)
-        if self.path.is_symlink() or _file_digest(self.path) != result["diskDigest"]:
+                library=saved["library"], revision=saved["revision"], diskDigest=saved["digest"],
+                scopeId=scope_id)
+        if saved["path"].is_symlink() or _file_digest(saved["path"]) != result["diskDigest"]:
             return None
         return result
+
+    @staticmethod
+    def splitGalleryId(gallery_id):
+        value = str(gallery_id)
+        if "~" in value:
+            scope_id, gid = value.split("~", 1)
+            if scope_id in SCOPES and scope_id != "legacy-nightmare":
+                return scope_id, gid
+        return "legacy-nightmare", value
+
+    @Slot(str, result=str)
+    def profileGalleryId(self, gallery_id):
+        return str(gallery_id) if self._scope_id == "legacy-nightmare" else self._scope_id + "~" + str(gallery_id)
+
+    scopeId = Property(str, lambda s: s._scope_id, notify=scopeChanged)
+
+    @Slot(str)
+    def selectScope(self, scope_id):
+        if scope_id not in SCOPES or scope_id == self._scope_id or self._busy or self._pending:
+            return
+        def select():
+            self._scope_id = scope_id
+            self._resource_generation += 1
+            self.path = (self.paths.custom_galleries_path if scope_id == "legacy-nightmare" else
+                         self.paths.settings_path.parent / "route-galleries" / scope_id / "galleries.json")
+            self._library_root = (self._legacy_library_root if scope_id == "legacy-nightmare" else
+                                  self.paths.resource_root / "assets/android-route-editor")
+            if scope_id != "legacy-nightmare" and not self._library_root.exists():
+                from client_paths import RESOURCE_ROOT
+                self._library_root = RESOURCE_ROOT / "assets/android-route-editor"
+            self._gallery, self._map, self._floor = "default", "", SCOPES[scope_id].floors[0]
+            self._editing = False
+            self._past, self._future = [], []
+            self._load()
+        self._run(select, on_done=lambda error: self.scopeChanged.emit() if not error else None)
 
     def _write(self, operation):
         if self._data_error:
@@ -208,7 +293,8 @@ class CustomGalleryService(QObject):
 
     def _state_for_selection(self):
         store = self._store
-        galleries = [dict(id=gid, name=name, readonly=ro, source=store.source(gid), drawnCount=len(store.drawn_maps(gid)))
+        galleries = [dict(id=gid, name=name, readonly=ro, source=store.source(gid),
+                         originWorkId=store.export(gid).get("originWorkId"), drawnCount=len(store.drawn_maps(gid)))
                      for gid, name, ro in store.galleries()]
         if self._gallery not in [g["id"] for g in galleries]:
             self._gallery = galleries[0]["id"]
@@ -230,7 +316,7 @@ class CustomGalleryService(QObject):
         except (OSError, ValueError, KeyError, TypeError) as error:
             state.update(available=False, libraryMessage=f"地图资源无法读取：{error}")
             return state
-        floors = [f for f in FLOORS if f in graph.floors]
+        floors = [f for f in getattr(self.library, "floor_ids", FLOORS) if f in graph.floors]
         if self._floor not in floors:
             self._floor = floors[0]
         asset = self.library.floor(self._map, self._floor)
@@ -247,7 +333,7 @@ class CustomGalleryService(QObject):
         lines = [dict(points=[xy(p) for p in line], color=color)
                  for line, color in graph.floor_lines(segments, self._floor)]
         markers = [dict(**xy((x, y)), label=label) for x, y, label in marker_groups(points, self._floor, per_floor=True)]
-        state.update(floors=[dict(id=f, name=FLOOR_LABELS[f]) for f in floors], selectedFloor=self._floor,
+        state.update(floors=[dict(id=f, name=getattr(self.library, "floor_labels", FLOOR_LABELS)[f]) for f in floors], selectedFloor=self._floor,
             imageUrl=QUrl.fromLocalFile(str(asset.image_path)).toString(), imageWidth=int(asset.image_size[0]),
             imageHeight=int(asset.image_size[1]), points=points, lines=lines, markers=markers)
         return state
@@ -293,12 +379,13 @@ class CustomGalleryService(QObject):
             self._refresh_pending = True
             return
         def reload():
-            if not self._injected_library:
+            if not self._injected_library and self._scope_id == "legacy-nightmare":
                 paths = runtime_paths(self.sandbox)
                 root = next((candidate for candidate in paths.editor_base_candidates
                              if editor_library_usable(candidate)), paths.editor_base_root)
                 self.library = CustomMapLibrary(root)
                 self._library_root = self.library.root
+                self._legacy_library_root = self.library.root
             self._load()
         self._run(reload)
 
@@ -388,8 +475,8 @@ class CustomGalleryService(QObject):
     def addPoint(self, image_x, image_y):
         def edit():
             points = self._store.route(self._gallery, self._map)
-            if len(points) >= MAX_POINTS:
-                raise ValueError(f"一张地图最多 {MAX_POINTS} 个目标")
+            if len(points) >= getattr(self.library, "max_points", MAX_POINTS):
+                raise ValueError(f"一张地图最多 {getattr(self.library, 'max_points', MAX_POINTS)} 个目标")
             asset = self.library.floor(self._map, self._floor)
             u, v, z = asset.to_native @ [image_x, image_y, 1]
             graph = self.library.graph(self._map)
@@ -471,24 +558,50 @@ class CustomGalleryService(QObject):
     def importGallery(self, value):
         path = Path(QUrl(value).toLocalFile() if value.startswith("file:") else value)
         def load():
-            if not path.is_file() or path.is_symlink() or path.stat().st_size > 2 * 1024 * 1024:
-                raise ValueError("请选择不超过 2 MiB 的图集 JSON 文件")
-            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+            _no_links(path)
+            if not path.is_file() or path.stat().st_size > 64 * 1024 * 1024:
+                raise ValueError("请选择不超过 64 MiB 的图集文件")
+            if path.suffix.lower() in (".xingtu-gallery", ".zip"):
+                import io, zipfile
+                import route_plaza
+                archive = path.read_bytes()
+                with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
+                    member = bundle.getinfo("map-gallery.json")
+                    if member.file_size > route_plaza.MAX_MANIFEST_BYTES:
+                        raise ValueError("路线清单过大")
+                    header = json.loads(bundle.read(member).decode("utf-8-sig"))
+                scope = SCOPES[self._scope_id]
+                if (header.get("scenario", "lady-of-misfortune"), header.get("mode")) != (scope.scenario, scope.mode):
+                    raise ValueError("请先选择路线包对应的场景与难度")
+                manifest = route_plaza.read_manifest(archive,
+                    dict(mode=scope.mode, package_id=header.get("packageId"), revision=header.get("revision"), manifest_bytes=member.file_size),
+                    dict(work_id=header.get("workId"), scenario=scope.scenario))
+                maps, report = route_plaza.convert_manifest(self.library, manifest)
+                if not maps or report["droppedPoints"] or report["missingMaps"]:
+                    raise ValueError("路线包与地图资料不完整兼容，未导入")
+                payload = dict(schema=GALLERY_SCHEMA, name=manifest.get("title", "导入路线"), maps=maps,
+                               originWorkId=manifest.get("sourceWorkId") or manifest.get("workId"))
+                if scope.id != "legacy-nightmare":
+                    payload.update(routeCatalogId=scope.id, scenario=scope.scenario, mode=scope.mode)
+            else:
+                if path.stat().st_size > 4 * 1024 * 1024:
+                    raise ValueError("图集 JSON 不能超过 4 MiB")
+                payload = json.loads(path.read_text(encoding="utf-8-sig"))
             self._gallery = self._write(lambda: self._store.import_gallery(payload))
             self._past, self._future = [], []
         self._run(load, "图集已导入", galleries_changed=True)
 
     def _export_path(self, name):
         name = str(name).strip()
-        if not re.fullmatch(r"[^\\/:*?\"<>|\x00-\x1f]{1,80}\.json", name, re.I) or name in (".json", "..json"):
-            raise ValueError("请使用有效的 .json 文件名")
+        if not re.fullmatch(r"[^\\/:*?\"<>|\x00-\x1f]{1,80}\.(?:json|xingtu-gallery)", name, re.I) or name in (".json", "..json"):
+            raise ValueError("请使用有效的 .json 或 .xingtu-gallery 文件名")
         return self._validate_export_path(self.exports / name)
 
     def _validate_export_path(self, target):
         target = Path(target)
         _no_links(target)
-        if not target.is_absolute() or target.suffix.lower() != ".json":
-            raise ValueError("请选择本地 .json 文件")
+        if not target.is_absolute() or target.suffix.lower() not in (".json", ".xingtu-gallery"):
+            raise ValueError("请选择本地 .json 或 .xingtu-gallery 文件")
         if not self.paths.production and not target.resolve().is_relative_to(self.sandbox):
             raise ValueError("导出路径必须位于当前测试数据目录")
         if target.exists() and not target.is_file():
@@ -512,7 +625,7 @@ class CustomGalleryService(QObject):
         try:
             url = QUrl(file_url)
             if not url.isLocalFile():
-                raise ValueError("请选择本地 .json 文件")
+                raise ValueError("请选择本地 .json 或 .xingtu-gallery 文件")
             path = self._validate_export_path(Path(url.toLocalFile()))
         except (OSError, ValueError) as error:
             self._message = str(error); self.changed.emit(); return
@@ -540,7 +653,22 @@ class CustomGalleryService(QObject):
 
         path = self._validate_export_path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        data = json.dumps(self._store.export(gid), ensure_ascii=False, indent=1).encode("utf-8")
+        gallery = self._store.export(gid)
+        if path.suffix.lower() == ".xingtu-gallery":
+            import uuid
+            import route_submission
+            # File exchange remains available for personal use, including a
+            # downloaded work. This does not authorize publishing a derivative.
+            origin = gallery.get("originWorkId")
+            personal = dict(gallery, id="local-export", originWorkId=None, source=None, readonly=False)
+            maps = route_submission.prepare_maps(self.library, personal)
+            draft = dict(id=str(uuid.uuid4()), work_id=str(uuid.uuid4()), revision=1,
+                         status="draft", content_kind="nightmare-routes", packages=[],
+                         scenario=SCOPES[self._scope_id].scenario)
+            data = route_submission.build_package(draft, gid, maps, gallery["name"], "星辰",
+                                                   scope_id=self._scope_id, source_work_id=origin).archive
+        else:
+            data = json.dumps(gallery, ensure_ascii=False, indent=1).encode("utf-8")
         row = dict(path=path.name, bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
         temporary = None
         identity = None
@@ -617,7 +745,7 @@ class CustomGalleryService(QObject):
     def submissionChoices(self):
         """UI snapshot only; never read the writer's mutable GalleryStore."""
         return [dict(id=row["id"], name=row["name"]) for row in self._state["galleries"]
-                if row["id"] != "default" and not row.get("readonly") and not row.get("source")]
+                if row["id"] != "default" and not row.get("readonly") and not row.get("source") and not row.get("originWorkId")]
 
     def submissionSnapshot(self, gallery_id):
         if self._closed or self._busy or self._pending or self._refresh_pending or self._data_error:
@@ -681,7 +809,8 @@ class CustomGalleryService(QObject):
                   on_done=lambda error: done(result, error))
 
     def setActiveGallery(self, gid):
-        self._in_use = str(gid or "")
+        scope_id, local_id = self.splitGalleryId(gid)
+        self._in_use = local_id if gid and scope_id == self._scope_id else ""
         self.changed.emit()
 
     @Slot()
@@ -690,7 +819,7 @@ class CustomGalleryService(QObject):
             return
         target = "" if self._in_use == self._gallery else self._gallery
         try:
-            receipt = self._use_handler(target)
+            receipt = self._use_handler(self.profileGalleryId(target) if target else "")
             self._message = str(receipt.get("message", ""))
             if receipt.get("success") and receipt.get("applied") is True:
                 self._in_use = target
