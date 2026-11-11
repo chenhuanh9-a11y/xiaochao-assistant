@@ -98,18 +98,19 @@ class ComponentResourceReader:
         extension = self._check_size(relative)
         return self._check_payload(self.view.read(relative), extension)
 
-    def read_many(self, paths):
+    def read_many(self, paths, *, expected_root=None, cancelled=None):
         relatives = tuple(self.relative_path(path) for path in paths)
         extensions = tuple(self._check_size(relative) for relative in relatives)
-        payloads = self.view.read_many(relatives)
-        result = []
-        for relative, raw, extension in zip(relatives, payloads, extensions):
-            try:
-                result.append(self._check_payload(raw, extension))
-            except (OSError, ValueError) as error:
-                error.resource_file_ref = FileRef(self.view.component_ref, relative)
-                raise
-        return tuple(result)
+        ref = self.view.component_ref
+        def validate(payloads):
+            for relative, raw, extension in zip(relatives, payloads, extensions):
+                try:
+                    self._check_payload(raw, extension)
+                except (OSError, ValueError) as error:
+                    error.resource_file_ref = FileRef(ref, relative)
+                    raise
+        return self.view.read_many(relatives, expected_root=expected_root,
+                                   cancelled=cancelled, validate_payloads=validate)
 
     def json(self, relative):
         return decode_resource_json(self(self.view.path(relative)))

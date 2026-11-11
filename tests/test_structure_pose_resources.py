@@ -18,6 +18,7 @@ from client_providers import SharedReferenceProvider
 from imported_native_base import decode_native_base
 from imported_resource_archive import save_archive
 from imported_resource_packages import PackageView
+from imported_resource_reader import ComponentResourceReader
 from structure_pose_solver import StructurePoseSolver
 from structure_pose_resources import StructureFitResources
 import test_export_native_base_package as exported_fixture
@@ -80,9 +81,91 @@ class StructurePoseResourceTests(unittest.TestCase):
                           wraps=resource_snapshot_io.read_stable_file) as read:
             raw, _ = source.read(reference)
         self.assertIsNotNone(source.decode(raw, reference))
-        # Source ownership before/after plus one shared manifest pair for its
-        # index, typed reference and prepared arrays. All payloads are real.
-        self.assertEqual(sum(Path(call.args[0]) == manifest for call in read.call_args_list), 4)
+        # Initial source ownership plus the batch's before/after manifest
+        # proof, including content preflight. No separate post-batch reload.
+        self.assertEqual(sum(Path(call.args[0]) == manifest for call in read.call_args_list), 3)
+
+    def test_manifest_replaced_during_content_preflight_rejects_source_read(self):
+        source = self.engine.qt_fast_structure_source
+        reference = self.provider('shared-structure', self.map_id, '1')
+        manifest = self.view.root.parent.parent / 'manifest.json'
+        replacement = manifest.with_name('replacement-manifest.json')
+        replacement.write_bytes(manifest.read_bytes())
+        original = source.reader._check_payload
+        changed = []
+        def preflight(raw, extension):
+            result = original(raw, extension)
+            if extension == '.npz' and not changed:
+                replacement.replace(manifest)
+                changed.append(True)
+            return result
+        with patch.object(source.reader, '_check_payload', side_effect=preflight):
+            with self.assertRaisesRegex(ValueError, 'manifest-replaced'):
+                source.read(reference)
+        self.assertTrue(changed)
+
+    def test_source_root_changed_during_content_preflight_is_rejected(self):
+        source = self.engine.qt_fast_structure_source
+        reference = self.provider('shared-structure', self.map_id, '1')
+        original = source.reader._check_payload
+        def preflight(raw, extension):
+            result = original(raw, extension)
+            if extension == '.npz':
+                source.root = self.root / 'different-component'
+            return result
+        with patch.object(source.reader, '_check_payload', side_effect=preflight):
+            with self.assertRaisesRegex(ValueError, 'component-root-changed'):
+                source.read(reference)
+
+    def test_cancel_during_content_preflight_discards_payloads(self):
+        source = self.engine.qt_fast_structure_source
+        reference = self.provider('shared-structure', self.map_id, '1')
+        original = source.reader._check_payload
+        stopped = []
+        def preflight(raw, extension):
+            result = original(raw, extension)
+            if extension == '.npz':
+                stopped.append(True)
+            return result
+        with patch.object(source.reader, '_check_payload', side_effect=preflight):
+            with self.assertRaisesRegex(ValueError, 'import-cancelled'):
+                source.read(reference, cancelled=lambda: bool(stopped))
+
+    def test_component_moved_during_preflight_is_not_returned(self):
+        source = self.engine.qt_fast_structure_source
+        reference = self.provider('shared-structure', self.map_id, '1')
+        component = self.view.root
+        moved = self.root / 'moved-component'
+        for target in (component, moved):
+            self.assertTrue(target.resolve().is_relative_to(self.root.resolve()))
+        original = source.reader._check_payload
+        changed = []
+        def preflight(raw, extension):
+            result = original(raw, extension)
+            if extension == '.npz' and not changed:
+                component.rename(moved)
+                changed.append(True)
+            return result
+        try:
+            with patch.object(source.reader, '_check_payload', side_effect=preflight):
+                with self.assertRaisesRegex(ValueError, 'component-root-unavailable'):
+                    source.read(reference)
+        finally:
+            if moved.exists():
+                moved.rename(component)
+        self.assertTrue(changed)
+
+    def test_distinct_reader_view_keeps_its_source_manifest_proof(self):
+        source = self.engine.qt_fast_structure_source
+        reference = self.provider('shared-structure', self.map_id, '1')
+        source.reader = ComponentResourceReader(PackageView(self.view.resource_root, self.view.component_ref))
+        manifest = self.view.root.parent.parent / 'manifest.json'
+        with patch.object(resource_snapshot_io, 'read_stable_file',
+                          wraps=resource_snapshot_io.read_stable_file) as read:
+            raw, _ = source.read(reference)
+        self.assertIsNotNone(source.decode(raw, reference))
+        # The separately pinned source view still needs its own final proof.
+        self.assertEqual(sum(Path(call.args[0]).samefile(manifest) for call in read.call_args_list), 4)
 
     def test_optional_failure_rechecks_required_inputs_before_returning_none(self):
         source = self.engine.qt_fast_structure_source

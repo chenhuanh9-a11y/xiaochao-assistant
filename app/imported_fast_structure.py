@@ -120,38 +120,51 @@ class ImportedFastStructureSource:
 
     def read(self, reference, *, cancelled=None, strict=False):
         self.assert_current(cancelled)
+        view, reader, root = self.view, self.reader, self.root
+        reader_view = reader.view
+
+        def read_many(paths):
+            # A shared view can prove payload preflight and the source's root
+            # in its existing batch. A distinct view retains its own proof.
+            payloads = reader.read_many(paths, expected_root=root if reader_view is view else None,
+                                        cancelled=cancelled)
+            if (self.view is not view or self.reader is not reader or self.root != root
+                    or reader.view is not reader_view):
+                _reject('component-root-changed')
+            if reader_view is not view:
+                self.assert_current(cancelled)
+            files._check_cancelled(cancelled)
+            return payloads
+
         # Even an old package without preparations must not reuse a damaged
         # cached reference in the normal solver after this optional miss.
-        required = ([self.root / self.index_path] if self.index_path is not None else [])
+        required = ([root / self.index_path] if self.index_path is not None else [])
         required.append(reference.path)
         binding = reference.metadata.get('binding', {})
         key = (binding.get('profile'), binding.get('mapId'), binding.get('variant'), binding.get('floor'))
         entry = self.entries.get(key)
         if entry is None:
-            self.reader.read_many(required)
+            read_many(required)
             if self.entries:
                 _reject('reference-not-declared')
-            self.assert_current(cancelled)
             return None
         reference_ref, prepared_ref = entry
-        if self.reader.relative_path(reference.path) != reference_ref.path:
-            self.reader.read_many(required)
+        if reader.relative_path(reference.path) != reference_ref.path:
+            read_many(required)
             _reject('reference-mismatch')
         try:
-            raw = self.reader.read_many((*required, self.root / prepared_ref.path))[-1]
+            raw = read_many((*required, root / prepared_ref.path))[-1]
         except (OSError, ValueError) as error:
             if getattr(error, 'resource_file_ref', None) != prepared_ref:
                 raise
             # Only the optional preparation may fail open. Recheck the view,
             # index and reference so obsolescence/cancellation never does.
             self.assert_current(cancelled)
-            self.reader.read_many(required)
-            self.assert_current(cancelled)
+            read_many(required)
             if strict:
                 raise
             return None
-        self.assert_current(cancelled)
-        return raw, (str(self.root), reference_ref, prepared_ref, id(reference))
+        return raw, (str(root), reference_ref, prepared_ref, id(reference))
 
     def decode(self, raw, reference):
         return decode_prepared(raw, reference)

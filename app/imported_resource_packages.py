@@ -370,10 +370,15 @@ class PackageView:
     @property
     def root(self):
         _, data_root, _, _, _, _, _ = self._load()
-        component_root = files._target(data_root, self.component_ref.component_id)
+        component_root = self._component_root(data_root, self.component_ref)
+        self._assert_current()
+        return component_root
+
+    @staticmethod
+    def _component_root(data_root, ref):
+        component_root = files._target(data_root, ref.component_id)
         if not component_root.is_dir():
             _reject('component-root-unavailable')
-        self._assert_current()
         return component_root
 
     @property
@@ -438,16 +443,22 @@ class PackageView:
     def read(self, relative):
         return self.read_many((relative,))[0]
 
-    def read_many(self, relatives):
+    def read_many(self, relatives, *, expected_root=None, cancelled=None, validate_payloads=None):
         """Read selected payloads under one current component/manifest scope.
 
         Each payload retains its stable-file and declared byte checks. Nothing
         is returned until the manifest identity and selection are checked again.
         Payload errors retain their type and name their resource_file_ref so
         consumers can distinguish required inputs from optional preparations.
+        Content preflight runs inside this proof; an owning source may also
+        pin its component root without reloading the manifest afterwards.
         """
-        ref = self.component_ref
-        package_root, _, _, _, inventory, stamp, digest = self._load()
+        files._check_cancelled(cancelled)
+        expected_root = Path(expected_root) if expected_root is not None else None
+        ref, resource_root = self.component_ref, self.resource_root
+        package_root, data_root, _, _, inventory, stamp, digest = self._load()
+        if expected_root is not None and self._component_root(data_root, ref) != expected_root:
+            _reject('component-root-changed')
         result = []
         for relative in relatives:
             file_ref = FileRef(ref, relative)
@@ -456,11 +467,17 @@ class PackageView:
             except (OSError, ValueError) as error:
                 error.resource_file_ref = file_ref
                 raise
+        if validate_payloads is not None:
+            validate_payloads(tuple(result))
         # Compare both contents and stable-file identity after all payloads.
         _, current_stamp, current_digest = self._read_manifest_bytes(package_root)
         if current_digest != digest or current_stamp['identity'] != stamp['identity']:
             _reject('manifest-replaced')
+        if expected_root is not None and (self.resource_root != resource_root
+                or self._component_root(data_root, ref) != expected_root):
+            _reject('component-root-changed')
         self._assert_current()
+        files._check_cancelled(cancelled)
         if self.component_ref != ref:
             _reject('component-reference-changed')
         return tuple(result)
