@@ -15,6 +15,7 @@ import numpy as np
 
 import test_native_similarity_runtime as native_fixture
 from map_identity_engine import MapIdentityEngine
+from entry_work_fixture import FixtureEntryWork
 
 
 IDS = native_fixture.IDS
@@ -31,8 +32,8 @@ class SidePoseRecoveryJobTests(unittest.TestCase):
         self.hint = ('nightmare', self.fixture.index.validate(self.fixture.group, self.fixture.provider),
                      '1', 'three', (IDS[2], IDS[0], IDS[1]))
         e.native_similarity_priority_provider = lambda: self.hint
-        e.entry_identity = SimpleNamespace(rank=lambda *a, **kw: ([], dict(
-            complete=True, reason='controlled-main-source', elapsedMs=0)))
+        e.entry_identity = SimpleNamespace(prepare_rank=lambda frame, *a, **kw: FixtureEntryWork(frame,
+            lambda: ([], dict(complete=True, reason='controlled-main-source', elapsedMs=0))))
         e._shared_entry_inventory = lambda floor: None
         e.side_entry_error, e.entry_advisory = None, None
         self.source = [self.row(IDS[0], 25), self.row(IDS[1], 25),
@@ -42,7 +43,8 @@ class SidePoseRecoveryJobTests(unittest.TestCase):
         self.outcomes = {(IDS[2], 0): True}
         self.refinements = []
         self.side = e.side_entry_identity = SimpleNamespace(
-            rank=lambda *a, **kw: (deepcopy(self.source), dict(self.diagnostics)),
+            prepare_rank=lambda frame, *a, **kw: FixtureEntryWork(frame,
+                lambda: (deepcopy(self.source), dict(self.diagnostics))),
             verify=self.verify, refine_candidate=self.refine,
             _observe=lambda frame: ({}, [dict(point=p) for p in ([0, 0], [40, 0], [0, 40], [40, 40])], []))
         self.frame = np.zeros((64, 64, 3), np.uint8)
@@ -157,7 +159,7 @@ class SidePoseRecoveryJobTests(unittest.TestCase):
 
     def test_resource_failure_in_actual_rank_is_not_budget_exhaustion(self):
         with patch.object(self.side, 'verify', side_effect=OSError('reference gone')), \
-             patch.object(self.fixture.index, 'propose', wraps=self.fixture.index.propose) as proposed:
+             patch.object(self.fixture.index, 'prepare_proposal', wraps=self.fixture.index.prepare_proposal) as proposed:
             rows = self.engine.rank(self.frame, '1')
         self.assertEqual(self.engine.last_difficult_evidence['tilemapSide']['reason'], 'side-resource-unavailable')
         self.assertFalse(any(r['identityHardGatePassed'] for r in rows))
@@ -167,7 +169,7 @@ class SidePoseRecoveryJobTests(unittest.TestCase):
     def test_actual_rank_drives_work_and_preserves_required_group_members(self):
         self.source[1]['continuousRefinementReason'] = 'controlled-completed-rejection'
         with patch.object(self.engine, 'prepare_side_recovery', wraps=self.engine.prepare_side_recovery) as prepared, \
-             patch.object(self.fixture.index, 'propose', wraps=self.fixture.index.propose) as proposed:
+             patch.object(self.fixture.index, 'prepare_proposal', wraps=self.fixture.index.prepare_proposal) as proposed:
             rows = self.engine.rank(self.frame, '1')
         prepared.assert_called_once()
         self.assertEqual(set(proposed.call_args.kwargs['required_map_ids']), set(IDS))

@@ -1135,72 +1135,11 @@ class LiveRuntime:
         self._identity_source = "group-default" if is_registered_identity_group(state) else "native-similarity"
         return True
 
-    def _rank_structure_candidates(self, engine, frame, floor, epoch, frame_id, cancelled, *, budget_seconds=None):
-        """Current geometry proposals; never promote a map/group to identity."""
-        started = time.monotonic()
-        from s1_structure_selection import StructureCatalog, StructureEvidenceSession, StructureCandidateScanner
-        catalog = StructureCatalog.from_engine(engine)
-        with self._lock:
-            if (epoch != self._epoch or frame_id != self._frame_id or engine is not self._engine
-                    or str(floor) != self._observed_floor or not self._identity_observation_current()):
-                return None, None, "stale-structure-observation"
-            session = self._s1_structure_session
-            if session is None or session.catalog != catalog:
-                if session is not None:
-                    session.end_round()
-                session = self._s1_structure_session = StructureEvidenceSession(catalog, str(self._round))
-            ticket = session.begin_observation(str(floor))
-            self._s1_structure_ticket = ticket
-            self._automatic_candidate_rows = []
-            intent_generation = self._group_intent_generation
-            locked_map = self._s1_round_locked_map()
-            if locked_map and locked_map not in catalog.map_ids:
-                return None, None, "locked-map-resource-unavailable"
-        scan = (getattr(engine, 'qt_s1_structure_scan', None) if catalog.season == 's1'
-                else getattr(engine, 'qt_structure_scan', None))
-        if not callable(scan):
-            from client_providers import attach_structure_scanner
-            attach_structure_scanner(engine, catalog)
-            scan = engine.qt_structure_scan
-        obsolete = lambda: (self._cancelled(cancelled) or epoch != self._epoch
-            or frame_id != self._frame_id or engine is not self._engine
-            or intent_generation != self._group_intent_generation)
-        if budget_seconds is None:
-            budget_seconds = (self._recorded_s1_scan_budget if self._s1_provisional_enabled()
-                              else S1_STRUCTURE_CANDIDATE_BUDGET_SECONDS)
-        else:
-            budget_seconds = max(0., budget_seconds - (time.monotonic() - started))
-        report = scan(frame, floor=str(floor),
-            floor_source="current-frame-verified", cancelled=obsolete,
-            budget_seconds=budget_seconds,
-            **({"planned_map_ids": (locked_map,)} if locked_map else {}))
-        rows = StructureCandidateScanner.rank_rows(report, engine.pack)
-        with self._lock:
-            if obsolete() or not self._identity_observation_current() or not session.commit(report, ticket):
-                return None, None, "stale-structure-observation"
-            self._identity_rank_rows = rows
-            self._identity_source = f"{catalog.season}-structure-candidates"
-            self._automatic_candidate_rows = [dict(row, key=row["mapId"], identityKind="candidate") for row in rows]
-            self._update_candidates(rows, floor)
-            # Cursor only. It does not confirm or authorize a map/pose.
-            if rows and self._gate.selected_id not in report["supportedMapIds"]:
-                self._gate.select(rows[0]["mapId"])
-        self._recognition_diagnostic("identity-rank", f"{catalog.season}-current-structure-proposals",
-            inputs=dict(floor=floor, frameId=frame_id, budgetSeconds=budget_seconds),
-            structureEvidence={key:value for key,value in report.items() if key != "poses"})
-        self._notify("structure-candidates", reason=("s1-current-candidate-display" if self._s1_provisional_enabled()
-            else f"{catalog.season}-structure-candidates-awaiting-confirmation"),
-            supportedMapIds=report["supportedMapIds"], scanComplete=report["scanComplete"], identityVerified=False)
-        if self._s1_provisional_enabled() and rows:
-            # A fresh observation always starts at its current highest-ranked
-            # supported hypothesis, never at a remembered display map.
-            return rows[0]["mapId"], None, None
-        return None, None, None
 
     def _observation_stream_enabled(self, engine):
         scan = getattr(engine, 'qt_structure_scan', None) or getattr(engine, 'qt_s1_structure_scan', None)
         return bool(callable(scan) and (
-            self._candidate_streaming_requested() and self._s1_provisional_enabled()
+            self._season == 's1' and not self._manual_alignment
             or self._season == 's0' and getattr(engine, 'qt_native_base', None) is not None
             and getattr(engine, 'qt_rank_ready', False)))
 
@@ -1283,7 +1222,8 @@ class LiveRuntime:
         attempted = set()
         last_material_reason = "no-current-supported-candidates"
         started = time.monotonic()
-        scan_budget = self._recorded_s1_scan_budget if provisional_display else INITIAL_IDENTITY_BUDGET_SECONDS
+        scan_budget = (self._recorded_s1_scan_budget if provisional_display else
+            S1_STRUCTURE_CANDIDATE_BUDGET_SECONDS if catalog.season == 's1' else INITIAL_IDENTITY_BUDGET_SECONDS)
         deadline = time.perf_counter() + scan_budget if scan_budget is not None else None
         private_report = None
         private_material_ms = 0.0
@@ -1527,14 +1467,14 @@ class LiveRuntime:
                     cancelled=obsolete, budget_seconds=scan_budget,
                     on_progress=publish, candidate_order=order, preferred_map_id=preferred,
                     preferred_material_committed=preferred_material_committed,
-                    **({} if provisional_display else dict(on_entry_evidence=publish_entry)),
+                    **(dict(on_entry_evidence=publish_entry) if catalog.season == 's0' else {}),
                     **({'deadline': deadline} if deadline is not None else {}), **options)
                 if _test_evidence_active() and type(report.get('fitEvidence')) is dict:
                     _test_evidence('fit-evidence', frame, dict(report['fitEvidence'],
                         priorBinding=prior_binding, priorReason=prior_reason))
                 return report
             report = scan_current()
-            if not provisional_display and report['status'] != 'cancelled' and not obsolete():
+            if catalog.season == 's0' and report['status'] != 'cancelled' and not obsolete():
                 if not entry_published and 'entryEvidence' in report:
                     publish_entry(report['entryEvidence'])
                 if entry_selection and not obsolete():
@@ -1579,6 +1519,8 @@ class LiveRuntime:
                 result = dict(first_result, structureScanStatus=report["status"],
                     structureScanComplete=report["scanComplete"], structureScanElapsedSeconds=report["elapsedSeconds"],
                     candidateReuse=report.get("candidateReuse", "none"), scanSkipped=report.get("scanSkipped", False))
+            elif catalog.season == 's1' and not provisional_display:
+                result = self._s1_structure_pending_receipt(action, payload)
             else:
                 result = self._receipt(action, payload, success=False, reason=last_material_reason,
                     posePending=True, identityUnresolved=not bool(self._s1_round_locked_map()))
@@ -1842,10 +1784,8 @@ class LiveRuntime:
             reason="s1-structure-candidates-awaiting-confirmation" if candidates else "s1-structure-candidates-unresolved",
             posePending=True, identityUnresolved=True, structureEvidence=evidence)
 
-    def _rank_identity(self, engine, frame, floor, epoch, frame_id, cancelled, *, rediscover=False):
-        if self._season == "s1" and callable(getattr(engine, "qt_s1_structure_scan", None)):
-            return self._rank_structure_candidates(engine, frame, floor, epoch, frame_id, cancelled)
-        started = time.monotonic()
+    def _collect_legacy_entry_evidence(self, engine, frame, floor, epoch, frame_id, cancelled, *, rediscover=False):
+        """Explicit legacy providers use the shared source-plan collector."""
         with self._lock:
             previous, prior = self._identity_native, self._identity_prior
             context = self._identity_context()
@@ -1854,17 +1794,9 @@ class LiveRuntime:
         rows = (review(frame, floor, prior=prior, budget_seconds=INITIAL_IDENTITY_BUDGET_SECONDS)
                 if prior and callable(review) and not rediscover else engine.rank(frame, floor=floor,
                     limit=len(engine.pack.maps), budget_seconds=INITIAL_IDENTITY_BUDGET_SECONDS))
-        selected, seed, stale = self._commit_identity_rows(engine, rows, frame, floor,
+        return self._commit_identity_rows(engine, rows, frame, floor,
             epoch, frame_id, cancelled, rediscover=rediscover,
             identity_snapshot=(previous, context, intent_generation))
-        if (not stale and not selected and self._season == 's0'
-                and getattr(engine, 'qt_native_base', None) is not None
-                and not self._identity_fields()['groupLocked']
-                and not any(row.get('identityKind') == 'group' for row in self._automatic_candidate_rows)
-                and not any(row.get('identityHardGatePassed') is True for row in rows)):
-            return self._rank_structure_candidates(engine, frame, floor, epoch, frame_id, cancelled,
-                budget_seconds=max(0., INITIAL_IDENTITY_BUDGET_SECONDS - (time.monotonic() - started)))
-        return selected, seed, stale
 
     def _commit_identity_rows(self, engine, rows, frame, floor, epoch, frame_id, cancelled, *,
                               identity_snapshot, rediscover=False):
@@ -3220,7 +3152,7 @@ class LiveRuntime:
                 if engine.pack.mode == "difficult" and str(floor) == "2":
                     return self._receipt(action, payload, success=False,
                         reason="difficult-f2-entry-recognition-disabled", posePending=True)
-                selected, entry_candidate, stale = self._rank_identity(engine, observation["frame"], floor,
+                selected, entry_candidate, stale = self._collect_legacy_entry_evidence(engine, observation["frame"], floor,
                     epoch, frame_id, cancelled)
                 if stale:
                     return self._receipt(action, payload, success=False, reason=str(stale), stale=True)
@@ -5787,7 +5719,7 @@ class LiveRuntime:
             # Opening the map again refreshes the selected member's geometry.
             # Only an identity reset/new round starts discovery; later side
             # views must not silently replace a front-group member selection.
-            map_id, entry_candidate, stale = self._rank_identity(engine, frame, floor, epoch, frame_id, cancelled)
+            map_id, entry_candidate, stale = self._collect_legacy_entry_evidence(engine, frame, floor, epoch, frame_id, cancelled)
             if stale:
                 return self._receipt(action, payload, success=False, reason=str(stale), stale=True)
             if not map_id:

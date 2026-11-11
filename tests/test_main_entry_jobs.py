@@ -156,10 +156,9 @@ class MainEntryJobTests(unittest.TestCase):
         engine.entry_advisory = None
         engine.native_similarity_index = None
         engine._shared_entry_inventory = lambda _: None
-        # Explicitly scoped source-policy fixture excludes optional global
-        # discovery/icon advice; the real rank and main producer run normally.
-        rows = engine.rank(self.frame, floor='2', budget_seconds=1.,
-                           _established_members=('map-a', 'map-b'))
+        # No optional source store/icon advice is configured. The real common
+        # plan and main producer still owe both declared competitors.
+        rows = engine.rank(self.frame, floor='2', budget_seconds=1.)
         self.assertFalse(any(row['identityHardGatePassed'] for row in rows))
         self.assertFalse(any(row['identityBudgetExceeded'] for row in rows))
 

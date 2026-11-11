@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 import numpy as np
-from client_live_runtime import LiveRuntime
+from client_live_runtime import LiveRuntime, S1_STRUCTURE_CANDIDATE_BUDGET_SECONDS
 from test_client_live_runtime import FixtureCapture,fixture_engine
 from s1_structure_selection import StructureCatalog,StructureCandidateScanner
 
@@ -55,6 +55,26 @@ class CandidateRuntimeContracts(unittest.TestCase):
     def capture_candidates(self):
         receipt=self.runtime.dispatch("capture_now");self.assertTrue(receipt["success"],receipt)
         return self.runtime.snapshot()
+
+    def test_candidate_only_preserves_original_s1_budget_and_finishes_both_kernels(self):
+        clock, budgets = [100.], []
+        def scan(frame, **kwargs):
+            budgets.append(kwargs['budget_seconds'])
+            def fit(*args, **kw):
+                clock[0] += 2.1
+                return dict(success=True, coordinateSpace='shared-structure-to-client',
+                    matrixSourceToClient=np.eye(3), selectedRouteCurrentFrameResidual=dict(
+                        verified=True, poseVerifiedAgainstSharedStructure=True, withinThreePixels=1.))
+            return StructureCandidateScanner(self.registry.catalog, fit,
+                clock=lambda: clock[0]).scan(frame, **kwargs)
+        self.registry.engine.qt_s1_structure_scan = scan
+        with patch('client_live_runtime.time.perf_counter', side_effect=lambda: clock[0]):
+            state = self.capture_candidates()
+        self.assertEqual(budgets, [S1_STRUCTURE_CANDIDATE_BUDGET_SECONDS])
+        self.assertEqual(state['structureEvidence']['currentSupportedMapIds'], ['a', 'b'])
+        self.assertEqual(state['structureEvidence']['currentUnscannedMapIds'], [])
+        self.assertFalse(state['identityLocked'])
+        self.assertFalse(state['displayAuthorized'])
 
     def payload(self,state,mid="a"):
         index=next(i for i,row in enumerate(state["candidateRows"]) if row["mapId"]==mid)

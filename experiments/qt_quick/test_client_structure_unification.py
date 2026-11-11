@@ -43,12 +43,13 @@ class SharedStructureRuntimeTests(unittest.TestCase):
         self.assertTrue(self.runtime.dispatch('start_round')['success'])
 
     def test_unresolved_default_s0_publishes_shared_structure_proposals_without_identity(self):
+        self.assertFalse(hasattr(self.runtime, '_rank_identity'))
+        self.assertFalse(hasattr(self.runtime, '_rank_structure_candidates'))
         with patch.object(StructureCandidateScanner, 'scan', autospec=True,
                           side_effect=StructureCandidateScanner.scan) as scan, \
              patch.object(self.engine, 'rank', side_effect=AssertionError('old rank')), \
              patch.object(self.engine, 'rank_established_group', side_effect=AssertionError('old group rank')), \
-             patch.object(self.runtime, '_rank_identity', side_effect=AssertionError('old runtime controller')), \
-             patch.object(self.runtime, '_rank_structure_candidates', side_effect=AssertionError('old fallback scanner')), \
+             patch.object(self.runtime, '_collect_legacy_entry_evidence', side_effect=AssertionError('legacy collector')), \
              patch.object(_AlignmentHost, 'fit', return_value=supported_pose()) as fit:
             result = self.runtime.dispatch('capture_now')
         self.assertEqual(result['reason'], 'identity-not-uniquely-verified', result)
@@ -67,8 +68,7 @@ class SharedStructureRuntimeTests(unittest.TestCase):
         self.assertEqual(self.engine.qt_logical_group_registry,
                          self.engine.qt_native_base.reviewed_front_groups)
         with patch.object(self.capture, 'capture', side_effect=AssertionError('retained must not capture')), \
-             patch.object(self.runtime, '_rank_identity', side_effect=AssertionError('old retained controller')), \
-             patch.object(self.runtime, '_rank_structure_candidates', side_effect=AssertionError('old retained scanner')), \
+             patch.object(self.runtime, '_collect_legacy_entry_evidence', side_effect=AssertionError('legacy retained collector')), \
              patch.object(_AlignmentHost, 'fit', return_value=supported_pose()) as retained_fit:
             retained = self.runtime._solve_retained('capture_now', {}, None, acquire_current=False)
         self.assertEqual(retained['reason'], 'identity-not-uniquely-verified', retained)

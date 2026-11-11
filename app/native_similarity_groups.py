@@ -8,9 +8,11 @@ from pathlib import Path
 import threading
 import time
 import zlib
-from zipfile import BadZipFile
 
 import numpy as np
+
+from entry_evidence_work import ObservationWorkScheduler
+from native_condition_work import ConditionProposalWork, LegacyGroupProposalWork
 
 
 class NativeSimilarityGroups:
@@ -176,47 +178,22 @@ class NativeSimilarityGroups:
     def propose(self, rows, entry_rows, diagnostics, floor, provider, geometry,
                 *, side_rows=(), side_diagnostics=None, deadline=None, prior=None,required_map_ids=None):
         """Use original verdicts; no score normalization or hard-gate rewrites."""
+        work = self.prepare_proposal(rows, entry_rows, diagnostics, floor, provider,
+            geometry, side_rows=side_rows, side_diagnostics=side_diagnostics,
+            deadline=deadline, prior=prior, required_map_ids=required_map_ids)
+        ObservationWorkScheduler(clock=time.perf_counter).drive(work, deadline=deadline)
+        return work.finish()
+
+    def prepare_proposal(self, rows, entry_rows, diagnostics, floor, provider, geometry,
+                         *, side_rows=(), side_diagnostics=None, deadline=None,
+                         prior=None, required_map_ids=None):
+        """Create the advisory proposal's jobs for the shared observation plan."""
         if self.condition_index is not None:
-            return self.condition_index.propose(rows,entry_rows,diagnostics,side_rows,
-                side_diagnostics or {},str(floor),provider,geometry,deadline,prior,required_map_ids)
-        verified = [r for r in rows if r.get('identityHardGatePassed') is True]
-        winner = verified[0]['mapId'] if len(verified)==1 else None
-        group = self.group_for(winner) if winner else None
-        supported = {}
-        for row in entry_rows:
-            fit = row.get('verification') or {}
-            if ((fit.get('regions') or {}).get('regionalEdgeVerified') is True
-                    and (fit.get('residual') or {}).get('verified') is True
-                    and fit.get('matrixSourceToClient') is not None):
-                supported[row['mapId']] = row
-        if group is None:
-            group = next((g for g in self.groups if set(supported)==set(g['memberIds'])),None)
-        if group is None:
-            return dict(status='none',reason=self.error or 'no-supported-native-group')
-        try:
-            resource_key = self.validate(group,provider)
-            result = dict(mode=self.mode,groupId=group['groupId'],memberIds=list(group['memberIds']),floor=str(floor),
-                resourceKey=resource_key,authorizesIdentity=False,authorizesPose=False)
-            if winner:
-                reference = provider(self._member_profile(group,winner),winner,str(floor))
-                if reference is None:
-                    raise ValueError('similarity-winning-floor-unavailable')
-                binding = {k:reference.metadata.get(k) for k in ('binding','structureVersionKey','sourceVersion','baseSnapshot')}
-                binding.update(mapId=winner,floor=str(floor),profile=self._member_profile(group,winner),
-                    resourcePath=Path(reference.path).relative_to(self.root).as_posix(),
-                    resourceSha256=self._sha(reference.path),shapeHW=list(reference.shape))
-                return dict(result,status='identity-pending',candidateMemberId=winner,
-                    originalIdentityHardGatePassed=True,winnerReference=binding)
-            declared = next((r for r in group['floors'] if str(r['floor'])==str(floor)),None)
-            if declared is None or diagnostics.get('complete') is not True or diagnostics.get('entryInventoryComplete') is not True:
-                return dict(status='none',reason='similarity-competition-incomplete')
-            poses = {mid:r['verification']['matrixSourceToClient'] for mid,r in supported.items()}
-            difference = self.differences(declared,poses,geometry())
-            best = max(supported,key=lambda mid:float(supported[mid]['score']))
-            return dict(result,status='group-candidate',candidateMemberId=difference['candidateMemberId'] or best,
-                differenceEvidence=difference,supportedMemberIds=list(supported),originalIdentityHardGatePassed=False)
-        except (OSError,ValueError,KeyError,TypeError,BadZipFile,np.linalg.LinAlgError) as error:
-            return dict(status='unavailable',reason=str(error),groupId=group['groupId'])
+            return self.condition_index.prepare_proposal(rows, entry_rows, diagnostics,
+                side_rows, side_diagnostics or {}, str(floor), provider, geometry,
+                deadline, prior, required_map_ids)
+        return LegacyGroupProposalWork(self, rows, entry_rows, diagnostics, floor,
+            provider, geometry, deadline, side_rows, prior, required_map_ids)
 
     @staticmethod
     def _member_profile(group,map_id):
@@ -412,128 +389,20 @@ class NativeConditionIndex:
         # and no identity/verifier threshold is changed.
         return len(hits)>=4 and sum(bool(feature['main'][i]) for i in hits)>=2
 
-    def propose(self,rows,front_rows,front_diagnostics,side_rows,side_diagnostics,floor,provider,geometry,deadline,prior=None,required_map_ids=None):
-        deadline=float('inf') if deadline is None else deadline
-        result=dict(status='conditions',mode=self.mode,floor=floor,groupId='conditions',
-            resourceKey=self.owner.index_digest,conditionObservations=[],complete=False,
-            candidateMemberId=None,memberIds=[],originalIdentityHardGatePassed=False,
-            authorizesIdentity=False,authorizesPose=False,reason='condition-budget-incomplete')
-        try:
-            verified=[r for r in rows if r.get('identityHardGatePassed') is True]
-            if len(verified)==1:
-                winner=verified[0]['mapId'];rid=f'{self.mode}/{winner}/{floor}'
-                if rid in self.references:
-                    # An original unique verdict does not need a static group
-                    # search. The UI checks final wrapper flags, resource
-                    # binding and the real current/global core commit.
-                    return dict(result,complete=True,reason='original-identity-pending',
-                        candidateMemberId=winner,memberIds=[winner],
-                        originalIdentityHardGatePassed=True,winnerReference=self.references[rid])
-            if time.perf_counter()>=deadline:return result
-            matched,complete=self.match(front_rows,side_rows,floor,deadline)
-            if not complete:return result
-            # A previously observed front entrance can be outside the next
-            # viewport. Only a freshly verified ordinary structure pose may
-            # extend that same reference domain; never reuse a previous H.
-            established={}
-            if prior and tuple(prior[:3])==(self.mode,floor,self.owner.index_digest):
-                established={did:set(cids) for did,cids in prior[3]}
-                for did,cids in established.items():
-                    if did not in self.domains:continue
-                    for row in side_rows:
-                        if time.perf_counter()>=deadline:return result
-                        if (row.get('entryCrossCheck') or {}).get('contradicted') is True:continue
-                        checked=row.get('verification') or {}
-                        if not (checked.get('success') is True and (checked.get('residual') or {}).get('verified') is True):continue
-                        rid=f"{self.mode}/{row['mapId']}/{floor}";matrix=self._matrix(row)
-                        if matrix is None:continue
-                        reference=self.references.get(rid)
-                        if (reference is None or row.get('profileId')!=reference['profile']
-                                or row.get('sourceProduct')!=reference['features'].get('side',{}).get('sourceProduct',reference['resourcePath'])):continue
-                        for pid,p in self.poses.items():
-                            if p['domainId']!=did or p['target']!=rid:continue
-                            if any(v['poseId']==pid for v in matched.get(did,())):continue
-                            matched.setdefault(did,[]).append(dict(poseId=pid,
-                                matrix=matrix@np.linalg.inv(self._matrices[pid]),eligible=True,
-                                matchedFeatureIds=set(),mapId=row['mapId'],continuation=True,
-                                establishedConditions=cids))
-            if time.perf_counter()>=deadline:return result
-            matched={did:views for did,views in matched.items() if any(
-                v['eligible'] and str(v['poseId']) in set(map(str,self.conditions[cid]['poseIds']))
-                and self.local_witness(v,self.conditions[cid])
-                for cid in self.domain_conditions[did] for v in views)}
-            if time.perf_counter()>=deadline:return result
-            context=geometry() if matched else None
-            if matched and context is None:
-                return dict(result,reason='condition-current-geometry-unavailable')
-            # Validate once before using the bound packed samples. No masks are
-            # rebuilt on the rank path, and all following work shares its deadline.
-            if time.perf_counter()>=deadline:return result
-            if matched:self.samples(0)
-            outside=({r['mapId'] for r in [*front_rows,*side_rows]}
-                if required_map_ids is None else set(required_map_ids))
-            for did,views in matched.items():
-                if time.perf_counter()>=deadline:return result
-                # Do not decode the entire potential domain before knowing
-                # whether this observation can use any of its conditions.
-                duplicated=any(sum(v['poseId']==pid for v in views)>1 for pid in {v['poseId'] for v in views})
-                for cid in self.domain_conditions[did]:
-                    if time.perf_counter()>=deadline:return result
-                    condition=self.conditions[cid];pose_ids=set(map(str,condition['poseIds']))
-                    current=[v for v in views if v['poseId'] in pose_ids and v['eligible']
-                        and self.local_witness(v,condition)]
-                    if not current:continue
-                    self.validate_domains((did,),provider)
-                    members=sorted({self.references[self.poses[p]['target']]['mapId'] for p in pose_ids})
-                    observation=dict(domainId=did,conditionId=cid,radiusUnits=condition['radiusUnits'],
-                        memberIds=members,poseMaps={p:self.references[self.poses[p]['target']]['mapId'] for p in pose_ids},
-                        activeViews=sorted({v['poseId'] for v in current}),pairs=[],
-                        expectedPoseIds=sorted(pose_ids),
-                        entryEstablished=cid in established.get(did,set()),
-                        completeForeignMapCompetition=condition['completeForeignMapCompetition'],
-                        currentCompetitionComplete=(side_diagnostics.get('complete') is True
-                            if condition['kind']=='side' else front_diagnostics.get('complete') is True
-                            and front_diagnostics.get('entryInventoryComplete') is True),
-                        ambiguousViews=duplicated,outsideCompetitors=sorted(outside-set(members)),
-                        coverage='partial-positive-observation; unseen window pixels are unknown',
-                        sameMapAlternativePoses=condition.get('sameMapAlternativePoses','UNKNOWN'))
-                    result['conditionObservations'].append(observation)
-                    if duplicated:continue
-                    contradictory=False
-                    for pair in self.comparisons.get(cid,()):
-                        if time.perf_counter()>=deadline:return result
-                        a,b=str(pair['poseA']),str(pair['poseB'])
-                        winners=[]
-                        for view in current:
-                            if time.perf_counter()>=deadline:return result
-                            record=dict(poseA=a,poseB=b,viewerPoseId=view['poseId'])
-                            for side in ('a','b'):
-                                sid=int(pair[side+'Only']['sampleSetId']);key=(self.sample_bundle[0],sid)
-                                cached=self._sample_views.get(key)
-                                if cached is None:
-                                    _,points,offsets=self.sample_bundle
-                                    if sid<0 or sid+1>=len(offsets):raise ValueError('similarity-sample-id')
-                                    xy=points[offsets[sid]:offsets[sid+1]]
-                                    if len(xy)>512:raise ValueError('similarity-sample-count')
-                                    cached=(tuple(map(tuple,xy.tolist())),np.column_stack((xy,np.ones(len(xy)))))
-                                    self._sample_views[key]=cached
-                                universe,points=cached
-                                support=NativeSimilarityGroups._support(points,view['matrix'],context)
-                                record[side]=dict(samples=universe,
-                                    observed=tuple(universe[i] for i in support['observedIndices']))
-                            observation['pairs'].append(record)
-                            fa=len(record['a']['observed'])/max(1,len(record['a']['samples']))
-                            fb=len(record['b']['observed'])/max(1,len(record['b']['samples']))
-                            if fa>fb:winners.append(a)
-                            if fb>fa:winners.append(b)
-                        if len(set(winners))>1:contradictory=True
-                    observation['conflictingViews']=contradictory
-            if time.perf_counter()>=deadline:return result
-            result.update(complete=True,reason='finite-conditions-evaluated',
-                memberIds=sorted({mid for c in result['conditionObservations'] for mid in c['memberIds']}))
-            return result
-        except (OSError,ValueError,KeyError,TypeError,BadZipFile,np.linalg.LinAlgError) as error:
-            return dict(result,complete=False,reason=str(error))
+    def prepare_proposal(self,rows,front_rows,front_diagnostics,side_rows,
+                         side_diagnostics,floor,provider,geometry,deadline,
+                         prior=None,required_map_ids=None):
+        return ConditionProposalWork(self, rows, front_rows, front_diagnostics,
+            side_rows, side_diagnostics, floor, provider, geometry, deadline,
+            prior, required_map_ids)
+
+    def propose(self,rows,front_rows,front_diagnostics,side_rows,side_diagnostics,
+                floor,provider,geometry,deadline,prior=None,required_map_ids=None):
+        work = self.prepare_proposal(rows, front_rows, front_diagnostics, side_rows,
+            side_diagnostics, floor, provider, geometry, deadline, prior,
+            required_map_ids)
+        ObservationWorkScheduler(clock=time.perf_counter).drive(work, deadline=deadline)
+        return work.finish()
 
     def prioritize(self,rows,hint,provider):
         mode,key,floor,domains,members=hint

@@ -229,6 +229,7 @@ jobs:
                 'test_entry_resource_io', 'test_main_entry_jobs', 'test_passport_entry_jobs', 'test_side_entry_jobs',
                 'test_side_pose_recovery_jobs',
                 'test_observation_work_scheduler',
+                'test_source_structure_jobs', 'test_native_condition_jobs',
                 'test_export_native_base_package',
                 'test_export_s0_difficult_native_base_package',
                 'test_export_s1_native_base_package', 'test_export_s1_nightmare_base_package',

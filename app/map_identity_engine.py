@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 import cv2
 import numpy as np
-from nightmare_candidate import (NightmareCandidateEngine, nightmare_map_crop, map_color_mask,
+from nightmare_candidate import (NightmareCandidateEngine, nightmare_map_crop,
                                 SOURCE_STRUCTURE_PROFILE_ID)
 
 def entry_rank_diagnostics(evidence, *, side_error=None):
@@ -610,242 +610,46 @@ class MapIdentityEngine(NightmareCandidateEngine):
             sourceCoordinateSpace='producer-source-png-pixels',sourcePngIsDisplayImage=True,
             authorRouteEligible=False,crossFloorRelationAvailable=False)
 
-    def _rank_source_structure_candidates(self,frame,*,budget_seconds,floor):
-        """Rank source sheets and expose a separate held-out identity result."""
-        started=time.perf_counter()
-        store=getattr(self.pack,'source_candidates',None)
-        if store is None:
-            return dict(reason='source-candidate-store-unavailable',complete=True,
-                evaluatedEntryCount=0,candidates=[],elapsedMs=(time.perf_counter()-started)*1000)
-        remaining=max(0.0,float(budget_seconds or 0.0))
-        if remaining<0.04:
-            return dict(reason='shared-request-budget-exhausted',complete=False,
-                evaluatedEntryCount=0,candidates=[],elapsedMs=(time.perf_counter()-started)*1000)
-        features,status=store.load_sift_features(max_edge=self.max_edge,opencv_version=cv2.__version__)
-        if not status.get('ready'):
-            return dict(reason='source-feature-cache-unavailable',complete=True,
-                featureStatus=status,evaluatedEntryCount=0,candidates=[],
-                elapsedMs=(time.perf_counter()-started)*1000)
-        query_crop,crop_offset=nightmare_map_crop(frame)
-        query=self._features(query_crop)
-        query_count=len(query.keypoints)
-        if query.descriptors is None or query_count<3:
-            return dict(reason='query-has-insufficient-structure-features',complete=True,
-                featureStatus=status,queryKeypointCount=query_count,evaluatedEntryCount=0,
-                candidates=[],elapsedMs=(time.perf_counter()-started)*1000)
-        deadline=started+remaining
-        rows=[]
-        evaluated=0
-        for key,row in sorted(store.entries.items()):
-            if time.perf_counter()>=deadline:break
-            reference=features.get(key)
-            if reference is None or reference.descriptors is None:continue
-            try:match=self._match(reference,query,include_correspondences=True)
-            except (ValueError,cv2.error):continue
-            evaluated+=1
-            held=self._verify_source_structure_match(reference,query,match,row,crop_offset)
-            candidate=dict(sourceGroup=str(row.get('sourceGroup')),
-                sourceCandidateId=row.get('sourceCandidateId'),
-                producerVariantLabel=str(row.get('variant')),
-                producerSourceFloorLabel=str(row.get('sourceFloor')),
-                score=float(match['score']),inliers=int(match['inliers']),
-                goodMatches=int(match['goodMatches']),inlierRatio=float(match['inlierRatio']),
-                medianError=float(match['medianError']),
-                featureKeypointCount=len(reference.keypoints),heldOutVerification=held,
-                sourceCandidateKey=[str(row.get('sourceGroup')),str(row.get('variant')),str(row.get('sourceFloor'))],
-                identityVerified=False,poseVerified=False,displayEligible=False,
-                runtimeMapId=store.runtime_map_id(row.get('sourceGroup')))
-            rows.append(candidate)
-        expected=sum(1 for feature in features.values() if feature.descriptors is not None)
-        complete=evaluated==expected
-        best_by_group={}
-        quality=lambda value:(int((value.get('heldOutVerification') or {}).get('heldOutInliers',0)),
-            -float((value.get('heldOutVerification') or {}).get('heldOutP90Error',99.0)),
-            int(value.get('inliers',0)))
-        for candidate in rows:
-            prior=best_by_group.get(candidate['sourceGroup'])
-            if prior is None or quality(candidate)>quality(prior):best_by_group[candidate['sourceGroup']]=candidate
-        candidates=sorted(best_by_group.values(),key=lambda row:(-row['score'],-row['inliers'],row['sourceGroup']))
-        verified_rows=sorted((r for r in rows if (r.get('heldOutVerification') or {}).get('verified')),
-            key=quality,reverse=True)
-        automatic=None;decision_reason='source-structure-no-heldout-match'
-        variant_exclusive=None
-        if complete and verified_rows:
-            top=verified_rows[0]
-            selected=top
-            variant_uncertain=False
-            same_group=[r for r in verified_rows if r['sourceGroup']==top['sourceGroup']]
-            other_group=[r for r in verified_rows if r['sourceGroup']!=top['sourceGroup']]
-            same_group.sort(key=quality,reverse=True);other_group.sort(key=quality,reverse=True)
-            sheet_clear=(len(same_group)==1 or quality(top)[0]-quality(same_group[1])[0]>=5
-                or float((same_group[1].get('heldOutVerification') or {}).get('heldOutP90Error',99))
-                   -float((top.get('heldOutVerification') or {}).get('heldOutP90Error',99))>=1.25
-                or int(top.get('inliers',0))-int(same_group[1].get('inliers',0))>=12)
-            rival_clear=(not other_group or quality(top)[0]-quality(other_group[0])[0]>=5
-                or float((other_group[0].get('heldOutVerification') or {}).get('heldOutP90Error',99))
-                   -float((top.get('heldOutVerification') or {}).get('heldOutP90Error',99))>=1.25)
-            # A larger sheet can match all the visible rooms of a smaller one.
-            # Prefer the independently verified smaller sheet until the extra
-            # rooms become visible. This is a provisional variant choice within
-            # an already identified group, not negative evidence from fog.
-            alternates=[row for row in rows if row is not top
-                and row['sourceGroup']==top['sourceGroup']
-                and row['producerSourceFloorLabel']==top['producerSourceFloorLabel']
-                and row['producerVariantLabel']!=top['producerVariantLabel']
-                and (row['heldOutVerification'] or {}).get('heldOutInliers',0)>=5
-                and (row['heldOutVerification'] or {}).get('heldOutP90Error',99)<=2.0
-                and (row['heldOutVerification'] or {}).get('matrixSourceToClient') is not None]
-            for alternate in alternates:
-                top_row=store.entries[tuple(top['sourceCandidateKey'])]
-                alternate_row=store.entries[tuple(alternate['sourceCandidateKey'])]
-                if np.prod(top_row['canvasPx'])<=np.prod(alternate_row['canvasPx'])*1.1:
-                    continue
-                top_image=store.load_rgba(top_row['sourceGroup'],top_row['variant'],top_row['sourceFloor'])
-                alternate_image=store.load_rgba(alternate_row['sourceGroup'],alternate_row['variant'],alternate_row['sourceFloor'])
-                if top_image is None or alternate_image is None:continue
-                size=frame.shape[1::-1]
-                top_mask=cv2.warpAffine((top_image[:,:,3]>16).astype(np.uint8),
-                    np.asarray(top['heldOutVerification']['matrixSourceToClient'],dtype=np.float32)[:2],size)>0
-                alternate_mask=cv2.warpAffine((alternate_image[:,:,3]>16).astype(np.uint8),
-                    np.asarray(alternate['heldOutVerification']['matrixSourceToClient'],dtype=np.float32)[:2],size)>0
-                exclusive=top_mask & ~cv2.dilate(alternate_mask.astype(np.uint8),
-                    np.ones((7,7),np.uint8)).astype(bool)
-                exclusive_count=int(exclusive.sum())
-                observed_count=int((exclusive & (map_color_mask(frame,live=True)>0)).sum())
-                variant_exclusive=dict(top=top['sourceCandidateKey'],alternate=alternate['sourceCandidateKey'],
-                    exclusivePixels=exclusive_count,observedExclusivePixels=observed_count)
-                if exclusive_count>=500 and (observed_count<500
-                    or observed_count/exclusive_count<0.015):
-                    selected=alternate
-                    variant_uncertain=True
-                    variant_exclusive['selected']=alternate['sourceCandidateKey']
-                    break
-            if sheet_clear and rival_clear:
-                group=selected['sourceGroup']
-                map_id=store.runtime_map_id(group)
-                automatic=dict(selected,identityVerified=True,poseVerified=False,displayEligible=False,
-                    runtimeMapId=map_id,gameFloor=str(floor),gameFloorFromCurrentObservation=True,
-                    sourceFloorIsProducerLabelOnly=True,
-                    identityEvidence=('source-structure-group-heldout-variant-provisional'
-                        if variant_uncertain else 'source-structure-heldout-current-frame'),
-                    poseSubmissionAllowed=False,displayEligibleAfterSharedCommitOnly=True,
-                    sourceMatchMethod=('group-heldout-plus-visible-variant-selection'
-                        if variant_uncertain else 'independent-spatial-heldout-sift'),
-                    producerVariantUncertain=variant_uncertain)
-                decision_reason=('source-structure-visible-variant-selected' if variant_uncertain
-                    else 'source-structure-heldout-unique')
-            else:
-                decision_reason='source-structure-competitor-ambiguous'
-        elif not complete:decision_reason='source-structure-search-incomplete'
-        return dict(reason='shared-sift-source-structure-advisory',complete=evaluated==expected,
-            elapsedMs=(time.perf_counter()-started)*1000,featureStatus=status,
-            queryKeypointCount=query_count,evaluatedEntryCount=evaluated,availableEntryCount=expected,
-            candidateCount=len(candidates),candidates=candidates,
-            sourceLabelsAreNotGameTruth=True,identityHardGatePassed=False,
-            heldOutDecisionReason=decision_reason,automaticCandidate=automatic,
-            variantExclusiveEvidence=variant_exclusive,
-            poseSubmissionAllowed=False,authorRouteDisplayAllowed=False)
+    def prepare_source_structure_candidates(self, frame, *, floor, deadline):
+        from source_structure_work import SourceStructureEvidence
+        return SourceStructureEvidence(self, frame, floor, deadline=deadline)
 
-    def rank(self,frame,floor='1',limit=30,*,budget_seconds=None,_established_members=None):
-        if floor not in self.identity_floors:return []
-        started=time.perf_counter()
-        allowed=set(_established_members) if _established_members is not None else None
-        gate_report=None
-        prefilter=getattr(self,'front_gate_prefilter',None)
-        if prefilter is not None and _established_members is None:
-            allowed,gate_report=prefilter.select(frame,floor,self.entry_identity.geometry)
-        gate_args=dict(candidate_map_ids=allowed) if allowed is not None else {}
-        budget=1.0 if budget_seconds is None else max(0.,float(budget_seconds))
-        remaining=lambda:max(0.,budget-(time.perf_counter()-started))
-        passport_rows=[];passport_diagnostics=None
-        rank_entry=getattr(self.side_entry_identity,'rank_entry',None)
-        if rank_entry is not None:
-            try:
-                passport_rows,passport_diagnostics=rank_entry(frame,floor,budget_seconds=remaining(),**gate_args)
-            except (ValueError,TypeError,KeyError,OSError,cv2.error) as error:
-                # A failed exit observation cannot authorize a generic identity.
-                passport_diagnostics=dict(reason='entry-resource-unavailable',error=str(error),
-                    exitObserved=None,entryObserved=False,complete=False)
-        entry_rows=[];entry_diagnostics=dict(reason='side-entry-path-selected',complete=True)
-        fallback_allowed=entry_passport_fallback_allowed(passport_diagnostics)
-        passport_selected=bool(passport_diagnostics and not fallback_allowed
-            and passport_diagnostics.get('entryObserved') is True)
-        entry_unresolved=passport_diagnostics is not None and not fallback_allowed and not passport_selected
-        if entry_unresolved:
-            entry_diagnostics=dict(reason=passport_diagnostics['reason'],complete=False)
-        if not passport_selected and not entry_unresolved:
-            entry_rows,entry_diagnostics=self.entry_identity.rank(frame,floor,budget_seconds=remaining(),**gate_args)
-            self._apply_shared_entry_inventory(
-                entry_rows, entry_diagnostics, self._shared_entry_inventory(floor))
-            check_entry=getattr(self.side_entry_identity,'check_entry_evidence',None)
-            if check_entry is not None and passport_diagnostics is not None:
-                for row in entry_rows:
-                    if not row.get('identityVerified'):continue
-                    candidate=dict(row,floor=str(floor),profileId=self.identity_profile_for_map(row['mapId']),
-                        matrixSourceToClient=row['verification']['matrixSourceToClient'])
-                    try:
-                        row['entryCrossCheck']=check_entry(frame,candidate,observation=passport_diagnostics)
-                    except (ValueError,TypeError,KeyError,OSError,cv2.error):
-                        row['identityVerified']=False;row['poseVerified']=False
-                        row['entryCrossCheck']=dict(reason='entry-cross-check-unavailable')
-                        continue
-                    if row['entryCrossCheck'].get('contradicted') is True:
-                        row['identityVerified']=False;row['poseVerified']=False
-        side_producer='not-run'
-        original_group_recovery=[]
-        side_rows=[];side_diagnostics=(dict(reason='side-resource-unavailable',error=self.side_entry_error,complete=False)
-            if self.side_entry_identity is None else None);side_winner=None
-        if passport_selected:
-            side_producer='passport'
-            side_rows,side_diagnostics=passport_rows,passport_diagnostics
-            side_winner=verified_entry_candidate(side_rows,side_diagnostics,floor,profile_id=self.identity_profile_for_map)
-        if (not passport_selected and fallback_allowed
-                and not any(row['identityVerified'] for row in entry_rows) and self.side_entry_identity is not None):
-            side_producer='local-structure'
-            recovery_work=None
-            try:
-                side_rows,side_diagnostics=self.side_entry_identity.rank(frame,floor,budget_seconds=remaining(),**gate_args)
-                recovery_work=self.prepare_side_recovery(frame,floor,side_rows,side_diagnostics,
-                    entry_rows=entry_rows,passport_diagnostics=passport_diagnostics,deadline=started+budget)
-                while (job := recovery_work.next_job()) is not None:
-                    if remaining()<=0:break
-                    job.run()
-                side_rows,side_diagnostics,side_winner,original_group_recovery=recovery_work.finish()
-            except (ValueError,TypeError,KeyError,OSError,cv2.error) as error:
-                if recovery_work is not None:
-                    original_group_recovery=recovery_work.original_proposals
-                side_diagnostics=dict(reason='side-resource-unavailable',error=str(error),complete=False)
-        # A registered identity does not suppress the new source-family scan.
-        # Both searches share the original request budget; source rows remain
-        # advisory and cannot replace the registered identity or authorize pose/display.
-        source_candidates=(self._rank_source_structure_candidates(
-            frame,budget_seconds=remaining(),floor=str(floor)) if _established_members is None
-            else dict(candidates=[],candidateCount=0,reason='established-group-only'))
-        return self._collect_observation_rows(frame, floor, allowed, started, started+budget,
-            entry_rows, entry_diagnostics, side_rows, side_diagnostics, side_winner,
-            passport_rows, passport_diagnostics, passport_selected, fallback_allowed,
-            entry_unresolved, side_producer, source_candidates, original_group_recovery,
-            gate_report, limit, established=_established_members is not None)
+    def _rank_source_structure_candidates(self, frame, *, budget_seconds, floor):
+        """Compatibility collector over the common source-job driver."""
+        from entry_evidence_work import ObservationWorkScheduler
+        deadline = time.perf_counter() + max(0., float(budget_seconds or 0.))
+        work = self.prepare_source_structure_candidates(frame, floor=floor, deadline=deadline)
+        ObservationWorkScheduler(clock=time.perf_counter).drive(work, deadline=deadline)
+        return work.finish()
 
-    def prepare_entry_observation(self, frame, floor, *, deadline):
+    def rank(self, frame, floor='1', limit=30, *, budget_seconds=None):
+        """Compatibility collector; all source kernels use the common driver."""
+        if floor not in self.identity_floors:
+            return []
+        from entry_evidence_work import ObservationWorkScheduler
+        deadline = time.perf_counter() + (1. if budget_seconds is None else max(0., float(budget_seconds)))
+        work = self.prepare_entry_observation(frame, floor, deadline=deadline)
+        ObservationWorkScheduler(clock=time.perf_counter).drive(work, deadline=deadline)
+        return work.finish()[:limit]
+
+    def prepare_entry_observation(self, frame, floor, *, deadline, prior=None):
         """Prepare source jobs; the common scanner owns their execution."""
         from map_observation_work import MapObservationWork
-        return MapObservationWork(self, frame, floor, deadline=deadline)
+        return MapObservationWork(self, frame, floor, deadline=deadline, prior=prior)
 
     def collect_observation_rows(self, work):
         return self._collect_observation_rows(work.frame, work.floor, work.allowed,
-            work.started, work.deadline, work.entry_rows, work.entry_diagnostics,
+            work.started, work.entry_rows, work.entry_diagnostics,
             work.side_rows, work.side_diagnostics, work.side_winner, work.passport_rows,
             work.passport_diagnostics, work.passport_selected, work.fallback_allowed,
             work.entry_unresolved, work.side_producer, work.source_candidates,
-            work.original_group_recovery, work.gate_report, len(self.pack.maps),
-            established=False)
+            work.gate_report, len(self.pack.maps), advisory=work.advisory)
 
-    def _collect_observation_rows(self, frame, floor, allowed, started, deadline,
+    def _collect_observation_rows(self, frame, floor, allowed, started,
             entry_rows, entry_diagnostics, side_rows, side_diagnostics, side_winner,
             passport_rows, passport_diagnostics, passport_selected, fallback_allowed,
-            entry_unresolved, side_producer, source_candidates, original_group_recovery,
-            gate_report, limit, *, established):
+            entry_unresolved, side_producer, source_candidates,
+            gate_report, limit, *, advisory):
         registered_identity_candidates=[dict(mapId=str(row.get('mapId')),
             score=float(row.get('score',0.0)),identityEvidence=row.get('identityEvidence'),
             identityVerified=bool(row.get('identityVerified')))
@@ -864,8 +668,7 @@ class MapIdentityEngine(NightmareCandidateEngine):
         # icon-only advisory pass. Unresolved inputs keep that fallback intact.
         evidence=(dict(candidates=[],entryKind='main',reason='tilemap-entry-verified')
                   if any(row['identityVerified'] for row in entry_rows) or side_winner is not None
-                  else self.entry_advisory(frame) if self.entry_advisory is not None and not established
-                  else dict(candidates=[],entryKind='unknown'))
+                  else advisory)
         evidence['tilemapEntry']=entry_diagnostics
         evidence['tilemapCandidates']=entry_rows
         evidence['tilemapSide']=side_diagnostics
@@ -935,42 +738,20 @@ class MapIdentityEngine(NightmareCandidateEngine):
         for row in rows:
             row['difficultRecognition'] = diagnostics
         if rows:
-            # Reuse the existing entry competitive band and original side
-            # band/recovery set. Raw weak hypotheses remain on all rows, but
-            # do not become new mandatory group competitors merely by existing.
-            front_top=max((float(r['score']) for r in entry_rows),default=0.)
-            side_top=max((float(r['score']) for r in side_rows),default=0.)
-            group_required={r['mapId'] for r in entry_rows if float(r['score'])>=max(10,front_top*.65)}
-            group_required.update(r['mapId'] for r in side_rows if float(r['score'])>=max(4,side_top-1)
-                or (r.get('verification') or {}).get('success'))
-            group_required.update(r['mapId'] for r in original_group_recovery)
-            rows[0]['nativeSimilarity'] = self.native_similarity_index.propose(
-                rows, entry_rows, entry_diagnostics, str(floor),
-                self.entry_shared_reference_provider, lambda:self.entry_identity.geometry(frame),
-                side_rows=side_rows,side_diagnostics=side_diagnostics,
-                deadline=deadline,prior=(self.native_similarity_context_provider()
-                    if getattr(self,'native_similarity_context_provider',None) else None),
-                required_map_ids=tuple(sorted(group_required))) if self.native_similarity_index is not None else dict(status='none',reason='similarity-root-not-configured')
+            rows[0]['nativeSimilarity'] = dict(status='none', reason=('similarity-root-not-configured'
+                if self.native_similarity_index is None else 'similarity-work-incomplete'))
         diagnostics['elapsedMs'] = (time.perf_counter()-started)*1000
         return rows[:limit]
 
     def rank_established_group(self, frame, floor, *, prior, budget_seconds):
-        """Run the unchanged identity gates within a previously proven family.
-
-        Only the bound entrance context can supply the competitor set. A caller
-        cannot make an arbitrary singleton unique by passing a list of map IDs.
-        Source-family discovery and icon advice are not part of this review.
-        """
-        started = time.perf_counter()
-        budget = max(0., float(budget_seconds))
-        if budget <= 0:return []
-        members = self.established_candidate_scope(prior=prior)
-        if members is None:return []
-        # Dynamic dispatch preserves the difficult provider's inventory checks.
-        remaining = budget - (time.perf_counter() - started)
-        if remaining <= 0:return []
-        return self.rank(frame, str(floor), limit=len(members), budget_seconds=remaining,
-                         _established_members=members)
+        """Review the complete resource-validated prior through the same plan."""
+        if not prior or budget_seconds <= 0:
+            return []
+        from entry_evidence_work import ObservationWorkScheduler
+        deadline = time.perf_counter() + float(budget_seconds)
+        work = self.prepare_entry_observation(frame, str(floor), deadline=deadline, prior=prior)
+        ObservationWorkScheduler(clock=time.perf_counter).drive(work, deadline=deadline)
+        return work.finish()
 
     def established_candidate_scope(self, *, prior):
         """Return the complete validated prior cohort without starting a rank."""

@@ -15,6 +15,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from entry_work_fixture import FixtureEntryWork
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'app'))
 from native_similarity_groups import NativeSimilarityGroups, NativeSimilarityState
@@ -206,10 +207,10 @@ class NativeSimilarityRuntimeTests(unittest.TestCase):
         e.native_similarity_index = self.f.index; e.entry_shared_reference_provider = self.f.provider
         hint = ('nightmare',self.f.index.validate(self.f.group,self.f.provider),'1','three',(IDS[2],IDS[0],IDS[1]))
         e.native_similarity_priority_provider = lambda:hint
-        e.entry_identity = SimpleNamespace(rank=lambda *args, **kw:([], dict(complete=True, reason='fixture', elapsedMs=0)))
+        e.entry_identity = SimpleNamespace(prepare_rank=lambda frame, *args, **kw:
+            FixtureEntryWork(frame, lambda: ([], dict(complete=True, reason='fixture', elapsedMs=0))))
         e._shared_entry_inventory = lambda floor:None
         e.side_entry_error = None; e.entry_advisory = None
-        e._rank_source_structure_candidates = lambda *args, **kw:dict(candidateCount=0)
         def row(mid, score, success=False, evaluated=True, pose=0):
             return dict(mapId=mid, score=score, floor='1', profileId='zhan10-speed', entryKind='side', pose=pose,
                 competitionComplete=True, poseAmbiguous=False, hypothesis=dict(chainCount=8, extentGrid=[3,3]),
@@ -223,7 +224,8 @@ class NativeSimilarityRuntimeTests(unittest.TestCase):
         def refine(frame, candidate):
             refine_calls.append(candidate['mapId'])
             return dict(candidate, continuousRefinementReason='completed-rejection')
-        e.side_entry_identity = SimpleNamespace(rank=lambda *args, **kw:(copy.deepcopy(source),dict(diag)),
+        e.side_entry_identity = SimpleNamespace(prepare_rank=lambda frame, *args, **kw:
+            FixtureEntryWork(frame, lambda: (copy.deepcopy(source), dict(diag))),
             verify=verify, refine_candidate=refine)
         frame = np.zeros((64,64,3),np.uint8)
         # Original no-hint competition and priority must both retain 12's success.
@@ -247,12 +249,12 @@ class NativeSimilarityRuntimeTests(unittest.TestCase):
         result = e.rank(frame,'1')
         self.assertEqual([r['mapId'] for r in result if r['identityHardGatePassed']], [IDS[2]])
         clock = [100.]
-        original = e.native_similarity_index.propose
+        original = e.native_similarity_index.prepare_proposal
         def measured(*args, **kwargs):
             clock[0] += .125
             return original(*args, **kwargs)
         with patch('map_identity_engine.time.perf_counter', side_effect=lambda:clock[0]), \
-             patch.object(e.native_similarity_index, 'propose', side_effect=measured):
+             patch.object(e.native_similarity_index, 'prepare_proposal', side_effect=measured):
             result = e.rank(frame,'1')
         self.assertEqual(result[0]['difficultRecognition']['elapsedMs'], 125.)
 
