@@ -84,13 +84,29 @@ class _SourceImportLock:
             self.stream = None
 
 
+class _SourceImportLocks:
+    def __init__(self, leases):
+        self.leases = tuple(leases)
+
+    def verify(self):
+        for lease in self.leases:
+            lease.verify()
+
+    def allows(self, path):
+        for lease in self.leases:
+            if lease.path == path and lease.stream is not None:
+                lease.verify()
+                return True
+        return False
+
+
 def _owns_import_lock(lease, path):
-    # A truthy flag or a source lease reused for another root grants nothing.
-    return type(lease) is _SourceImportLock and lease.allows(path)
+    # Only a currently-held OS lease for this exact path grants an exception.
+    return type(lease) in (_SourceImportLock, _SourceImportLocks) and lease.allows(path)
 
 
 def _check_source_transactions(source, import_lock=None):
-    if type(import_lock) is _SourceImportLock:
+    if type(import_lock) in (_SourceImportLock, _SourceImportLocks):
         import_lock.verify()
     for relative in ('work/pending-installer-upgrade.json', 'work/qt-import-pending.json',
                      'work/qt-recovery-pending.json', 'work/map-packages/pending-upgrade.json',
@@ -179,7 +195,7 @@ def _scan_error(error):
     raise MigrationError('source-scan-error')
 
 
-def _inventory(source, *, import_lock=None):
+def _inventory(source, *, import_lock=None, extra_roots=None):
     # Exclude diagnostics by directory, not by image extension: confirmation
     # images and samples remain paired with their original JSON records.
     result = {}
@@ -245,10 +261,52 @@ def _inventory(source, *, import_lock=None):
             raise
         except (ValueError, OSError, KeyError, TypeError):
             raise MigrationError('resource-receipts-unverified') from None
+    # Explicitly identified roots outside ``work`` are stored in a namespaced
+    # quarantine inside the destination. They are never activated as current
+    # map receipts or editor libraries by migration alone.
+    for label, root in sorted((extra_roots or {}).items()):
+        if not re.fullmatch(r'[a-z][a-z0-9-]{0,31}', label):
+            raise MigrationError('invalid-extra-root-label')
+        root = _safe(Path(root))
+        if not root.exists():
+            continue
+        if not root.is_dir():
+            raise MigrationError('extra-root-not-directory')
+        for directory, dirs, files in os.walk(root, followlinks=False, onerror=_scan_error):
+            for child in dirs:
+                _safe(Path(directory) / child)
+            for filename in files:
+                path = _safe(Path(directory) / filename)
+                rel = path.relative_to(root).as_posix()
+                if filename == 'import.lock' and path == root / 'work/map-packages/import.lock':
+                    if not _owns_import_lock(import_lock, path):
+                        raise MigrationError('resource-import-busy-or-recovery-required')
+                    continue
+                if (filename.startswith('pending-') or filename in {
+                        'qt-import-pending.json', 'qt-recovery-pending.json',
+                        'pending-resource-reset.json', 'pending-base-repair.json'}
+                        or filename.endswith(('.lock', '.tmp', '.new'))):
+                    raise MigrationError('resource-transaction-recovery-required')
+                target = 'map-packages/legacy-unverified/asset-roots/' + label + '/' + rel
+                info = _file(path)
+                if target in result and result[target] != info:
+                    raise MigrationError('asset-root-path-conflict')
+                result[target] = info
+        if (root / 'work/map-packages').is_dir():
+            try:
+                from managed_base_resources import _package_constraints
+                _package_constraints(root)
+            except (ValueError, OSError, KeyError, TypeError):
+                raise MigrationError('resource-receipts-unverified') from None
     return result
 
 
 def _source_file(source, relative):
+    prefix = 'map-packages/legacy-unverified/asset-roots/'
+    if relative.startswith(prefix):
+        tail = relative[len(prefix):].split('/', 1)
+        # Asset source lookup is resolved by _migrate's validated root map.
+        raise MigrationError('asset-root-source-map-required')
     prefix = 'map-packages/legacy-unverified/metadata/'
     if relative.startswith(prefix):
         return _safe(source / 'work/map-packages' / relative[len(prefix):])
@@ -261,12 +319,13 @@ def _source_file(source, relative):
     return _safe(source / 'work' / relative)
 
 
-def _migrate(source, program, identity, *, import_lock=None):
+def _migrate(source, program, identity, *, import_lock=None, extra_roots=None):
     """Copy owned user and resource data to a fresh program/work, resumably.
     Errors expose stable codes only; absolute paths and OS exception text stay
     out of installer output and the persistent journal.
     """
     source, program = _roots(source, program)
+    extra_roots = {key: _safe(Path(value)) for key, value in (extra_roots or {}).items()}
     journal = _safe(program / 'legacy-migration.json')
     stage = _safe(program / '.legacy-migration-work')
     destination = _safe(program / 'work')
@@ -281,7 +340,14 @@ def _migrate(source, program, identity, *, import_lock=None):
                 or instance['id'] != 'production' or instance['appId'] != PRODUCTION_APP_ID):
             raise MigrationError('production-identity-required')
         _validate_identity(identity, source)
-        identity_binding = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        if extra_roots:
+            identity_payload = dict(identity=identity,
+                                    extraRoots={key: str(value) for key, value in sorted(extra_roots.items())})
+        else:
+            # Preserve resumability for journals produced by the original
+            # work-only migration path.
+            identity_payload = identity
+        identity_binding = hashlib.sha256(json.dumps(identity_payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         if 'source' in state and state.get('identity') != identity_binding:
             raise MigrationError('migration-identity-changed-or-unverifiable')
         # Never migrate across an unresolved installer/import/resource transaction.
@@ -294,7 +360,7 @@ def _migrate(source, program, identity, *, import_lock=None):
                 _package_constraints(source)
             except (ValueError, OSError, KeyError, TypeError):
                 raise MigrationError('resource-receipts-unverified') from None
-        files = _inventory(source, import_lock=import_lock)
+        files = _inventory(source, import_lock=import_lock, extra_roots=extra_roots)
         binding = hashlib.sha256(str(source).encode('utf-8')).hexdigest()
         if state.get('source') not in (None, binding) or (state['files'] != _private_files(files) and 'source' in state):
             raise MigrationError('source-changed')
@@ -324,7 +390,15 @@ def _migrate(source, program, identity, *, import_lock=None):
                     rename_no_replace(temporary, partial)
                     state.setdefault('partials', []).append(dict(name=partial.name, **info))
                     _save(journal, state)
-                with _source_file(source, name).open('rb') as reader, temporary.open('xb') as writer:
+                asset_prefix = 'map-packages/legacy-unverified/asset-roots/'
+                if name.startswith(asset_prefix):
+                    parts = name[len(asset_prefix):].split('/', 1)
+                    if len(parts) != 2 or parts[0] not in extra_roots:
+                        raise MigrationError('asset-root-source-map-required')
+                    origin = _safe(extra_roots[parts[0]] / parts[1])
+                else:
+                    origin = _source_file(source, name)
+                with origin.open('rb') as reader, temporary.open('xb') as writer:
                     for block in iter(lambda: reader.read(1024 * 1024), b''):
                         writer.write(block)
                     writer.flush()
@@ -333,7 +407,7 @@ def _migrate(source, program, identity, *, import_lock=None):
                     raise MigrationError('copy-mismatch')
                 rename_no_replace(temporary, output)
             _check_source_transactions(source, import_lock)
-            if _inventory(source, import_lock=import_lock) != files:
+            if _inventory(source, import_lock=import_lock, extra_roots=extra_roots) != files:
                 raise MigrationError('source-changed')
             # Check every staged object, including unexpected files from a prior run.
             actual = {}
@@ -361,7 +435,10 @@ def _migrate(source, program, identity, *, import_lock=None):
         state.pop('error', None)
         _save(journal, state)
         _check_source_transactions(source, import_lock)
-        return dict(migrated=True, files=len(files), scope='settings-routes-and-map-resources-unverified',
+        return dict(migrated=True, files=len(files),
+                    inventorySha256=hashlib.sha256(json.dumps(_private_files(files), sort_keys=True,
+                        separators=(',', ':')).encode('ascii')).hexdigest(),
+                    scope='settings-routes-and-map-resources-unverified',
                     sourceKind=identity['sourceKind'], sourceUnchanged=True)
     except (OSError, ValueError, KeyError, TypeError) as error:
         code = str(error) if isinstance(error, MigrationError) else 'migration-io-or-format-error'
@@ -399,18 +476,26 @@ def _validate_identity(identity, source):
         raise MigrationError('source-data-root-mismatch')
 
 
-def migrate(source, program, *, identity):
+def migrate(source, program, *, identity, extra_roots=None):
     """Serialize installer invocations; a crash lock requires manual inspection."""
     source, program = _roots(source, program)
-    program.mkdir(parents=True, exist_ok=True)
-    lock = _safe(program / '.legacy-migration.lock')
-    try:
-        handle = lock.open('x', encoding='ascii')
-    except OSError:
-        raise MigrationError('migration-busy-or-recovery-required') from None
-    try:
-        with handle:
-            with _SourceImportLock(source) as import_lock:
-                return _migrate(source, program, identity, import_lock=import_lock)
-    finally:
-        lock.unlink()
+    from contextlib import ExitStack
+    roots = dict(extra_roots or {})
+    with ExitStack() as stack:
+        leases = [stack.enter_context(_SourceImportLock(source))]
+        for root in roots.values():
+            leases.append(stack.enter_context(_SourceImportLock(Path(root))))
+        import_lock = _SourceImportLocks(leases)
+        # Do not create target evidence until every source lock is held.
+        program.mkdir(parents=True, exist_ok=True)
+        lock = _safe(program / '.legacy-migration.lock')
+        try:
+            handle = lock.open('x', encoding='ascii')
+        except OSError:
+            raise MigrationError('migration-busy-or-recovery-required') from None
+        try:
+            with handle:
+                return _migrate(source, program, identity, import_lock=import_lock,
+                                extra_roots=roots)
+        finally:
+            lock.unlink()

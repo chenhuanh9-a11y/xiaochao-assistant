@@ -41,7 +41,23 @@ helper 仅纳入正式产品身份下的 `work` 用户资料：设置、地图�
 
 副本位于新目录的 `.legacy-upgrade-prepared`，尚未成为新安装活动资料。接口回执明确是 `prepared-native-unverified`，并写明 `nativeInstalled=False`、`oldEntryRetired=False`、`sourceDeleted=False`。安装页面收到此状态后明确停止，不继续原生安装，不将“副本校验”升级为“接管成功”。旧 Inno 同根升级继续已有 preserve 协调器，不经过这条搬迁入口。
 
-以下仍是实质缺口：外置 `%LOCALAPPDATA%/Xingtu/resources`、旧自定义地图资产目录的完整迁移和当前准入交接；历史维护入口退休；准备副本到原生安装/登记核验/事务提交的连接；成功后来源和精确暂存的清理。探测到尚未接通的外置资源或图库资产时在复制前停止，不能只搬索引就报告完整准备。未验证历史卸载行为前，不执行历史卸载器、删旧登记或清理来源。
+### 外置资源与编辑器图库的资产清单
+
+准备入口在唯一当前用户产品登记和来源程序根已核实后，只扫描以下固定根；不会按目录名搜索用户磁盘，也不认领其他用户目录：
+
+| 根标签 | 来源 | 目标相对路径 |
+| --- | --- | --- |
+| `external` | 当前用户已知文件夹下的 `Xingtu/resources` | `work/map-packages/legacy-unverified/asset-roots/external/` |
+| `outer-custom-maps` | 旧程序根下的 `assets/custom-maps` | `work/map-packages/legacy-unverified/asset-roots/outer-custom-maps/` |
+| `internal-custom-maps` | 旧程序根下的 `_internal/assets/custom-maps` | `work/map-packages/legacy-unverified/asset-roots/internal-custom-maps/` |
+| `editor-base` | 旧程序根下的 `_internal/qt-editor-base` | `work/map-packages/legacy-unverified/asset-roots/editor-base/` |
+| `imported-resources` | 旧程序根下的 `work/imported-resources` | `work/map-packages/legacy-unverified/asset-roots/imported-resources/` |
+
+所有这些来源均使用同一复制引擎，纳入同一逐文件哈希清单和恢复日志。完整目录结构、图包载荷、索引、收据和依赖字节原样保留在隔离区；旧收据不复制成活动收据，也不因此取得地图识别身份、显示授权或默认资源资格。外置资源根存在时必须已有 `work/map-packages/import.lock`；入口与迁移引擎都实际取得相应排它锁并持有至复验、发布和完成日志结束，不移除或改写来源锁。产品程序根及外置根按现有用户身份边界校验；未知根、缺锁、坏收据、待恢复事务、链接、硬链接、越界路径或来源变化均失败关闭。
+
+交给第 4 项原生安装接缝的稳定准备回执包括 `status=prepared-native-unverified`、`copiedFiles`、`assetRoots`（固定标签列表）、`inventorySha256`（清单摘要）、`nativeInstalled=False`、`oldEntryRetired=False` 和 `sourceDeleted=False`。只有全部文件和根集合复核一致才可产生准备成功；接收方仍须按「地图资源」现行准入流程审查隔离的图包，不能据此写活动收据。失败回执含稳定 `errorCode`，不导出绝对路径或用户文件名。此合同只代表资产准备完成，不代表 Inno 已安装、旧入口已退休或升级事务已提交。
+
+本切片完成了外置资源及固定图库根的成套复制/校验/恢复和交接摘要。历史维护入口退休；准备副本到原生安装/登记核验/事务提交的连接；成功后来源和精确暂存的清理仍待后续切片。未验证历史卸载行为前，不执行历史卸载器、删旧登记或清理来源。
 
 源码和合成目录测试不能代表 QtIFW / Inno 已安装或 Windows 联合验收通过。真实登记、历史包、父 lease ABI、原生退出后的全清核验、占用统计及 huan 本机正式验收均须另外提供证据。
 
