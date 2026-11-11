@@ -3,14 +3,16 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using StarMap.Core.Resources;
+using StarMap.Core.Identity;
 
 namespace StarMap.Core.Selection;
 
-/// <summary>The exact selected S1 mode/resource generation. It grants no identity or display authority.</summary>
+/// <summary>A selected structure resource registration. It grants no identity or display authority.</summary>
 public sealed class StructureCatalog
 {
     private static readonly string[] S1Floors = ["-1", "-2", "-3", "-4"];
     private readonly ResourceCatalog? _resourceOwner;
+    private readonly IReadOnlyDictionary<(string MapId,string Floor),ResourceCatalogEntry>? _references;
     public string Season { get; }
     public string Mode { get; }
     public string ResourceKey { get; }
@@ -21,11 +23,18 @@ public sealed class StructureCatalog
 
     public StructureCatalog(string season, string mode, string resourceKey, IEnumerable<string> mapIds,
         IEnumerable<string> floors, IReadOnlyDictionary<string, string>? mapNames = null, string? modeRoot = null)
+        : this(season,mode,resourceKey,mapIds,floors,mapNames,modeRoot,false) { }
+
+    private StructureCatalog(string season,string mode,string resourceKey,IEnumerable<string> mapIds,
+        IEnumerable<string> floors,IReadOnlyDictionary<string,string>? mapNames,string? modeRoot,bool boundRegistration)
     {
         var ids = mapIds.ToArray(); var levels = floors.ToArray();
-        if (season != "s1" || mode is not ("difficulty2" or "difficult" or "nightmare") || string.IsNullOrEmpty(resourceKey)
+        bool s1Scope=season=="s1"&&levels.SequenceEqual(S1Floors);
+        bool s0Scope=boundRegistration&&season=="s0"&&mode is ("nightmare" or "difficult")&&levels.Length>0
+            &&levels.All(v=>!string.IsNullOrEmpty(v))&&levels.Distinct(StringComparer.Ordinal).Count()==levels.Length;
+        if (!(s1Scope||s0Scope) || mode is not ("difficulty2" or "difficult" or "nightmare") || string.IsNullOrEmpty(resourceKey)
             || ids.Length == 0 || ids.Any(string.IsNullOrEmpty) || ids.Distinct(StringComparer.Ordinal).Count() != ids.Length
-            || !levels.SequenceEqual(S1Floors)) throw new ArgumentException("s1-structure-catalog-invalid");
+            ) throw new ArgumentException("s1-structure-catalog-invalid");
         Season = season; Mode = mode; ResourceKey = resourceKey;
         MapIds = Array.AsReadOnly(ids); Floors = Array.AsReadOnly(levels); ModeRoot = modeRoot;
         MapNames = new ReadOnlyDictionary<string, string>(ids.ToDictionary(id => id,
@@ -33,11 +42,45 @@ public sealed class StructureCatalog
     }
 
     private StructureCatalog(ResourceCatalog resourceOwner, string season, string mode, string resourceKey,
-        IEnumerable<string> mapIds, IEnumerable<string> floors, IReadOnlyDictionary<string,string> mapNames, string modeRoot)
-        : this(season,mode,resourceKey,mapIds,floors,mapNames,modeRoot) => _resourceOwner = resourceOwner;
+        IEnumerable<string> mapIds, IEnumerable<string> floors, IReadOnlyDictionary<string,string> mapNames, string modeRoot,
+        IReadOnlyDictionary<(string MapId,string Floor),ResourceCatalogEntry>? references=null)
+        : this(season,mode,resourceKey,mapIds,floors,mapNames,modeRoot,true)
+    { _resourceOwner=resourceOwner;_references=references; }
 
-    /// <summary>Only the resource factory can bind a complete immutable catalog to its actual resource owner.</summary>
+    /// <summary>Only the resource factory can bind a selected catalog to its actual resource owner.</summary>
     public bool IsBoundTo(ResourceCatalog resources) => ReferenceEquals(_resourceOwner,resources);
+
+    /// <summary>Exact registered input, including its actual profile. Missing floors remain missing.</summary>
+    public ResourceCatalogEntry? ReferenceFor(ResourceCatalog resources,string mapId,string floor)
+    {
+        if(!IsBoundTo(resources))throw new ArgumentException("structure-catalog-resource-owner-mismatch",nameof(resources));
+        if(!MapIds.Contains(mapId,StringComparer.Ordinal)||!Floors.Contains(floor,StringComparer.Ordinal))return null;
+        return _references is not null?_references.GetValueOrDefault((mapId,floor))
+            :resources.Find(Mode,Season,"shared-structure",mapId,floor);
+    }
+
+    /// <summary>S0 registration from its actual passport/pack scope. This does not declare door coordinates complete.
+    /// The caller supplies its existing resource-generation identity; no new content fingerprint is invented here.</summary>
+    public static StructureCatalog FromS0Resources(ResourceCatalog resources,EntryPassportCatalog passports,string resourceGeneration)
+    {
+        if(passports.Season!="s0"||!string.Equals(Path.GetFullPath(resources.RootPath),passports.ResourceRoot,StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("s0-structure-catalog-context-mismatch",nameof(passports));
+        string[] ids=passports.Maps.Select(map=>map.MapId).Order(StringComparer.Ordinal).ToArray();
+        var references=new Dictionary<(string MapId,string Floor),ResourceCatalogEntry>();
+        // Do not manufacture a complete cartesian product: a declared unavailable
+        // floor has no usable entry and must later produce UNKNOWN, not exclusion.
+        foreach(var pair in passports.PackFloors)
+        {
+            if(!ids.Contains(pair.MapId,StringComparer.Ordinal)||!passports.Floors.Contains(pair.Floor))
+                throw new InvalidDataException("s0-structure-floor-registration-invalid");
+            if(passports.UnavailablePackFloors.Contains(pair))continue;
+            var entry=resources.Find(passports.Mode,passports.Season,passports.MapProfiles[pair.MapId],pair.MapId,pair.Floor);
+            if(entry is not null)references.Add(pair,entry);
+        }
+        return new(resources,passports.Season,passports.Mode,resourceGeneration,ids,passports.Floors,
+            passports.Maps.ToDictionary(map=>map.MapId,map=>map.Name,StringComparer.Ordinal),passports.ModeRoot,
+            new ReadOnlyDictionary<(string MapId,string Floor),ResourceCatalogEntry>(references));
+    }
 
     /// <summary>Uses the native manifest's complete content inventory, exactly as the Python native context does.</summary>
     public static StructureCatalog FromResources(ResourceCatalog resources, string mode)

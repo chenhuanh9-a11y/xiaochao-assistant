@@ -9,6 +9,7 @@ public sealed record SideDoorObservationResult(JsonArray Anchors, JsonArray Obse
 /// <summary>Evidence from the exit glyph and current wall pixels, in full-client coordinates.</summary>
 public sealed partial class SideDoorObservation : IDisposable
 {
+    internal const double ReliableIconScore = .78;
     private readonly Mat icon;
     private sealed record Anchor(double Score, Rect Bounds, JsonObject Appearance)
     {
@@ -16,9 +17,11 @@ public sealed partial class SideDoorObservation : IDisposable
             ["width"] = Bounds.Width, ["height"] = Bounds.Height, ["appearance"] = Appearance.DeepClone() };
     }
 
-    public SideDoorObservation(string iconResourcePath)
+    public SideDoorObservation(string iconResourcePath) : this(File.ReadAllBytes(iconResourcePath)) { }
+
+    internal SideDoorObservation(byte[] iconResource)
     {
-        var image = JsonNode.Parse(File.ReadAllBytes(iconResourcePath))?["exitIcon"] ??
+        var image = JsonNode.Parse(iconResource)?["exitIcon"] ??
             throw new InvalidDataException("Exit icon is missing.");
         int width = image["width"]!.GetValue<int>(), height = image["height"]!.GetValue<int>();
         byte[] pixels = Convert.FromBase64String(image["pixels"]!.GetValue<string>());
@@ -66,7 +69,7 @@ public sealed partial class SideDoorObservation : IDisposable
             var rectangle = LocalRectangle(frame,bounds.Value,live);
             var direction = Direction(bounds.Value,live,rectangle);
             observations.Add(new JsonObject { ["icon"] = live, ["rectangle"] = rectangle, ["direction"] = direction,
-                ["reliable"] = anchor.Score >= .78 || Bool(direction,"reliable") });
+                ["reliable"] = anchor.Score >= ReliableIconScore || Bool(direction,"reliable") });
         }
         var boundary = ObservedBoundary(observations,out var count);
         return new(new JsonArray(anchors.Select(a => (JsonNode)a.ToJson()).ToArray()),observations,boundary,bounds,

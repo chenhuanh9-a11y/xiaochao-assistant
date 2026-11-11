@@ -23,6 +23,8 @@ public sealed record StructureGateAnchor
     public required string ProfileSha256 { get; init; }
     public required JsonObject Diagnostics { get; init; }
     public bool AllowStructureFallback => true;
+    public bool GlyphPresenceVerified => Status=="located" || Diagnostics["glyph_presence_verified"] is JsonValue value
+        && value.TryGetValue<bool>(out bool verified) && verified;
     internal Mat? Frame { get; init; }
 
     public JsonObject ToJson() => new()
