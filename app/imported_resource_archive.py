@@ -44,6 +44,7 @@ class ArchiveSummary:
     manifest_sha256: str
     component_refs: tuple[packages.ComponentRef, ...]
     status: str
+    archive_bytes: int
 
 
 def _reject(reason: str) -> None:
@@ -391,7 +392,7 @@ def _validate_staged(root: Path, refs):
     packages.PackageView(root, refs[0]).validate_inventory()
 
 
-def _summary(parsed, archive_sha256, status):
+def _summary(parsed, archive_sha256, status, archive_bytes):
     manifest = parsed[1]
     return ArchiveSummary(
         package_id=manifest['packageId'],
@@ -400,6 +401,7 @@ def _summary(parsed, archive_sha256, status):
         manifest_sha256=parsed[2],
         component_refs=parsed[3],
         status=status,
+        archive_bytes=archive_bytes,
     )
 
 
@@ -431,8 +433,9 @@ def inspect_archive(zip_path, *, expected_archive_sha256=None, cancelled=None) -
         with _open_archive(zip_path, expected_archive_sha256) as (archive, archive_sha256):
             parsed = _archive_inventory(archive, cancelled)
             _validate_archive_payloads(archive, parsed, cancelled)
+            archive_bytes = archive.fp.seek(0, os.SEEK_END)
         _check_cancelled(cancelled)
-        return _summary(parsed, archive_sha256, 'inspected')
+        return _summary(parsed, archive_sha256, 'inspected', archive_bytes)
     except files.ImportRejected:
         raise
     except (OSError, zipfile.BadZipFile) as error:
@@ -647,6 +650,7 @@ def save_archive(zip_path, resource_root, *, expected_archive_sha256=None, cance
             archive, archive_sha256 = source.enter_context(
                 _open_archive(zip_path, expected_archive_sha256))
             parsed = _archive_inventory(archive, cancelled)
+            archive_bytes = archive.fp.seek(0, os.SEEK_END)
             root = _ensure_resource_root(Path(resource_root))
             lifetime.enter_context(resource_transaction.resource_write_lock(
                 root, wait=True, cancelled=lambda: cancelled is not None and cancelled()))
@@ -682,7 +686,7 @@ def save_archive(zip_path, resource_root, *, expected_archive_sha256=None, cance
                     if _existing_version(root, parsed) is None:
                         _reject('version-conflict')
                     _check_cancelled(cancelled)
-                    return _summary(parsed, archive_sha256, 'already-saved')
+                    return _summary(parsed, archive_sha256, 'already-saved', archive_bytes)
 
                 # The original open handle was checked against its starting
                 # identity and digest. Recheck the selected path immediately
@@ -714,7 +718,7 @@ def save_archive(zip_path, resource_root, *, expected_archive_sha256=None, cance
                         raise conflict from error
                     if existing is None:
                         raise files.ImportRejected('resource-archive-version-conflict') from error
-                    return _summary(parsed, archive_sha256, 'already-saved')
+                    return _summary(parsed, archive_sha256, 'already-saved', archive_bytes)
                 except OSError as error:
                     if getattr(error, 'errno', None) in {17, 80, 183}:
                         try:
@@ -723,7 +727,7 @@ def save_archive(zip_path, resource_root, *, expected_archive_sha256=None, cance
                             raise conflict from error
                         if existing is None:
                             raise files.ImportRejected('resource-archive-version-conflict') from error
-                        return _summary(parsed, archive_sha256, 'already-saved')
+                        return _summary(parsed, archive_sha256, 'already-saved', archive_bytes)
                     raise files.ImportRejected('resource-archive-publish-failed') from error
                 except Exception:
                     # The helper may report a post-rename target check failure.
@@ -748,7 +752,7 @@ def save_archive(zip_path, resource_root, *, expected_archive_sha256=None, cance
             finally:
                 if stage is not None and ownership is not None:
                     _remove_owned_stage(stage, root, ownership)
-            return _summary(parsed, archive_sha256, 'saved')
+            return _summary(parsed, archive_sha256, 'saved', archive_bytes)
     except resource_transaction.ResourceTransactionError as error:
         raise files.ImportRejected(str(error), code=error.code, details=error.details) from error
     except files.ImportRejected:

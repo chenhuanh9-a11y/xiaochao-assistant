@@ -68,8 +68,9 @@ class ImportedResourceArchiveTests(unittest.TestCase):
         }
         self.write_archive()
 
-    def write_archive(self, *, extra=None, compression=zipfile.ZIP_STORED):
+    def write_archive(self, *, extra=None, compression=zipfile.ZIP_STORED, comment=b''):
         with zipfile.ZipFile(self.archive_path, 'w', compression=compression) as archive:
+            archive.comment = comment
             archive.writestr('manifest.json', canonical(self.manifest))
             for (component, relative), raw in self.payloads.items():
                 archive.writestr(f'data/{component}/{relative}', raw)
@@ -80,6 +81,20 @@ class ImportedResourceArchiveTests(unittest.TestCase):
     def package_path(self, version='v1'):
         return self.resource_root / 'packages' / 'demo' / version
 
+    def test_inspect_save_and_retry_size_comes_from_actual_archive_encoding(self):
+        sizes = []
+        for number, compression in enumerate((zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)):
+            self.write_archive(compression=compression, comment=b'valid-zip-comment' * 5)
+            expected = len(self.source_bytes)
+            inspected = archives.inspect_archive(self.archive_path)
+            saved = archives.save_archive(self.archive_path, self.resource_root)
+            self.assertEqual(saved.status, 'saved' if number == 0 else 'already-saved')
+            for summary in (inspected, saved):
+                self.assertEqual(summary.archive_bytes, expected)
+                self.assertEqual(summary.archive_sha256, hashlib.sha256(self.source_bytes).hexdigest())
+            sizes.append(saved.archive_bytes)
+        self.assertNotEqual(sizes[0], sizes[1])
+
     def test_inspect_multi_component_package_is_read_only_and_returns_full_refs(self):
         summary = archives.inspect_archive(self.archive_path)
 
@@ -87,6 +102,7 @@ class ImportedResourceArchiveTests(unittest.TestCase):
         self.assertEqual(summary.package_id, 'demo')
         self.assertEqual(summary.resource_version, 'v1')
         self.assertEqual(summary.archive_sha256, hashlib.sha256(self.source_bytes).hexdigest())
+        self.assertEqual(summary.archive_bytes, len(self.source_bytes))
         self.assertEqual(len(summary.component_refs), 3)
         self.assertEqual({ref.component_id for ref in summary.component_refs},
                          {'base', 'display', 'controls'})

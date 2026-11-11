@@ -216,7 +216,7 @@ class ImportedResourceService(QObject):
                     raise ResourceCatalogError('resource-download-binding-invalid')
                 sha = expected['sha256']
                 inspected = inspect_archive(path, expected_archive_sha256=sha, cancelled=cancelled)
-                if inspected.package_id != expected['packageId'] or path.stat().st_size != expected['bytes']:
+                if inspected.package_id != expected['packageId'] or inspected.archive_bytes != expected['bytes']:
                     raise ResourceCatalogError('resource-download-binding-invalid')
             summary = save_archive(path, self.resolver.root, expected_archive_sha256=sha, cancelled=cancelled)
             # A completed save is reported even if a cancellation arrives during

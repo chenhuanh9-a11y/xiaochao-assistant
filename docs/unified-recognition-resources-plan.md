@@ -546,3 +546,8 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 - 真实源为只读 recovery resource-root、sourceVersion `2.104.3099014`，855 文件 inventory；只用 `PYTHONPATH=app;tools` 的公开 producer 已完成全部 116 层派生比较。输出资源版本 `2.104.3099014-fast-v1`，困难 ZIP 28,252,843 B / SHA256 `ac0ae15582630790b48cddb6e19578652ce55da07cbdf9c7f637cb70cb6a92cc`，噩梦 ZIP 30,646,052 B / SHA256 `0f1d76a685a1e4b1ae80d36e484bd9279b4b4fabc7c4ccf670a3d5c6cf59db73`，均在 `work/native-base-export-20261111-fast-v1`，非 Setup，未在用户目录启用或发布。第一次调用未建立输出父目录，在完整 round trip 后独占发布失败；修正调用目录后重试通过，原失败日志保留，未为此改 exporter 的覆盖保护。
 - 上述两个新 ZIP 又在隔离临时资源目录经过公开保存、实际双次 prospective 启用、默认 factory 和 `_AlignmentHost.fit`：困难 `106001/-3`、噩梦 `107012/-3` 各读 prepared 一次，真实 reference 分别 1920×2100、2100×1860；输入均为明确构造的 1920×1200 全黑帧，结果仍 `initial-structure-query-unavailable` / `fast-observation-unavailable`，无 live 许可、无 memory 写入。一次启用分别 38,980 / 40,132 ms；单次 fit 计算 630 / 562 ms，在并行测试期间采样各 n=1，不是成功贴合、分位数或启动基准。未产生正确可见像素，无错层真值。脚本、原日志和 receipt 均在 `work/startup-performance-20261110`，没有操作用户安装或游戏。
 - CI 原 71 模块全保留，只加入实际 Host/缓存边界模块，共 72；六组 10/32/17/3/3/7，18 matrix、25 分钟上限与历史 baseline 不变。独立复核确认三个 PowerShell block AST 无错误。实帧真值、正向贴合、首个正确可见像素和用户 B3 故障根因尚未建立，不将全黑负例或静态逐数组相等称为游戏验收。
+
+### 登记来源准备：归档字节数与同一读取对象
+
+- 为后续项目索引条目与实际归档核对，`ArchiveSummary` 增加 `archive_bytes`，在既有 `_open_archive` 的实际 descriptor/内容及路径前后检查范围内取得物理 EOF 长度。inspect、首次保存和各幂等保存出口都返回同一输入归档的长度与既有 SHA256；未新增摘要或来源资格。在线保存入口用此已验长度核 `expected.bytes`，不另取已离开 inspect 读取范围的 `path.stat()`。
+- 新字段回归修前因字段不存在失败（1 项、0.006 秒），修后真实 archive/resource service 共 36 项通过（2.884 秒）。附带实际 stored/deflated 两种编码和合法 ZIP comment，首次保存与同版本重导入均核输入物理 bytes/摘要，不能用解压大小或已保存目录大小替代。项目登记 source owner、在线/本地来源闭包及生产发布索引仍未实现；现有软件公告 URL 不能当成登记入口。
