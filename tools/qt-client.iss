@@ -145,6 +145,10 @@ UsePreviousLanguage=no
 [Languages]
 Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 
+[Messages]
+; Native zero exit is not a receipt for external data or a pending self-delete.
+UninstalledAll=程序卸载步骤已结束。完整清理仍须核对本次清理提示和剩余项。
+
 #ifdef ProductionInstaller
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式："; Flags: unchecked
@@ -186,7 +190,7 @@ const
 var
   UpgradeFiles, UpgradeExisting, UpgradeRetired: TStringList;
   UpgradeBackup: String;
-  UpgradeStarted, UpgradeCommitted: Boolean;
+  UpgradeStarted, UpgradeCommitted, UpgradeCleanupFailed: Boolean;
   ResourcePlanReady, InstallEditorBase: Boolean;
   ResourcePlanRoot: String;
   ResourceLock: THandle;
@@ -200,6 +204,7 @@ function CloseHandle(hObject: THandle): Boolean;
 function InstallerFileAttributes(lpFileName: String): LongWord;
   external 'GetFileAttributesW@kernel32.dll stdcall';
 #include "qt-game-watcher-lifecycle.iss"
+#include "qt-installer-target.iss"
 function OwnedAssistantShortcut(const Path: String): Boolean;
 var
   Shell, Link: Variant;
@@ -238,7 +243,7 @@ begin
   if OwnedAssistantShortcut(ExpandConstant('{group}\{#InstallerAppName}.lnk')) and
     OwnedAssistantShortcut(OldMenu) then
     if not DeleteFile(OldMenu) then Log('LEGACY_SHORTCUT_RETAINED ' + OldMenu);
-  { The new wizard offers keep/clear, so retire only our old keep-only caption.
+  { The new uninstaller clears owned data, so retire our old keep-only caption.
     Do not delete a renamed user shortcut or one pointing at another product. }
   OldUninstall := ExpandConstant('{group}\卸载星图（保留个人资料）.lnk');
   if FileExists(ExpandConstant('{group}\卸载星图.lnk')) and FileExists(OldUninstall) then begin
@@ -458,7 +463,38 @@ begin
     Log('UPGRADE_RETIRED ' + Relative);
   end;
 end;
+function CleanupCommittedUpgradeBackup(var Reason: String): Boolean;
+var I: Integer; Path: String;
+begin
+  Result := True;
+  Reason := '';
+  if not UpgradeStarted or not UpgradeCommitted or (UpgradeBackup = '') then Exit;
+  Result := False;
+  Reason := '升级已提交，但本次程序暂存副本没有全部清理：' + UpgradeBackup;
+  if not NoLinkedAncestors(UpgradeBackup) then Exit;
+  { Only this invocation's numbered copies and metadata, never a recursive
+    delete of historical recovery evidence or user-created backup siblings. }
+  for I := 0 to UpgradeExisting.Count - 1 do begin
+    Path := UpgradeBackup + '\files\' + IntToStr(I);
+    if not NoLinkedAncestors(Path) or DirExists(Path) then Exit;
+    if FileExists(Path) and not DeleteFile(Path) then Exit;
+  end;
+  if DirExists(UpgradeBackup + '\files') and not RemoveDir(UpgradeBackup + '\files') then Exit;
+  for I := 0 to 2 do begin
+    case I of
+      0: Path := UpgradeBackup + '\affected.txt';
+      1: Path := UpgradeBackup + '\existing.txt';
+      2: Path := UpgradeBackup + '\ui-settings.json';
+    end;
+    if not NoLinkedAncestors(Path) or DirExists(Path) then Exit;
+    if FileExists(Path) and not DeleteFile(Path) then Exit;
+  end;
+  if DirExists(UpgradeBackup) and not RemoveDir(UpgradeBackup) then Exit;
+  Result := True;
+  Reason := '';
+end;
 #include "qt-resource-reset.iss"
+#include "qt-legacy-migration.iss"
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   WatcherReason: String;
@@ -502,7 +538,13 @@ begin
     UpgradeCommitted := not ResourceResetStarted or ResourceResetFinalized;
     if not ResourceResetStarted or ResourceResetFinalized then begin
       RetireLegacyShortcuts;
-      Log('UPGRADE_COMMITTED');
+      if CleanupCommittedUpgradeBackup(WatcherReason) then Log('UPGRADE_COMMITTED')
+      else begin
+        UpgradeCleanupFailed := True;
+        ResourceResetFailureCode := 64;
+        Log('UPGRADE_COMMITTED_CLEANUP_INCOMPLETE ' + WatcherReason);
+        SuppressibleMsgBox(WatcherReason, mbError, MB_OK, IDOK);
+      end;
     end;
     { Restore only the exact opt-in captured from this installation. A failed
       restore is retried/reported during deinitialization, not a false rollback. }
@@ -539,7 +581,8 @@ begin
   end else if GameWatcherRestorePending then
     SuppressibleMsgBox('安装状态尚未核实，游戏启动绑定保持关闭。请先完成安装恢复，再核对设置。',
       mbError, MB_OK, IDOK);
-  { Backups and append-only recovery evidence intentionally survive exit. }
+  { Failed/uncommitted backups and the coordinator's recovery evidence survive.
+    Only our exact committed temporary program copies are cleaned above. }
   if UpgradeFiles <> nil then UpgradeFiles.Free;
   if UpgradeExisting <> nil then UpgradeExisting.Free;
   if UpgradeRetired <> nil then UpgradeRetired.Free;
@@ -547,6 +590,8 @@ begin
 end;
 procedure CurPageChanged(CurPageID: Integer);
 begin
+  if (CurPageID = wpFinished) and UpgradeCleanupFailed then
+    WizardForm.FinishedLabel.Caption := '升级已提交，但本次临时备份未能全部清理。请按前面的路径提示处理剩余项。';
   if (CurPageID = wpFinished) and ResourceResetStarted and not ResourceResetFinalized then begin
     if ResourceResetNativeCompleted then
       WizardForm.FinishedLabel.Caption := 'Windows 安装步骤已完成，但整体升级尚未核验提交，暂不能启动星图。'
@@ -583,7 +628,10 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   WatcherReason, RestoreReason: String;
 begin
-  Result := '';
+  Result := PrepareLegacyMigration;
+  if Result <> '' then Exit;
+  Result := InstallerTargetError;
+  if Result <> '' then Exit;
   if DirExists(UninstallHoldingDirectory) or FileExists(UninstallHoldingDirectory) then begin
     Result := '上次卸载的资料尚未恢复，请先核对保留目录：' + UninstallHoldingDirectory;
     Exit;
@@ -622,6 +670,7 @@ const
   ProductionUninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{D04394A0-DACE-4FF9-874D-3DCB43EE53D1}_is1';
 function InstallerFileAttributes(lpFileName: String): LongWord;
   external 'GetFileAttributesW@kernel32.dll stdcall';
+#include "qt-installer-target.iss"
 function NormalizedDirectory(Path: String): String;
 begin
   Result := RemoveBackslashUnlessRoot(ExpandFileName(Path));
@@ -816,7 +865,10 @@ end;
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   { Also covers silent /DIR installs and changes since directory selection. }
-  Result := PrivateDirectoryError(ExpandConstant('{app}'));
+  Result := InstallerTargetError;
+  if Result = '' then Result := PrivateDirectoryError(ExpandConstant('{app}'));
 end;
+
+#include "qt-uninstall-data.iss"
 
 #endif

@@ -100,6 +100,20 @@ begin
 #endif
 end;
 
+procedure ExtractAndVerifyResetHelper;
+begin
+  ResourceResetExtractRoot := ExpandConstant('{tmp}\') + '{app}';
+  ExtractTemporaryFile('reset-helper-inventory.txt');
+  ExtractTemporaryFile('reset-program-inventory.json');
+  ExtractTemporaryFiles('{app}\star-map-reset-helper.exe');
+  ExtractTemporaryFiles('{app}\_star_map_reset_runtime\*');
+  ExtractTemporaryFiles('{app}\release-report.json');
+#ifndef ProgramOnlyInstaller
+  ExtractTemporaryFiles('{app}\_internal\managed-base-resources\*');
+#endif
+  VerifyResetInputs;
+end;
+
 function CallResourceReset(const Action: String; Confirmed: Boolean; var Reason, ResultDir: String): Boolean;
 var Params, ParentImage, Detail, UninstallExe: String; Code: Integer; Size: LongWord;
   Created, Exited, KernelTime, UserTime: Int64;
@@ -220,14 +234,7 @@ begin
       ResourceResetSession := ExpandConstant('{tmp}\resource-reset-session');
       if not CreateDir(ResourceResetSession) then RaiseException('资源升级会话目录已存在，请重新运行安装包。');
     end;
-    ExtractTemporaryFile('reset-helper-inventory.txt');
-    ExtractTemporaryFile('reset-program-inventory.json');
-    ExtractTemporaryFiles('{app}\star-map-reset-helper.exe');
-    ExtractTemporaryFiles('{app}\_star_map_reset_runtime\*');
-    ExtractTemporaryFiles('{app}\release-report.json');
-#ifndef ProgramOnlyInstaller
-    ExtractTemporaryFiles('{app}\_internal\managed-base-resources\*');
-#endif
+    ExtractAndVerifyResetHelper;
     if HasInstallerPending then begin
       if not CallResourceReset('installer-pending', False, Reason, ResultDir) then Exit;
       ResourceResetSessionId := GetIniString('result', 'sessionId', '', ResultDir + '\result.ini');

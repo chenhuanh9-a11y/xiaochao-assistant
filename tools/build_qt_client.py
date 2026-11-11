@@ -163,7 +163,7 @@ def verify_invoker_manifest(executable):
 
 def assemble_recovery_helper(output, stage, environment_vars, *, kind="recovery"):
     """One separate helper freeze in the same build chain; no EXE launch."""
-    if kind not in ("recovery", "import", "reset"):
+    if kind not in ("recovery", "import", "reset", "uninstall"):
         raise ValueError("Unknown resource helper")
     product = "star-map-" + kind + "-helper"
     subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
@@ -199,6 +199,57 @@ def assemble_recovery_helper(output, stage, environment_vars, *, kind="recovery"
     return dict(included=True, product=product, executable=executable.name,
                 runtimeDirectory=runtime.name, invokerManifests=manifests, files=files,
                 launched=False, nativeParentWaitTested=False)
+
+
+def write_private_program_ownership(stage):
+    """Private wildcard installers need the same installed ownership metadata.
+
+    This only inventories the clean build stage, never a user's installed tree.
+    It does not turn a test package into a production resource projection.
+    """
+    stage = Path(stage)
+    names = []
+    for path in sorted(stage.rglob('*')):
+        if path.is_symlink() or path.is_junction():
+            raise ValueError('Private stage must not contain links')
+        if path.is_file():
+            relative = path.relative_to(stage).as_posix()
+            _local_file(stage, relative)
+            names.append(relative)
+    if '_installer-owned-files.txt' not in names:
+        names.append('_installer-owned-files.txt')
+    return write_program_ownership(stage, {'fileProjection': {'installedFiles': names, 'stagedFiles': {}}})
+
+
+def uninstall_helper_installer_defines(stage, record):
+    """Extend the existing helper inventory protection to the uninstall helper.
+
+    An uninstaller must not execute mutable installed Python/runtime bytes. Its
+    compiled inventory digest binds the exact temporary copy it will execute.
+    This is the same trust boundary as the existing resource-reset helper.
+    """
+    stage = Path(stage)
+    helper = record.get('uninstallHelper', {})
+    inventory = helper.get('files', {})
+    executable, runtime = 'star-map-uninstall-helper.exe', '_star_map_uninstall_runtime/'
+    if (helper.get('included') is not True or helper.get('executable') != executable
+            or helper.get('runtimeDirectory') != runtime[:-1] or executable not in inventory
+            or not any(name.startswith(runtime) for name in inventory)):
+        raise ValueError('Uninstall helper inventory missing; perform a full freeze')
+    actual = {path.relative_to(stage).as_posix() for path in (stage / runtime).rglob('*') if path.is_file()}
+    if actual | {executable} != set(inventory):
+        raise ValueError('Uninstall helper runtime differs from recorded inventory')
+    rows = []
+    for name, row in sorted(inventory.items()):
+        if name != executable and not name.startswith(runtime):
+            raise ValueError('Uninstall helper inventory contains an unrelated file')
+        path = _local_file(stage, name)
+        if path.stat().st_size != row['bytes'] or sha256(path) != row['sha256']:
+            raise ValueError('Uninstall helper changed: ' + name)
+        rows.append(row['sha256'] + ' ' + name.replace('/', '\\'))
+    listing = stage / '_uninstall-helper-files.txt'
+    listing.write_text('\n'.join(rows) + '\n', encoding='utf-8-sig')
+    return [f'/DUninstallHelperInventorySHA256={sha256(listing)}']
 
 
 def assemble_game_watcher(output, stage, environment_vars):
@@ -1224,6 +1275,7 @@ def main(argv=None):
                 recoveryHelper=dict(included=args.instance == "production", product="star-map-recovery-helper"),
                 importHelper=dict(included=args.instance == "production", product="star-map-import-helper"),
                 resetHelper=dict(included=args.instance == "production", product="star-map-reset-helper"),
+                uninstallHelper=dict(included=True, product="star-map-uninstall-helper"),
                 gameWatcher=dict(included=args.instance == "production", executable="XingtuGameWatcher.exe"),
                 sourceRoot=str(ROOT), version=version, profileId=LIGHT_PROFILE,
                 resourceRoot=str(args.resource_root.resolve()), resourceVersion=declaration["resourceVersion"],
@@ -1265,6 +1317,7 @@ def main(argv=None):
                    recoveryHelper=dict(included=args.instance == "production", executable="star-map-recovery-helper.exe"),
                    importHelper=dict(included=args.instance == "production", executable="star-map-import-helper.exe"),
                    resetHelper=dict(included=args.instance == "production", executable="star-map-reset-helper.exe"),
+                   uninstallHelper=dict(included=True, executable="star-map-uninstall-helper.exe"),
                    gameWatcher=dict(included=args.instance == "production", executable="XingtuGameWatcher.exe"),
                    resourceVersion=declaration["resourceVersion"], authorDisplayPackagesIncluded=args.bundled_package,
                    includedResourceContexts=included_resource_contexts(args.instance, resources,
@@ -1293,6 +1346,8 @@ def main(argv=None):
                     "--distpath", str(output / "freeze"), "--workpath", str(output / "pyinstaller"),
                     str(TOOLS / "qt-client.spec")], cwd=ROOT, env=environment_vars, check=True)
     stage = output / "freeze" / product
+    plan['uninstallHelper'] = assemble_recovery_helper(output, stage, environment_vars, kind='uninstall')
+    uninstall_defines = uninstall_helper_installer_defines(stage, plan)
     if args.instance == "production":
         plan["recoveryHelper"] = assemble_recovery_helper(output, stage, environment_vars)
         plan["importHelper"] = assemble_recovery_helper(output, stage, environment_vars, kind="import")
@@ -1329,6 +1384,8 @@ def main(argv=None):
         write_program_ownership(stage, plan)
         production_defines = ["/DProductionInstaller", f"/DProductionFilesInclude={include}"]
         production_defines += resource_reset_installer_defines(stage, plan, output, source)
+    else:
+        write_private_program_ownership(stage)
     setup_name = setup_basename(instance, display, source["commit"])
     subprocess.run([str(args.iscc.resolve()), f"/DStageDir={stage}", f"/DSetupOutputDir={output / 'setup'}",
                     f"/DSetupName={setup_name}", f"/DDisplayVersion={display}", f"/DNumericVersion={numeric}",
@@ -1337,16 +1394,18 @@ def main(argv=None):
                     f"/DInstallerFolder={instance['installFolder']}",
                     f"/DInstallerGroup={instance['startMenuGroup']}",
                     f"/DInstallerExeName={product}.exe",
-                    *production_defines,
+                    *production_defines, *uninstall_defines,
                     str(TOOLS / "qt-client.iss")], cwd=ROOT, check=True)
     setup = output / "setup" / (setup_name + ".exe")
     if not setup.is_file():
         raise ValueError("Inno Setup completed without the expected Setup artifact")
     plan["installer"] = dict(fileName=setup.name, bytes=setup.stat().st_size, sha256=sha256(setup))
     recipes = [Path(__file__), TOOLS / "qt-client.spec", TOOLS / "qt-recovery-helper.spec",
-               TOOLS / "qt-import-helper.spec", TOOLS / "qt-reset-helper.spec", TOOLS / "qt-game-watcher.spec", TOOLS / "qt-client.iss"]
+               TOOLS / "qt-import-helper.spec", TOOLS / "qt-reset-helper.spec", TOOLS / "qt-uninstall-helper.spec",
+               TOOLS / "qt-game-watcher.spec", TOOLS / "qt-client.iss", TOOLS / "qt-uninstall-data.iss",
+               TOOLS / "qt-installer-target.iss", TOOLS / "qt-legacy-migration.iss"]
     if args.instance == 'production':
-        recipes.extend((TOOLS / "qt-game-watcher-lifecycle.iss", TOOLS / "qt-uninstall-data.iss", TOOLS / "qt-resource-reset.iss"))
+        recipes.extend((TOOLS / "qt-game-watcher-lifecycle.iss", TOOLS / "qt-resource-reset.iss"))
     plan["recipes"] = {p.name: sha256(p) for p in recipes}
     plan["source"] = source_identity(args.source_commit)
     plan["buildCompleted"] = True

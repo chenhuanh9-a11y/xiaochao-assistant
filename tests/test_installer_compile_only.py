@@ -17,7 +17,7 @@ spec.loader.exec_module(probe)
 class CompileOnlyContractTests(unittest.TestCase):
     def test_watcher_is_never_invoked_without_an_unknown_argument(self):
         self.assertEqual(probe.cli_cases('watcher'), ((('--help',), 2),))
-        for kind in ('import', 'recovery', 'reset'):
+        for kind in ('import', 'recovery', 'reset', 'uninstall'):
             self.assertEqual(probe.cli_cases(kind), ((('--help',), 0), ((), 2)))
         with self.assertRaises(ValueError):
             probe.cli_cases('main')
@@ -52,15 +52,17 @@ class CompileOnlyContractTests(unittest.TestCase):
     def make_fixture(self, parent):
         stage, out = parent / 'stage', parent / 'output'
         stage.mkdir(); out.mkdir()
-        rows = {}
-        for relative, data in [('star-map-reset-helper.exe', b'synthetic helper, not PE'),
-                               ('_star_map_reset_runtime/installation-profile.json', b'{}')]:
-            path = stage / relative
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(data)
-            rows[relative] = dict(bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
-        helpers = {'reset': dict(included=True, executable='star-map-reset-helper.exe',
-            runtimeDirectory='_star_map_reset_runtime', files=rows)}
+        helpers = {}
+        for kind in ('reset', 'uninstall'):
+            rows = {}
+            executable, runtime = f'star-map-{kind}-helper.exe', f'_star_map_{kind}_runtime'
+            for relative, data in [(executable, b'synthetic helper, not PE'),
+                                   (runtime + '/installation-profile.json', b'{}')]:
+                path = stage / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+                rows[relative] = dict(bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+            helpers[kind] = dict(included=True, executable=executable, runtimeDirectory=runtime, files=rows)
         source = dict(commit='a' * 40, tree='b' * 40, clean=True)
         profile = dict(product='星图', sourceCommit=source['commit'], syntheticCompileOnly=True)
         return stage, out, helpers, source, profile
@@ -75,6 +77,7 @@ class CompileOnlyContractTests(unittest.TestCase):
             self.assertFalse((stage / '星图.exe').read_bytes().startswith(b'MZ'))
             self.assertIn('/DResetSourceCommit=' + source['commit'], defines)
             self.assertIn('/DProgramOnlyInstaller', defines)
+            self.assertTrue(any(value.startswith('/DUninstallHelperInventorySHA256=') for value in defines))
             inventory = json.loads((out / 'reset-program-inventory.json').read_text('utf-8'))
             self.assertEqual(inventory['sourceCommit'], source['commit'])
             self.assertFalse(any('recognition/' in row for row in inventory['files']))
