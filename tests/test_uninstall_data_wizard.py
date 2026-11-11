@@ -27,12 +27,14 @@ def routine(name):
 class UninstallWiringTests(unittest.TestCase):
     def test_default_full_clear_has_only_continue_or_cancel_in_both_channels(self):
         choose = routine('InitializeUninstall')
-        self.assertIn('永久清除', choose)
-        self.assertIn('更新版本', choose)
+        self.assertIn('ConfirmUninstall=卸载将永久清除', INSTALLER)
+        self.assertIn('更新版本请取消', INSTALLER)
+        self.assertEqual(INSTALLER.count('ConfirmUninstall='), 1)
+        self.assertNotIn('MsgBox(', choose.split('ConfirmUninstall', 1)[-1])
         for obsolete in ('UninstallDeleteData', 'DeleteBox', 'UninstallMakeBackup', 'CreateCustomForm'):
             self.assertNotIn(obsolete, SOURCE)
         self.assertEqual(INSTALLER.count('#include "qt-uninstall-data.iss"'), 2)
-        self.assertIn('if not UninstallSilent then', choose)
+        self.assertNotIn('MB_YESNO', choose)
         self.assertIn('Result := True', choose)
         self.assertNotIn('AcquireUninstallLease', choose)
 
@@ -50,7 +52,11 @@ class UninstallWiringTests(unittest.TestCase):
         self.assertIn('remaining.txt', clear)
         self.assertIn('mutationStarted', clear)
         self.assertIn('UninstallMayHaveChanged := True', clear)
-        self.assertIn('if UninstallMayHaveChanged then CommitGameWatcherUninstall', routine('DeinitializeUninstall'))
+        self.assertIn('if UninstallMayHaveChanged or UninstallProcessUncertain then', routine('DeinitializeUninstall'))
+        self.assertLess(pre.index('ClearOwnedInstallation'), pre.index('FinishUninstallData'))
+        self.assertLess(pre.index('FinishUninstallData'), pre.index('CommitGameWatcherUninstall'))
+        self.assertIn('MB_RETRYCANCEL, IDCANCEL', pre)
+        self.assertIn('if UninstallSilent or', pre)
 
     def test_installed_helper_is_verified_and_copied_before_execution(self):
         copy = routine('PrepareUninstallRunner')
@@ -58,7 +64,7 @@ class UninstallWiringTests(unittest.TestCase):
                      'GetSHA256OfFile(Source)', 'FileCopy(Source, Target, True)', 'GetSHA256OfFile(Target)'):
             self.assertIn(text, copy)
         clear = routine('ClearOwnedInstallation')
-        self.assertIn("Exec(UninstallRunnerRoot + '\\star-map-uninstall-helper.exe'", clear)
+        self.assertIn("RunBoundedUninstallProcess(UninstallRunnerRoot + '\\star-map-uninstall-helper.exe'", clear)
         self.assertIn('--lock-handle', clear)
         self.assertNotIn("Exec(ExpandConstant('{app}", SOURCE)
         self.assertNotIn('DelTree(', SOURCE)
@@ -71,20 +77,48 @@ class UninstallWiringTests(unittest.TestCase):
         self.assertNotIn('DeleteFile', check)
         finish = routine('FinishUninstallEntries')
         self.assertIn('RemoveOwnedUninstallShortcut', finish)
-        self.assertLess(finish.index('InstallLocation'), finish.index('RegDeleteKeyIncludingSubkeys'))
-        self.assertIn('HKCU64', finish)
-        self.assertIn('HKLM64', finish)
+        self.assertNotIn('RegDeleteKey', SOURCE)
+        self.assertNotIn("RemoveOwnedUninstallShortcut(ExpandConstant('{group}\\卸载星图.lnk'))", finish)
 
-    def test_locked_file_is_deleted_by_same_handle_after_native_not_by_path(self):
+    def test_locked_file_is_finalized_before_native_can_remove_retry_files(self):
         event = routine('CurUninstallStepChanged')
         post = event.split('if CurUninstallStep = usPostUninstall', 1)[1]
-        self.assertLess(post.index('UninstallDeleteByHandle'), post.index('ReleaseUninstallLease'))
+        finish = routine('FinishUninstallData')
+        self.assertLess(finish.index('UninstallDeleteByHandle'), finish.index('ReleaseUninstallLease'))
         self.assertIn('$C0010000', routine('AcquireUninstallLease'))
-        self.assertNotIn('DeleteFile(Path)', post)
-        self.assertIn('not RemoveDir', post)
+        self.assertNotIn('DeleteFile(Path)', finish)
+        self.assertNotIn('FinishUninstallData', post)
+        self.assertIn('not RemoveDir', finish)
         self.assertLess(post.index("Path := ExpandConstant('{app}')"), post.index('UninstallCleanupComplete := True'))
         self.assertIn('UninstallCleanupComplete := True', post)
         self.assertIn('完整清理仍须核对', INSTALLER)
+
+    def test_worker_wait_is_bounded_and_retry_requires_confirmed_process_exit(self):
+        wait = routine('RunBoundedUninstallProcess')
+        self.assertIn('UninstallCreateProcess(Executable', wait)
+        self.assertIn('UninstallTicks - Started >= Timeout', wait)
+        self.assertIn('UninstallTerminate(Process.Process', wait)
+        self.assertIn('UninstallWait(Process.Process', wait)
+        self.assertIn('UninstallPumpMessages', wait)
+        self.assertNotIn('ewWaitUntilTerminated', SOURCE)
+        clear = routine('ClearOwnedInstallation')
+        self.assertIn('--timeout-seconds 120', clear)
+        self.assertIn('UninstallRunnerRoot, 135000, Code', clear)
+        self.assertIn('PreviouslyChanged := UninstallMayHaveChanged', clear)
+        self.assertIn('UninstallMayHaveChanged := PreviouslyChanged', clear)
+        event = routine('CurUninstallStepChanged')
+        self.assertLess(event.index('if UninstallProcessUncertain then begin'), event.index('MB_RETRYCANCEL'))
+        self.assertIn('UninstallAttempt := UninstallAttempt + 1', routine('PrepareUninstallRunner'))
+
+    def test_install_and_uninstall_share_atomic_process_lifetime_maintenance_mutex(self):
+        self.assertIn('if not AcquireInstallerMaintenance then Exit', routine('InitializeUninstall'))
+        self.assertIn('Result := AcquireInstallerMaintenance', routine('InitializeSetup'))
+        self.assertIn("ExpandConstant('Global\\XingtuMaintenance-{#InstallerAppId}')", SOURCE)
+        self.assertIn('(MaintenanceMutex = 0) or (Error = 183)', SOURCE)
+        self.assertNotIn('SetupMutex=', INSTALLER)
+        watcher = (ROOT / 'tools/qt-game-watcher-lifecycle.iss').read_text('utf-8-sig')
+        self.assertIn('if IsUninstaller then', watcher)
+        self.assertIn('Directory, 15000, Code', watcher)
 
     def test_upgrade_keeps_existing_preserve_coordinator_and_never_calls_uninstall(self):
         production = INSTALLER.split('; Original per-user installer', 1)[1].split('; Private directory selection', 1)[0]

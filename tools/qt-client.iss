@@ -146,6 +146,7 @@ UsePreviousLanguage=no
 Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 
 [Messages]
+ConfirmUninstall=卸载将永久清除 %1 本次安装的程序、设置、缓存、图包、自建路线图库和迁移备份，不经过回收站。%n%n已确认属于本次安装的外置资料也会清除；其他实例和外部原始文件不在范围内。%n%n更新版本请取消并运行安装包的升级入口。继续卸载？
 ; Native zero exit is not a receipt for external data or a pending self-delete.
 UninstalledAll=程序卸载步骤已结束。完整清理仍须核对本次清理提示和剩余项。
 
@@ -203,6 +204,8 @@ function CloseHandle(hObject: THandle): Boolean;
   external 'CloseHandle@kernel32.dll stdcall';
 function InstallerFileAttributes(lpFileName: String): LongWord;
   external 'GetFileAttributesW@kernel32.dll stdcall';
+function RunBoundedUninstallProcess(const Executable, Params, Directory: String;
+  Timeout: LongWord; var Code: Integer): Boolean; forward;
 #include "qt-game-watcher-lifecycle.iss"
 #include "qt-installer-target.iss"
 function OwnedAssistantShortcut(const Path: String): Boolean;

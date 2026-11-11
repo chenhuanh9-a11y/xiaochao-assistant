@@ -19,6 +19,7 @@ from pathlib import Path
 import re
 import stat
 import sys
+import time
 
 from packaged_product_identity import PRODUCTION_APP_ID, PRODUCTION_PRODUCT, _ISOLATED
 
@@ -622,7 +623,7 @@ def _is_maintenance_file(name):
 class _TreePlan:
     """Complete native-handle inventory; deletes only handles opened here."""
 
-    def __init__(self, api, root, *, mode, owned=(), preserve_lock=False):
+    def __init__(self, api, root, *, mode, owned=(), preserve_lock=False, checkpoint=None):
         self.api = api
         self.root = Path(root)
         self.mode = mode
@@ -637,6 +638,7 @@ class _TreePlan:
         self.handles = []
         self.root_identity = None
         self.unowned = []
+        self.checkpoint = checkpoint or (lambda: None)
 
     def _app_classification(self, relative, is_dir):
         folded = relative.casefold()
@@ -719,6 +721,7 @@ class _TreePlan:
         return self
 
     def _walk(self, directory_path, relative_directory):
+        self.checkpoint()
         try:
             with os.scandir(directory_path) as iterator:
                 entries = sorted(list(iterator), key=lambda entry: entry.name.casefold())
@@ -728,6 +731,7 @@ class _TreePlan:
         if len(set(folded_names)) != len(folded_names):
             raise UninstallError("case-colliding-directory-entry", remaining=(relative_directory or ".",))
         for entry in entries:
+            self.checkpoint()
             name = entry.name
             if (not name or name in (".", "..") or "/" in name or "\\" in name or ":" in name
                     or name[-1:] in (" ", ".") or any(ord(c) < 32 for c in name)):
@@ -766,7 +770,14 @@ class _TreePlan:
                                        action=action, handle=None, identity=None))
                 continue
             delete_access = action == "delete" or (self.mode == "external" and action == "preserve-dir")
-            handle, info = _open_handle(self.api, path, directory=is_dir, delete=delete_access)
+            # A DELETE handle alone can open a running Windows image and fail
+            # only later, after unrelated data has already been removed. A
+            # retained WRITE handle rejects a mapped main image now and also
+            # prevents it from starting between this preflight and deletion.
+            main_image = self.mode == 'app' and not is_dir and rel.casefold() in {
+                self.exe_name.casefold(), '第五人格小抄助手.exe'}
+            handle, info = _open_handle(self.api, path, directory=is_dir,
+                                        delete=delete_access, write=main_image)
             self.handles.append(handle)
             if _handle_path(self.api, handle) != _path_key(path):
                 raise UninstallError("entry-physical-path-mismatch", remaining=(rel,))
@@ -777,7 +788,9 @@ class _TreePlan:
                 self._walk(path, rel)
 
     def assert_unchanged(self):
+        self.checkpoint()
         for node in self.nodes:
+            self.checkpoint()
             if node["handle"] is None:
                 continue
             info = _handle_info(self.api, node["handle"])
@@ -786,6 +799,7 @@ class _TreePlan:
             if _handle_path(self.api, node["handle"]) != _path_key(node["path"]):
                 raise UninstallError("preflight-path-changed", remaining=(node["relative"] or ".",))
         for directory in (node for node in self.nodes if node["directory"] and node.get("handle")):
+            self.checkpoint()
             prefix = directory["relative"]
             expected = set()
             for child in self.nodes:
@@ -814,6 +828,7 @@ class _TreePlan:
     def delete_files(self, mutation_started):
         self.assert_unchanged()
         for node in self.nodes:
+            self.checkpoint()
             if node["action"] != "delete" or node["directory"]:
                 continue
             if mutation_started is not None:
@@ -834,6 +849,7 @@ class _TreePlan:
                      and node not in dirs]
         dirs.sort(key=lambda node: node["relative"].count("/") + bool(node["relative"]), reverse=True)
         for node in dirs:
+            self.checkpoint()
             if node.get("deleted"):
                 continue
             if mutation_started is not None:
@@ -1031,6 +1047,21 @@ def _remove_run_values(registry, run_state, mutation_started):
                                  remaining=('HKCU\\' + _EXIT_KEY + '\\' + name,)) from error
 
 
+def _failure_message(error):
+    code = error.code if isinstance(error, UninstallError) else "unexpected-error"
+    if code == "cleanup-time-limit":
+        return "清理超过本次等待时间，已停止。请关闭本安装的星图和资源任务后重新卸载。"
+    if code.startswith(("file-open", "handle-delete", "directory-enumeration")):
+        return "部分文件被占用或当前账号无权清除。请退出本安装的星图，核对剩余项后重试；不会自动修改权限。"
+    if "recovery" in code or "pending" in code:
+        return "上次升级尚未完成，请先运行对应安装包完成恢复，再重新卸载。"
+    if any(word in code for word in ("profile", "ownership", "identity-file", "uninstall-runtime")):
+        return "安装文件不完整或无法核实归属。请使用对应安装包修复，再重新卸载；不要手动删除卸载程序。"
+    if any(word in code for word in ("changed", "mismatch", "shared", "unknown", "link", "reparse")):
+        return "资料归属或占用状态无法安全确认，已停止。请核对剩余项；其他实例和外部原件不会自动清理。"
+    return "清理未完成，已停止。请保留剩余项和卸载入口，关闭相关任务后重试；仍失败时使用对应安装包修复。"
+
+
 def _write_receipt(result_dir, *, status, mutation_started, error=None, remaining=()):
     receipt = configparser.ConfigParser(interpolation=None)
     receipt.optionxform = str
@@ -1038,6 +1069,7 @@ def _write_receipt(result_dir, *, status, mutation_started, error=None, remainin
                          "mutationStarted": "True" if mutation_started else "False"}
     if error:
         receipt["result"]["errorCode"] = error.code if isinstance(error, UninstallError) else type(error).__name__
+        receipt["result"]["message"] = _failure_message(error)
     if error:
         message = str(error) or type(error).__name__
         if isinstance(error, UninstallError) and error.remaining:
@@ -1062,6 +1094,8 @@ def _args(argv):
     parser.add_argument("--parent-executable", required=True)
     parser.add_argument("--parent-sha256", required=True)
     parser.add_argument("--lock-handle", required=True, type=int)
+    parser.add_argument("--timeout-seconds", type=int, default=120, choices=range(1, 601),
+                        metavar="1..600")
     return parser.parse_args(argv)
 
 
@@ -1079,12 +1113,19 @@ def run(args, *, registry_provider=None, owner_sid_provider=None, profile_provid
     pinned_handles = []
     metadata_observations = []
     remaining = []
+    deadline = time.monotonic() + getattr(args, "timeout_seconds", 120)
+
+    def checkpoint():
+        if time.monotonic() >= deadline:
+            raise UninstallError("cleanup-time-limit")
 
     def began_mutation():
         nonlocal mutation
+        checkpoint()
         mutation = True
 
     try:
+        checkpoint()
         if os.name != "nt":
             raise UninstallError("windows-required")
         _safe_ancestors(root)
@@ -1106,6 +1147,7 @@ def run(args, *, registry_provider=None, owner_sid_provider=None, profile_provid
         run_state = None
         resource_root = None
         external_exists = False
+        external_lock_missing = False
         startup_root = None
         startup_exists = False
         if expected["production"]:
@@ -1146,23 +1188,32 @@ def run(args, *, registry_provider=None, owner_sid_provider=None, profile_provid
                     # by resource_transaction while the preflight/deletion runs.
                     external_lease = _ExternalLease(api, ext_lock_path)
                 else:
-                    raise UninstallError("external-resource-lock-missing",
-                                         remaining=(str(ext_lock_path),))
+                    external_lock_missing = True
             elif resource_root.is_symlink():
                 raise UninstallError("external-resource-root-linked")
 
-        app_plan = _TreePlan(api, root, mode="app", owned=ownership, preserve_lock=True)
+        app_plan = _TreePlan(api, root, mode="app", owned=ownership, preserve_lock=True,
+                             checkpoint=checkpoint)
         app_plan.scan(exe_name=expected["executable"])
         if expected["production"]:
             _require_owner(app_plan, sid, "install-root-owner-mismatch")
         if external_exists:
-            external_plan = _TreePlan(api, resource_root, mode="external", preserve_lock=True)
+            external_plan = _TreePlan(api, resource_root, mode="external", preserve_lock=True,
+                                     checkpoint=checkpoint)
             external_plan.scan()
             _require_owner(external_plan, sid, "external-resource-owner-mismatch")
+            if external_lock_missing:
+                # A previous attempt can stop after removing its lock but
+                # before removing the empty lock ancestors. This permits only
+                # that empty scaffold, never missing-lock data or unknown items.
+                if any(not node['directory'] or node['relative'].casefold() not in {
+                        '', 'work', 'work/map-packages'} for node in external_plan.nodes):
+                    raise UninstallError("external-resource-lock-missing",
+                                         remaining=(str(_external_lock_path(resource_root)),))
         if startup_exists:
             if not startup_root.is_dir():
                 raise UninstallError("game-startup-state-not-directory")
-            startup_plan = _TreePlan(api, startup_root, mode="full")
+            startup_plan = _TreePlan(api, startup_root, mode="full", checkpoint=checkpoint)
             startup_plan.scan()
             _require_owner(startup_plan, sid, "game-startup-owner-mismatch")
         app_plan.assert_unchanged()
@@ -1181,17 +1232,14 @@ def run(args, *, registry_provider=None, owner_sid_provider=None, profile_provid
             api.CloseHandle(handle)
         metadata_observations.clear()
 
-        # Keep the app's parent lock and ancestors for Inno's usPostUninstall.
+        # Keep the app's parent lock until Inno's pre-native data finalization.
         # The external lock is owned by this helper and is removed here.
         app_plan.delete_files(began_mutation)
         app_plan.delete_directories(began_mutation)
         if external_plan:
             external_plan.delete_files(began_mutation)
             external_plan.delete_directories(began_mutation)
-            lock_path = _external_lock_path(resource_root)
-            if lock_path.exists():
-                if external_lease is None:
-                    external_lease = _ExternalLease(api, lock_path)
+            if not external_lock_missing:
                 external_lease.close_for_delete()
                 began_mutation()
                 external_lease.delete()
