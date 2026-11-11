@@ -89,15 +89,19 @@ class InstallerProjectionTests(unittest.TestCase):
         self.assertEqual(build.setup_basename(private, "1.0.5-qt-test", commit),
                          "XingtuQtTest-Setup-1.0.5-qt-test-aaaaaaaaaaaa")
 
-    def test_fresh_install_stages_complete_candidate_then_runtime_repairs_all_base_files(self):
+    def test_fresh_install_has_no_default_base_or_candidate_repair_projection(self):
         destination = self.folder / "fresh"
         copied = self.apply_generated_projection(destination)
         expected = set(self.report["installedFiles"])
         self.assertEqual(set(copied), expected)
-        from managed_base_resources import repair_managed_base_resources
-        self.assertEqual(repair_managed_base_resources(destination)["changed"], len(self.report["families"]["base"]))
+        self.assertIsNone(self.report["managedBaseManifest"])
+        self.assertFalse(any("managed-base-resources" in name for name in copied))
+        self.assertFalse(any(name in copied for name in self.report["families"]["base"]))
         for name in self.resources:
             if "/author-packs/" in name:
+                self.assertFalse((destination / "_internal" / name).exists())
+                continue
+            if name.startswith(("recognition/", "references/author-packs/", "references/difficult-native/")) or name == "difficult-native-manifest.json":
                 self.assertFalse((destination / "_internal" / name).exists())
                 continue
             self.assertEqual((destination / "_internal" / name).read_bytes(),
@@ -124,18 +128,15 @@ class InstallerProjectionTests(unittest.TestCase):
                          (self.stage / "_internal/references/build-fingerprint.txt").read_bytes())
         self.assertEqual((destination / "version.json").read_bytes(), b"new-program")
 
-    def test_partial_plane_repairs_missing_full_set_preserving_unmanaged_extra_file(self):
+    def test_partial_or_missing_base_is_not_filled_by_program_upgrade(self):
         destination = self.folder / "partial"
         self.write(destination / "_internal/references/one-existing.json", b"keep")
         copied = self.apply_generated_projection(destination)
         self.assertFalse(set(copied) & set(self.report["families"]["base"]))
         self.assertFalse((destination / "_internal/difficult-native-manifest.json").exists())
         self.assertTrue((destination / "_internal/assets/custom-maps/manifest.json").exists())
-        from managed_base_resources import repair_managed_base_resources
-        repair_managed_base_resources(destination)
         self.assertEqual((destination / "_internal/references/one-existing.json").read_bytes(), b"keep")
-        self.assertEqual((destination / "_internal/difficult-native-manifest.json").read_bytes(),
-                         (self.stage / "_internal/difficult-native-manifest.json").read_bytes())
+        self.assertFalse((destination / "_internal/difficult-native-manifest.json").exists())
 
     def test_production_fingerprint_uses_new_qt_commit_and_records_replaced_hash(self):
         resources = {"references/build-fingerprint.txt": dict(bytes=9, sha256="a" * 64)}
@@ -163,8 +164,7 @@ class InstallerProjectionTests(unittest.TestCase):
         sidecars = {"_internal/references/author-packs/nightingale/" + name
                     for name in ("catalog.json", "display-bindings.json")}
         self.assertEqual(set(self.report["families"]["optional-author"]), sidecars)
-        manifest = json.loads((self.stage / self.report["managedBaseManifest"]).read_bytes())
-        self.assertFalse(sidecars & {row["path"] for row in manifest["files"]})
+        self.assertIsNone(self.report["managedBaseManifest"])
         self.assertEqual(set(self.report["omittedOptionalAuthorFiles"]), sidecars)
         self.assertTrue(all(not any(path.endswith(name) for name in sidecars)
                             for path in self.report["installedFiles"]))

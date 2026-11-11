@@ -7,7 +7,6 @@ import subprocess
 import sys
 import tempfile
 import unittest
-import zipfile
 from contextlib import redirect_stdout
 from io import StringIO
 from unittest.mock import patch
@@ -17,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "tools"), str(ROOT / "app")]
 import qtifw_trial_helper as helper
 from qtifw_trial_helper import OWNER, prepare, verify, verify_program, clear_data, scoped, check_target
-from build_qtifw_trial import check_archive_inventory, map_inputs
+from build_qtifw_trial import check_archive_inventory
 
 
 class TrialTests(unittest.TestCase):
@@ -93,24 +92,14 @@ class TrialTests(unittest.TestCase):
         self.assertEqual(outside.read_bytes(), b"immutable snapshot pointer")
         self.assertEqual(original.stat().st_nlink, 3)
 
-    def test_accepted_map_delivery_is_copied_by_exact_archive_identity(self):
-        archives = self.scope / "archives"
-        archives.mkdir()
-        original = archives / "author.zip"
-        with zipfile.ZipFile(original, "w") as archive:
-            archive.writestr("map-package.json", json.dumps(dict(packageId="author-example", season="s1")))
-        payload = original.read_bytes()
-        report = self.scope / "delivery.json"
-        report.write_text(json.dumps(dict(packages=[dict(path="author.zip", outputBytes=len(payload),
-                                                       sha256=hashlib.sha256(payload).hexdigest())])))
-        packages, sources = map_inputs(archives, report)
-        self.assertEqual(packages[0]["path"], "_installer-support/maps/author.zip")
-        self.assertEqual(packages[0]["packageId"], "author-example")
-        self.assertTrue(packages[0]["versionedAuthor"])
-        self.assertEqual(sources, [(original, packages[0]["path"])])
-        original.write_bytes(payload + b"changed")
-        with self.assertRaisesRegex(ValueError, "archive changed"):
-            map_inputs(archives, report)
+    def test_new_qtifw_entry_has_no_default_map_seed_or_base_repair(self):
+        component = (ROOT / "tools/qtifw_trial/component.js").read_text(encoding="utf-8")
+        helper_source = (ROOT / "tools/qtifw_trial_helper.py").read_text(encoding="utf-8")
+        builder = (ROOT / "tools/build_qtifw_trial.py").read_text(encoding="utf-8")
+        self.assertNotIn("install-maps", component)
+        self.assertNotIn("install-maps", helper_source)
+        self.assertNotIn("map-pack-root", builder)
+        self.assertNotIn("map-pack-report", builder)
 
     @unittest.skipUnless(os.name == "nt", "Win32 per-install Run entry")
     def test_uninstall_disables_own_run_entry_even_if_watcher_exe_is_missing(self):

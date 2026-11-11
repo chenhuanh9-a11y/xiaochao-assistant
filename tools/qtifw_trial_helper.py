@@ -231,7 +231,7 @@ def receipt(policy, target, name, value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("check-target", "prepare", "verify-program", "verify", "install-maps", "disable-watcher", "inspect-data", "hold-uninstall", "select-data", "undo-data", "noop", "data", "pause", "fail"))
+    parser.add_argument("action", choices=("check-target", "prepare", "verify-program", "verify", "disable-watcher", "inspect-data", "hold-uninstall", "select-data", "undo-data", "noop", "data", "pause", "fail"))
     parser.add_argument("target", type=Path)
     parser.add_argument("choice", nargs="?", default="keep")
     parser.add_argument("operation", nargs="?", default="none", choices=("none", "purge"))
@@ -251,15 +251,6 @@ def main():
             if not _safe(target / "trial-maintenance.exe").is_file():
                 raise ValueError("maintenance-not-created")
             result = verify(policy, args.target)
-        elif args.action == "install-maps":
-            target, owner = bound_owner(policy, args.target)
-            if owner["phase"] != "installing":
-                raise ValueError("maps-require-new-installation")
-            verify_program(policy, target)
-            result = dict(installed=0, packages=[])
-            if policy.get("mapPackages"):
-                from qtifw_map_seed import install_bundled_maps
-                result = install_bundled_maps(target, policy["mapPackages"])
         elif args.action == "select-data":
             bound_owner(policy, args.target)
             if args.choice not in {"keep", "clear"}:
