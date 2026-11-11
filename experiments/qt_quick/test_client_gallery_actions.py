@@ -28,14 +28,14 @@ class SharedLease(resources_fixture.Lease):
 
 class GalleryBackend(FakeBackend):
     def __init__(self, image):
-        super().__init__(image)
-        self.error = ""
         self.catalog = [
             dict(id="author-a", name="测试速菊", packageId="nightmare-suju", available=40,
                  availableMaps=40, mapCount=40, previewUrl=image),
             dict(id="author-b", name="未登记资源", packageId="", available=12,
                  availableMaps=12, mapCount=40, previewUrl=image),
         ]
+        super().__init__(image)
+        self.error = ""
 
     profiles = Property("QVariantList", lambda self: self.catalog, notify=FakeBackend.changed)
     hasError = Property(bool, lambda self: bool(self.error), notify=FakeBackend.changed)

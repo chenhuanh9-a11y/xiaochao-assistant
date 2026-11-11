@@ -166,7 +166,10 @@ class QtClient:
             index_url=None if probe_output else os.environ.get("STAR_MAP_PACKAGE_INDEX_URL"),
             save_only=True,
             installed_package=lambda package_id, sha, cancelled: dict(status='unverified'))
-        self.backend = Backend(self.sandbox, resource_resolver=self.resource_resolver)
+        from client_imported_gallery_images import ImportedGalleryImages
+        self.gallery_images = ImportedGalleryImages()
+        self.backend = Backend(self.sandbox, resource_resolver=self.resource_resolver,
+                               gallery_images=self.gallery_images, defer_loading=True)
         self.route_choices = Backend(self.sandbox, resource_resolver=self.resource_resolver)
         self.resources.resourcesChanged.connect(self.route_choices.refresh)
         self.resources.resourcesChanged.connect(self._schedule_resource_preparation)
@@ -279,6 +282,7 @@ class QtClient:
         self.engine = QQmlApplicationEngine()
         self.engine.addImageProvider("live", self.images)
         self.engine.addImageProvider("floorregion", self.floor_region_images)
+        self.engine.addImageProvider("importedgallery", self.gallery_images)
         self.warnings = []
         self.engine.warnings.connect(self._record_qml_warnings)
         context = self.engine.rootContext()

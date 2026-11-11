@@ -85,6 +85,16 @@ class ResourceRows(QAbstractListModel):
                     self.mutations += 1
 
 
+class GalleryProfiles(ResourceRows):
+    fields = ('modelData',)
+
+    def reconcile_profiles(self, profiles):
+        rows = [dict(key='author:' + row['id'], modelData=dict(row, importCard=False)) for row in profiles]
+        rows.append(dict(key='action:import', modelData=dict(importCard=True, id='', name='',
+                         availableMaps=0, mapCount=0, previewUrl='')))
+        self.reconcile(rows)
+
+
 class Backend(QObject):
     changed = Signal()
     viewChanging = Signal(str)
@@ -93,15 +103,19 @@ class Backend(QObject):
     overlayRequested = Signal()
     clickThroughRequested = Signal(bool)
 
-    def __init__(self, sandbox, *, resource_resolver=None):
+    def __init__(self, sandbox, *, resource_resolver=None, gallery_images=None, defer_loading=False):
         super().__init__()
         self.paths = runtime_paths(sandbox)
         self.resource_resolver = resource_resolver
+        self.gallery_images = gallery_images
+        self._defer_loading = bool(defer_loading)
+        self._active, self._refresh_pending = not self._defer_loading, False
         self.sandbox = self.paths.installation_root
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(2)
         self.model = ResourceRows()
         self.preview_model = ResourceRows()
+        self.gallery_profiles = GalleryProfiles()
         self.context = None
         self._season = "s0"
         self._mode, self._profile, self._floor, self._query = "nightmare", "", "", ""
@@ -110,6 +124,7 @@ class Backend(QObject):
         self._selected = ""
         self._selection = {}
         self._profiles = []
+        self.gallery_profiles.reconcile_profiles([])
         self._selections = {}
         self._mode_profiles = {}
         self._context_floors = {}
@@ -125,6 +140,7 @@ class Backend(QObject):
     season = Property(str, lambda s: s._season, notify=changed)
     mode = Property(str, lambda s: s._mode, notify=changed)
     profiles = Property("QVariantList", lambda s: s._profiles, notify=changed)
+    galleryProfileModel = Property(QObject, lambda s: s.gallery_profiles, constant=True)
     profileId = Property(str, lambda s: s._profile, notify=changed)
     floor = Property(str, lambda s: s._floor, notify=changed)
     floorOptions = Property("QVariantList", lambda s: s._floor_options(), notify=changed)
@@ -149,6 +165,13 @@ class Backend(QObject):
     viewKey = Property(str, lambda s: f"{s._season}/{s._mode}/{s._profile}/{s._floor}/{s._query}", notify=changed)
 
     def _floor_options(self):
+        if self.resource_resolver is not None:
+            result = [dict(name='全部楼层', value='')]
+            if self.context is not None and self.context.pack is not None:
+                metadata = self.context.floor_metadata or {}
+                result.extend(dict(name=metadata.get(str(floor), {}).get('label', str(floor)),
+                    value=str(floor)) for floor in self.context.pack.floors)
+            return result
         if self._season == "s0":
             return [dict(name=name, value=value) for name, value in
                     (("全部楼层", ""), ("1 楼", "1"), ("2 楼", "2"), ("B1 地下室", "B1"))]
@@ -156,6 +179,26 @@ class Backend(QObject):
         return [dict(name="全部楼层", value="")] + [
             dict(name=metadata.get(f"source-height-{height}", {}).get("label", f"源高度 {height}"),
                  value=f"source-height-{height}") for height in (4, 3, 2, 1)]
+
+    def _set_profiles(self, profiles):
+        self._profiles = profiles
+        self.gallery_profiles.reconcile_profiles(profiles)
+
+    def _image_url(self, path):
+        if self.resource_resolver is not None:
+            return self.gallery_images.url(path) if self.gallery_images is not None else ''
+        return self._preview_url(path, self.context.path_stamps, self._season)
+
+    @Slot()
+    def invalidateResources(self):
+        """Revoke imported pixels immediately, preserving rows/selection keys."""
+        if self.gallery_images is not None:
+            self.gallery_images.clear()
+            self._set_profiles([dict(profile, previewUrl='') for profile in self._profiles])
+            for model in (self.model, self.preview_model):
+                model.reconcile([dict(row, imageUrl='', available=False) for row in model.rows])
+            self._selection = next((row for row in self.model.rows if row['key'] == self._selected), {})
+        self.refresh()
 
     def _submit(self, function, callback):
         job = Work(function)
@@ -169,9 +212,17 @@ class Backend(QObject):
 
     @Slot()
     def refresh(self):
+        if self._shutting_down:
+            return
         self._cancel.set()
         self._cancel = cancel = threading.Event()
         self._generation += 1
+        if self._defer_loading and not self._active:
+            self._refresh_pending = True
+            self._busy = False
+            self.changed.emit()
+            return
+        self._refresh_pending = False
         generation, mode, season, initial_view = self._generation, self._mode, self._season, self.viewKey
         self._busy = True
         self.changed.emit()
@@ -180,26 +231,37 @@ class Backend(QObject):
                 self.stale_results += 1
                 return
             self._busy = False
+            if self._defer_loading and not self._active:
+                # The worker drains independently of page visibility. Keep no
+                # hidden image/model result; resume reads the current snapshot.
+                self._refresh_pending = True
+                self.changed.emit()
+                return
             if error or context.error:
                 self.context = None
-                self._profiles = []
+                self._set_profiles([])
+                if self.gallery_images is not None:
+                    self.gallery_images.clear()
                 self.model.reconcile([])
                 self.preview_model.reconcile([])
                 self._selected, self._selection = "", {}
                 self._message = f"资源读取失败：{error or context.error}"
             else:
                 self.context = context
+                if self.gallery_images is not None:
+                    self.gallery_images.publish(getattr(context, 'assets', None))
                 # Keep all declarations in the read context for package repair,
                 # but only offer authors with actual local images in the gallery.
                 from generic_author_package import is_generic_profile
-                self._profiles = [{"id": p.profile_id, "name": p.name, "packageId": p.package_id or "",
+                self._set_profiles([{"id": p.profile_id, "name": p.name, "packageId": p.package_id or "",
                                    "runtimeSelectable": season == "s0" or is_generic_profile(p.profile_id) or p.profile_id in {"s1-jiaye-handnotes", "s1-aichicu-routes", "s1-native-structure"},
                                    "runtimeProfileId": "shared-structure" if p.profile_id == "s1-native-structure" else p.profile_id,
                                    "available": p.available_layers,
                                    "availableMaps": p.available_maps, "mapCount": p.map_count,
-                                   "previewUrl": self._preview_url(p.first_preview[2], context.path_stamps, self._season)
+                                   "userProvided": self.resource_resolver is not None,
+                                   "previewUrl": self._image_url(p.first_preview[2])
                                        if p.first_preview else ""} for p in context.profiles
-                                  if p.available_layers > 0]
+                                  if p.available_layers > 0])
                 if self._profile not in {p["id"] for p in self._profiles}:
                     self._profile = next((p["id"] for p in self._profiles if p["available"]),
                                          self._profiles[0]["id"] if self._profiles else "")
@@ -207,6 +269,8 @@ class Backend(QObject):
                 self._message = ('\n'.join(context.warnings) if not self._profiles and context.warnings else
                                 f"S1 图库 · 已读取 {self.mapCount} 份图"
                                  if season == "s1" else self._import_notice or f"已读取 {self.mapCount} 份图")
+                if self.resource_resolver is not None and self._profiles:
+                    self._message += '\n' + '\n'.join((*context.warnings, '配准由作者提供，尚未复核。'))
             self.changed.emit()
             if self.viewKey != initial_view:
                 self.viewChanged.emit(self.viewKey)
@@ -222,6 +286,17 @@ class Backend(QObject):
                 return load_browse_context(self.paths.resource_root, mode, season=season, cancelled=cancel.is_set,
                                            display_fallback_root=bundled_author_root())
         self._submit(read, loaded)
+
+    @Slot(bool)
+    def setActive(self, active):
+        if self._shutting_down:
+            return
+        active = bool(active)
+        if active == self._active:
+            return
+        self._active = active
+        if active and self._refresh_pending:
+            self.refresh()
 
     @staticmethod
     def _preview_url(path, stamps, season="s0"):
@@ -246,7 +321,7 @@ class Backend(QObject):
                         path = Path(path)
                         stamp = self.context.path_stamps.get(path)
                         # The S1 producer hash also binds the preview cache.
-                        image_url = self._preview_url(path, self.context.path_stamps, self._season)
+                        image_url = self._image_url(path)
                         rows.append(dict(key=f"{self._season}/{self._mode}/{self._profile}/{item.id}/{variant.id}/{floor}",
                                          title=item.name, mapId=item.id, floor=str(floor),
                                          variant=variant.name, imageUrl=image_url,
@@ -301,7 +376,9 @@ class Backend(QObject):
         self._season, self._mode = season, mode
         self._floor = self._context_floors.get((season, mode), "")
         self.context = None
-        self._profiles = []
+        self._set_profiles([])
+        if self.gallery_images is not None:
+            self.gallery_images.clear()
         self.model.reconcile([])
         self.preview_model.reconcile([])
         self._profile = self._mode_profiles.get((season, mode), "")
@@ -414,6 +491,8 @@ class Backend(QObject):
     def shutdown(self):
         self._shutting_down = True
         self._cancel.set()
+        if self.gallery_images is not None:
+            self.gallery_images.clear()
         self.pool.clear()
         # Finish any import transaction before process exit; never abandon a writer.
         self.pool.waitForDone()

@@ -1840,7 +1840,7 @@ class ClientCoordinator(QObject):
         if invalidate:
             invalidate("resources-changed")
         self.session.refreshRuntime()
-        self.backend.refresh()
+        getattr(self.backend, 'invalidateResources', self.backend.refresh)()
         self.changed.emit()
 
     def _invalidate_display(self, reason="display-invalidated"):

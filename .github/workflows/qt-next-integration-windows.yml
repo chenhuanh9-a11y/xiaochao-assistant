@@ -264,7 +264,8 @@ jobs:
             # Joint B/C/display and actual QML flows have their own process
             # budget; eea64f0's combined lifecycle group reached 25 minutes.
             'packaging-imported-display-integration' {
-              $modules = @('test_client_imported_author_joint_activation', 'test_client_imported_author_ui')
+              $modules = @('test_client_imported_author_joint_activation', 'test_client_imported_author_ui',
+                'test_client_imported_browse', 'test_client_imported_browse_modes', 'test_client_imported_gallery_ui')
             }
             'season-ui' { $modules = @('test_s1_builtin_resources', 'test_probe_resource_context', 'test_season_settings', 'test_season_catalog', 'test_season_selector', 'test_season_selector_layout', 'test_season_gallery', 'test_season_resources', 'test_season_session', 'test_client_season_preparation', 'test_client_context_failure', 'test_settings_accessibility', 'test_client_gallery_actions', 'test_client_gallery_layout', 'test_client_gallery_resource_refresh') }
             'author-snapshots' { $modules = @('test_author_deferred_decode', 'test_s1_author_loading_work', 'test_author_snapshot_removal', 'test_client_snapshot_removal', 'test_author_resource_snapshots', 'test_author_snapshot_history', 'test_client_author_history', 'test_client_author_history_page', 'test_generic_author_package', 'test_generic_author_affine', 'test_generic_author_windows_paths', 'test_resource_transaction', 'test_map_package_upgrade', 'test_map_package_summary', 'test_client_author_snapshots', 'test_client_author_snapshot_recovery', 'test_client_author_snapshot_page', 'test_client_package_manager', 'test_star_map_recovery_helper', 'test_client_resource_recovery_lease', 'test_client_resource_startup_recovery', 'test_client_additions_recovery', 'test_client_import_upgrade_parity', 'test_generic_author_consumers', 'test_generic_author_startup') }

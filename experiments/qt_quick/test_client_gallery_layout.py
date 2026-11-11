@@ -13,7 +13,7 @@ from PySide6.QtGui import QGuiApplication, QImage
 from PySide6.QtQml import QQmlComponent, QQmlEngine
 from PySide6.QtQuick import QQuickWindow
 from PySide6.QtTest import QTest
-from backend import ResourceRows
+from backend import ResourceRows, GalleryProfiles
 
 APP = QGuiApplication.instance() or QGuiApplication([])
 
@@ -35,11 +35,19 @@ class FakeBackend(QObject):
         self._mode, self._profile, self._floor, self._query = "nightmare", "author-a", "", ""
         self.selected = {}
         self.calls = []
+        self.gallery_profiles = GalleryProfiles()
+        self.gallery_profiles.reconcile_profiles(self.profiles)
+        self.changed.connect(lambda: self.gallery_profiles.reconcile_profiles(self.profiles))
 
     season = Property(str, lambda self: self._season, notify=changed)
     mode = Property(str, lambda self: self._mode, notify=changed)
     profiles = Property("QVariantList", lambda self: getattr(self, "_profiles_override", None) or [dict(id="author-a", name="作者甲", runtimeSelectable=True, available=40, availableMaps=40, mapCount=40, previewUrl=self.image),
         dict(id="author-b", name="作者乙", runtimeSelectable=True, available=12, availableMaps=12, mapCount=40, previewUrl=self.image)], notify=changed)
+    galleryProfileModel = Property(QObject, lambda self: self.gallery_profiles, constant=True)
+
+    @Slot(bool)
+    def setActive(self, active):
+        self._active = bool(active)
     profileId = Property(str, lambda self: self._profile, notify=changed)
     floor = Property(str, lambda self: self._floor, notify=changed)
     floorOptions = Property("QVariantList", lambda self: [dict(name=name, value=value) for name, value in
@@ -210,10 +218,61 @@ class GalleryLayoutTests(unittest.TestCase):
                 break
             time.sleep(.01)
         point = item.mapToScene(QPointF(item.width()/2, item.height()/2))
+        scroll = self.item('galleryDetailScroll')
+        ancestor = item.parentItem()
+        while ancestor is not None and ancestor is not scroll:
+            ancestor = ancestor.parentItem()
+        if ancestor is scroll:
+            # The compact detail is one native scroll area. Reach controls via
+            # actual wheel input, rather than clicking through its clip rect.
+            for _ in range(8):
+                top = item.mapToScene(QPointF(0, 0))
+                local = scroll.mapFromScene(top)
+                if 0 <= local.y() and local.y() + item.height() <= scroll.height():
+                    break
+                center = scroll.mapToScene(QPointF(scroll.width()/2, scroll.height()/2))
+                QTest.wheelEvent(self.window, center, QPoint(0, 120 if local.y() < 0 else -120))
+                QTest.qWait(25)
+                deadline = time.monotonic() + 2
+                while scroll.property('moving') and time.monotonic() < deadline:
+                    QTest.qWait(10)
+                self.assertFalse(scroll.property('moving'), 'scroll must settle before pointer activation')
+                point = item.mapToScene(QPointF(item.width()/2, item.height()/2))
+            local = scroll.mapFromScene(item.mapToScene(QPointF(0, 0)))
+            self.assertTrue(0 <= local.y() and local.y() + item.height() <= scroll.height() + 1, name)
         self.assertTrue(0 <= point.x() < self.window.width() and 0 <= point.y() < self.window.height(), (name, point))
         QTest.mouseClick(self.window, Qt.LeftButton, Qt.NoModifier, QPoint(round(point.x()), round(point.y())))
         APP.processEvents()
         QTest.qWait(10)
+
+    def test_window_hidden_minimized_and_restored_updates_content_activity(self):
+        self.assertTrue(self.backend._active)
+        self.window.hide()
+        QTest.qWait(25)
+        self.assertTrue(self.page.isVisible(), 'Item visibility alone does not track its window')
+        self.assertFalse(self.backend._active)
+        self.window.showMinimized()
+        QTest.qWait(25)
+        self.assertTrue(self.page.isVisible())
+        self.assertFalse(self.backend._active)
+        self.window.showNormal()
+        QTest.qWait(25)
+        self.assertTrue(self.backend._active)
+
+    def test_compact_keyboard_focus_reveals_detail_actions(self):
+        self.resize(514, 386)
+        self.click('galleryViewAuthor_author-a')
+        action = self.item('galleryShowReference')
+        scroll = self.item('galleryDetailScroll')
+        self.window.requestActivate()
+        QTest.qWait(25)
+        action.forceActiveFocus(Qt.TabFocusReason)
+        QTest.qWait(25)
+        self.assertTrue(action.hasActiveFocus())
+        top = action.mapToScene(QPointF(0, 0))
+        local = scroll.mapFromScene(top)
+        self.assertGreaterEqual(local.y(), 0)
+        self.assertLessEqual(local.y() + action.height(), scroll.height() + 1)
 
     def test_author_capability_alias_and_busy_states_fail_closed(self):
         row = dict(id="author-a", name="测试作者", available=1, availableMaps=1, mapCount=1)

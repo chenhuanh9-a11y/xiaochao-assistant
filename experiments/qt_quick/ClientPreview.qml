@@ -59,7 +59,7 @@ Window {
                     width: implicitWidth * fit * preview.zoom; height: implicitHeight * fit * preview.zoom
                     x: (viewport.contentWidth - width) / 2; y: (viewport.contentHeight - height) / 2
                     source: preview.visible ? (preview.previewData.imageUrl || "") : ""
-                    asynchronous: true; cache: true; fillMode: Image.PreserveAspectFit
+                    asynchronous: true; cache: !source.toString().startsWith("image://importedgallery/"); fillMode: Image.PreserveAspectFit
                     onSourceChanged: preview.changeZoom(1, true)
                 }
                 WheelHandler {
