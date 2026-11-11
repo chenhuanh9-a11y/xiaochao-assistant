@@ -1,20 +1,45 @@
 """Sequential source jobs; the scanner owns scheduling and runtime state."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import hashlib
+import json
 import time
 from typing import Callable
 
 import numpy as np
 
 
-@dataclass(frozen=True, eq=False)
+@dataclass(frozen=True, init=False)
 class FrameSnapshot:
-    """Owned immutable pixels shared by all jobs of one observation."""
-    pixels: np.ndarray
+    """One immutable pixel owner for capture, admission and evidence jobs.
 
-    def __post_init__(self):
-        frame = self.pixels
-        owned = np.frombuffer(frame.tobytes(order='C'), dtype=frame.dtype).reshape(frame.shape)
-        object.__setattr__(self, 'pixels', owned)
+    Both digests retain their existing meanings: admission includes shape and
+    dtype; the observation frame key is the digest of the raw pixel bytes.
+    The stable view cannot be made writable because its backing store is bytes.
+    """
+    _pixels: bytes = field(repr=False)
+    shape: tuple
+    sha256: str
+    frame_key: str
+    _view: np.ndarray = field(repr=False, compare=False)
+
+    def __init__(self, frame):
+        if (not isinstance(frame, np.ndarray) or frame.dtype != np.uint8
+                or frame.ndim not in (2, 3) or not frame.size):
+            raise ValueError('invalid-frame')
+        if frame.ndim == 3 and frame.shape[2] not in (1, 3, 4):
+            raise ValueError('invalid-channels')
+        pixels = frame.tobytes(order='C')
+        shape = tuple(frame.shape)
+        object.__setattr__(self, '_pixels', pixels)
+        object.__setattr__(self, 'shape', shape)
+        object.__setattr__(self, 'sha256', hashlib.sha256(
+            json.dumps(shape).encode() + b'\0uint8\0' + pixels).hexdigest())
+        object.__setattr__(self, 'frame_key', hashlib.sha256(pixels).hexdigest())
+        object.__setattr__(self, '_view', np.frombuffer(pixels, dtype=np.uint8).reshape(shape))
+
+    @property
+    def pixels(self):
+        return self._view
 
 
 @dataclass

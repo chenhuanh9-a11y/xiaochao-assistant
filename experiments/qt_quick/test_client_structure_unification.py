@@ -42,6 +42,27 @@ class SharedStructureRuntimeTests(unittest.TestCase):
         self.addCleanup(observe.stop)
         self.assertTrue(self.runtime.dispatch('start_round')['success'])
 
+    def test_capture_observes_owned_pixels_once_before_shared_scan(self):
+        captured = []
+        original_capture = self.capture.capture
+        def acquire(*args, **kwargs):
+            result = original_capture(*args, **kwargs)
+            captured.append(result)
+            return result
+        self.runtime._observe.reset_mock()
+        with patch.object(self.capture, 'capture', side_effect=acquire), \
+             patch.object(_AlignmentHost, 'fit', return_value=supported_pose()):
+            result = self.runtime.dispatch('capture_now')
+        self.assertEqual(result['reason'], 'identity-not-uniquely-verified', result)
+        self.assertEqual(len(captured), 1)
+        self.runtime._observe.assert_called_once()
+        pixels = captured[0].frame_bgr
+        self.assertIs(self.runtime._observe.call_args.args[1], pixels)
+        self.assertIs(self.runtime._last_observation['frame'], pixels)
+        self.assertIs(captured[0].frame_snapshot.pixels, pixels)
+        with self.assertRaises(ValueError):
+            pixels.setflags(write=True)
+
     def test_unresolved_default_s0_publishes_shared_structure_proposals_without_identity(self):
         self.assertFalse(hasattr(self.runtime, '_rank_identity'))
         self.assertFalse(hasattr(self.runtime, '_rank_structure_candidates'))

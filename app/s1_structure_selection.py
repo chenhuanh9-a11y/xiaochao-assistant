@@ -159,7 +159,7 @@ class StructureCandidateScanner:
     def scan(self, frame, *, floor, floor_source, cancelled=None, budget_seconds=None,
              on_progress=None, candidate_order=None, preferred_map_id=None,
              preferred_material_committed=None, planned_map_ids=None, first_material_committed=None,
-             prepare_entry=None, on_entry_evidence=None, deadline=None):
+             prepare_entry=None, on_entry_evidence=None, deadline=None, frame_snapshot=None):
         if floor not in self.catalog.floors or floor_source not in ("operator-declared", "current-frame-verified"):
             raise ValueError("s1-structure-floor-evidence-required")
         if not isinstance(frame, np.ndarray) or frame.ndim != 3 or frame.shape[2] != 3 or frame.dtype != np.uint8:
@@ -172,9 +172,12 @@ class StructureCandidateScanner:
         started = self.clock()
         # Own immutable bytes. Neither callers nor fit helpers can turn this
         # view writable and change the frame after a partial has been issued.
-        snapshot = FrameSnapshot(frame)
+        if frame_snapshot is not None and (not isinstance(frame_snapshot, FrameSnapshot)
+                or frame_snapshot.pixels is not frame):
+            raise ValueError('structure-scan-frame-snapshot-mismatch')
+        snapshot = frame_snapshot if frame_snapshot is not None else FrameSnapshot(frame)
         frame = snapshot.pixels
-        frame_key = hashlib.sha256(frame.tobytes()).hexdigest()
+        frame_key = snapshot.frame_key
         bounds = (0, 0, frame.shape[1], frame.shape[0])
         fit_one = self.prepare_fit(frame, bounds) if self.prepare_fit else self.fit
         order = self.catalog.map_ids

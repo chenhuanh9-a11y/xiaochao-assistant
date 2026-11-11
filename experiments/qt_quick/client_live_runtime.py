@@ -1468,7 +1468,8 @@ class LiveRuntime:
                     on_progress=publish, candidate_order=order, preferred_map_id=preferred,
                     preferred_material_committed=preferred_material_committed,
                     **(dict(on_entry_evidence=publish_entry) if catalog.season == 's0' else {}),
-                    **({'deadline': deadline} if deadline is not None else {}), **options)
+                    **({'deadline': deadline} if deadline is not None else {}),
+                    frame_snapshot=snapshot, **options)
                 if _test_evidence_active() and type(report.get('fitEvidence')) is dict:
                     _test_evidence('fit-evidence', frame, dict(report['fitEvidence'],
                         priorBinding=prior_binding, priorReason=prior_reason))
@@ -3139,11 +3140,14 @@ class LiveRuntime:
                 return self._capture_and_solve(action, payload, cancelled, expected_epoch=epoch)
             entry_candidate = None
             if not selected and self._observation_stream_enabled(engine) and not self._manual_selection_unlocked():
-                from priority_admission import FrameSnapshot
+                snapshot = getattr(observation['captured'], 'frame_snapshot', None)
+                if snapshot is None or snapshot.pixels is not observation['frame']:
+                    return self._receipt(action, payload, success=False,
+                        reason="retained-frame-snapshot-unavailable", stale=True)
                 return self._stream_observation(action, payload, cancelled, engine, epoch,
                     observation['captured'], observation['frame'], floor, observation['digest'],
                     observation['capture_generation'], generation, frame_id, cycle,
-                    FrameSnapshot(observation['frame']))
+                    snapshot)
             if not selected:
                 if self._manual_selection_unlocked():
                     return self._receipt(action, payload, success=True,
@@ -5535,22 +5539,14 @@ class LiveRuntime:
                 observed=(observation, floor, floor_read, opened))
         frame = self._full_frame(captured)
         width, height = captured.context.full_client_size
+        capture_snapshot = captured.frame_snapshot
+        if capture_snapshot is None or capture_snapshot.pixels is not frame:
+            raise ValueError('capture-frame-snapshot-unavailable')
         stream_snapshot = None
         if self._observation_stream_enabled(engine):
-            from priority_admission import FrameSnapshot
-            stream_snapshot = FrameSnapshot(frame)
-            # pixels returns a new ndarray view each time. Observe the exact
-            # view actually consumed below, not an immediately discarded one.
-            stream_frame = stream_snapshot.pixels
-            _test_evidence("input-alias", frame, stream_frame)
-            frame = stream_frame
-            # Recheck floor against the exact immutable frame consumed by scan,
-            # not a mutable transport buffer observed during preparation.
-            observation, floor, floor_read = self._observe(engine, frame)
+            stream_snapshot = capture_snapshot
             opened = observation.get("mapOpen")
-        else:
-            frame = _test_input_copy(frame)
-            frame.setflags(write=False)
+        _test_evidence("input-alias", captured.frame_bgr, frame)
         if obsolete():
             return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
         map_detected = observation.get("detected") is True
@@ -5576,7 +5572,7 @@ class LiveRuntime:
                 if obsolete():
                     return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                 self._revoke_render("current-floor-unavailable")
-            digest = hashlib.sha256(frame.tobytes()).hexdigest()
+            digest = capture_snapshot.frame_key
             with self._lock:
                 if obsolete():
                     return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
@@ -5658,7 +5654,7 @@ class LiveRuntime:
                 self._revoke_render("floor-policy-deferred")
                 return self._receipt(action, payload, success=False, reason="floor-policy-deferred")
         floor = effective_floor
-        digest = hashlib.sha256(frame.tobytes()).hexdigest()
+        digest = capture_snapshot.frame_key
         with self._lock:
             if obsolete():
                 return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)

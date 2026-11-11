@@ -9,10 +9,11 @@ from __future__ import annotations
 import ctypes
 import operator
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 import numpy as np
+from entry_evidence_work import FrameSnapshot
 
 Rect = tuple[int, int, int, int]
 
@@ -32,6 +33,19 @@ class RegionCapture:
     context: ClientCaptureContext
     acquisition: str
     fallback_reason: str | None = None
+    frame_snapshot: FrameSnapshot | None = field(init=False, default=None, repr=False, compare=False)
+
+    def __post_init__(self):
+        # Invalid transports retain their original shape/dtype so the existing
+        # consumer reports its precise capture diagnostics. Valid image bytes
+        # become independent of any backend buffer before observers can run.
+        frame = self.frame_bgr
+        if (isinstance(frame, np.ndarray) and frame.dtype == np.uint8
+                and frame.ndim in (2, 3) and frame.size
+                and (frame.ndim == 2 or frame.shape[2] in (1, 3, 4))):
+            snapshot = FrameSnapshot(frame)
+            object.__setattr__(self, 'frame_snapshot', snapshot)
+            object.__setattr__(self, 'frame_bgr', snapshot.pixels)
 
     @property
     def origin_client(self) -> tuple[int, int]:

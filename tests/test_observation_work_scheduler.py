@@ -2,13 +2,14 @@
 import unittest
 import time
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
 from entry_evidence_work import EntryEvidenceWork, FrameSnapshot, ObservationWorkScheduler
 from s1_structure_selection import StructureCandidateScanner, StructureCatalog, StructureEvidenceSession
 from map_identity_engine import MapIdentityEngine
+from client_region_capture import ClientCaptureContext, RegionCapture
 from test_s1_structure_selection import catalog, pose
 import test_main_entry_jobs as main_fixture
 import test_side_entry_jobs as side_fixture
@@ -56,6 +57,39 @@ class ObservationSchedulerTests(unittest.TestCase):
         np.testing.assert_array_equal(a.frame, expected)
         with self.assertRaises(ValueError):
             a.frame.setflags(write=True)
+
+    def test_capture_admission_and_actual_scanner_share_one_immutable_owner(self):
+        from priority_admission import FrameSnapshot as AdmissionSnapshot
+        self.assertIs(AdmissionSnapshot, FrameSnapshot)
+        expected = self.frame.copy()
+        captured = RegionCapture(self.frame, (0, 0, 5, 4), (0, 0, 5, 4),
+            ClientCaptureContext((5, 4), (0, 0, 5, 4), 96), 'controlled-backend')
+        self.frame[:] = 0
+        seen = []
+        def prepare(frame, bounds):
+            self.assertIs(frame, captured.frame_bgr)
+            np.testing.assert_array_equal(frame, expected)
+            def fit(actual, mid, floor, cancelled, **kwargs):
+                self.assertIs(actual, frame)
+                seen.append(mid)
+                return pose()
+            return fit
+        report = StructureCandidateScanner(catalog(), None, prepare_fit=prepare).scan(
+            captured.frame_bgr, floor='-1', floor_source='operator-declared',
+            frame_snapshot=captured.frame_snapshot)
+        self.assertEqual(seen, ['a', 'b', 'c'])
+        self.assertEqual(report['frameKey'], captured.frame_snapshot.frame_key)
+        with self.assertRaises(ValueError):
+            captured.frame_bgr.setflags(write=True)
+
+    def test_foreign_snapshot_never_reaches_a_fit(self):
+        snapshot = FrameSnapshot(self.frame)
+        fit = Mock(side_effect=AssertionError('foreign frame ran'))
+        with self.assertRaisesRegex(ValueError, 'frame-snapshot-mismatch'):
+            StructureCandidateScanner(catalog(), fit).scan(
+                snapshot.pixels.copy(), floor='-1', floor_source='operator-declared',
+                frame_snapshot=snapshot)
+        fit.assert_not_called()
 
     def test_deadline_stops_between_jobs_and_closes_unrun_job(self):
         work = self.work()

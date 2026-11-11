@@ -117,12 +117,19 @@ class GCycleIntegration(unittest.TestCase):
         self.assertEqual(self.recorder.rows[0][1]["attempt"], "a"*32)
 
     def test_crop_snapshot_is_not_changed_by_mutable_transport(self):
+        from dataclasses import replace
         trace = _Trace(self.f.runtime, self.recorder, "map", {})
         self.f.capture.enable()
         captured = self.f.capture.capture()
+        transport = captured.frame_bgr.copy()
+        captured = replace(captured, frame_bgr=transport)
         trace("capture", captured, None, self.f.runtime._failure_capture_scope(), "a"*32)
         trace("structure-input", captured.frame_bgr, dict(observationBounds=(10, 20, 40, 45)))
-        captured.frame_bgr[:] = 250
+        transport[:] = 250
+        self.assertIsNotNone(trace.roi)
+        with self.assertRaises(ValueError):
+            captured.frame_bgr[:] = 250
+        self.assertFalse(np.shares_memory(trace.roi, captured.frame_bgr))
         self.assertFalse(np.any(trace.roi))
 
     def test_second_capture_cannot_reuse_old_roi_after_failure(self):

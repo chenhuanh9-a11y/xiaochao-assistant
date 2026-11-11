@@ -149,7 +149,7 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
                        on_progress=None, candidate_order=None, preferred_map_id=None,
                        preferred_material_committed=None, private_coordinate_report=None, planned_map_ids=None,
                        first_material_committed=None, pose_priors=None, collect_fit_diagnostics=False,
-                       on_entry_evidence=None, deadline=None):
+                       on_entry_evidence=None, deadline=None, frame_snapshot=None):
         check_current()
         if not getattr(engine, 'qt_rank_ready', True):
             raise ProviderUnavailable(';'.join(getattr(engine, 'qt_rank_gaps', ())) or 'recognition-rank-unavailable')
@@ -173,7 +173,7 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
             planned_map_ids=planned_map_ids, first_material_committed=first_material_committed,
             prepare_entry=(engine.prepare_entry_observation if catalog.season == 's0'
                 and getattr(engine, 'qt_native_base', None) is not None else None),
-            on_entry_evidence=on_entry_evidence, deadline=deadline)
+            on_entry_evidence=on_entry_evidence, deadline=deadline, frame_snapshot=frame_snapshot)
         check_current()
         report["posePriorOutcomes"] = [{key: event[key] for key in
             ("mapId", "floor", "accepted", "fallback", "elapsedMs") if key in event}
