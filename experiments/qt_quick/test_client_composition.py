@@ -44,11 +44,19 @@ class CompositionTests(unittest.TestCase):
         self.active = dict(inUse="")
         self.client.custom_galleries = SimpleNamespace(snapshot=self.active,
             setActiveGallery=lambda gallery: self.active.update(inUse=gallery))
-        self.client.custom_display = SimpleNamespace(
-            use_request=lambda gallery, mode, **kw: dict(success=mode == "nightmare", applied=False,
-                profileId="custom:"+gallery if gallery else kw["fallback_profile"], message="proposal"),
-            active_gallery=lambda profile, mode: profile[7:] if mode == "nightmare" and profile.startswith("custom:") else "",
-            invalidate=Mock())
+        self.proposals = []
+        from route_scopes import SCOPES
+        def matches(gallery, mode, season):
+            scope_id = gallery.partition("~")[0] if "~" in gallery else "legacy-nightmare"
+            scope = SCOPES.get(scope_id)
+            return scope is not None and (scope.season, scope.runtime_mode) == (season, mode)
+        def proposal(gallery, mode, season="s0", **kw):
+            self.proposals.append((gallery, mode, season))
+            return dict(success=not gallery or matches(gallery, mode, season), applied=False,
+                        profileId="custom:" + gallery if gallery else kw["fallback_profile"], message="proposal")
+        self.client.custom_display = SimpleNamespace(use_request=proposal,
+            active_gallery=lambda profile, mode, season="s0": profile[7:]
+                if profile.startswith("custom:") and matches(profile[7:], mode, season) else "", invalidate=Mock())
         self.client.coordinator = SimpleNamespace(_revoke_runtime=Mock(), closing=False)
 
     def test_route_metadata_refreshes_only_when_runtime_context_changes(self):
@@ -141,6 +149,21 @@ class CompositionTests(unittest.TestCase):
         result = self.client._use_custom_gallery("")
         self.assertTrue(result["success"])
         self.assertEqual(self.client.settings.values["modeRouteProfiles"]["nightmare"], "author-one")
+
+    def test_s1_gallery_passes_exact_context_without_overwriting_s0_profiles(self):
+        previous = deepcopy(self.client.settings.persistedValues["modeRouteProfiles"])
+        for values in (self.client.settings.persistedValues, self.client.settings.values):
+            values.update(gameSeason="s1", gameMode="difficult")
+        self.client.route_choices.season = "s1"
+        self.client.route_choices.mode = "difficult"
+        self.client.route_choices.profiles = [dict(id="s1-author", name="S1 author")]
+        gallery = "season-s1-hard~mine"
+        receipt = self.client._use_custom_gallery(gallery)
+        self.assertTrue(receipt["success"])
+        self.assertEqual(self.proposals[-1], (gallery, "difficult", "s1"))
+        self.assertEqual(self.client.settings.values["modeRouteProfiles"], previous)
+        self.assertEqual(self.client.settings.values["contextRouteProfiles"]["s1:difficult"], "custom:" + gallery)
+        self.assertFalse(self.client._use_custom_gallery("season-s1-nightmare~mine")["success"])
 
     def test_display_injection_is_mode_bound_and_does_not_prepare_engines(self):
         factories = EngineFactories(Path("work/not-a-resource-root"))
