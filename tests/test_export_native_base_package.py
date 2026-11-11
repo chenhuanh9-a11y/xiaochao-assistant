@@ -1,7 +1,9 @@
 """Producer round trips with tiny real JSON/NPZ source products, not game data."""
 import base64
+from contextlib import redirect_stdout
 from copy import deepcopy
 import hashlib
+from io import StringIO
 import json
 from pathlib import Path
 import tempfile
@@ -141,6 +143,18 @@ class NativeBaseExporterTests(unittest.TestCase):
     def export(self, **kwargs):
         return exporter.export_package(self.source, self.output, package_id='fixture-package',
                                        resource_version='v1', **kwargs)
+
+    def test_public_cli_creates_native_base_suffix_with_real_package_contents(self):
+        from resource_package_types import BASE_SUFFIX, validate_package_filename
+        output = self.root / ('cli-output' + BASE_SUFFIX)
+        result = StringIO()
+        with redirect_stdout(result):
+            exporter.main(['--source-root', str(self.source), '--output', str(output),
+                           '--resource-version', 'cli-v1'])
+        self.assertEqual(json.loads(result.getvalue())['mapCount'], 1)
+        with zipfile.ZipFile(output) as archive:
+            components = json.loads(archive.read('manifest.json'))['components']
+        self.assertEqual(validate_package_filename(output, components), BASE_SUFFIX)
 
     def test_real_roundtrip_preserves_full_competition_and_source_bytes(self):
         original = {p.relative_to(self.source).as_posix(): p.read_bytes()

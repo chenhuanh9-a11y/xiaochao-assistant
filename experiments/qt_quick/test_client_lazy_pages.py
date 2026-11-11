@@ -1,4 +1,8 @@
-"""Real Loader persistence and full client composition with fixture native/engine IO."""
+"""Real Loader persistence and client composition with a real imported provider.
+
+The owned imported-resource root is empty; input, capture, and network access
+are isolated. This is source/offscreen composition evidence, not game acceptance.
+"""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
@@ -19,7 +23,8 @@ APP = QGuiApplication.instance() or QGuiApplication([])
 def wait(predicate, seconds=5):
     deadline = time.monotonic() + seconds
     while not predicate() and time.monotonic() < deadline:
-        QTest.qWait(5)
+        APP.processEvents()
+        time.sleep(.002)
     assert predicate(), "QML operation did not settle"
 
 
@@ -74,10 +79,9 @@ def composition(*, check_lazy=False):
 def _composition(*, check_lazy=False):
     from client import QtClient
     from client_paths import WORK_ROOT
-    from client_providers import EngineFactories
     from client_route_plaza import RoutePlazaService
     from test_client_input import Native
-    from test_client_live_runtime import FixtureCapture, fixture_engine
+    from test_client_live_runtime import FixtureCapture
     import psutil
     WORK_ROOT.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="qt-lazy-composition-", dir=WORK_ROOT) as directory:
@@ -93,8 +97,7 @@ def _composition(*, check_lazy=False):
             with patch("client_input.NativeWindowAPI", return_value=Native()), \
                  patch("client_capture.ClientCaptureProvider", return_value=capture), \
                  patch("client_coordinator.another_assistant_running", return_value=False), \
-                 patch("client_route_plaza.RoutePlazaService", side_effect=offline_plaza), \
-                 patch.object(EngineFactories, "_build", lambda self, mode, **kw: fixture_engine(mode)):
+                 patch("client_route_plaza.RoutePlazaService", side_effect=offline_plaza):
                 client = QtClient(APP, root, probe_output=root / "unused.json", info_fetch=lambda *a, **k: {})
                 construction_ms = (time.monotonic()-start)*1000
                 wait(lambda: not client.session.busy and client._initialized)

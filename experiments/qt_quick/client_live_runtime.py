@@ -2896,12 +2896,23 @@ class LiveRuntime:
                     session, ticket = self._s1_structure_session, self._s1_structure_ticket
                     observation = self._last_observation or {}
                     mid = payload.get("mapId")
-                    if (self._season != "s1" or self._map_id or not self._map_open or self._capture_pending
+                    if (self._map_id or not self._map_open or self._capture_pending
                             or session is None or ticket is None
+                            or session.catalog.season != self._season or session.catalog.mode != self._mode
                             or payload.get("structureFrameId") != self._frame_id
                             or payload.get("structureGeneration") != self._frame_generation
                             or payload.get("structureRoundId") != self._round
                             or not self._identity_observation_current()):
+                        return self._receipt(action, payload, success=False, reason="stale-structure-candidate", stale=True)
+                    from s1_structure_selection import StructureCatalog
+                    try:
+                        check_current = getattr(self._engine, 'qt_assert_resource_current', None)
+                        if check_current is not None:
+                            check_current()
+                        catalog = StructureCatalog.from_engine(self._engine)
+                    except (OSError, ValueError, RuntimeError):
+                        return self._receipt(action, payload, success=False, reason="stale-structure-candidate", stale=True)
+                    if catalog != session.catalog:
                         return self._receipt(action, payload, success=False, reason="stale-structure-candidate", stale=True)
                     choice = session.choose_candidate(mid, ticket)
                     if not choice.get("success") or choice.get("frameKey") != observation.get("digest"):

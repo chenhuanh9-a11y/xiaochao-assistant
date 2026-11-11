@@ -1,4 +1,4 @@
-"""Create an inert author display component ZIP for one installed native base.
+"""Create an inert author display component package for one installed native base.
 
 Input registrations are intentionally smaller than the consumer payload: they
 contain only author labels, map/floor bindings, source image paths, and the
@@ -31,6 +31,7 @@ from imported_native_base import decode_native_base
 from imported_resource_packages import ComponentRef, PackageView
 from imported_resource_reader import MAX_JSON_BYTES, decode_resource_json
 from resource_snapshot_io import read_stable_file
+from resource_package_types import ROUTE_SUFFIX
 import star_map_import as files
 
 
@@ -334,7 +335,7 @@ def build_parser():
     parser.add_argument('--image-root', required=True, type=Path,
         help='注册 JSON 中 image 相对路径的根目录。')
     parser.add_argument('--output', required=True, type=Path,
-        help='新 ZIP 输出路径；已存在文件不会覆盖。')
+        help=f'用户可见作者路线包输出路径，必须以 {ROUTE_SUFFIX} 结尾；内部内容仍为 ZIP，已有文件不会覆盖。')
     parser.add_argument('--package-id', required=True)
     parser.add_argument('--resource-version', required=True)
     parser.add_argument('--component-id',
@@ -343,7 +344,11 @@ def build_parser():
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.output.suffix.casefold() != ROUTE_SUFFIX:
+        parser.error(
+            f'--output 必须以 {ROUTE_SUFFIX} 结尾；.zip 是内部 ZIP 容器名，不能作为作者路线包输出后缀。')
     base_ref = ComponentRef(args.base_package_id, args.base_resource_version,
         args.base_component_id, args.base_manifest_sha256)
     result = export_component(args.base_resource_root, base_ref, args.registration,

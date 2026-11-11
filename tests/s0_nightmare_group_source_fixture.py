@@ -59,7 +59,7 @@ class S0NightmareGroupSourceFixture:
         self.root.mkdir(parents=True, exist_ok=True)
         self.sourceRoot = self.root / "source"
         self.sourceRoot.mkdir(parents=True, exist_ok=True)
-        self.output = self.root / "s0-nightmare-group-base.zip"
+        self.output = self.root / "s0-nightmare-group-base.xingtu-base"
         chosen = tuple(_DEFAULT_IDS if ids is None else ids)
         if (not chosen or any(not isinstance(item, str) or item not in _DEFAULT_IDS
                               for item in chosen)

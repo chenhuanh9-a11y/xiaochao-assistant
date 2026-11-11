@@ -106,6 +106,47 @@ class SharedStructureRuntimeTests(unittest.TestCase):
         self.assertFalse(state['structureEvidence']['currentSupportedMapIds'])
         self.assertFalse(any(row['structureSupported'] for row in state['candidateRows']))
 
+    def capture_choice_payload(self):
+        with patch.object(_AlignmentHost, 'fit', return_value=supported_pose()):
+            result = self.runtime.dispatch('capture_now')
+        self.assertEqual(result['reason'], 'identity-not-uniquely-verified', result)
+        rows = self.runtime.snapshot()['candidateRows']
+        index = next(i for i, row in enumerate(rows) if row['structureSupported'])
+        row = rows[index]
+        # These are the fields sent by ClientControls.chooseCandidate(). The
+        # S0 UI adds a stable map ID when the row carries current structure.
+        return dict(index=index, **{key: row[key] for key in (
+            'mapId', 'structureFrameId', 'structureGeneration', 'structureRoundId')})
+
+    def test_current_s0_structure_choice_waits_for_explicit_confirmation(self):
+        payload = self.capture_choice_payload()
+        result = self.runtime.dispatch('select_candidate', dict(payload, index=-1))
+        self.assertTrue(result['success'], result)
+        self.assertEqual(result['reason'], 'structure-candidate-selected-awaiting-confirmation')
+        state = self.runtime.snapshot()
+        self.assertEqual(state['selectedCandidate']['mapId'], 'fixture-map')
+        self.assertTrue(self.runtime._selection_pending)
+        self.assertFalse(state['identityLocked'])
+        self.assertFalse(state['groupLocked'])
+        self.assertFalse(state['displayAuthorized'])
+        self.assertIsNone(self.runtime._render)
+
+    def test_s0_structure_choice_rejects_changed_frame_scope_and_base(self):
+        old = self.capture_choice_payload()
+        current = self.capture_choice_payload()
+        self.assertFalse(self.runtime.dispatch('select_candidate', old)['success'])
+        for field in ('structureFrameId', 'structureGeneration', 'structureRoundId', 'mapId'):
+            with self.subTest(field=field):
+                rejected = self.runtime.dispatch('select_candidate', dict(current, **{field: 'foreign'}))
+                self.assertFalse(rejected['success'], rejected)
+        # Same bytes/ref but a new actual catalog publication supersedes the
+        # engine's source generation; a current-looking UI row cannot revive it.
+        self.source.activate()
+        rejected = self.runtime.dispatch('select_candidate', current)
+        self.assertFalse(rejected['success'], rejected)
+        self.assertTrue(rejected.get('stale'), rejected)
+        self.assertFalse(self.runtime.snapshot()['displayAuthorized'])
+
     def test_catalog_uses_imported_base_identity_and_real_s0_floors(self):
         cat = StructureCatalog.from_engine(self.engine)
         ref = self.engine.qt_native_base.component_ref

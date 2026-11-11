@@ -4,8 +4,12 @@ Each scenario runs in an isolated process and owned temporary installation. Only
 native input, capture, heavy engine construction and explicit detector evidence
 are fixtures. Settings, coordinator, session, runtime, S0 geometry validation,
 ImportedEngineFactories caching/preparation and QTimer connections are real.
-Only this lifecycle fixture supplies an S0 binding and synthetic engine; it does
-not establish imported-package decoder readiness.
+Real exported bases satisfy the mode-selection prerequisite. This lifecycle
+fixture replaces heavy S0 engines and deliberately refuses S1 engine bindings;
+that injected preparation failure is distinct from an absent imported base.
+Display-only home/gallery metadata remains an empty fixture, as before these
+tests had imported bases; queued Session and mode-selection state stay real.
+It does not establish imported-package decoder or live readiness.
 """
 import json
 import os
@@ -29,6 +33,7 @@ class SeasonPreparationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="qt-season-lifecycle-", dir=WORK_ROOT) as directory:
             root = Path(directory)
             (root / ".qt-lab-owner").write_text("qt-quick-isolated-v1", encoding="utf-8")
+            seed_lifecycle_bases(root)
             # A separate process really saves S1 and shuts down before restart.
             stages = ("save-s1", scenario) if scenario == "cold-restart" else (scenario,)
             for stage in stages:
@@ -40,7 +45,7 @@ class SeasonPreparationTests(unittest.TestCase):
                 self.assertTrue(evidence["closed"], evidence)
         return evidence
 
-    def test_hidden_resource_page_does_not_scan_until_opened(self):
+    def test_startup_availability_scan_is_not_repeated_by_opening_resource_page(self):
         self.run_scenario("lazy-inventory")
 
     def test_saved_s1_cold_restart_switch_to_s0_prepares_and_allows_start(self):
@@ -91,6 +96,49 @@ class DeferredPreparationDispatchTests(unittest.TestCase):
                     session.dispatch.assert_not_called()
 
 
+def seed_lifecycle_bases(root):
+    """Real package data is a precondition; engine faults remain controlled."""
+    from uuid import uuid4
+    from client_paths import RuntimePaths
+    from client_imported_providers import SUPPORTED_CAPABILITIES
+    from imported_resource_activation import activate_catalog_locked
+    from imported_resource_archive import save_archive
+    from imported_resource_selection import inspect_selection
+    from resource_transaction import resource_write_lock
+    import test_imported_native_base as s0_fixture
+    from test_export_s0_difficult_native_base_package import S0DifficultSourceFixture
+    from test_export_s1_native_base_package import S1NativeBaseSourceFixture
+
+    resource_root = RuntimePaths(root, False).imported_resource_root
+    contexts = {}
+    def add(archive, season, mode):
+        saved = save_archive(archive, resource_root)
+        refs = {ref.component_id: ref for ref in saved.component_refs}
+        def wire(ref):
+            return dict(packageId=ref.package_id, resourceVersion=ref.resource_version,
+                        componentId=ref.component_id, manifestSha256=ref.manifest_sha256)
+        contexts[f'{season}:{mode}'] = dict(recognitionBase=wire(refs['base']),
+                                           controls=wire(refs['controls']), reviewedGroups=None)
+    s0_fixture.ImportedNativeBaseTests.setUpClass()
+    try:
+        add(s0_fixture.ImportedNativeBaseTests.archive, 's0', 'nightmare')
+    finally:
+        s0_fixture.ImportedNativeBaseTests.doClassCleanups()
+    difficult = S0DifficultSourceFixture(root / 'fixture-inputs' / 's0-difficult')
+    difficult.export()
+    add(difficult.output, 's0', 'difficult')
+    nightmare = S1NativeBaseSourceFixture(root / 'fixture-inputs' / 's1-nightmare', mode='nightmare')
+    nightmare.export()
+    add(nightmare.output, 's1', 'nightmare')
+    document = dict(schema='xingtu-resource-catalog-v1', generation=str(uuid4()), contexts=contexts, displays=[])
+    # Fixture setup publishes an inspected selection. Product import/decoding
+    # is covered separately; these scenarios replace the heavy engine builder.
+    with resource_write_lock(resource_root):
+        activate_catalog_locked(resource_root, document, expected_catalog_stamp=None,
+            validate=lambda proposed: inspect_selection(resource_root, proposed,
+                supported_capabilities=SUPPORTED_CAPABILITIES))
+
+
 def scenario(name, root):
     queued_preparation = name == "context-superseded-queued-preparation"
     if queued_preparation:
@@ -110,6 +158,12 @@ def scenario(name, root):
     calls, builds = [], []
     entered, release = threading.Event(), threading.Event()
     from client_imported_resources import ImportedResourceService
+    from client_imported_browse import load_imported_browse_context
+    from imported_resource_catalog import ResourceResolver
+    empty_display_resolver = ResourceResolver(root / 'fixture-empty-display')
+    def display_metadata(_source, mode, *, season='s0', cancelled=lambda: False, **kwargs):
+        return load_imported_browse_context(empty_display_resolver, mode,
+                                           season=season, cancelled=cancelled)
     inventory_reads = []
     original_scan = ImportedResourceService._scan
     def scan(service, verify):
@@ -122,7 +176,7 @@ def scenario(name, root):
             raise RuntimeError("controlled-prepare-error")
         return original_prepare(self, mode, cancelled, season=season)
     def build(self, mode, *, season="s0"):
-        assert season == "s0", "Unregistered season reached the resource builder"
+        assert season == "s0", "The controlled S1 binding failure reached the engine builder"
         builds.append(mode)
         if name == "cancelled-late" and len(builds) == 1:
             entered.set()
@@ -169,12 +223,15 @@ def scenario(name, root):
              patch("client_capture.ClientCaptureProvider", return_value=capture), \
              patch("client_coordinator.another_assistant_running", return_value=False), \
              patch("client_imported_providers.build_imported_engine_factories", side_effect=LifecycleFactories) as factory, \
+             patch('client_imported_browse.load_imported_browse_context', side_effect=display_metadata), \
              patch.object(EngineFactories, "prepare_context", prepare), \
              patch.object(ImportedResourceService, "_scan", scan):
             client = QtClient(app, root, probe_output=root / "unused.json", info_fetch=lambda *a, **k: {})
             factory.assert_called_once_with(client.resource_resolver, client.paths)
             if name == "cancelled-late":
                 wait(entered.is_set, "startup entered controlled build")
+                wait(lambda: not client.resources.busy and client.resources.contextAvailable('s1', 'nightmare'),
+                     "imported bases become selectable while engine preparation is blocked")
                 # Save through the public coordinator while the real startup
                 # session worker is blocked. No production callback is invoked.
                 client.coordinator.requestGameSeason("s1")
@@ -351,11 +408,11 @@ def scenario(name, root):
                 wait(lambda: idle() and client.settings.persistedValues["gameSeason"] == "s0",
                      "choose actual context after failure")
             elif name == "lazy-inventory":
-                wait(ready, "current mode ready without management scan")
-                assert inventory_reads == [], inventory_reads
+                wait(ready, "current mode ready after startup availability scan")
+                assert inventory_reads == [True], inventory_reads
                 client.main.setProperty("page", "resources")
-                wait(lambda: bool(inventory_reads) and idle(),
-                     "opening management page triggers inventory")
+                QTest.qWait(350)
+                assert idle()
                 assert len(inventory_reads) == 1, inventory_reads
                 client.main.setProperty("page", "resources")
                 QTest.qWait(350)

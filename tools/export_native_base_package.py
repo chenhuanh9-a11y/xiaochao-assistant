@@ -1,4 +1,4 @@
-"""Export declared S0/S1 source data into an inert recognition-base ZIP.
+"""Export declared S0/S1 source data into an inert recognition-base package.
 
 S0 nightmare keeps its byte-preserving structure/entry flow. S0 difficult keeps
 native and legacy working-draft inventories separate. S1 difficult and
@@ -31,6 +31,7 @@ import map_package_upgrade as publication
 from imported_resource_packages import ComponentRef, PackageView
 from imported_resource_reader import ComponentResourceReader, decode_resource_json
 from resource_snapshot_io import read_stable_file
+from resource_package_types import BASE_SUFFIX
 import star_map_import as files
 
 
@@ -933,10 +934,11 @@ def export_package(source_root, output, *, package_id, resource_version, source_
         return result
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source-root', required=True, type=Path)
-    parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--output', required=True, type=Path,
+        help=f'用户可见结构包输出路径，必须以 {BASE_SUFFIX} 结尾；内部内容仍为 ZIP。')
     parser.add_argument('--package-id', default='s0-nightmare-native')
     parser.add_argument('--resource-version', required=True)
     parser.add_argument('--source-inventory', type=Path)
@@ -944,7 +946,9 @@ def main():
                         help='Explicit project-reviewed group data for this base context')
     parser.add_argument('--season', choices=('s0', 's1'), default='s0')
     parser.add_argument('--mode', choices=('nightmare', 'difficult'), default='nightmare')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.output.suffix.casefold() != BASE_SUFFIX:
+        parser.error(f'--output 必须以 {BASE_SUFFIX} 结尾；.zip 是内部 ZIP 容器名，不能作为结构包输出后缀。')
     print(json.dumps(export_package(args.source_root, args.output, package_id=args.package_id,
         resource_version=args.resource_version, source_inventory=args.source_inventory,
         season=args.season, mode=args.mode, group_registration=args.group_registration),
