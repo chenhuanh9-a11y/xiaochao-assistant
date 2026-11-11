@@ -20,6 +20,7 @@ from imported_resource_archive import save_archive
 from imported_resource_packages import PackageView
 from structure_pose_solver import StructurePoseSolver
 import test_export_native_base_package as exported_fixture
+import test_imported_resource_reader as reader_fixture
 
 
 class StructurePoseResourceTests(unittest.TestCase):
@@ -40,7 +41,12 @@ class StructurePoseResourceTests(unittest.TestCase):
         package.write_bytes(self.package_bytes)
         saved = save_archive(package, self.root / 'resources')
         base = next(ref for ref in saved.component_refs if ref.component_id == 'base')
-        self.view = PackageView(self.root / 'resources', base)
+        self.bind_view(PackageView(self.root / 'resources', base))
+        self.frame = np.zeros((720, 1280, 3), np.uint8)
+        self.observed = []
+
+    def bind_view(self, view):
+        self.view = view
         self.bundle = decode_native_base(self.view)
         self.provider = SharedReferenceProvider(self.view.root, self.bundle.resources,
             self.bundle.versions, check_current=self.bundle.assert_current)
@@ -48,8 +54,18 @@ class StructurePoseResourceTests(unittest.TestCase):
             qt_shared_provider=self.provider, qt_fast_structure_source=self.bundle.fast_structure_source,
             qt_assert_resource_current=self.bundle.assert_current)
         self.host = StructurePoseSolver(self.engine)
-        self.frame = np.zeros((720, 1280, 3), np.uint8)
-        self.observed = []
+
+    def test_required_and_optional_faults_hit_real_short_and_long_file_paths(self):
+        alias = reader_fixture.ComponentResourceReaderTests.short_path_alias(self, self.view.resource_root)
+        self.bind_view(PackageView(alias, self.view.component_ref))
+        source = self.engine.qt_fast_structure_source
+        reference = self.provider('shared-structure', self.map_id, '1')
+        entry = source.entries[('zhan10-speed', self.map_id, 'variant-01', '1')]
+        actual_path = self.view.path(entry[0].path)
+        self.assertNotEqual(reference.path, actual_path)
+        self.assertTrue(reference.path.samefile(actual_path))
+        self.test_first_required_read_failure_is_not_an_optional_miss()
+        self.test_optional_failure_rechecks_required_inputs_before_returning_none()
 
     def preparation_path(self):
         entry = self.engine.qt_fast_structure_source.entries[('zhan10-speed', self.map_id, 'variant-01', '1')]
@@ -74,7 +90,7 @@ class StructurePoseResourceTests(unittest.TestCase):
         real_read = resource_snapshot_io.read_stable_file
         def change_after_reference(path, *args, **kwargs):
             result = real_read(path, *args, **kwargs)
-            if Path(path) == reference.path:
+            if Path(path).samefile(reference.path):
                 reference.path.write_bytes(b'changed-required-reference')
             return result
         with patch.object(resource_snapshot_io, 'read_stable_file', change_after_reference):
@@ -88,7 +104,7 @@ class StructurePoseResourceTests(unittest.TestCase):
             attempts = []
             real_read = resource_snapshot_io.read_stable_file
             def fail_once(path, *args, **kwargs):
-                if Path(path) == failed_path:
+                if Path(path).samefile(failed_path):
                     attempts.append(path)
                     if len(attempts) == 1:
                         raise OSError('one-shot required read failure')
@@ -107,7 +123,7 @@ class StructurePoseResourceTests(unittest.TestCase):
             attempts = []
             real_read = resource_snapshot_io.read_stable_file
             def fail_once(path, *args, **kwargs):
-                if Path(path) == failed_path:
+                if Path(path).samefile(failed_path):
                     attempts.append(path)
                     if len(attempts) == 1:
                         raise OSError('one-shot optional read failure')
