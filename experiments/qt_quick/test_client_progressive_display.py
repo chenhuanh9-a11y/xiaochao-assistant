@@ -16,6 +16,7 @@ import test_client_live_runtime as runtime_fixtures
 import test_s1_manual_alignment as manual_fixtures
 import test_shared_recovery_residual_contract as recovery_fixtures
 import single_map_structure as structure
+import round_layer_group_commit as group_commit
 
 
 class ProgressiveDisplayContracts(unittest.TestCase):
@@ -100,6 +101,68 @@ class ProgressiveDisplayContracts(unittest.TestCase):
         self.assertFalse(final["pixels"].flags.writeable)
         self.assertAlmostEqual(final["matrix"][0][2] - pending["matrix"][0][2], 17)
         np.testing.assert_allclose(self.runtime._group.root_pose, corrected["matrixSourceToClient"])
+
+    def test_peer_correction_reuses_pixel_features_but_reprojects_player(self):
+        frame = self.fixture.capture.frame
+        frame[200:470, 300:650] = 120
+        frame[330:336, 470:476] = (0, 220, 220)
+        for y in range(250, 290, 5):
+            frame[y:y + 2, 500:520] = 190
+        corrected = copy.deepcopy(self.first)
+        corrected["matrixSourceToClient"][0, 2] += 17
+        original_stage = self.runtime._stage_round_group_commit
+        tracking = []
+
+        def stage(*args, **kwargs):
+            group = original_stage(*args, **kwargs)
+            tracking.append(group.tracking_for_floor("1"))
+            return group
+
+        with patch.object(group_commit, "map_reuse_evidence", wraps=group_commit.map_reuse_evidence) as reuse, \
+             patch.object(group_commit, "live_stair_screen_candidates", wraps=group_commit.live_stair_screen_candidates) as stairs, \
+             patch.object(group_commit, "map_anchor_focus_point", wraps=group_commit.map_anchor_focus_point) as marker, \
+             patch.object(self.runtime, "_stage_round_group_commit", side_effect=stage):
+            _, result, _ = self.run_review(corrected)
+            self.assertTrue(result["success"], result)
+            self.assertEqual((reuse.call_count, stairs.call_count, marker.call_count), (1, 1, 1))
+            self.assertEqual(len(tracking), 2)
+            for row, fit in zip(tracking, (self.first, corrected)):
+                expected = np.linalg.inv(fit["matrixSourceToClient"]) @ np.array([472.5, 332.5, 1.])
+                np.testing.assert_allclose(row["verifiedPlayerAuthorPoint"], expected[:2])
+                np.testing.assert_array_equal(row["translationMaskMatrix"], fit["matrixSourceToClient"])
+            self.assertGreaterEqual(tracking[1]["verifiedPlayerCommittedMonotonicAt"],
+                                    tracking[0]["verifiedPlayerCommittedMonotonicAt"])
+            self.assertIsNot(tracking[0]["translationMask"][0], tracking[1]["translationMask"][0])
+            np.testing.assert_array_equal(tracking[0]["translationMask"][0], tracking[1]["translationMask"][0])
+
+            # A later solve must use its newly captured pixels even when the
+            # map, floor and component rectangle are unchanged.
+            self.fixture.dispatch("end_round")
+            frame[330:336, 470:476] = 120
+            frame[350:356, 490:496] = (0, 220, 220)
+            self.fixture.begin_and_capture()
+            self.assertEqual((reuse.call_count, stairs.call_count, marker.call_count), (2, 2, 2))
+            expected = np.linalg.inv(self.fixture.fit["matrixSourceToClient"]) @ np.array([492.5, 352.5, 1.])
+            np.testing.assert_allclose(self.runtime._group.tracking["verifiedPlayerAuthorPoint"], expected[:2])
+
+    def test_same_bounds_changed_component_center_recomputes_marker(self):
+        frame = np.full((720, 1280, 3), 120, np.uint8)
+        frame[300:306, 300:306] = (0, 220, 220)
+        frame[300:306, 600:606] = (0, 220, 220)
+        frame.setflags(write=False)
+        scope = group_commit.RoundPoseObservationScope(frame)
+        component = dict(bounds=(0, 0, 1280, 720), center=(300, 300),
+                         width=1280, height=720, area=1280 * 720)
+        first = scope.prepare(frame, component_override=component,
+                              map_anchor_focus_point=group_commit.map_anchor_focus_point)
+        component["center"] = (600, 300)
+        second = scope.prepare(frame, component_override=component,
+                               map_anchor_focus_point=group_commit.map_anchor_focus_point)
+        np.testing.assert_array_equal(first.marker_client_point, [302.5, 302.5])
+        np.testing.assert_array_equal(second.marker_client_point, [602.5, 302.5])
+        with self.assertRaises(ValueError):
+            scope.prepare(frame.copy(), component_override=component,
+                          map_anchor_focus_point=group_commit.map_anchor_focus_point)
 
     def test_existing_recovery_solver_displays_point_pose_before_wall_correction(self):
         self.fixture.begin_and_capture()
@@ -275,11 +338,17 @@ class ProgressiveDisplayContracts(unittest.TestCase):
                     fit["observationComponent"] = dict(bounds=[0, 0, 1280, 720], center=[640, 360],
                                                        width=1280, height=720, area=1280*720)
                     pending = []
+                    final_fit = copy.deepcopy(fit)
+                    if season == "s1":
+                        final_fit["observationComponent"].update(bounds=[0, 0, 640, 720],
+                                                                 center=[320, 360], width=640, area=640 * 720)
                     def controlled(host, *args, **kwargs):
                         host._offer_usable_fit(fit)
                         pending.append(runtime.render_payload(runtime._render["token"]))
-                        return fit
-                    with patch.object(_AlignmentHost, "fit", controlled):
+                        return final_fit
+                    with patch.object(_AlignmentHost, "fit", controlled), \
+                         patch.object(group_commit, "live_stair_screen_candidates",
+                                      wraps=group_commit.live_stair_screen_candidates) as stairs:
                         if season == "s0":
                             runtime.dispatch("start_round")
                             result = runtime.dispatch("capture_now")
@@ -287,6 +356,7 @@ class ProgressiveDisplayContracts(unittest.TestCase):
                             self.assertFalse(runtime.dispatch("start_round")["success"])
                             producer.prepare()
                             result = runtime.dispatch("confirm_route", dict(mapId="fixture-map"))
+                    self.assertEqual(stairs.call_count, 2 if season == "s1" else 1)
                     self.assertTrue(result["success"], result)
                     self.assertEqual(len(pending), 1)
                     self.assertTrue(requests)
@@ -299,6 +369,7 @@ class ProgressiveDisplayContracts(unittest.TestCase):
                     self.assertEqual(final["reviewStatus"], "complete")
                     self.assertFalse(final["liveAuthorization"])
                     if season == "s1":
+                        self.assertEqual(runtime._group.tracking["component"]["bounds"], (0, 0, 640, 720))
                         self.assertFalse(runtime.snapshot()["liveEngineAvailable"])
                         self.assertFalse(runtime.dispatch("capture_now")["success"])
 

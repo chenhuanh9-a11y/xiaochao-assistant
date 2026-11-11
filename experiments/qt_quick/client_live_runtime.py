@@ -5321,7 +5321,8 @@ class LiveRuntime:
             pendingSiblingToken=token,renderToken=row["sourceToken"],projectionOnly=True,posePending=True)
 
     def _stage_round_group_commit(self, engine, group, map_id, floor, canonical, render_matrix,
-                                  display, frame, captured, cycle, frame_generation, residual, *, component_override=None):
+                                  display, frame, captured, cycle, frame_generation, residual, *, component_override=None,
+                                  observation_scope=None):
         """Reuse the original single-root relation and validation-pool writer."""
         from types import SimpleNamespace
         from round_layer_group_commit import (commit_alignment_v2_round_pose,
@@ -5352,7 +5353,7 @@ class LiveRuntime:
         accepted = commit_alignment_v2_round_pose(owner, map_id, floor, display["pixels"], frame,
             context.client_screen_bounds, render_matrix=render_matrix, canonical_matrix=canonical,
             route_profile_id=display.get("effectiveProfileId", "shared-structure"), source="initial-structure-v2", residual=residual,
-            component_override=component_override,
+            component_override=component_override, observation_scope=observation_scope,
             normalize_route_profile_id=lambda profile: profile,
             display_environment_signature=lambda _: signature, map_anchor_focus_point=map_anchor_focus_point)
         return owner.round_layer_group if accepted else None
@@ -5365,6 +5366,7 @@ class LiveRuntime:
         from alignment_core_v2 import AlignmentCandidate
         from alignment_observation import rendered_profile_residual_is_verified
         from round_layer_group import RoundLayerGroup
+        from round_layer_group_commit import RoundPoseObservationScope
         with self._lock:
             provisional_operation = self._s1_provisional_enabled()
             operation_settings_generation = self._settings_generation
@@ -5440,6 +5442,7 @@ class LiveRuntime:
             steady_context = self._steady_context()
         published_token = None
         review_core = None
+        observation_scope = RoundPoseObservationScope(frame)
 
         def revoke_published(reason):
             with self._lock:
@@ -5474,7 +5477,8 @@ class LiveRuntime:
                 previous_group = copy.deepcopy(group) if group is not None else None
             target_group = self._stage_round_group_commit(engine, previous_group, map_id, floor, canonical,
                 render_matrix, display, frame, captured, cycle, frame_generation, residual,
-                component_override=fit.get("observationComponent") if self._season == "s1" else None)
+                component_override=fit.get("observationComponent") if self._season == "s1" else None,
+                observation_scope=observation_scope)
             if target_group is None:
                 reason = "round-group-pose-commit-rejected"
                 self._set_pose_phase("rejected", reason, map_id, floor, frame_id, frame_generation,
