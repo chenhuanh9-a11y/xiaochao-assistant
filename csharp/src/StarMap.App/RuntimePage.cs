@@ -106,7 +106,7 @@ internal sealed partial class RuntimePage : UserControl
         });
         chooseGroupMember.Name = "RuntimeChooseGroupMember";
         candidateArea.Children.Add(groupArea);
-        openPicker = Add(candidateArea, "手动选图…", (_, _) => manualPicker.Toggle());
+        openPicker = Add(candidateArea, "重新识图", (_, _) => RequestMapSelection());
         openPicker.Name = "RuntimeOpenManualPicker";
         panel.Children.Add(candidateArea);
         var manual = new StackPanel { Margin = new(0, 8, 0, 8) };
@@ -229,18 +229,27 @@ internal sealed partial class RuntimePage : UserControl
         resourceLease = null; loadingResources = false; Render();
     }
 
-    internal async Task<bool> Configure(string root, SettingsDocument settings, bool reloadResources = false)
+    internal async Task<bool> Configure(string root, SettingsDocument settings, bool reloadResources = false, bool selectionModeOnly = false)
     {
         if (closed) return false;
         SetAlignedVisibility(settings.SheetVisibilityEnabled);
         if (configuring) { status("另一项运行设置正在应用，本次设置尚未应用，请稍后重试。"); return false; }
         var desired = new SessionSelection(settings.GameSeason, settings.GameMode, settings.RouteProfileId);
+        var requestedSelectionMode = settings.MapSelectionMode == "manual" ? S0MapSelectionMode.Manual : S0MapSelectionMode.Auto;
         bool steadyEnabled = settings.Get("idvb0059Enabled") is JsonValue steadyValue && steadyValue.TryGetValue<bool>(out var savedSteady) ? savedSteady : true;
         var controls = JsonSerializer.SerializeToElement(new JsonObject { ["floorControlMode"] = settings.FloorControlMode,
             ["floorControlRegion"] = settings.FloorControlRegion });
         bool replace = reloadResources || runtime is null || root != resourceRoot || floorSettings is null || !JsonElement.DeepEquals(floorSettings.Value, controls);
         if (replace && !CanReplaceResources)
         { status("设置已保存；请先结束本局并等待识别停止，再点击“保存并应用到测试版”。"); return false; }
+        if (selectionModeOnly && !replace && session is not null && runtime!.ReadState() is { ResourcesBound: true } current
+            && current.Context.Selection == desired)
+        {
+            // A preference for discovering an unknown identity does not change
+            // an already-chosen map's capture, fit or display preparation.
+            ApplySelectionMode(requestedSelectionMode);
+            return true;
+        }
         configuring = true;
         var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         configurationCompleted = completed; Render();
@@ -251,7 +260,8 @@ internal sealed partial class RuntimePage : UserControl
                 // Bind the proposed resource/settings context before replacing
                 // the idle current runtime. A failed bind leaves it available.
                 var nextRuntime = new LiveRuntime(capture, root, new() { FloorSettings = controls, SheetVisibilityEnabled = alignedVisible,
-                    Idvb0059Enabled = steadyEnabled,ConfirmationMemoryFactory=dataRoot is null?null:catalog=>new StarMap.Vision.ManualConfirmationMemoryStore(dataRoot,catalog) });
+                    Idvb0059Enabled = steadyEnabled,MapSelectionMode = requestedSelectionMode,
+                    ConfirmationMemoryFactory=dataRoot is null?null:catalog=>new StarMap.Vision.ManualConfirmationMemoryStore(dataRoot,catalog) });
                 var nextSession = new SessionService(new SynchronizationContextSessionDispatcher(new DispatcherSynchronizationContext(Dispatcher)), nextRuntime);
                 proposedRuntime = nextRuntime; proposedSession = nextSession;
                 bool proposedAccepted = nextSession.Reconfigure(settings.GameMode, settings.RouteProfileId, settings.GameSeason,refreshDisplay:true);
@@ -288,6 +298,7 @@ internal sealed partial class RuntimePage : UserControl
                 return false;
             }
             runtime!.SetIdvb0059Enabled(steadyEnabled);
+            ApplySelectionMode(requestedSelectionMode);
             dragBoundary=settings.Get("dragBoundaryNormalized") is { } boundary?JsonSerializer.SerializeToElement(boundary):null;
             CancelPointerDrag();
             observationTimer.Start();
@@ -298,6 +309,14 @@ internal sealed partial class RuntimePage : UserControl
             return succeeded;
         }
         finally { proposedSession = null; proposedRuntime = null; configuring = false; completed.TrySetResult(); Render(); }
+    }
+
+    void ApplySelectionMode(S0MapSelectionMode mode)
+    {
+        string previous = runtime!.ReadState().MapSelectionMode;
+        runtime.SetMapSelectionMode(mode);
+        session!.RefreshRuntime();
+        if (previous == "manual" && runtime.ReadState().MapSelectionMode == "auto") manualPicker.Hide();
     }
 
     internal SessionDispatchResult? Dispatch(string action, object? payload = null)
@@ -490,17 +509,20 @@ internal sealed partial class RuntimePage : UserControl
         candidates.IsEnabled = active && !working && Supports("select_candidate");
         pick.IsEnabled = ReadManualMapAvailability(floatingPicker: false).CanPick;
         openPicker.IsEnabled = ReadManualPickerAvailability().CanPick;
+        string mapAction = state is { Context.Season: "s0", MapSelectionMode: "auto" } ? "重新识图" : "手动选图…";
+        if (!Equals(openPicker.Content, mapAction)) openPicker.Content = mapAction;
         applyFloor.IsEnabled = active && !working && Supports("set_floor");
         if (state is null) return;
         summary.Text = $"{state.Context.Season} · {ModeLabel(state.Context.Mode)}";
         roundState.Text = !available ? "资源未就绪" : configuring || loadingResources ? "正在准备" : !active ? "等待开始" : working ? "正在处理" : state.ManualAlignmentSession?"手动贴合本局":"本局进行中";
-        mapIdentity.Text = state.IdentityKind == "group" ? $"已确认相似组 · {state.IdentityMemberIds.Count} 张地图"
+        mapIdentity.Text = state.ManualSelectionPending ? "等待手动选图" : state.IdentityKind == "group" ? $"已确认相似组 · {state.IdentityMemberIds.Count} 张地图"
             : state.IdentityLocked ? $"已锁定 {state.MapDisplayName ?? state.Context.MapId}"
             : state.ProvisionalMapId is not null ? $"临时参考 {state.MapDisplayName ?? state.ProvisionalMapId} · 剩余 {state.RemainingMapIds.Count} 张"
             : state.RemainingMapIds.Count > 0 ? $"剩余 {state.RemainingMapIds.Count} 张结构候选"
             : state.Candidates.Count > 0 ? $"{state.Candidates.Count} 个候选待确认" : "尚未确认";
         currentFloor.Text = state.Context.FloorId is null ? "尚未确认" : FloorLabel(state.Context.FloorId);
-        candidateCaption.Text = state.IdentityKind == "group" ? $"当前显示参考：{state.MapDisplayName ?? state.Context.MapId}。组内成员仍待区分，可手动选图。"
+        candidateCaption.Text = state.ManualSelectionPending ? "选择本局地图后继续贴合；已有候选范围会保留。"
+            : state.IdentityKind == "group" ? $"当前显示参考：{state.MapDisplayName ?? state.Context.MapId}。组内成员仍待区分，可手动选图。"
             : state.IdentityLocked ? (state.NativeGeometryVerified ? "地图身份已锁定，结构已对齐。" : "地图身份已锁定，等待结构对齐。")
             : state.ProvisionalMapId is not null ? "临时参考尚未锁定身份。继续探图后自动筛选，换层保留已有范围。"
             : state.Candidates.Count > 0 ? "选择候选后确认地图；也可以展开手动选图。" : "读取游戏地图后，候选会显示在这里。";
@@ -574,6 +596,8 @@ internal sealed partial class RuntimePage : UserControl
         "transient-projection-unavailable" or "projection-profile-mismatch" or "projection-normal-floors-only" => "当前画面暂不能跨层投影，请重新开图定位。",
         "game-floor-control-intent" or "pending-click-mismatch" => "已记录切层点击，等待游戏当前楼层高亮确认。",
         "context-bound" => "资源已就绪，开始本局不会自动开图或采集。", "round-started" => "请在游戏中打开地图，再读取画面。",
+        "manual-map-selection-pending" => "地图和楼层已读取，请手动选择本局地图。",
+        "map-selection-mode-changed" => "选图方式已切换，请重新读取地图。",
         "entry-neighborhood-candidates" or "candidates-awaiting-confirmation" => "画面尚不能唯一确认地图，可选择候选或手动选图。", "window-binding-changed" => "窗口连接已改变，请重新读取。",
         "map-closed" => "地图已关闭，已确认的地图选择保留。", "cancelled" => "识别已取消。",
         "current-floor-unavailable" or "s1-current-floor-unavailable" => "当前楼层尚未读清，请等待高亮稳定后重新读取，或手动选择楼层。",

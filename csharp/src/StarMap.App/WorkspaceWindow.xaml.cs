@@ -284,13 +284,21 @@ public partial class WorkspaceWindow : Window
         var modeStyle = new Style(typeof(ComboBoxItem));
         var legacy = new DataTrigger { Binding = new Binding("Selectable"), Value = false };
         legacy.Setters.Add(new Setter(IsEnabledProperty, false)); modeStyle.Triggers.Add(legacy); mode.ItemContainerStyle = modeStyle;
-        mode.SelectionChanged += (_, _) => MarkEdited("gameMode"); season.SelectionChanged += (_, _) => MarkEdited("gameSeason");
+        mode.SelectionChanged += (_, _) => MarkEdited("gameMode");
+        season.SelectionChanged += (_, _) => { MarkEdited("gameSeason"); UpdateMapSelectionModeAvailability(); };
+        mapSelectionMode.SelectionChanged += (_, _) => MapSelectionModeChanged();
         hotkey.TextChanged += (_, _) => MarkEdited("hotkey"); sheetOpacity.ValueChanged += (_, _) => MarkEdited("sheetOpacity"); referenceOpacity.ValueChanged += (_, _) => MarkEdited("referenceOpacity");
         var context = new StackPanel();
         context.Children.Add(SectionHeading("模式与赛季", new(0, 0, 0, 4)));
         var modeField = new StackPanel(); var seasonField = new StackPanel();
         AddField(modeField, "游戏模式", mode); AddField(seasonField, "赛季", season);
         context.Children.Add(ResponsiveColumns(modeField, seasonField));
+        AddField(mapSelectionModeField, "S0 地图选择方式", mapSelectionMode);
+        mapSelectionModeField.Children.Add(BodyText("手动选图会等待你选择本局地图，再继续贴合。已确认的地图不受切换影响；此项仅用于 S0。"));
+        mapSelectionModeStatus.SetResourceReference(TextBlock.ForegroundProperty, "StarMap.Muted");
+        mapSelectionModeField.Children.Add(mapSelectionModeStatus);
+        context.Children.Add(mapSelectionModeField);
+        UpdateMapSelectionModeAvailability();
         panel.Children.Add(Surface(context));
         var shortcuts = new StackPanel();
         shortcuts.Children.Add(SectionHeading("快捷键", new(0, 0, 0, 4)));
@@ -349,6 +357,8 @@ public partial class WorkspaceWindow : Window
         {
             mode.SelectedValue = settings.GameMode; season.SelectedItem = settings.GameSeason;
             var rawValues = settings.Values;
+            DisplayMapSelectionModeSetting(settings, rawValues);
+            UpdateMapSelectionModeAvailability();
             hotkey.Text = rawValues.TryGetPropertyValue("hotkey", out var rawKey)
                 ? rawKey is JsonValue keyValue && keyValue.TryGetValue<string>(out var keyText) ? keyText : rawKey?.ToJsonString() ?? "null"
                 : settings.Hotkey;
@@ -379,6 +389,7 @@ public partial class WorkspaceWindow : Window
     JsonNode? ReadSettingControl(string key) => key switch
     {
         "gameMode" => JsonValue.Create(mode.SelectedValue?.ToString()), "gameSeason" => JsonValue.Create(season.SelectedItem?.ToString()),
+        "mapSelectionMode" => ReadMapSelectionModeControl(),
         "hotkey" => JsonValue.Create(hotkey.Text), "sheetOpacity" => JsonValue.Create(sheetOpacity.Value), "referenceOpacity" => JsonValue.Create(referenceOpacity.Value),
         "actionHotkeys" => new JsonArray(actionHotkeys.Select(editor => (JsonNode?)JsonValue.Create(editor.Text)).ToArray()),
         "sheetVisibilityEnabled" => JsonValue.Create(settings?.SheetVisibilityEnabled ?? true),
@@ -395,15 +406,29 @@ public partial class WorkspaceWindow : Window
             if (editedSettings.Count == 0) { settingsState.Text = "设置没有更改，正在应用已保存设置。"; await ConfigureRuntime(); await ApplyInputSettings(); return; }
             var changes = new Dictionary<string, JsonNode?>();
             foreach (var key in editedSettings)
+            {
+                if (key == "mapSelectionMode" && !IsDraftSeasonS0) continue;
                 changes[key] = ReadSettingControl(key);
+            }
+            if (changes.Count == 0)
+            {
+                settingsState.Text = "S1 中保留了待保存的 S0 地图选择更改；切回 S0 后可继续保存。";
+                return;
+            }
             settings.SetMany(changes);
-            var saved = await settings.SaveAsync(dataRoot);
-            if (saved.Succeeded)
+            // Persist only this save's explicit fields over the last saved raw
+            // document. A failed, now-hidden S0 draft must not leak into S1.
+            var saved = await settings.SaveFieldsAsync(dataRoot, changes.Keys, waitForTurn: true);
+            if (saved.Succeeded || saved.Error is null) // Waiting saves can also find all selected values unchanged.
             {
                 foreach (var (key, value) in changes)
                     if (JsonNode.DeepEquals(value, ReadSettingControl(key))) editedSettings.Remove(key);
-                settingsState.Text = editedSettings.Count == 0 ? "已保存到测试版数据目录；没有修改原版设置。" : "本次更改已保存，仍有新更改尚未保存。";
-                await ConfigureRuntime();
+                if (!editedSettings.Contains("mapSelectionMode"))
+                    DisplayMapSelectionModeSetting(settings, settings.Values);
+                settingsState.Text = editedSettings.Count == 0 ? "已保存到测试版数据目录；没有修改原版设置。"
+                    : "本次更改已保存，仍有新更改尚未保存。"
+                        + (editedSettings.Contains("mapSelectionMode") && !IsDraftSeasonS0 ? " S0 地图选择更改仍待保存。" : "");
+                await ConfigureRuntime(selectionModeOnly: changes.Count == 1 && changes.ContainsKey("mapSelectionMode"));
                 await ApplyInputSettings();
             }
             else settingsState.Text = "没有保存：" + saved.Error?.Message;
@@ -446,16 +471,17 @@ public partial class WorkspaceWindow : Window
     void SetSettingsEditing(bool enabled)
     {
         foreach (var control in new Control[] { mode, season, hotkey, sheetOpacity, referenceOpacity }) control.IsEnabled = enabled;
+        SetMapSelectionModeEditingEnabled(enabled);
         foreach (var editor in actionHotkeys) editor.IsEnabled = enabled;
         clearPickerKey.IsEnabled = enabled;
         UpdateSettingsToolbar();
     }
 
-    async Task ConfigureRuntime()
+    async Task ConfigureRuntime(bool selectionModeOnly = false)
     {
         if (closed || catalog is null || runtimePage is null) return;
         var current = settings ?? SettingsDocument.CreateNew();
-        if (await runtimePage.Configure(catalog.RootPath, current))
+        if (await runtimePage.Configure(catalog.RootPath, current, selectionModeOnly: selectionModeOnly))
         {
             var applied = runtimePage.State!.Context;
             runtimePage.SetMaps(catalog.Entries.Where(entry => entry.Mode == applied.Mode && entry.Season == applied.Season).Select(entry => entry.MapId));

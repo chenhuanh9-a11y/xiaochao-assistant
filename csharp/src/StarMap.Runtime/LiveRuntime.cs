@@ -67,6 +67,8 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         _options = options is null ? new() : options with { FloorSettings = options.FloorSettings?.Clone() };
         _alignedVisible = _options.SheetVisibilityEnabled;
         _steadySettingEnabled = _options.Idvb0059Enabled;
+        if (!Enum.IsDefined(_options.MapSelectionMode)) throw new ArgumentOutOfRangeException(nameof(options));
+        _mapSelectionMode = _options.MapSelectionMode;
         if (_options.PreparationTimeout <= TimeSpan.Zero || _options.PreparationInterval <= TimeSpan.Zero
             || _options.MainEntryBudget <= TimeSpan.Zero) throw new ArgumentException("runtime-budget-invalid");
         lock (_sync) Publish();
@@ -692,6 +694,15 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         if(floorPolicyReason=="pending-click-mismatch")return Receipt(request,false,"pending-click-mismatch");
         if(floorConflict)return Receipt(request,false,"current-frame-floor-conflict");
         if (floor is null) return Receipt(request, false, s1Manual?"s1-current-floor-unavailable":"current-floor-unavailable");
+        lock (_sync)
+        {
+            RequireCurrent(epoch, token, captured, bound);
+            if (ManualSelectionRequired)
+            {
+                _reason = "manual-map-selection-pending"; Publish();
+                return Receipt(request, true, _reason);
+            }
+        }
         bool transient;
         lock(_sync){RequireCurrent(epoch,token,captured,bound);transient=DragCycleCurrent;}
         if(transient)return TryTransientFloorProjection(request,epoch,token,captured,bound,floor);
@@ -968,6 +979,8 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             RemainingMapIds = _structurePool?.Remaining ?? Array.Empty<string>(),
             EliminatedMapIds = _structurePool?.Eliminated ?? Array.Empty<string>(), RecognitionPath = _recognitionPath,
             ProvisionalMapId = _s1ProvisionalMapId,
+            MapSelectionMode = EffectiveMapSelectionMode == S0MapSelectionMode.Manual ? "manual" : "auto",
+            ManualSelectionPending = ManualSelectionRequired,
             ProbeMisses = _probeMisses,ManualAlignmentSession=_manualAlignmentSession,ManualLearning=_manualLearning,FloorClickIntent=gameFloorIntent,FloorPolicyReason=floorPolicyReason,
             IdentityKind = _identitySource == "group-default" ? "group" : IsStructureProvisional ? "candidate" : _mapId is null ? "unresolved" : "map",
             MapDisplayName = _resources?.Passports.Maps.FirstOrDefault(map => map.MapId == EffectiveMapId)?.Name,

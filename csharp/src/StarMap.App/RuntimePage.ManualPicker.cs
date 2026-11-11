@@ -13,6 +13,18 @@ internal sealed partial class RuntimePage
     internal bool ToggleManualPicker() => manualPicker.Toggle();
     internal void HandleManualPickerKey(string key) => manualPicker.HandleKey(key);
 
+    void RequestMapSelection()
+    {
+        var availability = ReadManualPickerAvailability();
+        if (!availability.CanPick) { status(availability.Message); return; }
+        if (runtime!.ReadState() is { Context.Season: "s0", MapSelectionMode: "auto" })
+        {
+            manualPicker.Hide();
+            Dispatch("reselect_map");
+        }
+        else manualPicker.Toggle();
+    }
+
     ManualMapPickerAvailability ReadManualPickerAvailability() => ReadManualMapAvailability(floatingPicker: true);
 
     ManualMapPickerAvailability ReadManualMapAvailability(bool floatingPicker)

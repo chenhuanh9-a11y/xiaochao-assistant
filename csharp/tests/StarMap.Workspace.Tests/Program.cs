@@ -36,6 +36,19 @@ internal static class Program
         }
         try
         {
+            if(Array.IndexOf(args,"--map-selection-mode-only")>=0 || Array.IndexOf(args,"--first-selection-save-only")>=0)
+            {
+                int resourcesIndex=Array.IndexOf(args,"--resources"),replayIndex=Array.IndexOf(args,"--original-replay");
+                if(resourcesIndex<0 || replayIndex<0)throw new ArgumentException("Selection mode entry needs resources and original replay.");
+                if(Array.IndexOf(args,"--first-selection-save-only")>=0)
+                    Await(S0SelectionModeWorkspaceRegression.RunFirstSave(Path.GetFullPath(args[resourcesIndex+1]),Path.GetFullPath(args[replayIndex+1]),output,Check));
+                else
+                {
+                    Await(MapSelectionSettingsWorkspaceRegression.Run(output,Check));
+                    Await(S0SelectionModeWorkspaceRegression.Run(Path.GetFullPath(args[resourcesIndex+1]),Path.GetFullPath(args[replayIndex+1]),output,Check));
+                }
+                return 0;
+            }
             if(Array.IndexOf(args,"--passive-refresh-only")>=0)
             {
                 int resourcesIndex=Array.IndexOf(args,"--resources"),replayIndex=Array.IndexOf(args,"--original-replay");
@@ -186,6 +199,8 @@ internal static class Program
             int replayOption = Array.IndexOf(args, "--original-replay");
             if (resourcesOption >= 0 && replayOption >= 0)
             {
+                Await(MapSelectionSettingsWorkspaceRegression.Run(output,Check));
+                Await(S0SelectionModeWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption+1]),Path.GetFullPath(args[replayOption+1]),output,Check));
                 Await(ManualMapPickerWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption+1]),Path.GetFullPath(args[replayOption+1]),output,Check));
                 Await(S0StructureIndexWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption+1]),Path.GetFullPath(args[replayOption+1]),output,Check));
                 Await(GroupChoiceWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption + 1]), Path.GetFullPath(args[replayOption + 1]), output, Check));

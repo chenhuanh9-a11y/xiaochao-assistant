@@ -21,7 +21,7 @@ public sealed partial class LiveRuntime
     private string StructureStage => _selection.Season+"-structure";
     private bool IsStructureProvisional => _identitySource == StructureStage+"-provisional";
     private string? EffectiveMapId => _mapId ?? _s1ProvisionalMapId;
-    private bool S0DiscoveryRequired => _mapId is null||IsStructureProvisional||_identitySource=="group-default";
+    private bool S0DiscoveryRequired => !ManualSelectionRequired && (_mapId is null||IsStructureProvisional||_identitySource=="group-default");
 
     // One request owns at most its current probe's preparation. Replacing a
     // probe retires borrowed frame observations, never the round entry latch.

@@ -35,7 +35,7 @@ internal static class ManualMapPickerWorkspaceRegression
         var evidence=new JsonArray();
         try
         {
-            check(await page.Configure(resources,SettingsDocument.CreateNew()),"picker-real-page-binds-current-prepared-resources");
+            check(await page.Configure(resources,new(new JsonObject {["mapSelectionMode"]="manual"})),"picker-real-page-binds-current-prepared-resources");
             check(!page.ToggleManualPicker() && service.Window is null && capture.Calls==0,
                 "picker-before-round-creates-no-window-and-performs-no-capture");
             host.Show();await Until(()=>Field<Button>(page,"start").IsEnabled);
@@ -93,6 +93,12 @@ internal static class ManualMapPickerWorkspaceRegression
                 && MatchesOriginal(d),
                 "difficult-catalog-matches-original-full-reference-availability-without-substituting-other-previews");
             var excluded=d!.Maps.First(row=>!before.RemainingMapIds.Contains(row.MapId));
+            long beforeReselect=page.SessionView!.Sequence.LastIssuedSequence;int beforeCalls=capture.Calls;
+            Field<Button>(page,"openPicker").RaiseEvent(new(Button.ClickEvent));await page.DrainAsync();
+            check(!service.Visible && page.SessionView!.Sequence.LastIssuedSequence>beforeReselect && capture.Calls==beforeCalls
+                && page.SessionView.LastReceipt is {Action:"reselect_map",Success:true}
+                && page.State!.RemainingMapIds.SequenceEqual(before.RemainingMapIds),
+                "automatic-map-button-reselects-through-session-without-opening-picker-or-expanding-round-pool");
             check(page.ToggleManualPicker(),"picker-can-open-after-default-index-narrowing");await service.DrainAsync();
             long issued=page.SessionView!.Sequence.LastIssuedSequence;await ChooseMap(excluded);
             check(service.Visible && page.SessionView!.Sequence.LastIssuedSequence==issued && !page.State!.IdentityLocked
@@ -118,6 +124,7 @@ internal static class ManualMapPickerWorkspaceRegression
                 "picker-can-bind-actual-S1-resources-after-the-S0-round");
             page.Dispatch("start_round");await page.DrainAsync();
             check(!page.ToggleManualPicker() && !service.Visible,"S1-automatic-round-does-not-admit-the-old-manual-picker-workflow");
+            check(!Field<Button>(page,"openPicker").IsEnabled,"S1-automatic-round-keeps-manual-map-button-disabled");
             page.Dispatch("end_round");await page.DrainAsync();page.Dispatch("prepare_manual_alignment");await page.DrainAsync();
             check(page.ToggleManualPicker(),"S1-prepared-manual-session-admits-the-picker");await service.DrainAsync();
             runtime=Field<LiveRuntime>(page,"runtime");var s1=await Task.Run(()=>runtime.ReadManualMapCatalog());

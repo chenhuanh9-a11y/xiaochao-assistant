@@ -7,9 +7,10 @@ bool dragGroupOnly=args.Length is 4 or 5 && args[0]=="--drag-group-only";
 bool s0ObserveOnly=args.Length is 5 or 6 && args[0]=="--s0-index-observe-only";
 bool s0FloorPoseOnly=args.Length==4 && args[0]=="--s0-floor-pose-only";
 bool s0PreparationOnly=args.Length==4 && args[0]=="--s0-preparation-gate-only";
-if (dragGroupOnly || s0ObserveOnly || s0FloorPoseOnly || s0PreparationOnly || args.Length == 5 && args[0] is "--s0-index-runtime-only" or "--projection-author-only" or "--projection-only" or "--current-group-only" or "--identity-prior-only" or "--unselected-floor-only" or "--map-recovery-only" or "--map-recovery-late-only" or "--passive-refresh-only" or "--passive-context-only" or "--s1-rich-sequence-only" or "--current-pose-only" or "--s1-floor-observer-only" or "--manual-confirm-only" or "--manual-learning-only" or "--manual-storage-safety-only" or "--floor-click-only" or "--floor-click-session-only" or "--map-close-detector-only" or "--map-close-busy-only" or "--map-close-failure-only" or "--drag-only")
+bool s0SelectionOnly=args.Length==4 && args[0]=="--s0-selection-mode-only";
+if (dragGroupOnly || s0ObserveOnly || s0FloorPoseOnly || s0PreparationOnly || s0SelectionOnly || args.Length == 5 && args[0] is "--s0-index-runtime-only" or "--projection-author-only" or "--projection-only" or "--current-group-only" or "--identity-prior-only" or "--unselected-floor-only" or "--map-recovery-only" or "--map-recovery-late-only" or "--passive-refresh-only" or "--passive-context-only" or "--s1-rich-sequence-only" or "--current-pose-only" or "--s1-floor-observer-only" or "--manual-confirm-only" or "--manual-learning-only" or "--manual-storage-safety-only" or "--floor-click-only" or "--floor-click-session-only" or "--map-close-detector-only" or "--map-close-busy-only" or "--map-close-failure-only" or "--drag-only")
 {
-    string priorOnlyOutput = Path.GetFullPath(args[dragGroupOnly||s0ObserveOnly||s0FloorPoseOnly||s0PreparationOnly?args.Length-1:4]);
+    string priorOnlyOutput = Path.GetFullPath(args[dragGroupOnly||s0ObserveOnly||s0FloorPoseOnly||s0PreparationOnly||s0SelectionOnly?args.Length-1:4]);
     if (Directory.Exists(priorOnlyOutput)) throw new IOException("Preserve previous evidence; use a new output.");
     Directory.CreateDirectory(priorOnlyOutput);
     var priorOnlyChecks = new List<object>(); var priorOnlyFailures = new List<string>();
@@ -21,6 +22,8 @@ if (dragGroupOnly || s0ObserveOnly || s0FloorPoseOnly || s0PreparationOnly || ar
         };
         if(args[0]=="--s0-index-observe-only")
             await S0IndexObservation.Run(args[1],args[2],args[3],priorOnlyOutput,priorOnlyCheck,args.Length==6?args[4]:null);
+        else if(s0SelectionOnly)
+            await S0SelectionModeRuntimeRegression.Run(args[1],args[2],priorOnlyOutput,priorOnlyCheck);
         else if(args[0]=="--s0-index-runtime-only")
             await S0StructureIndexRuntimeRegression.Run(args[1],args[2],args[3],priorOnlyOutput,priorOnlyCheck);
         else if(s0FloorPoseOnly)
@@ -94,6 +97,7 @@ var port = new RecordedCapture(index);
 var runtime = new LiveRuntime(port, root);
 var sequence = new SessionSequencer();
 
+await Run("S0-selection-mode", () => S0SelectionModeRuntimeRegression.Run(root, oracle, output, Check));
 if (args.Length >= 4) await Run("actual-geometry-group-lifetimes", () => GeometryGroupRuntimeRegression.Run(root, oracle, args[3], output, Check));
 if (args.Length >= 5) await Run("coordinate-policy", () => { CoordinatePolicyRegression.Run(args[4], output, Check); return Task.CompletedTask; });
 if (args.Length >= 6) await Run("actual-default-established-rejections", () => GeometryGroupRuntimeRegression.RunEstablished(root, oracle, args[5], output, Check));

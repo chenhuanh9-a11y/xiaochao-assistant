@@ -5,6 +5,8 @@ using StarMap.Vision;
 
 namespace StarMap.Runtime;
 
+public enum S0MapSelectionMode { Auto, Manual }
+
 public sealed record LiveRuntimeOptions
 {
     // app/map_open_preparation.py, not the first-visible-pixel performance target.
@@ -17,6 +19,7 @@ public sealed record LiveRuntimeOptions
     public JsonElement? FloorSettings { get; init; }
     public bool SheetVisibilityEnabled { get; init; } = true;
     public bool Idvb0059Enabled { get; init; } = true;
+    public S0MapSelectionMode MapSelectionMode { get; init; } = S0MapSelectionMode.Auto;
     public string StructureIndexAssetDirectory { get; init; } = Path.Combine(AppContext.BaseDirectory, "s1-private-assets");
     public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
     public Func<EntryPassportCatalog,IManualConfirmationMemory>? ConfirmationMemoryFactory {get;init;}
@@ -61,6 +64,8 @@ public sealed record LiveRuntimeState(RuntimeContext Context, bool ResourcesBoun
     public MapOpenRecoveryStatus MapOpenRecovery { get; init; } = new(false);
     public int ProbeMisses { get; init; }
     public bool ManualAlignmentSession { get; init; }
+    public string MapSelectionMode { get; init; } = "auto";
+    public bool ManualSelectionPending { get; init; }
     public ManualLearningStatus? ManualLearning {get;init;}
     public GameFloorIntent? FloorClickIntent {get;init;}
     public string FloorPolicyReason {get;init;}="";

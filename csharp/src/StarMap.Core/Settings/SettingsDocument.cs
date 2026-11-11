@@ -346,18 +346,22 @@ public sealed class SettingsDocument
     /// Saves only changed, explicitly selected fields over the last saved raw
     /// document. A busy document or an unchanged selection returns false with
     /// no error; accepted values are captured before the first file I/O await.
+    /// An explicit UI save can wait for the existing writer instead of returning busy.
     /// </summary>
     public async Task<DocumentSaveResult> SaveFieldsAsync(
         ExperimentalDataRoot root,
         IEnumerable<string> keys,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool waitForTurn = false)
     {
         ArgumentNullException.ThrowIfNull(root);
         ArgumentNullException.ThrowIfNull(keys);
         var selected = keys.Distinct(StringComparer.Ordinal).ToArray();
         if (selected.Length == 0 || selected.Any(key => key is null || !Defaults.ContainsKey(key)))
             return DocumentSaveResult.Failure(new ArgumentException("Select supported settings fields.", nameof(keys)));
-        if (!await _saveGate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+        if (waitForTurn)
+            await _saveGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        else if (!await _saveGate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
             return new DocumentSaveResult(false, null);
         try
         {
