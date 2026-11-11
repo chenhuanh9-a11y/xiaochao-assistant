@@ -406,9 +406,9 @@ class ResourceResetSourceContracts(unittest.TestCase):
         self.assertIn('pending-resource-reset.json', uninstall.split('function InitializeUninstall', 1)[1])
         self.assertIn('pending-installer-upgrade.json', uninstall.split('function InitializeUninstall', 1)[1])
         event = uninstall.split('procedure CurUninstallStepChanged', 1)[1].split('procedure DeinitializeUninstall', 1)[0]
-        self.assertLess(event.index('AcquireResourceLock'), event.index('pending-resource-reset.json'))
+        self.assertLess(event.index('AcquireUninstallLease'), event.index('pending-resource-reset.json'))
         self.assertLess(event.index('pending-resource-reset.json'), event.index('DisableGameWatcher'))
-        self.assertLess(event.index('pending-resource-reset.json'), event.index('PrepareUninstallData'))
+        self.assertLess(event.index('pending-resource-reset.json'), event.index('PrepareUninstallRunner'))
         rebuild = (ROOT / 'tools/rebuild_qt_installer.py').read_text()
-        self.assertIn('("recovery", "import", "reset")', rebuild)
+        self.assertIn('("recovery", "import", "reset", "uninstall")', rebuild)
         self.assertIn('resource_reset_installer_defines', rebuild)

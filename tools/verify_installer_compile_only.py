@@ -1,6 +1,6 @@
 """Hosted Windows compile-only evidence, never a distributable product build.
 
-Freeze the four ORIGINAL helper specs. Compile ORIGINAL production Inno with
+Freeze the five ORIGINAL helper specs. Compile ORIGINAL production Inno with
 /O- and explicitly synthetic main/base bytes. No production resource lock is
 changed or declared satisfied. No Xingtu Setup is produced or executed.
 """
@@ -27,10 +27,11 @@ HELPER_MODULES = {
     'recovery': ('star_map_import', 'star_map_import_helper', 'map_package_recovery_plan', 'map_package_upgrade', 'resource_transaction', 'packaged_product_identity'),
     'reset': ('resource_upgrade_reset', 'installer_resource_lease', 'installer_upgrade_coordinator', 'installer_upgrade_journal', 'installer_native_observation', 'managed_base_resources', 'map_package_upgrade', 'star_map_import', 'resource_transaction'),
     'watcher': ('game_startup', 'game_startup_win32', 'packaged_product_identity'),
+    'uninstall': ('installer_uninstall', 'installer_resource_lease', 'game_startup', 'packaged_product_identity'),
 }
-ENTRIES = {**{k: 'star_map_' + k + '_helper' for k in ('import', 'recovery', 'reset')}, 'watcher': 'game_startup_watcher'}
+ENTRIES = {**{k: 'star_map_' + k + '_helper' for k in ('import', 'recovery', 'reset', 'uninstall')}, 'watcher': 'game_startup_watcher'}
 _ACTIVE_REPORT = None
-RECIPES = ('qt-client.iss', 'qt-game-watcher-lifecycle.iss', 'qt-resource-reset.iss', 'qt-uninstall-data.iss', 'qt-import-helper.spec', 'qt-recovery-helper.spec', 'qt-reset-helper.spec', 'qt-game-watcher.spec')
+RECIPES = ('qt-client.iss', 'qt-game-watcher-lifecycle.iss', 'qt-resource-reset.iss', 'qt-uninstall-data.iss', 'qt-installer-target.iss', 'qt-import-helper.spec', 'qt-recovery-helper.spec', 'qt-reset-helper.spec', 'qt-uninstall-helper.spec', 'qt-game-watcher.spec')
 
 
 def cli_cases(kind):
@@ -93,7 +94,8 @@ def make_synthetic_projection(stage, output, source, profile, helpers):
     write_json(stage / 'version.json', version)
     write_json(stage / 'installation-profile.json', profile)
     (stage / '_installer-owned-files.txt').write_text('', encoding='utf-8-sig')
-    record = dict(resetHelper=helpers['reset'])
+    record = dict(resetHelper=helpers['reset'], uninstallHelper=helpers['uninstall'])
+    uninstall_defines = build.uninstall_helper_installer_defines(stage, record)
     record['releaseReport'] = build.stage_release_report(stage, product='星图', source=source,
         version=version, resource_version='ci-synthetic-not-release',
         resource_inventory_sha256=hashlib.sha256(json.dumps(resources, sort_keys=True).encode()).hexdigest())
@@ -101,7 +103,7 @@ def make_synthetic_projection(stage, output, source, profile, helpers):
         resource_version='ci-synthetic-not-release', source=source)
     build.write_program_ownership(stage, record)
     defines = build.resource_reset_installer_defines(stage, record, output, source)
-    return include, defines, record
+    return include, defines + uninstall_defines, record
 
 
 def compiler_arguments(iscc, stage, work, include, defines):
@@ -199,7 +201,7 @@ def main(argv=None):
     def checkpoint(phase):
         report['phase'] = phase
         write_json(_ACTIVE_REPORT[0], report)
-    for kind in ('import', 'recovery', 'reset', 'watcher'):
+    for kind in ('import', 'recovery', 'reset', 'watcher', 'uninstall'):
         checkpoint('freeze-' + kind)
         helpers[kind] = (build.assemble_game_watcher(work, stage, env) if kind == 'watcher'
             else build.assemble_recovery_helper(work, stage, env, kind=kind))
