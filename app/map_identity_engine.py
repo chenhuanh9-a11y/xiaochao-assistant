@@ -362,6 +362,12 @@ class MapIdentityEngine(NightmareCandidateEngine):
                 proposals.append(row)
         return proposals
 
+    def prepare_side_recovery(self, frame, floor, rows, diagnostics, *, entry_rows, passport_diagnostics, deadline):
+        from side_pose_recovery import SidePoseRecovery
+        return SidePoseRecovery(self, frame, floor, rows, diagnostics, entry_rows=entry_rows,
+            passport_diagnostics=passport_diagnostics, deadline=deadline,
+            adjudicate=verified_side_candidate, equivalent_poses=equivalent_observed_poses)
+
     def _shared_entry_inventory(self, floor):
         """Describe whether shared entry proposals cover this pack floor.
 
@@ -796,97 +802,18 @@ class MapIdentityEngine(NightmareCandidateEngine):
         if (not passport_selected and fallback_allowed
                 and not any(row['identityVerified'] for row in entry_rows) and self.side_entry_identity is not None):
             side_producer='local-structure'
+            recovery_work=None
             try:
                 side_rows,side_diagnostics=self.side_entry_identity.rank(frame,floor,budget_seconds=remaining(),**gate_args)
-                # Refine one fully competed local hypothesis for any map. The
-                # bound, request budget and normal author/identity checks remain
-                # identical across resource families.
-                if (side_rows and side_diagnostics.get('complete')
-                    and side_diagnostics.get('competitiveHypotheses')==1 and remaining()>0
-                    and not (side_rows[0].get('verification') or {}).get('success')):
-                    side_rows[0]=self.side_entry_identity.refine_candidate(frame,side_rows[0])
-                    side_diagnostics=dict(side_diagnostics,
-                        continuousRefinementMs=side_rows[0].get('continuousRefinementMs'),
-                        continuousRefinementReason=side_rows[0].get('continuousRefinementReason'))
-                check_entry=getattr(self.side_entry_identity,'check_entry_evidence',None)
-                if check_entry is not None and passport_diagnostics is not None and side_rows:
-                    band=max(4,max(float(row['score']) for row in side_rows)-1)
-                    for row in side_rows:
-                        if float(row['score'])>=band:
-                            row['entryCrossCheck']=check_entry(frame,row,observation=passport_diagnostics)
-                side_winner=verified_side_candidate(side_rows,side_diagnostics,floor,entry_rows,frame.shape,profile_id=self.identity_profile_for_map)
-                if side_winner is None and side_diagnostics.get('complete') and remaining()>0:
-                    # Raw chain counts are not comparable across author
-                    # profiles with different drawing density. Reserve one
-                    # recovery slot per profile before filling the remaining
-                    # three-slot budget from the strongest other poses.
-                    # Every proposal still takes the identical current-frame
-                    # wall/author/identity verification below.
-                    top=max((float(r['score']) for r in side_rows),default=0.)
-                    original_proposals=self._side_recovery_proposals(side_rows)
-                    original_group_recovery=original_proposals
-                    recovery_rows=self._native_similarity_prioritize(side_rows,floor)
-                    group_priority_applied=any(a is not b for a,b in zip(recovery_rows,side_rows))
-                    proposals=(self._side_recovery_proposals(recovery_rows)
-                        if group_priority_applied else original_proposals)
-                    accepted=[];evaluated=0
-                    completed=set()
-                    for candidate in proposals[:3]:
-                        if remaining()<=0:break
-                        if not (candidate.get('verification') or {}).get('evaluated',True):
-                            candidate['verification']=self.side_entry_identity.verify(frame,candidate)
-                        if (not candidate['verification'].get('success')
-                            and not candidate.get('continuousRefinementReason')):
-                            refined=self.side_entry_identity.refine_candidate(frame,candidate)
-                            candidate.update(refined)
-                        if check_entry is not None and passport_diagnostics is not None:
-                            candidate['entryCrossCheck']=check_entry(frame,candidate,observation=passport_diagnostics)
-                        evaluated+=1
-                        completed.add(id(candidate))
-                        if (candidate['verification'].get('success')
-                            and (candidate.get('entryCrossCheck') or {}).get('contradicted') is not True):
-                            accepted.append(candidate)
-                    side_diagnostics=dict(side_diagnostics,poseRecoveryEvaluated=evaluated,
-                        poseRecoveryCandidates=len(proposals))
-                    unresolved=[]
-                    if group_priority_applied:
-                        # Reordering work cannot erase original required
-                        # recovery paths or any already successful rival.
-                        # An initial failed verify is not a finished rejection
-                        # when the original path still owes refinement.
-                        required=list(original_proposals)
-                        for row in side_rows:
-                            if ((row.get('verification') or {}).get('success')
-                                    or float(row['score'])>=max(4,top-1)):
-                                if not any(row is old for old in required):required.append(row)
-                        unresolved=[row['mapId'] for row in required
-                            if id(row) not in completed
-                            and not (row.get('verification') or {}).get('success')
-                            and (not row.get('continuousRefinementReason')
-                                 or (row.get('verification') or {}).get('evaluated',True) is False)]
-                        for row in required:
-                            if ((row.get('verification') or {}).get('success')
-                                    and (row.get('entryCrossCheck') or {}).get('contradicted') is not True
-                                    and not any(row is old for old in accepted)):
-                                accepted.append(row)
-                        side_diagnostics['groupPriorityUnverifiedCompetitors']=unresolved
-                    equivalent=len(accepted)==1
-                    if len(accepted)>1 and len({r['mapId'] for r in accepted})==1:
-                        # Compare actual observed client positions, not remote
-                        # unobserved floor extents. One-cell shifts remain
-                        # distinct; only fits within the existing three-pixel
-                        # retrieval tolerance are merged.
-                        _,nodes,_=self.side_entry_identity._observe(frame)
-                        points=np.array([[*n['point'],1.] for n in nodes])
-                        equivalent=equivalent_observed_poses(accepted,points)
-                    if unresolved:equivalent=False
-                    side_diagnostics['poseRecoveryEquivalent']=equivalent
-                    if evaluated==len(proposals) and accepted and equivalent:
-                        candidate=dict(accepted[0],poseAmbiguous=False)
-                        side_winner=verified_side_candidate([candidate],dict(complete=True,
-                            verificationComplete=True,competitiveHypotheses=1,identityAmbiguous=False),
-                            floor,entry_rows,frame.shape,profile_id=self.identity_profile_for_map)
+                recovery_work=self.prepare_side_recovery(frame,floor,side_rows,side_diagnostics,
+                    entry_rows=entry_rows,passport_diagnostics=passport_diagnostics,deadline=started+budget)
+                while (job := recovery_work.next_job()) is not None:
+                    if remaining()<=0:break
+                    job.run()
+                side_rows,side_diagnostics,side_winner,original_group_recovery=recovery_work.finish()
             except (ValueError,TypeError,KeyError,OSError,cv2.error) as error:
+                if recovery_work is not None:
+                    original_group_recovery=recovery_work.original_proposals
                 side_diagnostics=dict(reason='side-resource-unavailable',error=str(error),complete=False)
         registered_identity_candidates=[dict(mapId=str(row.get('mapId')),
             score=float(row.get('score',0.0)),identityEvidence=row.get('identityEvidence'),
@@ -960,7 +887,7 @@ class MapIdentityEngine(NightmareCandidateEngine):
                 reason=('entry-current-exit-contradicted' if (candidate.get('entryCrossCheck') or {}).get('contradicted') is True
                         else side_diagnostics['reason']),difficultEntry=dict(candidate,locatorKind='side',identityVerified=False),
                 identityElapsedMs=(time.perf_counter()-started)*1000,
-                identityBudgetExceeded=not side_diagnostics.get('complete',False))
+                identityBudgetExceeded=str(side_diagnostics.get('reason','')).endswith('budget-incomplete'))
         if side_winner is not None and side_winner['mapId'] in by_id:
             row=by_id[side_winner['mapId']]
             row.update(score=1200+side_winner['score'],entryKind=side_winner['entryKind'],

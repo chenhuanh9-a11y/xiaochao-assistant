@@ -1,6 +1,8 @@
 name: Production Inno compile only and real helper freeze
 
 on:
+  push:
+    branches: [codex/pr133-p3-p4-p5-integration-20261111]
   workflow_dispatch:
   pull_request:
     branches: [main]

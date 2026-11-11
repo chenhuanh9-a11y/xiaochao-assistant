@@ -48,8 +48,7 @@ class ProgramInventoryTests(unittest.TestCase):
         self.assertEqual(ownership, (self.stage / '_installer-owned-files.txt').read_bytes())
         self.assertEqual(set(data['files']), set(program_paths_from_ownership(ownership)))
         payload = '_internal/managed-base-resources/payload/_internal/references/base.json'
-        self.assertIn(payload, data['files'])
-        self.assertEqual(data['files'][payload]['sha256'], build.sha256(self.stage / '_internal/references/base.json'))
+        self.assertNotIn(payload, data['files'])
         self.assertIn('_internal/qt-editor-base/manifest.json', data['files'])
         self.assertIn('_star_map_reset_runtime/python313.dll', data['files'])
         self.assertNotIn('_internal/assets/custom-maps/manifest.json', data['files'])
@@ -57,8 +56,8 @@ class ProgramInventoryTests(unittest.TestCase):
         self.assertNotIn(path.name, self.record['fileProjection']['installedFiles'])
         self.assertEqual(self.write(), path)
 
-    def test_program_and_candidate_tampering_or_missing_file_rejected(self):
-        for name in ('星图.exe', '_internal/app/module.py', '_internal/references/base.json',
+    def test_program_tampering_or_missing_file_rejected(self):
+        for name in ('星图.exe', '_internal/app/module.py',
                      '_internal/qt-editor-base/manifest.json', '_star_map_reset_runtime/python313.dll'):
             path = self.stage / name
             original = path.read_bytes()
@@ -79,8 +78,18 @@ class ProgramInventoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'projection'): self.write()
 
     def test_changed_family_destination_rejected(self):
-        self.record['fileProjection']['families']['base'] = []
+        self.record['fileProjection']['families']['program'].remove('_internal/app/module.py')
         with self.assertRaisesRegex(ValueError, 'family mappings'): self.write()
+
+    def test_uninstalled_base_is_not_claimed_by_program_inventory(self):
+        path = self.write()
+        before = path.read_bytes()
+        base = self.stage / '_internal/references/base.json'
+        base.write_bytes(b'independent resource bytes')
+        self.assertEqual(self.write().read_bytes(), before)
+        base.unlink()
+        self.assertEqual(self.write().read_bytes(), before)
+        self.assertNotIn('_internal/references/base.json', json.loads(before)['files'])
 
     def test_preexisting_inventory_cannot_be_rebound(self):
         path = self.write()

@@ -244,7 +244,6 @@ def write_program_ownership(stage, record):
 def write_installer_program_inventory(stage, record, output, source):
     """Pin installed destinations, not the different candidate staging paths."""
     from installer_native_observation import program_paths_from_ownership, MAX_FILE, MAX_METADATA
-    from managed_base_resources import CANDIDATE
     stage, output = Path(stage), Path(output)
     if not re.fullmatch('[0-9a-f]{40}', str(source.get('commit'))):
         raise ValueError('Invalid installer source commit')
@@ -267,7 +266,9 @@ def write_installer_program_inventory(stage, record, output, source):
         if family not in ('program', 'base', 'editor'):
             raise ValueError('Unknown installer projection family')
         for name in paths:
-            target = CANDIDATE + '/payload/' + name if family == 'base' else name
+            if family == 'base':
+                continue
+            target = name
             if target in mappings:
                 raise ValueError('Duplicate installed projection path')
             mappings[target] = name
@@ -351,24 +352,34 @@ def resource_reset_installer_defines(stage, record, output, source):
     listing = output / 'reset-helper-inventory.txt'
     listing.write_text('\n'.join(rows) + '\n', encoding='utf-8-sig')
     report = _local_file(stage, record['releaseReport']['file'])
-    candidate = _local_file(stage, record['fileProjection']['managedBaseManifest'])
-    if (sha256(report) != record['releaseReport']['sha256'] or
-            sha256(candidate) != record['fileProjection']['managedBaseManifestSha256']):
-        raise ValueError('Resource reset target report/candidate differs from build receipt')
+    projection = record['fileProjection']
+    candidate_name = projection['managedBaseManifest']
+    candidate = _local_file(stage, candidate_name) if candidate_name is not None else None
+    if sha256(report) != record['releaseReport']['sha256']:
+        raise ValueError('Installer target report differs from build receipt')
+    if candidate is None:
+        if (projection.get('policy') != RESOURCE_INSTALLATION_POLICY
+                or any(name not in projection or projection[name] is not None for name in (
+                    'managedBaseManifest', 'managedBaseBundleId', 'managedBaseManifestSha256'))):
+            raise ValueError('Program-only resource policy differs from build receipt')
+    elif sha256(candidate) != projection['managedBaseManifestSha256']:
+        raise ValueError('Resource reset candidate differs from build receipt')
     program_inventory = write_installer_program_inventory(stage, record, output, source)
     (output / 'production-file-projection.json').write_text(
         json.dumps(record['fileProjection'], indent=2), encoding='utf-8')
     record['resourceResetInstaller'] = dict(sourceCommit=source['commit'],
         programInventorySha256=sha256(program_inventory),
         helperInventorySha256=sha256(listing), targetReportSha256=sha256(report),
-        targetManifestSha256=sha256(candidate), lease='verified-duplicate-of-setup-share-zero-handle',
+        targetManifestSha256=sha256(candidate) if candidate is not None else None,
+        resourceAction='preserve' if candidate is None else 'reset',
+        lease='verified-duplicate-of-setup-share-zero-handle',
         confirmation='exact-plan-sha256', nativeTested=False,
         capacityPreflight=native_capacity_preflight(program_inventory, report, source))
-    return [f'/DResetHelperInventory={listing}', f'/DResetHelperInventorySHA256={sha256(listing)}',
+    defines = [f'/DResetHelperInventory={listing}', f'/DResetHelperInventorySHA256={sha256(listing)}',
             f'/DResetSourceCommit={source["commit"]}', f'/DResetTargetReportSHA256={sha256(report)}',
-            f'/DResetCandidateSHA256={sha256(candidate)}',
             f'/DResetProgramInventory={program_inventory}',
             f'/DResetProgramInventorySha256={sha256(program_inventory)}']
+    return defines + ([f'/DResetCandidateSHA256={sha256(candidate)}'] if candidate is not None else ['/DProgramOnlyInstaller'])
 
 
 def notice_inputs():
@@ -900,10 +911,10 @@ def verify_frozen(stage, resources, qml_names, product=PRODUCT, *, bundled_autho
 # Product identity travels with program updates, even inside the resource tree.
 _PROGRAM_IDENTITY = {"_internal/version.json", "_internal/installation-profile.json",
                      "_internal/references/build-fingerprint.txt"}
-RESOURCE_INSTALLATION_POLICY = dict(existingBasePlane="manifest-owned-transaction-before-runtime",
-    missingBasePlane="repair-complete-manifest", partialExistingPlane="repair-missing-verify-entire-set",
-    editorBase="seed-whole-family-only-when-both-outer-and-internal-absent",
-    resourceVersionMeaning="candidate-baseline; actual health is verified before resource consumers",
+RESOURCE_INSTALLATION_POLICY = dict(existingBasePlane="user-imported-catalog-only",
+    missingBasePlane="valid-empty-state", partialExistingPlane="preserve-and-report-package-health",
+    editorBase="program-editor-assets-only",
+    resourceVersionMeaning="build-input-inventory; no runtime resource ownership",
     unknownOwnership="block-with-path-and-expected-actual-hashes",
     installedAuthorPackages="preserve-receipt-files-and-dependency-contracts")
 
@@ -917,7 +928,8 @@ def resource_file_family(relative):
         return "editor"
     if optional_author_sidecar(relative):
         return "optional-author"
-    if (relative.startswith(("_internal/assets/", "_internal/references/", "_internal/recognition/", "_internal/seasons/"))
+    if (relative.startswith(("_internal/assets/", "_internal/references/", "_internal/recognition/", "_internal/seasons/",
+                             "_internal/managed-base-resources/"))
             or relative == "_internal/difficult-native-manifest.json"):
         return "base"
     return "program"
@@ -1070,27 +1082,9 @@ def write_production_files_include(stage, resources, output, *, resource_version
     families = production_file_projection(stage, resources, bundled_author_paths=bundled_author_paths,
                                           resource_version=resource_version, source=source)
     author_defaults = verify_bundled_author_defaults(stage, resources, bundled_author_paths)
-    # Keep active data untouched during Setup. The startup repair verifies this
-    # complete candidate manifest under the same OS lock as author transactions.
-    sys.path.insert(0, str(ROOT / "app"))
-    from managed_base_resources import CANDIDATE, manifest_for_rows
-    rows = [dict(path=name, bytes=(Path(stage) / name).stat().st_size,
-                 sha256=sha256(Path(stage) / name)) for name in families["base"]]
-    for row in rows:
-        declared = resources[row["path"][len("_internal/"):]]
-        if ("bytes" in declared and "sha256" in declared
-                and (row["bytes"] != declared["bytes"] or row["sha256"] != declared["sha256"].lower())):
-            raise ValueError("Managed candidate differs from verified resource inventory: " + row["path"])
-    # A family-only projection is useful to validate editor staging. Real full
-    # builds already require the complete two-mode base in validate_resources.
-    manifest = manifest_for_rows(rows, resource_version) if rows else None
-    manifest_name = CANDIDATE + "/manifest.json" if manifest else None
-    if manifest:
-        manifest_path = Path(stage) / manifest_name
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-        if manifest_name not in families["program"]:
-            families["program"].append(manifest_name)
+    # Recognition resources are imported by the user as independent packages.
+    # A program upgrade must not stage a base candidate which startup can later
+    # mistake for an owned repair source.
     lines = ["; Generated exact production projection; no directory wildcard copies."]
     installed_files = []
     for family, names in families.items():
@@ -1099,9 +1093,11 @@ def write_production_files_include(stage, resources, output, *, resource_version
             # older copy as base or program data would overwrite the author or
             # resurrect it after the user removes its package.
             continue
+        if family == "base":
+            continue
         for name in names:
             source = name.replace("/", "\\")
-            installed = CANDIDATE + "/payload/" + name if family == "base" else name
+            installed = name
             installed_files.append(installed)
             parent = str(PurePosixPath(installed).parent)
             destination = "{app}" + ("\\" + parent.replace("/", "\\") if parent != "." else "")
@@ -1116,8 +1112,8 @@ def write_production_files_include(stage, resources, output, *, resource_version
                                for names in families.values() for name in names},
                   bundledAuthorDefaults=author_defaults,
                   omittedOptionalAuthorFiles=families["optional-author"],
-                  managedBaseManifest=manifest_name, managedBaseBundleId=manifest["bundleId"] if manifest else None,
-                  managedBaseManifestSha256=sha256(Path(stage) / manifest_name) if manifest else None,
+                  managedBaseManifest=None, managedBaseBundleId=None,
+                  managedBaseManifestSha256=None,
                   includeSha256=sha256(include))
     (Path(output) / "production-file-projection.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     return include, report
@@ -1138,7 +1134,7 @@ def stage_release_report(stage, *, product, source, version, resource_version, r
         numericVersion=version['numericVersion'], buildFingerprint=source['commit'][:8].upper(),
         fingerprintScheme='source-commit-prefix', executableSha256=sha256(stage / (product + '.exe')),
         resourceVersion=resource_version, resourceInventorySha256=resource_inventory_sha256,
-        resourceVersionMeaning='candidate-baseline; installed health verified separately before resource consumers',
+        resourceVersionMeaning='build-input-inventory; no runtime resource ownership',
         identityFiles={name: row for name, row in selected_file_identities(stage).items()
                        if row['status'] == 'hashed'})
     path = stage / 'release-report.json'

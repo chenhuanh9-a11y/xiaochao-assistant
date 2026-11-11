@@ -321,6 +321,10 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 
 ## 8. 实施增量
 
+### P5 旧格式退役验收清单
+
+最终整合后的 P5 验收项、证据来源和未验收边界见[旧格式停用与最终验收清单](p5-retirement-acceptance-checklist.md)。该清单补足最终远端版本/协议绑定、Setup 字节数与 SHA256、干净启动、四组合真实导入与消费、第二版资源、升级/回退/取消/中断保留，以及 Windows/真实 GUI/游戏/发布分别记录的要求。当前代码和离屏/临时归档结果均不代表这些最终项已通过。
+
 - 原生 goal 已创建且 active，无预算；目标为完整 P0–P5 及协调启动优化，不自动正式合并/发版/发布。
 - P0 文档提交 `adab32a`、草稿 PR #131 已推送；生产基线仍是 `cc5100c6`，不把草稿文档算作新架构实现。
 - 启动路径优化已单独完成至 `0ba7ce83`、草稿 PR #132，独立干净 checkout 的 Setup 已隔离安装验证。该包仍是原资源架构，不包含 P1/P2。启动测量和边界在本地交接记录，不能把其构建/GUI结果迁作统一资源验收。
@@ -705,3 +709,14 @@ python -m unittest test_client_progressive_display test_client_progressive_pixel
 - 新 9 项测试经实际 component JSON 和原 turn/连续拟合、生产 prepared-array 构造及真实保守消费者，覆盖唯一位姿、多地图竞争、过滤范围、暂停关闭、门证据失败后的原带恢复、四个竞争者、资源异常、单 deadline、帧所有权及黑帧/不支持楼层。正向观察与最终图像验证隔离，prepared-array 的资源登记读取另由 I/O 测试覆盖；这些证据不是实帧/游戏/GUI/延迟验收。修前实际旧入口正例通过，新分步接口因不存在而失败（2 项中 1 error，0.172 秒），记录保留。
 - 父提交 `fa9579c` 的真实旧 `rank/_rank_observed` 与新入口对 13 种明确合成场景分别运行：唯一、歧义、过滤、已知图、四竞争者、全失败、prepared 无出口、门筛选使用/恢复/读取错误、零预算、不支持楼层及黑帧。完整候选行和资格诊断一致，仅双方执行后去除 `elapsedMs/sideOptionalDoorMs`，旧求解函数在新入口运行前移除，不向新求解注入旧答案。首轮来源组合 52 项通过（2.579 秒）；最终 `python -B -m unittest -v test_side_entry_jobs test_passport_entry_jobs test_main_entry_jobs test_group_review_lifecycle test_entry_resource_io test_client_structure_unification test_client_imported_group_runtime test_native_similarity_runtime test_client_known_floor_recovery test_side_entry_search test_side_entry_geometry test_entry_semantic_capability` 共 104 项通过（94.443 秒）。
 - CI 原 83 个资源模块保留，仅新增 side jobs 整模块，现 84 个、六组 12/39/18/7/3/5；292 个原测试字面项完整保留，仅新增 1 项，18 matrix、25 分钟、两个 baseline 和独立失败汇总保持。完整 P3 仍待 `MapIdentityEngine.rank` 的逐 profile pose recovery、原始必需竞争者和最终登记组提议接入分步生产，再实际改由共用 scanner/ticket/deadline 调度并退出旧全局控制器；本次不是 P3 完成。
+
+### P3/P4/P5 联合整合与修正（2026-11-11）
+
+- 整合分支为 `codex/pr133-p3-p4-p5-integration-20261111`，保留 #138、#141、#139、#140 的原始提交与父关系。P4 台账追加冲突已同时保留，运行代码自动合并；没有合并 main、替换用户安装或发布。
+- P3 的实际 `MapIdentityEngine.rank` 现逐项驱动 side recovery 的初始 refinement、passport 交叉检查、原恢复提议、每个 profile 的 pose recovery 与观测点等价判定，再执行原归约。保留原始必需竞争者、已成功及未完成的 rival，预算不足不能确认身份；资源异常不冒称预算耗尽。真实 rank 的异常反例曾丢失必需成员，修前失败、修后保留该范围。新工作与正门/passport/side 共用原帧和任务生命周期；外层全局控制器仍未退出。
+- P5 的正式 `production` Setup 只更新程序与既有编辑器默认项，不安装基础候选或默认作者。新 `preserve` 安装会话复用既有程序库存摘要和原生完成观察协议，全程不创建资源 reset 事务；准备、开始原生安装及最终提交仍检查资源 pending/handoff。模式由不可变安装会话决定，恢复时不能由新 CLI 改写。原历史 reset 事务与恢复检查保留。
+- Inno 新模式在空目标也执行只读状态检查，沿用普通安装确认，不展示资源清理同意框；旧破坏性清理模式保留交互确认。QtIFW 退役内置地图安装命令，但保留独立卸载清理组件。修正其缺失组件常量及新冻结记录复用路径，原程序、helper、profile、报告和库存身份检查均保留。正式投影不能把遗留 `managed-base-resources` 重新认作程序文件；实际反例修前失败、修后由原资源库存一致性检查拒绝。
+- 本地安装/资源 19 模块联合 **354 项，2 项跳过，其余通过（231.407 秒）**；该次运行在最后 QtIFW 接缝修正之前，后者另行定向重跑。资源入口 9 模块按 CI 各自独立进程共 **103 项通过**，避免测试模块的 QCore/QGui 全局状态互相污染。P3/P4 生产链组合 **141 项通过（106.655 秒）**，随后异常必需竞争者修正对应 **25 项通过（0.391 秒）**。失败与修前日志均保留，没有改成预期失败或移出统计。
+- 新 program-only 测试使用真实临时程序/资源字节、journal、readiness 与原生模板，但完整原生观察器及借句柄获取受控；不是 Windows 对象身份或实际安装验收。QtIFW 正常打包入口测试控制 Git 差异后端、外部冻结/编译器和 PE 校验，执行真实投影、库存、复制、XML/脚本及回执生成；不把非可执行测试产物当作 Setup。
+- CI 保留原 293 个测试字面项，新增 recovery、两个 progressive display 及 program-only 模块；资源六组为 12/40/18/7/5/5，18 matrix、25 分钟、两个比较 baseline 与逐模块独立进程不变。最终同提交远端结果及真实冻结/编译结果以整合 PR 回执为准，旧绿不能替代新提交。
+- 当前仍未证明：P3 默认共同 scanner/ticket/deadline 与旧控制器退出，P4 全部 ROI/恢复/context/成员 ACK 外围统一，四模式真实游戏准确率、500/300ms 目标、实际 Setup 安装/卸载。用户反馈旧 Inno 曾卸载不净，具体残留及根因尚未核实；框架或体积本身不构成清理可靠性证据。`client`/私有开发构建的旧显式资源输入不属于本次正式 production 投影验收，不能混称默认交付。

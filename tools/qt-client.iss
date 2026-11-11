@@ -304,9 +304,8 @@ var
 begin
   Target := ExpandConstant('{app}');
   if ResourcePlanReady and (CompareText(ResourcePlanRoot, Target) = 0) then Exit;
-  { Active base resources are never copied by Setup. The exact generated
-    projection installs a candidate manifest/payload; startup validates and
-    repairs the whole set under this same lock before creating consumers. }
+  { Program-only packages preserve separately imported recognition resources.
+    Legacy reset packages keep their explicitly reviewed candidate protocol. }
   InstallEditorBase := not (
     DirExists(Target + '\assets\custom-maps') or
     FileExists(Target + '\assets\custom-maps') or
@@ -472,7 +471,11 @@ begin
     { Re-evaluate once at the installation boundary, before any actual copy. }
     ResourcePlanReady := False;
     DetermineResourcePlanes;
+#ifdef ProgramOnlyInstaller
+    Log('RESOURCE_BASE_PRESERVE_IMPORTED_CATALOG');
+#else
     Log('RESOURCE_BASE_CANDIDATE_STAGED_VERIFY_AND_REPAIR_BEFORE_RUNTIME');
+#endif
     if InstallEditorBase then Log('RESOURCE_EDITOR_SEED_COMPLETE_FAMILY')
     else Log('RESOURCE_EDITOR_PRESERVE_EXISTING_FAMILY');
     if not PrepareResourceReset(WatcherReason) then RaiseException(WatcherReason);
@@ -496,7 +499,7 @@ begin
       ResourceResetNativeMetadataNeedsRepair := not ResourceResetFinalized;
       Log('UPGRADE_RESOURCE_RECOVERY_REQUIRED ' + WatcherReason);
     end;
-    UpgradeCommitted := not ResourceResetStarted or ResourceResetCommitted;
+    UpgradeCommitted := not ResourceResetStarted or ResourceResetFinalized;
     if not ResourceResetStarted or ResourceResetFinalized then begin
       RetireLegacyShortcuts;
       Log('UPGRADE_COMMITTED');
