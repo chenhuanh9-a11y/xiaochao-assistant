@@ -247,7 +247,8 @@ public sealed partial class LiveRuntime
             // contradictions change the round pool. Unknown fits cannot vote.
             var supported=result["supportedMapIds"]!.AsArray().Select(id=>id!.GetValue<string>()).ToHashSet(StringComparer.Ordinal);
             var shown=bound.UsesS1StructureFit?result["supportedMapIds"]!.AsArray().Select(id=>id!.GetValue<string>()).Where(pool.Remaining.Contains):pool.Remaining;
-            _candidates = shown.Select(id => new RuntimeCandidate(id,bound.Passports.MapProfiles[id],0,false,supported.Contains(id))).ToArray();
+            _candidates = shown.Select(id => new RuntimeCandidate(id,bound.Passports.MapProfiles[id],0,false,supported.Contains(id))
+                {Name=bound.Passports.Maps.FirstOrDefault(map=>map.MapId==id)?.Name}).ToArray();
             _selected = Array.FindIndex(_candidates, row => row.MapId == EffectiveMapId);
             if (_selected < 0 && _candidates.Length > 0) _selected = 0;
             bool current = RenderCurrent();

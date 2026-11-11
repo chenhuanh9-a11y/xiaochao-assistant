@@ -22,6 +22,7 @@ internal static class MapCloseWorkspaceRegression
             bool busy=scenario=="busy";
             string name=row!["name"]!.GetValue<string>()+"-"+scenario,sample=row["sample"]!.GetValue<string>();
             string season=row["season"]!.GetValue<string>(),mode=row["mode"]!.GetValue<string>();
+            bool defaultS0=season=="s0"&&row["manualMap"] is null;
             var settings=new SettingsDocument(new JsonObject {["gameSeason"]=season,["gameMode"]=mode,["routeProfileId"]="shared-structure"});
             var capture=new RecordedCapture(index);capture.Select(sample,false);
             var page=new RuntimePage(capture,_=>{});var shell=new WorkspaceWindow(Path.Combine(output,"close-shell-"+name),null);
@@ -44,6 +45,9 @@ internal static class MapCloseWorkspaceRegression
                 await host.StartAsync();
                 if(page.State?.MapOpen!=true)await MapKey();
                 var runtime=Field<LiveRuntime>(page,"runtime");var before=page.State!;var snapshot=page.GamePointerContextSlot!.Read()!;
+                if(defaultS0)check(before is {IdentityLocked:false,RecognitionPath:"structure-index",Context.MapId:null}
+                    && before.ProvisionalMapId is not null && before.RemainingMapIds.Contains(before.ProvisionalMapId),
+                    name+" starts from the actual default unresolved index reference rather than the old automatic identity policy");
                 check(snapshot.DownIntentSnapshot is GameFloorClickContext && before.MapOpen && before.RoundActive,
                     name+" actual current PNG creates pointer scope even when a manual map cannot fit");
                 var context=(GameFloorClickContext)snapshot.DownIntentSnapshot!;
@@ -86,6 +90,8 @@ internal static class MapCloseWorkspaceRegression
                 await MapKey();var reopened=page.State!;
                 await Save("reopened",new {reopened,session=page.SessionView,capture.Calls});
                 Matches(reopened,row["reopened"]!,"reopened");
+                check(reopened.RemainingMapIds.SequenceEqual(before.RemainingMapIds),
+                    name+" reopening the same frame preserves the surviving round pool");
                 check(reopened.MapOpen && runtime.PointerContextSlot.Read() is not null && Field<OrderedMapInput>(page,"mapInput").OpenIntent,
                     name+" next real host G edge opens and observes the map again");
                 issued=page.SessionView!.Sequence.LastIssuedSequence;
@@ -100,10 +106,11 @@ internal static class MapCloseWorkspaceRegression
                 await page.CloseAsync().WaitAsync(TimeSpan.FromSeconds(15));shell.Close();
             }
             void Matches(LiveRuntimeState state,JsonNode expected,string phase)
-                =>check(state.Context.MapId==expected["mapId"]?.GetValue<string>() && state.Context.FloorId==expected["floor"]?.GetValue<string>()
+                =>check(state.Context.MapId==(defaultS0?null:expected["mapId"]?.GetValue<string>())
+                    &&(!defaultS0||!state.IdentityLocked&&state.RecognitionPath=="structure-index") && state.Context.FloorId==expected["floor"]?.GetValue<string>()
                     && state.ObservedFloor==expected["observedFloor"]?.GetValue<string>() && state.MapOpen==expected["mapOpen"]!.GetValue<bool>()
                     && state.ManualAlignmentSession==expected["manualAlignment"]!.GetValue<bool>() && state.RoundActive==expected["roundActive"]!.GetValue<bool>(),
-                    name+" "+phase+" state matches the actual original resource/PNG runtime");
+                    name+" "+phase+" controls match the original runtime while default S0 obeys the requested unresolved-index identity policy");
             Task Save(string phase,object value)=>File.WriteAllTextAsync(Path.Combine(output,"map-close-"+name+"-"+phase+".json"),
                 JsonSerializer.Serialize(new {value,scope="Actual WPF source/channel/Dispatcher/Workspace/Page/Session/Runtime with recorded capture and fixed foreground/native-source seam. Hidden shell, no native mouse/game or visual acceptance. S1 IDs are explicit simulated human choices, not automatic solver truth."},new JsonSerializerOptions{WriteIndented=true}));
             async Task Drain()=>await page.DrainAsync().WaitAsync(TimeSpan.FromSeconds(20));

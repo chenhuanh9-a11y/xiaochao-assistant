@@ -17,6 +17,9 @@ internal static class GroupChoiceWorkspaceRegression
         var index = JsonNode.Parse(await File.ReadAllBytesAsync(Path.Combine(originalReplay, "all-samples.json")))!["samples"]!.AsArray()
             .ToDictionary(row => row!["id"]!.GetValue<string>(), row => row!.AsObject());
         var capture = new RecordedCapture(index); capture.Select("batch01-event-000006");
+        // Ordinary no-door compatibility uses exactly the derived pixels whose
+        // group behavior was independently replayed by the original Runtime.
+        capture.TransformPixels=S0GlyphAblation.Create(originalReplay,capture);
         var page = new RuntimePage(capture, _ => { });
         RuntimeOverlayHost? host = null;
         using var nativeCapture = new WindowsRuntimeCapturePort();
@@ -118,7 +121,7 @@ internal static class GroupChoiceWorkspaceRegression
                 "group-return-retains-the-desired-control-selection-and-still-waits-for-consumer-ACK");
             await File.WriteAllTextAsync(Path.Combine(output, "group-workspace.json"), JsonSerializer.Serialize(new {
                 state = page.State, session = page.SessionView, consumed,
-                scope = "Real WPF controls, Session receipt collection, original 2026-11-09 PNG and material-ready consumer. Recorded capture port only; no Show/native input/game acceptance."
+                scope = "Real WPF group controls and Session/material-ready consumer on the independent original Runtime's glyph-ablated PNG fixture. Default untouched-frame S0 index UI is tested separately. No native input/game acceptance."
             }, new JsonSerializerOptions { WriteIndented = true }));
         }
         finally { host?.Dispose(); await page.CloseAsync(); }

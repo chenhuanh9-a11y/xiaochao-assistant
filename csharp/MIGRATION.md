@@ -13,6 +13,7 @@
 | 启动/主窗口与持久页面 | tools/qt_client_entry.py → qt_quick/client.py / Client.qml | 实际 WPF 构造/持久页面回归通过；真实界面验收待完成，未接入页面有明确状态 |
 | 资源图库、图包、按层结构 | client_providers.py / shared_structure_reference.py / client_resources.py | 只读 catalog/NPZ 已实施；15 个跨模式/楼层代表与 NumPy 回读一致，15 个类型/坐标/wall 反例及 20 个非 object JSON 反例通过；轮廓回退、解码预算、坏图/缺结构/文件占用恢复有实际入口回归；图包安装/版本锁与完整 provider 待接入 |
 | 设置与自定义路线 | client_settings.py / client_custom_gallery.py / client_paths.py | 实验副本、批量/单字段保存与原件保护已接；坏尾项显式解绑、未选中坏原值保留、其他草稿隔离、忙写/冲突有真实文件回归；实际 WPF 保存期间编辑及导入编辑禁用/恢复通过；图库编辑与运行消费待完成 |
+| 手动选图浮层 | client_manual_map_service.py / manual_map_picker_core.py / ClientMapPicker.qml | WPF 内联候选与手动确认已接；默认候选显示资源声明名称，确认前后身份与贴合分离。旧版带缩略图的非激活两阶段浮层、分组与四键分页仍缺，手选热键入口仍是提示，不能以 ComboBox 代替功能完成 |
 | 捕获、窗口绑定与输入 | client_capture.py / client_native_keys.py / client_input.py | 11/09 生产 GDI 完整客户区实采 1334×750；WGC 三轮软件呈现自有窗口及取消/关闭 12 项通过，默认硬件呈现同窗口仍白/黑帧失败，未证明游戏 WGC；pass-through 模块 408 项和 WPF 主机 46 项离线检查通过，早期原生启动/停止通过；WPF 已接显式监听、设置切代、本局操作和默认 F11/主页显隐，构造不监听。当前组合尚未完成真实按键/游戏验收 |
 | 楼层/开图准备 | client_live_runtime.py / map_open_preparation.py / floor_contract.py | 37 项真实/合成边界及全部 S0 251 张原始客户区的观察结果与原 Python 严格一致；S1 当前真实输入由全 154 张组件回放及连续 Runtime 样本覆盖。map/foreground-return 准备沿原 1.05s/50ms/最多 21 probe；普通 capture_now 单次观察。超时未知楼层的正地图帧仍供人工修正，晚到可用楼层不绕过期限；有原 Runtime 真实晚采集对照及 C# 修前失败/修后回归。不是实机准备延迟验收 |
 | 身份与入口竞争 | map_identity_engine.py / difficult_entry_identity.py / difficult_side_entry_identity.py / front_door_recognition.py | S0 原 passport/main/side/source-advisory/native/登记组模块的 251 张当前原图组件对照零差异；默认运行入口现按用户要求由可靠门图标进入持续索引，否则保留普通识别。临时候选与身份分开；S1 正支持也不充当唯一身份。组内成员选择已接独立目标贴合、WPF 素材回执与同锁提交，手选跨层保留。强冲突观测及配置 source store 时的 SIFT producer 仍缺 |
@@ -24,6 +25,14 @@
 | 自包含 Setup/数据迁移/升级回退 | 当前 Python 安装更新流程 | 待交付完整实验 Setup；干净 Windows/中断/回退仍缺可恢复环境 |
 
 状态随实现与证据更新，不因页面存在就改为功能完成。每次交付记录源提交、资源来源、真实输入、构建、GUI 与未测项。Python 原件、玩家数据和历史失败证据保持可恢复。
+
+### WPF 默认候选与用户确认
+
+运行页的临时贴合、结构不足、楼层未决和困难二层初始识别限制已有中文恢复提示；共享索引候选从真实 passport 传递地图名称，不让内部 UUID 代替可读名称。实际 WPF 开始、三秒读取、候选选择、确认和楼层按钮沿 Session/Runtime 执行。临时候选只作为草稿，不能由素材 ready 回执取得稳态学习权限；确认时 UI 在捕获尚未完成前即显示已锁定身份、等待结构对齐。刻意取消的一次迟到捕获须恰好被丢弃一次，后续身份／模式切换不得引入额外丢弃。
+
+候选行的已锁定文字来自会话中的唯一地图身份，不能把单帧的验证标志当作跨帧索引锁定状态；相似组仍单独显示。候选列表与确认按钮使用实际可用命令同步禁用，锁定后不再显示可选择但后端拒绝的行。S1 连续原帧覆盖多候选到唯一锁定的实际 WPF 控件状态。
+
+普通无门登记组界面使用与原 Python Runtime 独立回放相同的派生图标遮除 PNG，默认未修改原帧的 S0 索引界面另测。需要已提交几何的稳态、续期和跨层投影正向测试，先通过真实确认请求建立明确地图参考，不借临时候选开启学习或跨层姿态恢复；默认候选拖动和普通登记组拖动分别保留。关闭按钮检测仍对照原始控制几何与楼层状态，S0 身份部分按新的未锁定索引规则核对，并检查关闭／重开不扩回候选。WPF 截图是实际控件的离屏合成，不能称为游戏或物理上屏验收。
 
 ### S0 / S1 门坐标索引与候选提前贴合
 

@@ -485,6 +485,7 @@ internal sealed partial class RuntimePage : UserControl
         previous.IsEnabled = active && !working && Supports("previous_candidate");
         next.IsEnabled = active && !working && Supports("next_candidate");
         confirm.IsEnabled = active && !working && Supports("confirm_route");
+        candidates.IsEnabled = active && !working && Supports("select_candidate");
         pick.IsEnabled = active && !working && view?.Runtime.ManualMapPickAvailable == true;
         applyFloor.IsEnabled = active && !working && Supports("set_floor");
         if (state is null) return;
@@ -511,7 +512,7 @@ internal sealed partial class RuntimePage : UserControl
         {
             var rows = state.Candidates.Select((row, i) => new CandidateRow(i,
                 row.IdentityKind == "group" ? $"相似地图组 · {row.MemberIds.Count} 张" : row.Name ?? row.MapId,
-                row.IdentityVerified)).ToArray();
+                row.IdentityVerified, state.IdentityLocked && state.IdentityKind == "map" && row.MapId == state.Context.MapId)).ToArray();
             if (!candidates.Items.Cast<CandidateRow>().SequenceEqual(rows)) candidates.ItemsSource = rows;
             candidates.SelectedIndex = state.SelectedCandidateIndex;
             var contract = FloorContract.Find(state.Context.Season, state.Context.Mode);
@@ -571,10 +572,15 @@ internal sealed partial class RuntimePage : UserControl
         "context-bound" => "资源已就绪，开始本局不会自动开图或采集。", "round-started" => "请在游戏中打开地图，再读取画面。",
         "entry-neighborhood-candidates" or "candidates-awaiting-confirmation" => "画面尚不能唯一确认地图，可选择候选或手动选图。", "window-binding-changed" => "窗口连接已改变，请重新读取。",
         "map-closed" => "地图已关闭，已确认的地图选择保留。", "cancelled" => "识别已取消。",
+        "current-floor-unavailable" or "s1-current-floor-unavailable" => "当前楼层尚未读清，请等待高亮稳定后重新读取，或手动选择楼层。",
+        "current-frame-floor-conflict" => "当前楼层与手动选择不一致，已暂停贴合；请核对楼层后重新读取。",
+        "difficult-f2-entry-recognition-disabled" => "当前尚未确认地图，请先在一层识别或手动选图。",
         "capture-context-changed" or "capture-context-obsolete" => "窗口或显示环境已变化，旧对齐已撤销，请重新开图读取。",
-        "idvb0059-steady" => "当前楼层结构已对齐。",
-        "s1-candidate-material-current" => "已贴合临时候选，继续探图筛选地图。",
-        "s1-structure-index-locked" => "结构索引已锁定地图，当前楼层已对齐。",
+        "idvb0059-steady" or "current-frame-pose-authorized" => "当前楼层结构已对齐。",
+        "s0-candidate-material-current" or "s1-candidate-material-current" => "已贴合临时候选，继续探图筛选地图。",
+        "s0-structure-index-locked" or "s1-structure-index-locked" => "结构索引已锁定地图，当前楼层已对齐。",
+        "s0-structure-candidates-unresolved" or "s1-structure-candidates-unresolved" => "当前结构不足以可靠贴合，已保留候选；请继续探图或手动选图。",
+        "initial-structure-supported-chains-insufficient" or "initial-structure-current-geometry-failed" => "当前结构不足以可靠贴合，请继续探图后重新读取。",
         "structure-coordinate-conflict-retained" => "当前结构存在冲突，已保留本局候选，等待更多结构。",
         "map-excluded-this-round" => "这张地图已在本局排除，请从剩余候选中选择。",
         "map-open-preparation-deadline" => "未在准备时间内读到完整地图，请打开地图并重试。", _ => string.IsNullOrEmpty(reason) ? "" : "当前结果：" + reason };
@@ -594,7 +600,7 @@ internal sealed partial class RuntimePage : UserControl
         surface.SetResourceReference(Border.BackgroundProperty, "StarMap.Canvas");
         Grid.SetColumn(surface, column); grid.Children.Add(surface);
     }
-    sealed record CandidateRow(int Index, string MapId, bool Verified)
-    { public override string ToString() => MapId + (Verified ? " · 已通过身份验证" : " · 待确认"); }
+    sealed record CandidateRow(int Index, string Label, bool Verified, bool Locked)
+    { public override string ToString() => Label + (Locked ? " · 已锁定" : Verified ? " · 已通过身份验证" : " · 待确认"); }
     sealed record FloorRow(string Id, string Label);
 }

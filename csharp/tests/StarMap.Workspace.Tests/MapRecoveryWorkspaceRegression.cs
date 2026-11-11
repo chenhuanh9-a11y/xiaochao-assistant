@@ -56,8 +56,13 @@ internal static class MapRecoveryWorkspaceRegression
             check(!capture.Foreground && timer.IsEnabled, "recovery-counter-is-observed-after-foreground-loss-with-the-production-timer-still-running");
             check(recoveryRetiredAtCollection && page.State?.MapOpenRecovery is { Pending: false, Id: null },
                 "successful-recovery-retires-its-ticket-before-foreground-loss-and-keeps-it-retired-after-settlement");
-            check(!page.IsVisible && capture.Calls == preparedCalls+1 && page.State!.Context.MapId == "nightmare-04"
-                && page.ReadRender() is { IsLive: false }, "hidden-page-timer-recovers-exactly-one-real-frame-and-publishes-current-canonical-material");
+            var recovered=page.State!;var material=page.ReadRender();
+            check(!page.IsVisible && capture.Calls == preparedCalls+1
+                && recovered is {IdentityLocked:false,RecognitionPath:"structure-index",Context.MapId:null}
+                && recovered.RemainingMapIds.Count==26 && recovered.Display.CanonicalVerified
+                && material is {IsLive:false} && material.MapId==recovered.ProvisionalMapId
+                && recovered.RemainingMapIds.Contains(material.MapId) && material.Stamp.FrameId==recovered.Context.FrameId,
+                "hidden-page-timer-recovers-one-current-index-candidate-without-manufacturing-identity");
             check(consumed.Count(row => row.Action == "recover_map_open" && row.Disposition == "Accepted") == 1
                 && page.SessionView is { Busy: false, WorkerActive: false, StaleResults: 0 },
                 "recovery-result-is-collected-through-the-real-session-without-stale-rebinding");

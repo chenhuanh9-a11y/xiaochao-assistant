@@ -36,6 +36,15 @@ internal static class Program
         }
         try
         {
+            if(Array.IndexOf(args,"--s0-index-only")>=0 || Array.IndexOf(args,"--s1-index-only")>=0)
+            {
+                int resourcesIndex=Array.IndexOf(args,"--resources"),replayIndex=Array.IndexOf(args,"--original-replay");
+                if(resourcesIndex<0 || replayIndex<0)throw new ArgumentException("Index UI entry needs resources and original replay.");
+                if(Array.IndexOf(args,"--s0-index-only")>=0)
+                    Await(S0StructureIndexWorkspaceRegression.Run(Path.GetFullPath(args[resourcesIndex+1]),Path.GetFullPath(args[replayIndex+1]),output,Check));
+                else Await(StructureIndexWorkspaceRegression.Run(Path.GetFullPath(args[resourcesIndex+1]),Path.GetFullPath(args[replayIndex+1]),output,Check));
+                return 0;
+            }
             if(Array.IndexOf(args,"--display-preparation-only")>=0)
             {
                 int resourcesIndex=Array.IndexOf(args,"--resources"),replayIndex=Array.IndexOf(args,"--original-replay");
@@ -163,6 +172,7 @@ internal static class Program
             int replayOption = Array.IndexOf(args, "--original-replay");
             if (resourcesOption >= 0 && replayOption >= 0)
             {
+                Await(S0StructureIndexWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption+1]),Path.GetFullPath(args[replayOption+1]),output,Check));
                 Await(GroupChoiceWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption + 1]), Path.GetFullPath(args[replayOption + 1]), output, Check));
                 Await(MapRecoveryWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption + 1]), Path.GetFullPath(args[replayOption + 1]), output, Check));
                 Await(PassiveRefreshWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption + 1]), Path.GetFullPath(args[replayOption + 1]), output, Check));
@@ -426,7 +436,11 @@ internal static class Program
         finally
         {
             shell?.Close();
-            File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new { exit, checks, scope = Array.IndexOf(args,"--display-preparation-only")>=0
+            File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new { exit, checks, scope = Array.IndexOf(args,"--s0-index-only")>=0
+                ?"Actual S0 WPF buttons, real three-second acquisition countdown, Session/Runtime, conditional candidate material, human confirmation and floor controls. Recorded post-Nov5 pixels; one explicitly masked floor rail case. Owned offscreen window/composite screenshots only, no game/native input or physical display acceptance."
+                :Array.IndexOf(args,"--s1-index-only")>=0
+                ?"Actual S1 WPF page/Session/Runtime index sequence, material consumer and unresolved/locked controls. Recorded original frames only; no native game capture, input or physical display acceptance."
+                :Array.IndexOf(args,"--display-preparation-only")>=0
                 ?"Recorded Page/Session/Runtime display preparation measurements, actual WPF source consumer and labelled component timings; no game/native visibility or latency acceptance. Unavailable recognition is retained in display-preparation.json."
                 :Array.IndexOf(args,"--projection-author-only")>=0
                 ?"Targeted actual projection/author RuntimePage, Session, strict fixture input and production WPF material consumer with recorded images and scoped relation/display faults. No native capture/input/game, author accuracy or latency acceptance."

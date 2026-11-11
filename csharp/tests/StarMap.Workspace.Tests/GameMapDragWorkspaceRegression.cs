@@ -21,13 +21,15 @@ internal static class GameMapDragWorkspaceRegression
     {
         var index=JsonNode.Parse(await File.ReadAllBytesAsync(Path.Combine(replay,"all-samples.json")))!["samples"]!.AsArray()
             .ToDictionary(row=>row!["id"]!.GetValue<string>(),row=>row!.AsObject());
-        foreach(var item in new[]{("s0","nightmare","batch01-event-000006",(string?)null),
-            ("s0","difficult","batch02-event-000147",null),("s1","nightmare","batch02-event-000315","107012"),
-            ("s1","difficult","batch02-event-000307","106008")})
+        foreach(var item in new[]{("s0","nightmare","batch01-event-000006",(string?)null,false),
+            ("s0","nightmare","batch01-event-000006",null,true),
+            ("s0","difficult","batch02-event-000147",null,false),("s1","nightmare","batch02-event-000315","107012",false),
+            ("s1","difficult","batch02-event-000307","106008",false)})
         {
-            string name=item.Item1+"-"+item.Item2;
+            string name=item.Item1+"-"+item.Item2+(item.Item5?"-ordinary-group":"");
             var settings=new SettingsDocument(new JsonObject {["gameSeason"]=item.Item1,["gameMode"]=item.Item2,["routeProfileId"]="shared-structure"});
             var capture=new RecordedCapture(index);capture.Select(item.Item3,false);
+            if(item.Item5)capture.TransformPixels=S0GlyphAblation.Create(replay,capture);
             var page=new RuntimePage(capture,_=>{});var shell=new WorkspaceWindow(Path.Combine(output,"drag-shell-"+name),null);
             await Field<RuntimePage>(shell,"runtimePage").CloseAsync();
             typeof(WorkspaceWindow).GetField("runtimePage",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(shell,page);
@@ -89,7 +91,7 @@ internal static class GameMapDragWorkspaceRegression
                     && page.State!.NativePose==state.NativePose && page.SessionView?.LastReceipt is {Action:"probe_map_after_drag",Success:true},
                     name+" actual release includes final delta and routes only to post-drag observation");
                 object? groupEvidence=null;double[] finalOffset=[15,-6];
-                if(item.Item1=="s0" && item.Item2=="nightmare")
+                if(item.Item5)
                 {
                     string sourceFrame=page.State!.Context.FrameId!;int calls=capture.Calls;
                     page.RefreshGroupControls();var members=Field<ComboBox>(page,"groupMember");var choose=Field<Button>(page,"chooseGroupMember");

@@ -31,6 +31,13 @@ internal static class PassiveRefreshWorkspaceRegression
             var input = Field<OrderedMapInput>(page, "mapInput"); var initial = page.ReadRender();
             check(!page.IsVisible && initial is not null && input.OpenIntent && capture.Calls == 1,
                 "passive-workspace-real-map-shortcut-establishes-hidden-current-observation");
+            check(!page.State!.IdentityLocked && !page.RememberMaterialReady(initial!) && page.ReadMaterialToRemember() is null,
+                "default-provisional-WPF-material-cannot-establish-0059-learning-before-human-identity");
+            // Positive cache/timer assertions need an actual chosen reference;
+            // the default index preview deliberately has no learning authority.
+            page.Dispatch("confirm_route",new {mapId="nightmare-12"});await page.DrainAsync();initial=page.ReadRender();
+            check(page.State is {IdentityLocked:true,IdentitySource:"manual",NativeGeometryVerified:true}
+                && initial is not null,"passive-cache-test-establishes-its-reference-through-real-human-confirmation");
             host = new(Dispatcher.CurrentDispatcher, page.ReadRender, native, _ => { }, visible: () => false,
                 readPendingMaterial: page.ReadPendingGroupMaterial, acceptMaterialReady: page.AcceptGroupMaterialReady,
                 rejectMaterial: page.RejectGroupMaterial, readMaterialToRemember: page.ReadMaterialToRemember,
@@ -78,7 +85,7 @@ internal static class PassiveRefreshWorkspaceRegression
                 "real-hidden-overlay-observer-retires-lost-context-and-old-pixels-stay-revoked-when-geometry-returns");
             await File.WriteAllTextAsync(Path.Combine(output, "passive-refresh-workspace.json"), JsonSerializer.Serialize(new {
                 state = page.State, session = page.SessionView, capture.Calls, input.Sequence, input.OpenIntent,
-                scope = "Real hidden WPF timer, Session, material-ready and actual Runtime/0059/Core. Recorded foreground/capture seams only; no Show/native capture/input/game."
+                scope = "Default provisional material has no learning authority; positive timer/cache flow follows explicit human reference selection through real Session/Runtime. Recorded foreground/capture seams only; no native capture/input/game."
             }, new JsonSerializerOptions { WriteIndented = true }));
             host.Dispose(); host = null;
             page.Dispatch("end_round"); await page.DrainAsync();

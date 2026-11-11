@@ -43,6 +43,13 @@ internal static class TransientProjectionWorkspaceRegression
             check(await page.Configure(resources,settings),"projection workspace binds real resources");
             var runtime=Field<LiveRuntime>(page,"runtime");SyntheticProjectionCoordinates.Install(runtime,resources,"nightmare");
             runtime.SetIdvb0059Enabled(true);page.Dispatch("start_round");await page.DrainAsync();page.HandleShortcut("map");await page.DrainAsync();
+            check(page.State is {IdentityLocked:false,RecognitionPath:"structure-index"} && page.ReadRender() is not null,
+                "projection-setup-first-exercises-the-default-conditional-index-reference");
+            // Cross-floor projection uses an explicitly chosen reference, as
+            // opposed to giving an unresolved index candidate persistent pose authority.
+            page.Dispatch("confirm_route",new {mapId="nightmare-04"});await page.DrainAsync();
+            check(page.State is {IdentityLocked:true,IdentitySource:"manual",NativeGeometryVerified:true},
+                "projection-reference-is-explicitly-chosen-through-real-Session-before-shared-root-display-tests");
             page.SetAlignedVisibility(false);
             using var materialHost=new RuntimeOverlayHost(Dispatcher.CurrentDispatcher,page.ReadRender,materialCapture,messages.Add,
                 visible:()=>page.AlignedVisible,readPendingMaterial:()=>allowProjectionAck?page.ReadPendingGroupMaterial():null,
@@ -176,7 +183,7 @@ internal static class TransientProjectionWorkspaceRegression
             check(nativeSurface.NativeHandle==0 && !nativeSurface.IsVisible && materialCapture.Binding is null && messages.Count==0,
                 "projection recorded fixture and material ACK never authorize a native window or Live game display");
             await File.WriteAllTextAsync(Path.Combine(output,"projection-workspace.json"),JsonSerializer.Serialize(new {observed=observed.Context,
-                after=page.State!.Context,authorCaptureDelta,recoveryCaptureDelta=capture.Calls-authorCalls,deliveries=deliveries.Count,scope="Actual UI floor/read buttons and saved author configuration, strict pointer/controller/Workspace/Page/Session/material-ready host and software pixels at four DPIs; actual resources/recorded PNG and independent original matrices. Relation data, controlled host cancellation and display declaration fault are explicitly scoped fixtures. Actual authors fall back to shared structure. No native relation, author pixels, game/physical input/GPU-present or latency acceptance."},new JsonSerializerOptions{WriteIndented=true}));
+                after=page.State!.Context,authorCaptureDelta,recoveryCaptureDelta=capture.Calls-authorCalls,deliveries=deliveries.Count,scope="Default unresolved index first, then explicit manual reference for actual UI floor/read buttons, author configuration, pointer/controller/Workspace/Page/Session/material-ready host and software pixels at four DPIs. Relation data, host cancellation and display declaration fault are scoped fixtures. Authors fall back to shared structure. No unique identity truth, native relation, author pixels, game/physical input/GPU-present or latency acceptance."},new JsonSerializerOptions{WriteIndented=true}));
             async Task Pointer(string phase,int px,int py,long gesture)
             {
                 inputSource.NowSeconds=Now();var p=new GlobalInputPointerEvent(phase,px,py,inputSource.NowSeconds,42,42,inputSource.Generation,1,

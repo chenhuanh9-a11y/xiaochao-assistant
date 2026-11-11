@@ -22,6 +22,11 @@ internal static class CurrentPoseWorkspaceRegression
             var settings = new SettingsDocument(new JsonObject { ["gameSeason"] = "s0", ["gameMode"] = "nightmare", ["idvb0059Enabled"] = false });
             check(await page.Configure(resources, settings), "renewal-WPF-uses-public-disabled-setting");
             page.Dispatch("start_round"); await page.DrainAsync(); page.Dispatch("capture_now"); await page.DrainAsync();
+            check(!page.State!.IdentityLocked && !page.RememberMaterialReady(page.ReadRender()!),
+                "renewal-WPF-keeps-the-default-provisional-reference-out-of-committed-pose-maintenance");
+            page.Dispatch("confirm_route",new {mapId="nightmare-12"});await page.DrainAsync();
+            check(page.State is {IdentityLocked:true,IdentitySource:"manual",NativeGeometryVerified:true},
+                "renewal-WPF-establishes-a-committed-reference-via-public-human-choice-before-cache-disabled-renewal");
             var runtime = Field<LiveRuntime>(page, "runtime"); var first = page.ReadRender()!;
             var bitmap = await Task.Run(() => WpfDisplayMaterialConsumer.PrepareMaterialReady(first.Material));
             var hold = capture.HoldNext(); page.Dispatch("refresh_map"); await hold.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
