@@ -94,6 +94,26 @@ Item {
                                 }
                             }
                         }
+                        Repeater {
+                            model: resourceService.displayModelForPackage(packageDelegate.modelData.key)
+                            delegate: ColumnLayout {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                spacing: 5
+                                AppButton {
+                                    objectName: "activateDisplayButton-" + packageDelegate.modelData.key + "-" + modelData.key
+                                    text: modelData.label
+                                    enabled: modelData.available && panel.refreshAllowed && !panel.operationPending && !panel.recoveryPending
+                                    onClicked: resourceService.activateDisplayComponent(packageDelegate.modelData.key, modelData.key)
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: "作者路线仅用于显示。配准由作者提供，尚未复核。"
+                                    wrapMode: Text.Wrap
+                                    color: "#526785"
+                                }
+                            }
+                        }
                     }
                     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#edf1f7"; visible: index < packages.count - 1 }
                 }

@@ -475,3 +475,12 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 
 - 新增独立模式模块，以完整 synthetic S0N、S0D native、S1N 源各导出一次，再执行实际 producer → inspect/save → decode/runtime；4 项通过（93.143 秒）。核对默认 componentId、实际结构引用/画布/版本、原 PNG bytes、完整仿射及 BGRA alpha，作者始终为 user-provided-unreviewed，base 身份、入口、rank 和坐标桥不变。S0D 的实际 legacy map29/floor1 返回 typed-reference-unavailable，ZIP 未发布，不补假 native 绑定。
 - 原 S1D producer 证据保留；新增模块加入 display-data 组，资源模块精确总数为 64，五组 10/31/16/3/4。首轮 fixture 准备错误日志保留，未改 producer 或放宽断言。这是四种上下文的合成组件证据，真实作者素材、GUI/文件选择、实帧与游戏仍未验证。
+
+### 资源页的作者组件选择与失败准备恢复
+
+- 资源页按已保存清单提供单上下文 display 的显式启用按钮，不在 UI 线程读取声明或解码图片。作者和基础选择共用原空闲 Session 租约、单 worker、取消/关闭排空、实际最终库存和完成通知；作者仍经实际 `activate_display` 严格校验及事务。缺活动基础、原作者声明不可读、重 profile 等问题有对应提示，保存不自动选择，启用组件不自动改变对局作者偏好。
+- 每包作者按钮使用稳定子模型，状态变更只 reconcile 有变化的字段，不重建包卡或作者按钮。实际 QML 鼠标启用、键盘重复启用和显式 profile 的生产 `prepare_display_layer` 核对透明 BGRA/完整 M、身份与 rank/live 不变；健康重复启用的 catalog、模型、按钮与 engine 保持。650×470 与 1000×720 两份离屏选择后截图已检查，不代表物理首像素。
+- 故障样本为启动准备时作者 PNG 损坏，恢复原 bytes 后再次显式启用：修前实际生产显示入口仍返回 shared-structure，1 项失败（62.591 秒）。现在工厂只查询是否曾发生可选组件准备失败，成功幂等重验后才通知现有资源拥有者重新准备；legacy 角色能力缺口不当成可重试失败。沿用 `resourcesChanged → Runtime → OfflineRuntime → factory` 的全局失效边界，不另写 cache、不改 catalog generation；失败重试不声称保留其他上下文缓存。
+- 最终纯查询实现的健康重复与坏 PNG/坏 manifest 恢复两项通过（185.759 秒），实际连接 Runtime 资源失效，恢复后重新取得 author-route 与透明像素，catalog bytes 不变。独立 Reviewer 对最终恢复项另跑 1 项/两 subtests（121.574 秒）通过。此前初版完整 4 项通过（220.038 秒），改为唯一失效拥有者后只重跑受影响两项，不把两次合称一次全量。原基础启用 UI 7 项（45.308 秒）、默认空资源 QtClient 与保存服务 9 项（2.213 秒）通过；取消/关闭时仅延迟实际 helper 来控制时机，未替换校验、事务或 engine。
+- 远端 `eea64f0` 四条 workflow 成功，联合工作流 16 组成功，display 组约 25 分钟时取消；此前三个模块分别完成 6/312.437s、4/232.421s、7/583.698s，joint 模块被中断，不能算通过。joint 与新增作者 UI 归独立 integration 组，原 64 模块全保留再加 1 个，共 65，六组 10/31/16/3/3/2，18 个 matrix 项；25 分钟上限、逐模块进程、失败汇总及历史 baseline 不变，分组实际远端结果待核。
+- 当前默认 `routeChoices` 与图库仍由空 imported browse 返回；设置中的作者选项尚未接入新组件，旧“显示资源尚未通过解码校验”提示也待该下游一起替换。因此本切片证明组件选择与显式 profile 显示消费者，不证明默认作者选择/图库完整旅程。Coordinator 清视图与 QtClient timer 重准备未在本新增 UI 组中完整执行；实际文件选择器、真实作者素材、实帧、游戏及 Setup 同样未验收。下一切片接公共 browse 与有界像素 provider，不能硬编码新作者选项补通过。

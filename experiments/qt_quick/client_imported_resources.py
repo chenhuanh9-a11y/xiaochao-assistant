@@ -58,6 +58,22 @@ def _activation_refs(row, season, mode):
     return tuple(refs)
 
 
+def _display_options(row):
+    options = []
+    for component in row['components']:
+        contexts = component['contexts']
+        if component['type'] != 'display' or len(contexts) != 1:
+            continue
+        context = tuple(contexts[0].split(':'))
+        if context not in _ACTIVATION_CONTEXTS:
+            continue
+        season, mode = context
+        name = f'{season.upper()} ' + ('困难' if mode == 'difficult' else '噩梦')
+        options.append(dict(key=component['componentId'], label=f'启用 {name}作者显示',
+                            context=contexts[0], available=row['status'] != 'damaged'))
+    return options
+
+
 class _Work(QRunnable):
     def __init__(self, token, function):
         super().__init__()
@@ -78,14 +94,16 @@ class ImportedResourceService(QObject):
     errorReported = Signal(object)
     importCompleted = Signal(str, str)
 
-    def __init__(self, resolver, parent=None, *, paths=None):
+    def __init__(self, resolver, parent=None, *, paths=None, engine_factories=None):
         super().__init__(parent)
         self.resolver = resolver
         self.paths = paths
+        self._engine_factories = engine_factories
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(1)
         self.model = PackageRows()
         self._rows, self._jobs = [], {}
+        self._display_models = {}
         self._token, self._busy, self._closed = 0, False, False
         self._kind, self._message, self._catalog_issue = '', '', ''
         self._cancel = threading.Event()
@@ -111,6 +129,17 @@ class ImportedResourceService(QObject):
         if self._busy or self._lease:
             raise RuntimeError('Cannot replace an active resource lease provider')
         self._lease_provider = provider
+
+    @Slot(str, result=QObject)
+    def displayModelForPackage(self, key):
+        model = self._display_models.get(key)
+        if model is None:
+            model = PackageRows()
+            model.setParent(self)
+            row = next((row for row in self._rows if row['key'] == key), None)
+            model.reconcile(_display_options(row) if row is not None else [])
+            self._display_models[key] = model
+        return model
 
     def setStartupCompatibilityReport(self, report):
         self._startup_notice = ('旧版资源操作记录已保留；新版资源从独立目录导入。'
@@ -195,7 +224,35 @@ class ImportedResourceService(QObject):
             return False
         row = next((row for row in self._rows if row['key'] == key), None)
         refs = _activation_refs(row, season, mode) if row is not None else None
-        if refs is None or self.paths is None or self._lease_provider is None:
+        if refs is None:
+            self._problem('resource-activation-unavailable')
+            return False
+        def activate(cancelled):
+            from client_imported_activation import activate_context
+            outcome = activate_context(self.resolver, self.paths, *refs,
+                                       season=season, mode=mode, cancelled=cancelled)
+            return dict(outcome, context=f'{season}:{mode}')
+        return self._activate(activate, 'base')
+
+    @Slot(str, str, result=bool)
+    def activateDisplayComponent(self, key, component_id):
+        from imported_resource_packages import ComponentRef
+        if self._closed or self._busy:
+            return False
+        row = next((row for row in self._rows if row['key'] == key), None)
+        option = next((option for option in _display_options(row)
+                       if option['key'] == component_id and option['available']), None) if row else None
+        if option is None:
+            self._problem('resource-activation-unavailable')
+            return False
+        ref = ComponentRef(row['packageId'], row['resourceVersion'], component_id, row['manifestSha256'])
+        def activate(cancelled):
+            from client_imported_activation import activate_display
+            return activate_display(self.resolver, self.paths, ref, cancelled=cancelled)
+        return self._activate(activate, 'display')
+
+    def _activate(self, operation, role):
+        if self.paths is None or self._lease_provider is None:
             self._problem('resource-activation-unavailable')
             return False
         self._lease = self._lease_provider.acquireResourceLease()
@@ -205,12 +262,13 @@ class ImportedResourceService(QObject):
             return False
 
         def activate(cancelled):
-            from client_imported_activation import activate_context
             from imported_resource_inventory import list_saved_versions
-            outcome, failure = None, None
+            outcome, failure, retry = None, None, False
             try:
-                outcome = activate_context(self.resolver, self.paths, *refs,
-                    season=season, mode=mode, cancelled=cancelled)
+                outcome = operation(cancelled)
+                if outcome['status'] == 'already-active' and self._engine_factories is not None:
+                    season, mode = outcome['context'].split(':')
+                    retry = self._engine_factories.needs_display_revalidation(mode, season=season)
             except Exception as error:
                 failure = _failure(error)
             # Observe the actual final state after success, cancellation or a
@@ -220,7 +278,7 @@ class ImportedResourceService(QObject):
                 inventory = list_saved_versions(self.resolver)
             except (OSError, ValueError, RuntimeError):
                 inventory = None
-            return dict(activated=outcome, activatedContext=f'{season}:{mode}',
+            return dict(activated=outcome, activationRole=role, retryPreparation=retry,
                         operationError=failure, inventory=inventory)
 
         if self._begin('activate', activate):
@@ -288,10 +346,17 @@ class ImportedResourceService(QObject):
             if kind == 'activate':
                 outcome = value['activated']
                 duplicate = outcome['status'] == 'already-active'
-                context = tuple(value['activatedContext'].split(':'))
+                context = tuple(outcome['context'].split(':'))
+                display = value['activationRole'] == 'display'
+                name = f'{context[0].upper()} ' + ('困难' if context[1] == 'difficult' else '噩梦')
                 self._message = ('此版本已经启用，资源选择未改变。' if duplicate
+                                 else f'{name}作者显示组件已启用。' if display
                                  else _ACTIVATION_CONTEXTS[context]['activatedMessage'])
-                if context[0] == 's1':
+                if value['retryPreparation']:
+                    self._message = '此版本已重新校验，正在重新准备显示资源。'
+                if display:
+                    self._message += ' 配准由作者提供，尚未复核。'
+                elif context[0] == 's1':
                     self._message += ' 自动楼层识别尚未验证，暂不可用。'
                 elif context == ('s0', 'difficult'):
                     self._message += ' 识别功能尚未开放，暂不能开始识别。'
@@ -299,7 +364,7 @@ class ImportedResourceService(QObject):
                     self._message += ' 列表暂时无法读取，请重新核对。'
                 elif inventory.generation != outcome['generation']:
                     self._message = '资源选择随后发生了变化，请重新核对当前版本。'
-                if not duplicate:
+                if not duplicate or value['retryPreparation']:
                     self.resourcesChanged.emit()
         self.changed.emit()
 
@@ -310,6 +375,13 @@ class ImportedResourceService(QObject):
                        if _activation_refs(row, season, mode) is not None]
             decorated.append(dict(row, canActivate=bool(contexts), activatableContexts=contexts))
         rows = decorated
+        current_keys = {row['key'] for row in rows}
+        for key in tuple(self._display_models):
+            if key not in current_keys:
+                self._display_models.pop(key).deleteLater()
+        for row in rows:
+            if row['key'] in self._display_models:
+                self._display_models[row['key']].reconcile(_display_options(row))
         if rows != self._rows:
             self._rows = deepcopy(rows)
             self.model.reconcile(rows)
@@ -317,6 +389,10 @@ class ImportedResourceService(QObject):
 
     def _problem(self, code):
         self._message = ('此为旧版图包，请获取新版资源包；原文件已保留。' if code == 'legacy-format-unsupported' else
+                         '请先启用此作者显示对应的基础结构与楼层控件；作者版本仍已保存。' if code == 'resource-display-base-context-not-active' else
+                         '作者显示依赖其他基础版本，请先核对配套资源；当前选择已保留。' if code == 'resource-dependency-not-selected' else
+                         '原作者版本的声明无法读取，暂不能确认替换范围；当前选择已保留。' if code == 'resource-previous-display-metadata-unavailable' else
+                         '当前模式已有同名作者显示，暂不能同时启用；当前选择已保留。' if code == 'resource-display-profile-conflict' else
                          '此资源尚不能在当前版本启用，请获取对应的基础结构与楼层控件包。' if code == 'resource-activation-unavailable' else
                          '操作已取消；若版本已经保存，可在列表中重新核对。' if code.endswith('-cancelled') else
                          '资源操作未完成，请检查资源包或重新核对本地版本。')

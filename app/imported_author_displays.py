@@ -71,6 +71,7 @@ class ImportedAuthorDisplays:
     def __init__(self, views, base, reference_provider, *, catalog=None, check_current=None):
         self._base, self._check_current = base, check_current
         self.bindings, self.profiles, self.errors = {}, set(), {}
+        self.preparation_failed = False
         self._cache, self._lock = OrderedDict(), threading.RLock()
         self.catalog = _DisplayCatalog(self, catalog)
         packages, conflicts, canvases = {}, set(), {}
@@ -83,6 +84,7 @@ class ImportedAuthorDisplays:
                 packages[profile] = package
             except (OSError, ValueError) as error:
                 self.assert_current()
+                self.preparation_failed = True
                 self.errors[f'display-component-{index + 1}'] = getattr(error, 'code', 'display-component-invalid')
         adapters = base.adapters
         for profile, package in packages.items():
@@ -114,6 +116,7 @@ class ImportedAuthorDisplays:
                 package.assert_current()
             except (OSError, ValueError) as error:
                 self.assert_current()
+                self.preparation_failed = True
                 self.errors[profile] = getattr(error, 'code', 'display-component-invalid')
                 continue
             self.bindings.update(bindings)

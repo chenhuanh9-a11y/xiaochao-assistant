@@ -187,6 +187,13 @@ class ImportedEngineFactories(EngineFactories):
             gaps = (code,)
         return dict(resourceGaps=list(gaps or ('resource-validation-failed',)))
 
+    def needs_display_revalidation(self, mode, *, season='s0'):
+        """Read preparation state only; the resource owner performs invalidation."""
+        key = context_key(mode, season)
+        with self._lock:
+            engine = self._engines.get(key)
+            return engine is not None and engine.qt_display_preparation_failed
+
     def _get(self, mode, season='s0'):
         key = context_key(mode, season)
         engine = super()._get(mode, season)
@@ -222,6 +229,8 @@ class ImportedEngineFactories(EngineFactories):
             engine.qt_catalog, engine.qt_adapters = optional.catalog, optional.adapters
         else:
             optional = None
+        engine.qt_display_preparation_failed = ('display-unavailable' in resources.optional_gaps
+            or optional is not None and optional.preparation_failed)
         engine.qt_resource_inventory['optionalResourceGaps'] = list(resources.optional_gaps) + (
             list(optional.errors.values()) if optional is not None else []) + (
             ['reviewed-groups-decoder-unavailable'] if resources.groups is not None else [])
