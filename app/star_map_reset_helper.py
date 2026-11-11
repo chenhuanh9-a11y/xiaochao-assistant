@@ -187,7 +187,16 @@ def run(args):
             from installer_upgrade_journal import read_status
             from installer_native_observation import current_user_sid
             owner_sid = current_user_sid()
-            if args.action in {'inspect', 'pending', 'resume-committed'}:
+            if args.action.startswith('legacy-'):
+                from installer_legacy_handoff import LegacyHandoff
+                # Same packaged target checks, real user and exact parent lease
+                # as native upgrades. The positional legacy-prepare command
+                # remains preparation-only and grants none of these actions.
+                from installer_uninstall import _baked_profile, _profile_identity
+                if _profile_identity(_baked_profile())[0] != 'production':
+                    raise ValueError('production-windows-helper-required')
+                result.update(LegacyHandoff(args, target, lease, owner_sid).execute())
+            elif args.action in {'inspect', 'pending', 'resume-committed'}:
                 if read_status(args.install_root, owner_sid=owner_sid)['status'] != 'not-needed':
                     raise ValueError('installer-coordinator-recovery-required')
                 result.update(_execute(args, api, target))
@@ -221,7 +230,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--action', choices=('inspect', 'prepare', 'status', 'commit', 'rollback',
                                            'pending', 'resume-committed', 'installer-pending',
-                                           'start-native', 'native-complete', 'resume-native-complete'), required=True)
+                                           'start-native', 'native-complete', 'resume-native-complete',
+                                           'legacy-prepare', 'legacy-start-native', 'legacy-native-complete',
+                                           'legacy-commit', 'legacy-status', 'legacy-cancel', 'legacy-resume'), required=True)
     for name in ('install-root', 'result-directory', 'target-report', 'target-report-sha256',
                  'source-commit', 'display-version', 'numeric-version', 'parent-created',
                  'parent-executable', 'parent-sha256'):
@@ -229,6 +240,7 @@ def main(argv=None):
     for name in ('parent-pid', 'lock-handle'):
         parser.add_argument('--' + name, type=int, required=True)
     parser.add_argument('--candidate-directory')
+    parser.add_argument('--legacy-source')
     parser.add_argument('--resource-action', choices=('reset', 'preserve'), default='reset')
     parser.add_argument('--plan-sha256')
     parser.add_argument('--transaction-id')

@@ -327,7 +327,7 @@ def _publish(directory, name, value, *, publication='hardlink-v1'):
 def _check_anchor(root, directory, anchor):
     if (type(anchor) is not dict or set(anchor) - {'publication', 'resourceAction'} != _ANCHOR
             or anchor['schema'] != SCHEMA
-            or anchor.get('resourceAction', 'reset') not in ('reset', 'preserve')
+            or anchor.get('resourceAction', 'reset') not in ('reset', 'preserve', 'legacy')
             or 'publication' in anchor and anchor['publication'] != 'move-v1'):
         _fail('invalid-anchor')
     if _uuid(anchor['upgradeId']) != _uuid(anchor['sessionId']):
@@ -359,7 +359,7 @@ def _check_record(record, index, previous, anchor_sha, resource_action='reset'):
         _fail('invalid-generation')
     _uuid(record['upgradeId']); _uuid(record['pinId'])
     tx = record['resourceTransactionId']
-    if resource_action == 'preserve' and tx is not None:
+    if resource_action != 'reset' and tx is not None:
         _fail('resource-binding-forbidden')
     if tx is not None:
         _uuid(tx)
@@ -382,7 +382,7 @@ def _check_record(record, index, previous, anchor_sha, resource_action='reset'):
     allowed = (before == 'prepared' and (
         after == 'aborted' and tx == prior['resourceTransactionId']
         or after == 'prepared' and prior['resourceTransactionId'] is None and tx is not None
-        or after == 'native-in-progress' and (tx is not None or resource_action == 'preserve')
+        or after == 'native-in-progress' and (tx is not None or resource_action != 'reset')
         and tx == prior['resourceTransactionId'])
         or before == 'native-in-progress' and after == 'native-complete' and tx == prior['resourceTransactionId']
         or before == 'native-complete' and after == 'completed' and tx == prior['resourceTransactionId']
@@ -554,14 +554,14 @@ def _remove_owned_marker(path, expected):
 class InstallerUpgradeJournal:
     def __init__(self, root, *, owner_sid, session_id, target_identity,
                  report_sha256, plan_sha256, restore_watcher=False, resource_action='reset'):
-        if resource_action not in ('reset', 'preserve'):
+        if resource_action not in ('reset', 'preserve', 'legacy'):
             _fail('invalid-resource-action')
         self.resource_action = resource_action
         self.root = _root(root)
         self.bindings = dict(ownerSid=_sid(owner_sid), sessionId=_uuid(session_id),
                              targetIdentity=_target(target_identity), reportSha256=_sha(report_sha256),
                              planSha256=_sha(plan_sha256), restoreWatcher=_watcher_intent(restore_watcher))
-        if resource_action == 'preserve':
+        if resource_action != 'reset':
             self.bindings['resourceAction'] = resource_action
         self.root_identity = _directory_identity(self.root)
 
@@ -649,7 +649,7 @@ class InstallerUpgradeJournal:
     def bind_resource(self, transaction_id, *, verify_resource):
         transaction_id = _uuid(transaction_id)
         current = self._load()
-        if self.resource_action == 'preserve':
+        if self.resource_action != 'reset':
             _fail('resource-binding-forbidden')
         if current[0]['status'] != 'prepared':
             _fail('not-pre-native')
@@ -670,7 +670,7 @@ class InstallerUpgradeJournal:
         # NOT retryable in native-in-progress: an uncertain start is blocked,
         # never authorization to run native mutation for a second time.
         if (current[0]['status'] != 'prepared'
-                or current[0]['resourceTransactionId'] is None and self.resource_action != 'preserve'):
+                or current[0]['resourceTransactionId'] is None and self.resource_action == 'reset'):
             _fail('native-start-not-allowed')
         self._verify(current, verify_resource)
         return self._append(current, status='native-in-progress')
@@ -716,6 +716,10 @@ class InstallerUpgradeJournal:
         return self.status()
 
     def finish_complete(self, *, verify_native, verify_resource):
+        if self.resource_action == 'legacy':
+            # Asset publication alone cannot prove historical QtIFW retirement.
+            # No current caller has a verified retirement implementation.
+            _fail('legacy-retirement-unverified')
         current = self._load()
         if current[0]['status'] not in {'native-complete', 'completed'}:
             _fail('native-completion-evidence-required')
