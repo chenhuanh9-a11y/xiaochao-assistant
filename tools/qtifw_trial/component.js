@@ -92,7 +92,7 @@ Component.prototype.createOperations = function() {
     for (var i = 0; i < copies.length; ++i) {
         var parent = copies[i][1].substring(0, copies[i][1].lastIndexOf("/"));
         if (!parents[parent]) {
-            component.addOperation("Mkdir", parent);
+            component.addOperation("Mkdir", parent, "UNDOOPERATION", "");
             parents[parent] = true;
         }
         component.addOperation("Copy", copies[i][0], copies[i][1]);

@@ -136,6 +136,15 @@ def stage_payload(stage, record, output, *, payload_stage=None, archive_from=Non
     return compiled, inventory
 
 
+def release_text(text):
+    """Render shared trial templates for a formal installer."""
+    text = text.replace("星图试用版", "星图").replace("星图（试用版）", "星图")
+    text = text.replace("测试安装操作未完成", "安装操作未完成").replace("本测试目录", "安装目录")
+    text = text.replace("安装器试用向导", "安装向导").replace("本测试安装", "星图")
+    text = text.replace("本试用版", "星图").replace("旧试用版", "旧版本").replace("测试目录", "安装目录")
+    return text.replace("测试", "安装").replace("试用", "")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-record", type=Path, required=True)
@@ -170,7 +179,7 @@ def main():
     instance = uuid.uuid4().hex
     (output / "targets").mkdir()
     (output / ".qtifw-trial-scope").write_text(instance + "\n", encoding="ascii")
-    policy = dict(scope=str(output), instance=instance, payloadSource=compiled, allowNewTargets=True, fullUninstall=True,
+    policy = dict(scope=str(output), instance=instance, payloadSource=compiled, allowNewTargets=True, nativeUninstallLease=True,
                   files=inventory["files"], faultsAllowed=not args.release, portable=args.release, mapPackages=packages)
     if args.release:
         policy.pop("scope")
@@ -221,10 +230,7 @@ def main():
     shutil.copy2(scripts / "install-location.ui", meta / "install-location.ui")
     if args.release:
         for path in (config / "controller.js", meta / "component.js", meta / "install-location.ui"):
-            text = path.read_text(encoding="utf-8").replace("星图试用版", "星图").replace("星图（试用版）", "星图")
-            text = text.replace("测试安装操作未完成", "安装操作未完成").replace("本测试目录", "安装目录")
-            text = text.replace("安装器试用向导", "安装向导").replace("本测试安装", "星图")
-            text = text.replace("本试用版", "星图")
+            text = release_text(path.read_text(encoding="utf-8"))
             path.write_text(text, encoding="utf-8")
     write_xml(meta / "package.xml", "Package", dict(DisplayName="星图",
         Description="星图桌面程序。", Version="1.0.0", ReleaseDate="2026-11-08",
@@ -239,12 +245,12 @@ def main():
     data_script = (scripts / "data-component.js").read_text(encoding="utf-8")
     (data_meta / "data-component.js").write_text(data_script.replace("__SUPPORT_FILES__", json.dumps(support_files)), encoding="utf-8")
     write_xml(data_meta / "package.xml", "Package", dict(DisplayName="卸载清理",
-        Description="彻底卸载时清理安装目录。", Version="1.0.0", Virtual="true",
+        Description="默认保留资料；主动确认后仅清理可确认归属的资料。", Version="1.0.0", Virtual="true",
         ReleaseDate="2026-11-08", Script="data-component.js"))
     write_xml(config / "config.xml", "Installer", dict(Name="星图安装器隔离试用 " + instance,
         Version="1.0.0", Title="星图（试用版）", Publisher="星图开发试用",
         TargetDir=str(output / "targets/trial"), MaintenanceToolName="trial-maintenance",
-        RemoveTargetDir="true", AllowNonAsciiCharacters="true", AllowSpaceInPath="true",
+        RemoveTargetDir="false", AllowNonAsciiCharacters="true", AllowSpaceInPath="true",
         AllowRepositoriesForOfflineInstaller="false", SaveDefaultRepositories="false", PersistentLocalCache="false",
         ControlScript="controller.js", StyleSheet="trial.qss", WizardStyle="Modern",
         InstallerApplicationIcon="xingtu", InstallerWindowIcon="xingtu-window.png",

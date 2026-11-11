@@ -79,10 +79,22 @@ def hold_uninstaller_lease(target):
             raise ValueError("uninstaller-parent-changed")
         if not api.DuplicateHandle(api.GetCurrentProcess(), local, parent, ctypes.byref(remote), 0, False, 2):
             raise ValueError("uninstall-lease-transfer-failed")
-        return dict(leaseHeld=True, parentPid=parent_pid, release="native-parent-exit")
+        return dict(leaseHeld=True, parentPid=parent_pid, parentCreated=created,
+                    parentSha256=digest, lockHandle=remote.value, release="native-parent-exit")
     finally:
         # Never close the parent's duplicate on Finished/cancel. Native process
-        # exit is the lifetime boundary; its stock VBS then removes TargetDir.
+        # exit is the lifetime boundary; TargetDir itself is retained.
         for handle in (local, root_handle, parent):
             if handle not in (None, invalid):
                 api.CloseHandle(handle)
+
+
+def verified_uninstaller_lease(target):
+    """Duplicate and validate the actual native parent's exclusive resource lease."""
+    import json
+    from installer_resource_lease import _duplicate_verified
+    target = _safe(Path(target))
+    proof = json.loads(_safe(target / "trial-hold-uninstall.json").read_bytes())
+    return _duplicate_verified(target / "program", parent_pid=proof["parentPid"],
+        parent_created=proof["parentCreated"], parent_executable=target / "trial-maintenance.exe",
+        parent_sha256=proof["parentSha256"], lock_handle=proof["lockHandle"])

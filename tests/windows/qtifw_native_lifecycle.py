@@ -31,7 +31,7 @@ if args.portable:
     values.update({n:b'deduplicated native payload\n'*3000 for n in
                    ['_internal/canonical.bin','_internal/nested/alias-a.bin','runtime/alias-b.bin']})
     values['_internal/python313.dll']=(Path(sys.base_prefix)/'python313.dll').read_bytes()
-policy=dict(scope=str(runroot),instance=instance,payloadSource='a'*40,allowNewTargets=True,fullUninstall=True,
+policy=dict(scope=str(runroot),instance=instance,payloadSource='a'*40,allowNewTargets=True,**({'fullUninstall':True} if old else {'nativeUninstallLease':True}),
             portable=args.portable,faultsAllowed=False,files={n:dict(bytes=len(b),sha256=hashlib.sha256(b).hexdigest()) for n,b in values.items()})
 if args.portable:policy.pop('scope')
 (runroot/'qtifw-trial-policy.json').write_text(json.dumps(policy),encoding='utf-8')
@@ -88,7 +88,7 @@ def build(name,broken=False,copy_fault=False):
     text=text.replace('function Controller() {','function Controller() {\ninstaller.setValue("DesktopDir",'+json.dumps(str(case/'desktop'))+');\ninstaller.setValue("UserStartMenuProgramsPath",'+json.dumps(str(case/'programs'))+');',1)
     (config/'controller.js').write_text(text,encoding='utf-8')
     write_xml(config/'config.xml','Installer',dict(Name='PR110 audit '+uuid.uuid4().hex,Version='1.0.0',Title='PR110 owned synthetic review',
-        TargetDir=str(runroot/'targets'/name),MaintenanceToolName='trial-maintenance',RemoveTargetDir='true',
+        TargetDir=str(runroot/'targets'/name),MaintenanceToolName='trial-maintenance',RemoveTargetDir='true' if old else 'false',
         AllowNonAsciiCharacters='true',AllowSpaceInPath='true',ControlScript='controller.js'))
     setup=case/'setup.exe';assert call(name+'-build',[IFW/'binarycreator.exe','--offline-only','--resources',runroot/'trial.qrc','-c',config/'config.xml','-p',case/'packages',setup])==0
     return case,setup,runroot/'targets'/name
@@ -123,7 +123,8 @@ if args.portable:
     outside=runroot/'copy-fault-outside.txt';outside.write_bytes(b'outside preserved')
     _,_,target=install('copy-fault',copy_fault=True)
     assert report['copy-fault']['exitCode']!=0
-    assert not (target/'program').exists() and not (target/'_installer-support').exists()
+    assert all(not (target/'program'/name).exists() for name in values)
+    assert not any(p.is_file() for p in (target/'_installer-support').rglob('*'))
     assert outside.read_bytes()==b'outside preserved'
     report['nativeCopyFailureRolledBack']=True
 
@@ -148,6 +149,9 @@ if not old:
     pointer=target/'program/work/author-snapshots/activation.json'
     pointer.parent.mkdir(parents=True,exist_ok=True);pointer.write_bytes(b'owned snapshot publication')
     os.link(pointer,pointer.with_name('publication-witness.json'))
+    known=target/'program/work/nightmare-memory';known.mkdir(parents=True,exist_ok=True)
+    (known/'ui-settings.json').write_bytes(b'{"synthetic":true}')
+    (known/'custom-routes.json').write_bytes(b'{"routes":[]}')
     report['internalHardlinkPair']=True
 if args.portable:
     # Preserve, but make the install-time support paths unavailable. Uninstall
@@ -161,6 +165,8 @@ active=call('active-before-purge',[target/'trial-maintenance.exe','--reject-mess
 p.communicate('\n',timeout=10);report['activeBeforePurgeRejected']=True
 auto=case/'auto.js';auto.write_text('''eval(installer.readFile(":/metadata/installer-config/controller_js","UTF-8"));
 installer.setMessageBoxAutomaticAnswer("installationErrorWithIgnore",QMessageBox.Ignore);
+installer.setMessageBoxAutomaticAnswer("ChooseUninstallData",QMessageBox.No);
+installer.setMessageBoxAutomaticAnswer("ConfirmClearData",QMessageBox.No);
 var ready=Controller.prototype.ReadyForInstallationPageCallback;
 Controller.prototype.ReadyForInstallationPageCallback=function(){ready.call(this);console.log("AUDIT_READY");gui.clickButton(buttons.CommitButton,4000);};
 installer.uninstallationFinished.connect(function(){gui.clickButton(buttons.NextButton,200);});
@@ -182,10 +188,16 @@ with logpath.open('wb') as log:
     report['lateProgramRemoved']=not (target/'program/星图.exe').exists()
     late.communicate('\n',timeout=10)
     for _ in range(100):
-        if not target.exists():break
+        if not old or not target.exists():break
         time.sleep(.1)
     report['lateTargetRemains']=target.exists()
-    if not old:assert not target.exists(), 'Final native cleanup did not complete'
+    if not old:
+        assert target.exists(), 'Default keep unexpectedly removed target'
+        assert pointer.read_bytes()==b'owned snapshot publication'
+        assert (known/'ui-settings.json').read_bytes()==b'{"synthetic":true}'
+        assert (known/'custom-routes.json').read_bytes()==b'{"routes":[]}'
+        assert not (target/'program/星图.exe').exists()
+        report['defaultKeepRetainsUnknownData']=True
 print(which,'late lease',report['lateLease'],'root remains',target.exists(),flush=True)
 
 case,_,target=install('pending');assert report['pending']['exitCode']==0
@@ -193,15 +205,39 @@ journal=target/'program/work/map-packages/pending-base-repair.json';journal.pare
 outside=target.parent/'outside-pending.txt';outside.write_bytes(b'keep external')
 code=call('pending-purge',[target/'trial-maintenance.exe','--reject-messages','--confirm-command','purge'])
 for _ in range(100):
-    if not target.exists():break
+    if not old or not target.exists():break
     time.sleep(.1)
 report['pendingPurge']=dict(exitCode=code,targetRemains=target.exists(),outsidePreserved=outside.read_bytes()==b'keep external')
 assert report['pendingPurge']['outsidePreserved'], 'External sentinel was modified'
-assert code!=0 if old else code==0 and not target.exists()
+assert code!=0 if old else code==0 and target.exists() and journal.read_text()=='{"syntheticInterrupted":true}'
 if old:
     journal.rename(runroot/'preserved-pending-fault.json')
     call('pending-fixture-cleanup',[target/'trial-maintenance.exe','--reject-messages','--confirm-command','purge'])
 else:
+    case,_,target=install('clear');assert report['clear']['exitCode']==0
+    data=target/'program/work/nightmare-memory';data.mkdir(parents=True,exist_ok=True)
+    # ui-settings.json has no ownership schema; use recognized owned settings.
+    settings=data/'chest-auto-tap.json';settings.write_text('{"schema":"xingtu-chest-auto-tap-v1"}')
+    routes=data/'custom-routes.json';routes.write_text('{"schema":"xingtu-custom-routes-v1","maps":{}}')
+    unknown=data/'personal.txt';unknown.write_bytes(b'unknown remains')
+    maintenance=target/'trial-maintenance.exe'
+    rejected=call('clear-without-confirm',[maintenance,'--reject-messages','--confirm-command','purge','DataChoice=clear'])
+    assert rejected!=0 and settings.exists() and (target/'program/星图.exe').exists()
+    code=call('clear-confirmed',[maintenance,'--reject-messages','--confirm-command','purge','DataChoice=clear','ConfirmClear=yes'])
+    assert code==0 and not settings.exists() and not routes.exists()
+    assert unknown.read_bytes()==b'unknown remains'
+    assert not (target/'program/星图.exe').exists()
+    report['confirmedClearOnlyOwnedData']=True
+    case,_,target=install('clear-untagged');assert report['clear-untagged']['exitCode']==0
+    data=target/'program/work/nightmare-memory';data.mkdir(parents=True,exist_ok=True)
+    settings=data/'ui-settings.json';settings.write_bytes(b'{"synthetic":true}')
+    routes=data/'custom-routes.json';routes.write_bytes(b'{"routes":[]}')
+    code=call('clear-untagged-confirmed',[target/'trial-maintenance.exe','--reject-messages','--confirm-command','purge','DataChoice=clear','ConfirmClear=yes'])
+    assert code==0
+    assert settings.read_bytes()==b'{"synthetic":true}'
+    assert routes.read_bytes()==b'{"routes":[]}'
+    assert not (target/'program/星图.exe').exists()
+    report['confirmedClearRetainsUntaggedSettings']=True
     case,_,target=install('cancel');assert report['cancel']['exitCode']==0
     cancel=case/'cancel.js';cancel.write_text('''eval(installer.readFile(":/metadata/installer-config/controller_js","UTF-8"));
 installer.autoAcceptMessageBoxes();

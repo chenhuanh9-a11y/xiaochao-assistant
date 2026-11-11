@@ -37,6 +37,8 @@ class TrialTests(unittest.TestCase):
         work = self.target / "program/work"
         work.mkdir(parents=True)
         (work / "settings.json").write_bytes(b"synthetic settings")
+        (work / "nightmare-memory").mkdir()
+        (work / "nightmare-memory/custom-galleries.json").write_bytes(b'{"schema":"xingtu-custom-gallery-v1","galleries":[]}')
         (self.target / "personal.txt").write_bytes(b"outside declared data scope")
         return work
 
@@ -149,21 +151,21 @@ class TrialTests(unittest.TestCase):
         self.assertEqual(verify_program(self.policy, self.target), dict(verified=True, files=2))
         self.assertEqual(json.loads((self.target / OWNER).read_text())["phase"], "installing")
 
-    def test_full_uninstall_schedules_native_cleanup_even_with_pending_journal(self):
+    def test_default_keep_preserves_pending_transactions_even_with_old_full_flag(self):
         work = self.seed()
         packages = work / "map-packages"
         packages.mkdir()
         pending = packages / "pending-base-repair.json"
         pending.write_bytes(b"interrupted resource transaction")
         self.policy["fullUninstall"] = True
-        (self.target / "trial-select-data.json").write_text(json.dumps(dict(operation="purge", choice="clear")))
+        (self.target / "trial-select-data.json").write_text(json.dumps(dict(operation="purge", choice="keep")))
         (self.scope / "qtifw-trial-policy.json").write_text(json.dumps(self.policy))
         with patch.object(helper, "__file__", str(self.scope / "helper.py")), \
                 patch.object(sys, "argv", ["helper", "undo-data", str(self.target)]), redirect_stdout(StringIO()):
             self.assertEqual(helper.main(), 0)
         result = json.loads((self.scope / "last-uninstall.json").read_bytes())
-        self.assertEqual(result["status"], "scheduled")
-        self.assertTrue(result["nativeRemovalScheduled"])
+        self.assertEqual(result["dataChoice"], "keep")
+        self.assertNotIn("nativeRemovalScheduled", result)
         self.assertEqual(pending.read_bytes(), b"interrupted resource transaction")
         self.assertEqual((work / "settings.json").read_bytes(), b"synthetic settings")
 
@@ -292,7 +294,8 @@ class TrialTests(unittest.TestCase):
         self.assertEqual(clear_data(self.policy, self.target, "keep")["cleared"], 0)
         self.assertEqual((work / "settings.json").read_bytes(), b"synthetic settings")
         self.assertEqual(clear_data(self.policy, self.target, "clear")["cleared"], 1)
-        self.assertFalse((work / "settings.json").exists())
+        self.assertFalse((work / "nightmare-memory/custom-galleries.json").exists())
+        self.assertEqual((work / "settings.json").read_bytes(), b"synthetic settings")
         self.assertEqual((self.target / "personal.txt").read_bytes(), b"outside declared data scope")
         self.assertTrue((work / "map-packages/import.lock").exists())
         self.assertEqual(clear_data(self.policy, self.target, "clear")["cleared"], 0)
@@ -316,10 +319,10 @@ class TrialTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "Windows cleanup preflight")
     def test_hardlink_rejects_clear_before_deleting_other_files(self):
         work = self.seed()
-        os.link(work / "settings.json", self.scope / "external-hardlink")
+        os.link(work / "nightmare-memory/custom-galleries.json", self.scope / "external-hardlink")
         with self.assertRaisesRegex(ValueError, "exclusive-file"):
             clear_data(self.policy, self.target, "clear")
-        self.assertEqual((self.scope / "external-hardlink").read_bytes(), b"synthetic settings")
+        self.assertEqual((self.scope / "external-hardlink").read_bytes(), b'{"schema":"xingtu-custom-gallery-v1","galleries":[]}')
 
 
 if __name__ == "__main__":
