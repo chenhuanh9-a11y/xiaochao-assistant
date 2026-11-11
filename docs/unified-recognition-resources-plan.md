@@ -770,3 +770,15 @@ python -m unittest test_client_progressive_display test_client_progressive_pixel
 - 同帧调用剖析发现原版使用预制快速轮廓通道，S0 噩梦导出包却未声明 `fastStructureIndex`，整合版因缺预制数据转向入口重验。制包器现从实际导出的 typed clean 通道离线生成距离场、拐角链、方向和尺度，连同绑定索引纳入基础包；运行时仍使用现有 `ImportedFastStructureSource` 和原快速求解器，不在每帧重建预制数据，不改变判断阈值或身份资格。
 - 新回归通过实际 export/save/decode/online loader，确认每层预制数据可消费且线上禁止调用 `prepare`。原结构/入口字节保持检查；错误 canvas 在生成预制数据前即被同一 typed decoder 拒绝。相关制包/解码 **29 项通过（55.187 秒）**。真实同源资源补制的 **78/78 层**预制数组、形状和 pitch 与原版消费结果一致；这只证明该算法输入恢复，不证明位姿或速度。
 - 旧包无此可选索引时仍明确报告预制缺口，不能静默查旧安装目录；新制包才包含该输入。S0 困难的 native/legacy 资格与完整资源池、S1 外置楼层观察及统一求解编排仍待处理；四模式性能阶段未完成，后续耗时须绑定新源码与新资源实际回放。
+
+### 贴合核心与单次静态资源准备
+
+`app/structure_pose_solver.py` 的 `StructurePoseSolver` 现持有原 Qt `_AlignmentHost` 的完整求解和区域仲裁实现；runtime 仅保留同类导入别名，provider 直接使用核心类。已登记楼层恢复移入 `app/registered_floor_pose_recovery.py`，旧 Qt 模块只重导出同一函数。核心可在仅有 app 路径时导入，不加载 Qt runtime 或 PySide6；并未另建一套算法。
+
+实际算法职责保持：`fast_structure_alignment` 用距离场和稀疏轮廓提出尺度/平移，`single_map_structure` 做拐角链对应、墙线细化和区域验证，既有 0059 尺度先验及登记楼层恢复仍由原顺序调用，最终通过当前帧 canonical 结构残差复核。首可用贴合回调与后续 peer 复核保留；runtime 仍唯一持有身份、持久位姿、组态、显示撤销与 material ACK。
+
+`StructureFitResources` 只属于一次同步 fit：区域重试复用同图的实际参考和准备结果，包括可选准备缺失；下一次 fit 重新取证。首次显示回调和返回前，经原 provider/reader/fast source 重新检查当前组件和实际字节；准备未使用的通道也检查 typed payload。异常或取消清除本次缓存，既有正确输入不能被坏准备缓存冒充。没有跨帧保存结果或缩短候选预算。
+
+本地真实临时 archive/export/decode/provider/prepared loader 的六项资源回归控制数值 fit，仅验证生命周期；坏参考、坏准备、首显前损坏、取消与下一帧不会沿用旧输入均覆盖，其中“未使用 fast 时参考损坏”的新负例先失败后修复。三片相关回归分别为 34、89、71 项通过，生产 S1 两模式实际导入 fast 入口一项通过，最后资源/渐进显示/区域仲裁 35 项通过；并不据此证明实帧速度、位姿或游戏验收。新的资源回归加入原联合 workflow，保留原模块、分组和时限。
+
+该片未完成观察域与先验策略拆分：scanner 的全客户区边界仍可能触发多区域搜索，扫描实例尚未完整接入 runtime 的 group/settings/steady。S0 困难及导入 S1 的资格缺口也未因此解除。需继续整理实际编排，再绑定同提交实帧回放判断性能阶段是否达到。

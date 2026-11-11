@@ -153,8 +153,8 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
         check_current()
         if not getattr(engine, 'qt_rank_ready', True):
             raise ProviderUnavailable(';'.join(getattr(engine, 'qt_rank_gaps', ())) or 'recognition-rank-unavailable')
-        from client_live_runtime import _AlignmentHost
-        host = _AlignmentHost(engine, pose_priors=pose_priors,
+        from structure_pose_solver import StructurePoseSolver
+        host = StructurePoseSolver(engine, pose_priors=pose_priors,
             collect_fit_diagnostics=collect_fit_diagnostics)
         fixed = private_coordinate_report is not None and private_coordinate_report.get("coordinateVerified") is True
         if fixed and private_fit is None:

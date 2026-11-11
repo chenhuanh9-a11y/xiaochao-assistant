@@ -505,7 +505,9 @@ def _try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_see
     if reference is None:
         return None
     source = getattr(getattr(assistant, 'engine', None), 'qt_fast_structure_source', None)
-    prepared = (load_prepared(reference) if source is None else
+    loader = getattr(assistant, '_load_fast_structure_prepared', None)
+    prepared = (loader(reference, cancelled=cancelled) if loader is not None else
+                load_prepared(reference) if source is None else
                 load_prepared(reference, source=source, cancelled=cancelled))
     if prepared is None:
         if getattr(assistant, 'collect_fit_diagnostics', False):

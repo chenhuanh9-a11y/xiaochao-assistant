@@ -117,7 +117,9 @@ class ImportedFastStructureTests(unittest.TestCase):
                         result = host.fit(np.zeros((720,1280,3),np.uint8), source.ids[0], '-3', lambda:False)
                 self.assertFalse(result['success'])
                 self.assertEqual(result['reason'], 'initial-structure-query-unavailable')
-                self.assertEqual(loaded.call_count, 1)
+                # One preparation and the solve's return-boundary recheck.
+                # Region retries share the preparation between these reads.
+                self.assertEqual(loaded.call_count, 2)
                 events = [event for event in host.events if event.get('event') == 'experimental-fast-alignment']
                 self.assertEqual(len(events), 1)
                 self.assertEqual(events[0]['reason'], 'fast-observation-unavailable')
