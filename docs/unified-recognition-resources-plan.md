@@ -613,3 +613,5 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 | `test_client_imported_difficult_provider -v` | 2 项通过，51.714 秒；真实合成困难包导入/启用/默认工厂，验证 rank/live/学习仍关闭、开始本局不采集。 |
 
 合计 227 项，226 通过、1 跳过；没有真实游戏/完整四模式实帧/物理显示/准确率/性能验收。不合并，不打 tag、不发布、不构建 Setup；本切片只交新分支及指向 #133 分支的草稿 PR，远端检查另核实际 head。
+
+**本轮交付阻塞**：实现和检查已本地提交，尚未上传远端分支或创建草稿 PR。`git push` 被本轮 Windows 凭据存储不可用阻断；实际可用的 GitHub 连接器可读，但首次 blob 写入被平台拒绝：要求批准，而当前后台策略不允许发起批准。没有绕过权限、切换其他身份或写出密钥。交付前回查远端同名分支及 PR 均不存在。中台请本人恢复代码上传身份/可批准写入的执行入口后重派；只接着上传已提交且已测试的分支、创建 base 为 `codex/unified-resource-runtime-20261110` 的草稿、核对远端源码树与检查，不重做实现或已完成的业务。若 #133 基线后来变化，先核变化与 P2 接缝，不覆盖对方提交。识别逻辑仍须 huan 确认后才能合并。
