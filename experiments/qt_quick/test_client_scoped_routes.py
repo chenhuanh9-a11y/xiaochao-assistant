@@ -8,8 +8,8 @@ from test_client_custom_gallery import CustomGalleryTests, until, APP
 from test_scoped_routes import write_scoped_resources, add_synthetic_display_bindings
 from client_custom_gallery import CustomGalleryService
 from client_custom_display import CustomGalleryDisplay
-from PySide6.QtCore import QUrl
-from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtCore import QUrl, QCoreApplication, QEvent, QObject
+from PySide6.QtQml import QQmlApplicationEngine, QQmlEngine, QQmlExpression
 
 
 class ScopedEditorTests(unittest.TestCase):
@@ -71,7 +71,6 @@ class ScopedEditorTests(unittest.TestCase):
         self.assertFalse(display.eligibility(qualified, "difficult", "s0")["allowed"])
 
     def test_scoped_qml_has_actual_selectors_and_two_way_state(self):
-        from PySide6.QtCore import QObject
         engine = QQmlApplicationEngine()
         warnings = []
         engine.warnings.connect(lambda rows: warnings.extend(str(r) for r in rows))
@@ -90,7 +89,14 @@ class ScopedEditorTests(unittest.TestCase):
             state = state.toVariant()
         self.assertEqual(state["scopeId"], "season-s1-hard")
         self.assertEqual(warnings, [])
+        # A completed gallery worker may have just queued asynchronous QML
+        # thumbnails. Windows cannot remove their files until reads finish.
+        images = [obj for obj in root.findChildren(QObject)
+                  if obj.metaObject().className().startswith("QQuickImage")]
+        until(lambda: all(QQmlExpression(QQmlEngine.contextForObject(obj), obj,
+                                        "status !== 2").evaluate()[0] for obj in images))
         engine.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
         APP.processEvents()
 
     def test_registered_scoped_pixels_reach_display_and_reject_foreign_masks(self):
