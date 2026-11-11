@@ -155,6 +155,9 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
         engine.qt_s1_index_resource_root = root
         engine.qt_s1_private_coordinate_prepare = engine.qt_s1_pose_prior = None
         attach_structure_scanner(engine, StructureCatalog.from_engine(engine))
+    elif rank_ready:
+        from s1_structure_selection import StructureCatalog
+        attach_structure_scanner(engine, StructureCatalog.from_engine(engine))
     check_current()
     return engine
 

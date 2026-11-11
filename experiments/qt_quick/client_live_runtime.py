@@ -1197,19 +1197,27 @@ class LiveRuntime:
             return rows[0]["mapId"], None, None
         return None, None, None
 
-    def _stream_s1_observation(self, action, payload, cancelled, engine, epoch,
+    def _observation_stream_enabled(self, engine):
+        scan = getattr(engine, 'qt_structure_scan', None) or getattr(engine, 'qt_s1_structure_scan', None)
+        return bool(callable(scan) and (
+            self._candidate_streaming_requested() and self._s1_provisional_enabled()
+            or self._season == 's0' and getattr(engine, 'qt_native_base', None) is not None
+            and getattr(engine, 'qt_rank_ready', False)))
+
+    def _stream_observation(self, action, payload, cancelled, engine, epoch,
                                captured, frame, floor, digest, capture_generation,
                                frame_generation, frame_id, cycle, snapshot):
         """One captured ticket streams material; finalization never chooses again."""
         from s1_structure_selection import StructureCatalog, StructureEvidenceSession, StructureCandidateScanner
         from s1_stream_priority import candidate_order
         catalog = StructureCatalog.from_engine(engine)
+        provisional_display = self._s1_provisional_enabled()
         shape = tuple(frame.shape)
         dimensions = tuple(captured.context.full_client_size)
         if snapshot is None or shape[:2] != (dimensions[1], dimensions[0]):
             return self._receipt(action, payload, success=False, reason="stream-frame-shape-mismatch")
         with self._lock:
-            if (epoch != self._epoch or frame_id != self._frame_id or not self._s1_provisional_enabled()
+            if (epoch != self._epoch or frame_id != self._frame_id or not self._observation_stream_enabled(engine)
                     or not self._identity_observation_current()):
                 return self._receipt(action, payload, success=False, reason="stale-stream-observation", stale=True)
             session = self._s1_structure_session
@@ -1266,13 +1274,17 @@ class LiveRuntime:
             display_generation = getattr(self, "_display_generation", 0)
             intent_generation = self._group_intent_generation
             round_id = self._round
+            identity_snapshot = (self._identity_native, self._identity_context(), intent_generation)
             priority_handles = dict(self._stream_priority_handles)
             self._private_observation_sequence += 1
             private_sequence = self._private_observation_sequence
         first_result = None
+        entry_selection, entry_seed, entry_published, entry_preserved = None, None, False, False
         attempted = set()
         last_material_reason = "no-current-supported-candidates"
         started = time.monotonic()
+        scan_budget = self._recorded_s1_scan_budget if provisional_display else INITIAL_IDENTITY_BUDGET_SECONDS
+        deadline = time.perf_counter() + scan_budget if scan_budget is not None else None
         private_report = None
         private_material_ms = 0.0
         scan_plan, scan_revision = (), None
@@ -1287,7 +1299,7 @@ class LiveRuntime:
 
         def current():
             return (owns_ticket() and not self._cancelled(cancelled)
-                and self._active and self._map_open and self._s1_provisional_enabled()
+                and self._active and self._map_open and self._observation_stream_enabled(engine)
                 and settings_generation == self._settings_generation
                 and display_generation == getattr(self, "_display_generation", 0)
                 and intent_generation == self._group_intent_generation
@@ -1321,6 +1333,28 @@ class LiveRuntime:
                 if revoke_pixels:
                     self._revoke_render(reason)  # Last mutation; notification may reenter.
 
+        def publish_entry(evidence):
+            nonlocal entry_selection, entry_seed, entry_published, entry_preserved, intent_generation
+            with self._lock:
+                if (not current() or evidence.get('frameKey') != digest
+                        or not session.commit_entry_evidence(evidence, ticket)):
+                    return False
+                entry_selection, entry_seed, stale = self._commit_identity_rows(
+                    engine, evidence['rows'], frame, floor, epoch, frame_id, cancelled,
+                    identity_snapshot=identity_snapshot)
+                if stale or not owns_ticket():
+                    return False
+                # The reducer checks the intent again after synchronous
+                # notifications. Adopt only its own completed group transition.
+                intent_generation = self._group_intent_generation
+                if not current():
+                    return False
+                entry_published = True
+                entry_preserved = bool(entry_selection or self._identity_fields()['groupLocked']
+                    or any(row.get('identityHardGatePassed') is True for row in evidence['rows'])
+                    or any(row.get('identityKind') == 'group' for row in self._automatic_candidate_rows))
+                return entry_preserved
+
         def publish(report):
             nonlocal first_result, last_material_reason, private_material_ms
             rows = StructureCandidateScanner.rank_rows(report, engine.pack)
@@ -1339,8 +1373,10 @@ class LiveRuntime:
                 if (not current() or report.get("frameKey") != digest
                         or not session.commit(report, ticket)):
                     return False
+                if entry_preserved:
+                    return True
                 self._identity_rank_rows = rows
-                self._identity_source = "s1-structure-candidates"
+                self._identity_source = f"{catalog.season}-structure-candidates"
                 self._automatic_candidate_rows = [dict(row, key=row["mapId"], identityKind="candidate") for row in rows]
                 self._update_candidates(rows, floor)
                 # A list update must not change an already materialized choice.
@@ -1352,7 +1388,7 @@ class LiveRuntime:
                 checkedMapIds=report["checkedMapIds"], supportedMapIds=report["supportedMapIds"],
                 firstVerifiedPoseElapsedSeconds=report.get("firstVerifiedPoseElapsedSeconds"),
                 rawFrameDigest=digest, shapeSnapshotId=snapshot.sha256, frameShape=list(shape))
-            for row in rows:
+            for row in rows if provisional_display else ():
                 mid = row["mapId"]
                 with self._lock:
                     eligible = not private_enabled or (self._s1_private_pool is pool and mid in pool.remaining)
@@ -1453,7 +1489,7 @@ class LiveRuntime:
                     self._stream_priority_handles.update(priority_handles)
             self._notify("structure-scan-started", reason=ordering["reason"], streamFrameId=frame_id,
                 streamEpoch=epoch, streamRoundId=round_id, streamCycleId=cycle,
-                candidateOrder=list(order), ordering=ordering, budgetSeconds=self._recorded_s1_scan_budget,
+                candidateOrder=list(order), ordering=ordering, budgetSeconds=scan_budget,
                 rawFrameDigest=digest, shapeSnapshotId=snapshot.sha256, frameShape=list(shape),
                 clientDimensions=list(dimensions))
             def scan_current():
@@ -1486,15 +1522,31 @@ class LiveRuntime:
                         privatePoolRevision=pool.revision if private_enabled else None,
                         privateExperimentalLocked=bool(private_enabled and pool.locked_id),
                         privateRecoveryPending=recovery_scan)
-                report = engine.qt_s1_structure_scan(frame, floor=str(floor), floor_source="current-frame-verified",
-                    cancelled=obsolete, budget_seconds=self._recorded_s1_scan_budget,
+                scan = getattr(engine, 'qt_structure_scan', None) or getattr(engine, 'qt_s1_structure_scan', None)
+                report = scan(frame, floor=str(floor), floor_source="current-frame-verified",
+                    cancelled=obsolete, budget_seconds=scan_budget,
                     on_progress=publish, candidate_order=order, preferred_map_id=preferred,
-                    preferred_material_committed=preferred_material_committed, **options)
+                    preferred_material_committed=preferred_material_committed,
+                    **({} if provisional_display else dict(on_entry_evidence=publish_entry)),
+                    **({'deadline': deadline} if deadline is not None else {}), **options)
                 if _test_evidence_active() and type(report.get('fitEvidence')) is dict:
                     _test_evidence('fit-evidence', frame, dict(report['fitEvidence'],
                         priorBinding=prior_binding, priorReason=prior_reason))
                 return report
             report = scan_current()
+            if not provisional_display and report['status'] != 'cancelled' and not obsolete():
+                if not entry_published and 'entryEvidence' in report:
+                    publish_entry(report['entryEvidence'])
+                if entry_selection and not obsolete():
+                    first_result = self._solve_observation(action, payload, cancelled, engine, self._group, epoch,
+                        captured, frame, floor, digest, capture_generation, frame_generation,
+                        frame_id, cycle, entry_selection, entry_seed, structure_current=current)
+                elif not entry_selection:
+                    last_material_reason = 'identity-not-uniquely-verified'
+            if not provisional_display and first_result is not None and not first_result.get('success'):
+                # Preserve the solver's concrete capability/resource failure.
+                # It may have revoked its own context before returning.
+                return first_result
             # A locked ID outlives an UNKNOWN current fit/material result, but
             # its old pixels do not. Final round locks never reopen identity;
             # legacy auto-test evidence experiments retain their own policy.
@@ -1802,6 +1854,22 @@ class LiveRuntime:
         rows = (review(frame, floor, prior=prior, budget_seconds=INITIAL_IDENTITY_BUDGET_SECONDS)
                 if prior and callable(review) and not rediscover else engine.rank(frame, floor=floor,
                     limit=len(engine.pack.maps), budget_seconds=INITIAL_IDENTITY_BUDGET_SECONDS))
+        selected, seed, stale = self._commit_identity_rows(engine, rows, frame, floor,
+            epoch, frame_id, cancelled, rediscover=rediscover,
+            identity_snapshot=(previous, context, intent_generation))
+        if (not stale and not selected and self._season == 's0'
+                and getattr(engine, 'qt_native_base', None) is not None
+                and not self._identity_fields()['groupLocked']
+                and not any(row.get('identityKind') == 'group' for row in self._automatic_candidate_rows)
+                and not any(row.get('identityHardGatePassed') is True for row in rows)):
+            return self._rank_structure_candidates(engine, frame, floor, epoch, frame_id, cancelled,
+                budget_seconds=max(0., INITIAL_IDENTITY_BUDGET_SECONDS - (time.monotonic() - started)))
+        return selected, seed, stale
+
+    def _commit_identity_rows(self, engine, rows, frame, floor, epoch, frame_id, cancelled, *,
+                              identity_snapshot, rediscover=False):
+        """The runtime alone consumes entry evidence; this method schedules no work."""
+        previous, context, intent_generation = identity_snapshot
         seeds = self._current_entry_seeds(rows, floor)
         state, proposal = stage_similarity_rank(None if rediscover else previous, rows, context,
             hashlib.sha256(frame.tobytes()).hexdigest(), seeds, group_only=True)
@@ -1925,6 +1993,7 @@ class LiveRuntime:
                 self._map_id = selected
                 self._gate.select(selected)
                 self._gate.confirm()
+            committed_intent_generation = self._group_intent_generation
         self._recognition_diagnostic('identity-rank', proposal.get('reason', proposal.get('status', 'ranked')),
             inputs=dict(candidateCount=len(rows), acceptedCount=len(accepted), seedCount=len(seeds),
                 floor=floor, frameId=frame_id, budgetSeconds=INITIAL_IDENTITY_BUDGET_SECONDS),
@@ -1940,17 +2009,14 @@ class LiveRuntime:
                 nativeStatus=proposal.get("status"), nativeCandidateMemberId=proposal.get("candidateMemberId"),
                 establishedMemberIds=list(state.member_ids)[:32], selectedMapId=selected,
                 entranceKind=entrance_kind))
+        with self._lock:
+            if (self._cancelled(cancelled) or epoch != self._epoch or frame_id != self._frame_id
+                    or committed_intent_generation != self._group_intent_generation
+                    or self._group_choice_inflight is not None):
+                return None, None, 'stale-context'
         seed = seeds.get(selected)
         if seed is None and len(accepted) == 1 and accepted[0].get("mapId") == selected:
             seed = accepted[0].get("difficultEntry")
-        if (self._season == 's0' and getattr(engine, 'qt_native_base', None) is not None
-                and not selected and not grouped and not block_member_unique and not accepted):
-            # First P3 slice: replace unresolved advisory-list publication with
-            # the actual S1 scanner/session. Entry/group confirmation above is
-            # still authoritative, and is explicitly not migrated in this slice.
-            # Both searches share the existing budget; unknown never excludes.
-            return self._rank_structure_candidates(engine, frame, floor, epoch, frame_id, cancelled,
-                budget_seconds=max(0., INITIAL_IDENTITY_BUDGET_SECONDS - (time.monotonic() - started)))
         return selected, seed, False
 
     def _stage_current_member_material(self, action, payload, state, *, manual_choice=None):
@@ -3140,6 +3206,12 @@ class LiveRuntime:
                 # Manual UI actions explicitly capture once in the same worker.
                 return self._capture_and_solve(action, payload, cancelled, expected_epoch=epoch)
             entry_candidate = None
+            if not selected and self._observation_stream_enabled(engine) and not self._manual_selection_unlocked():
+                from priority_admission import FrameSnapshot
+                return self._stream_observation(action, payload, cancelled, engine, epoch,
+                    observation['captured'], observation['frame'], floor, observation['digest'],
+                    observation['capture_generation'], generation, frame_id, cycle,
+                    FrameSnapshot(observation['frame']))
             if not selected:
                 if self._manual_selection_unlocked():
                     return self._receipt(action, payload, success=True,
@@ -5532,7 +5604,7 @@ class LiveRuntime:
         frame = self._full_frame(captured)
         width, height = captured.context.full_client_size
         stream_snapshot = None
-        if self._candidate_streaming_requested() and self._s1_provisional_enabled():
+        if self._observation_stream_enabled(engine):
             from priority_admission import FrameSnapshot
             stream_snapshot = FrameSnapshot(frame)
             # pixels returns a new ndarray view each time. Observe the exact
@@ -5708,8 +5780,8 @@ class LiveRuntime:
             if engine.pack.mode == "difficult" and str(floor) == "2":
                 return self._receipt(action, payload, success=False,
                     reason="difficult-f2-entry-recognition-disabled", posePending=True)
-            if self._candidate_streaming_requested() and self._s1_provisional_enabled():
-                return self._stream_s1_observation(action, payload, cancelled, engine, epoch,
+            if self._observation_stream_enabled(engine):
+                return self._stream_observation(action, payload, cancelled, engine, epoch,
                     captured, frame, floor, digest, capture_generation, frame_generation,
                     frame_id, cycle, stream_snapshot)
             # Opening the map again refreshes the selected member's geometry.

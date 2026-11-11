@@ -128,6 +128,19 @@ class NativeDifficultCandidateEngine(MapIdentityEngine):
             return structure_rank(frame, floor=str(floor), budget_seconds=budget_seconds)
         rows = super().rank(frame, floor=floor, limit=limit, budget_seconds=budget_seconds,
                             _established_members=_established_members)
+        return self._apply_native_inventory(rows, floor)
+
+    def prepare_entry_observation(self, frame, floor, *, deadline):
+        if not getattr(self, 'qt_rank_ready', True):
+            raise ValueError(';'.join(getattr(self, 'qt_rank_gaps', ())) or 'recognition-rank-unavailable')
+        if getattr(self, 'qt_season', None) == 's1':
+            raise ValueError('proposal-only-entry-evidence')
+        return super().prepare_entry_observation(frame, floor, deadline=deadline)
+
+    def collect_observation_rows(self, work):
+        return self._apply_native_inventory(super().collect_observation_rows(work), work.floor)
+
+    def _apply_native_inventory(self, rows, floor):
         # A missing native competitor cannot disappear from a uniqueness
         # decision. Preserve scores/order and expose the successful partial
         # fits as proposals, just as the existing shared entry inventory does.

@@ -731,3 +731,14 @@ python -m unittest test_client_progressive_display test_client_progressive_pixel
 - 修改前 S1 scanner/async/preferred 共 **61 项通过（4.186 秒）**；新增接口修前 ImportError 保留。最终同组加公共调度回归 **70 项通过（4.323 秒）**，真实入口工作/I/O **54 项通过（2.309 秒）**。用独立生成的 500 组预算、取消、首选、首显与输入变动情形执行基线和当前实际 `scan`，事后比较结果/回调/调用顺序，剔除两项实测时长后 **500 组一致**，没有把旧答案输入新求解。上述使用 fixture，不代表真实游戏。
 - 独立进程的实际运行接缝回归：`test_client_structure_unification` **8 项 / 35.582 秒**、`test_s1_candidate_runtime` **11 项 / 0.205 秒**、`test_client_progressive_display` **14 项 / 0.738 秒**、软件后端 `test_client_progressive_pixels` **3 项 / 4.992 秒**，均通过。像素测试不证明物理 GPU 或实机效果。
 - 默认 S0 的旧 `rank` 控制器、共同 observation ticket 的身份/source/condition 通道及登记组 prior 仍待后续迁入；S0 困难资格不变，S1 pose 不能提升为 identity。此切片不代表完整 P3，已交付 d672 Setup 不包含此后续源码。
+
+### P3 默认导入入口迁入共同 observation stream
+
+- 基于公共 driver 提交 `392e5463fff7cd53f762d72a598529f851bcf2b8` 继续实施。默认 S0 噩梦 provider 现在与 S1 一样装配共同 scanner；未确认地图的实际采集、保留帧与 `EngineAdapter` 保存帧入口改走公共扫描，不再先调用完整 `engine.rank` / `rank_established_group`，也不再另开一次结构 fallback 扫描。入口来源仍用原有证据和验证，`MapObservationWork` 依次提供实际出口、正门、侧门及 recovery kernel，每项由同一 driver 检查绝对 deadline 和取消。
+- `StructureEvidenceSession` 在同一个 ticket 上另收 entry 通道，绑定当前帧、资源和楼层。entry 通道不会改写 canonical pose 子账本，后者仍保持五项身份/显示权限为 false；只有原 runtime 身份归约负责登记组和唯一身份提交。S0 困难 rank 不可用、S1 proposal-only 的新 source 入口均明确拒绝；缺竞争者仍调用原 inventory 抑制，不接受调用者任意传入 singleton。
+- 预算在准备、entry 与 canonical fit 之间共用。终止会关闭内层 work 并收取未完成证据；必需 cross-check 尚未完成时，已算出的正向结果不能提前确认身份。source 首次确认可复用原 entry seed 进入现有 P4 solver；结构提案保持待确认。已确认地图的后续贴合沿用现有渐进显示路径，本切片不提前迁移这部分 ROI/恢复，避免丢失已验证首显/复核行为。
+- 实际默认 S0 工厂回归将旧 engine/runtime 排序与 fallback 入口设为调用即失败，仍验证采集、保留帧和磁盘 PNG 保存帧分别进入共同 scanner；保存帧继续是 diagnosticOnly、identityOrPoseAuthorized=false。登记组测试的替身从旧 rank 移到显式 source work，原真实归档/激活/登记表/成员 ACK 与资源替换反例保留，不把替身当作来源识别准确率。
+- 独立复核复现两项修前失败：缺失主入口 rival 的 probe 抛错后仍可落入侧门硬确认；旧兼容 rank 抽取后丢失排序前的手选代次。现保持主入口异常传播，并显式携带排序前身份/context/intent 快照；同步通知后再次核对代次与 owner，登记表不可用时也不能转成单地图结构选择。两条定向负例修前均失败，修后通过；真实 main/side component、probe、recovery 和身份归约执行，观测与末端图像验证仍是 fixture。
+- 本地最终相关十模块 **190 项通过（8.861 秒）**；实际默认 S0 采集/保留帧/保存帧及晚结果 **8 项通过（38.782 秒）**。四组合工厂的 S0 困难 **2 项 / 69.609 秒**、S1 困难 **3 项 / 96.168 秒**、S1 噩梦 **2 项 / 131.145 秒**通过；P4 渐进显示 **14 项 / 0.723 秒**、软件像素 **3 项 / 4.841 秒**通过。资格拒绝与实际资源消费使用生产导入/factory，但捕获和正向 fit 有明确替身，不能据此宣称实帧准确率或 500/300ms 达标。
+- 公共 driver 提交 `392e546` 的 CI 为 **17 组成功 / 1 组 season-ui 失败**，helper 冻结/编译成功，失败不抹去。失败的 fixture 在首次真实资源 inventory 完成前就开始原 5 秒受控引擎断言。只读观测本机真实扫描 3816.75ms；仅将该扫描受控延长至 6 秒可复现同型空 preparations 失败，扫描完成后生产 timer 仍在 127.21ms 内自行准备，未发现产品丢调度。当前 fixture 单独等待实际 inventoryLoaded、非忙和三份真实基础可用（90 秒上限，子进程 120 秒），后续引擎/取消/恢复的原 5 秒断言不变；相同 6 秒慢扫描修后完成。远端失败没有资源扫描耗时字段，其确切原因/耗时不由本地同型注入代证；没有修改产品 timer 或 solver 门槛。
+- 本轮尚未完成：legacy 非导入 collector 退役、可选 source-family/condition 的逐项调度、完整登记组 prior 校验及 P4 全部外围统一。默认未配置的旧 source/condition 不能据方法存在而当作能力；source-family namespace、held-out 证据和 S1 资格不得混入 canonical 地图集合。安装卸载由用户指定的另一个 agent 负责，等待其 PR 后再整合，本轮不改其模块。

@@ -45,6 +45,10 @@ class SharedStructureRuntimeTests(unittest.TestCase):
     def test_unresolved_default_s0_publishes_shared_structure_proposals_without_identity(self):
         with patch.object(StructureCandidateScanner, 'scan', autospec=True,
                           side_effect=StructureCandidateScanner.scan) as scan, \
+             patch.object(self.engine, 'rank', side_effect=AssertionError('old rank')), \
+             patch.object(self.engine, 'rank_established_group', side_effect=AssertionError('old group rank')), \
+             patch.object(self.runtime, '_rank_identity', side_effect=AssertionError('old runtime controller')), \
+             patch.object(self.runtime, '_rank_structure_candidates', side_effect=AssertionError('old fallback scanner')), \
              patch.object(_AlignmentHost, 'fit', return_value=supported_pose()) as fit:
             result = self.runtime.dispatch('capture_now')
         self.assertEqual(result['reason'], 'identity-not-uniquely-verified', result)
@@ -62,15 +66,44 @@ class SharedStructureRuntimeTests(unittest.TestCase):
         self.assertEqual(self.runtime._identity_source, 's0-structure-candidates')
         self.assertEqual(self.engine.qt_logical_group_registry,
                          self.engine.qt_native_base.reviewed_front_groups)
-        # Let the real entry producer finish, then advance only the request's
-        # monotonic clock: the fallback must not allocate another full budget.
-        rank, monotonic, offset = self.engine.rank, time.monotonic, [0.]
+        with patch.object(self.capture, 'capture', side_effect=AssertionError('retained must not capture')), \
+             patch.object(self.runtime, '_rank_identity', side_effect=AssertionError('old retained controller')), \
+             patch.object(self.runtime, '_rank_structure_candidates', side_effect=AssertionError('old retained scanner')), \
+             patch.object(_AlignmentHost, 'fit', return_value=supported_pose()) as retained_fit:
+            retained = self.runtime._solve_retained('capture_now', {}, None, acquire_current=False)
+        self.assertEqual(retained['reason'], 'identity-not-uniquely-verified', retained)
+        self.assertEqual(retained_fit.call_count, 1)
+        self.assertFalse(self.runtime.snapshot()['identityLocked'])
+        import cv2
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from client_engine import EngineAdapter
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / 'synthetic.png'
+            ok, encoded = cv2.imencode('.png', self.capture.frame)
+            self.assertTrue(ok)
+            path.write_bytes(encoded.tobytes())
+            adapter = EngineAdapter(engine_factories=self.source.factories, allowed_read_root=folder)
+            with patch.object(self.engine, 'rank', side_effect=AssertionError('old offline rank')), \
+                 patch.object(self.engine, 'rank_established_group', side_effect=AssertionError('old offline group rank')), \
+                 patch.object(_AlignmentHost, 'fit', return_value=supported_pose()) as saved_fit:
+                saved = adapter.dispatch('rank_saved_frame', dict(path=str(path), season='s0',
+                    mode='nightmare', floor='1', inputKind='synthetic'))
+            self.assertTrue(saved['success'], saved)
+            self.assertEqual(saved_fit.call_count, 1)
+            self.assertFalse(saved['identityOrPoseAuthorized'])
+            self.assertEqual(saved['diagnostics']['structureObservation']['supportedMapIds'], ['fixture-map'])
+        # Spend the budget inside the real common plan's entry-scope kernel.
+        # Neither old rank controller may run or allocate a second fit budget.
+        select, perf_counter, offset = self.engine.front_gate_prefilter.select, time.perf_counter, [0.]
         def spent_entry_budget(*args, **kwargs):
-            rows = rank(*args, **kwargs)
+            rows = select(*args, **kwargs)
             offset[0] += INITIAL_IDENTITY_BUDGET_SECONDS + 1
             return rows
-        with patch.object(self.engine, 'rank', side_effect=spent_entry_budget), \
-             patch('client_live_runtime.time.monotonic', side_effect=lambda: monotonic() + offset[0]), \
+        with patch.object(self.engine, 'rank', side_effect=AssertionError('old rank')), \
+             patch.object(self.engine, 'rank_established_group', side_effect=AssertionError('old group rank')), \
+             patch.object(self.engine.front_gate_prefilter, 'select', side_effect=spent_entry_budget), \
+             patch('client_live_runtime.time.perf_counter', side_effect=lambda: perf_counter() + offset[0]), \
              patch.object(_AlignmentHost, 'fit', side_effect=AssertionError('second scan budget')):
             exhausted = self.runtime.dispatch('capture_now')
         self.assertEqual(exhausted['reason'], 'identity-not-uniquely-verified', exhausted)

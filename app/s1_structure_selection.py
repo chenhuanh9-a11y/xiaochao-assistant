@@ -110,6 +110,29 @@ class _StructureFitWork(EntryEvidenceWork):
             yield self._job(map_id, 'canonical-fit', lambda map_id=map_id: self._fit(map_id))
 
 
+class _ObservationWork(EntryEvidenceWork):
+    """Dependencies and canonical poses share one driver, frame and deadline."""
+    def __init__(self, snapshot, entry, fit):
+        self.entry, self.fit, self.entry_rows = entry, fit, None
+        super().__init__(snapshot)
+
+    def _delegate(self, work):
+        try:
+            while (job := work.next_job()) is not None:
+                yield self._job(job.map_id, job.phase, job.run)
+        finally:
+            work.close()
+
+    def _jobs(self):
+        if self.entry is not None:
+            try:
+                yield from self._delegate(self.entry)
+            finally:
+                self.entry_rows = self.entry.finish()
+            yield self._job(None, 'entry-evidence', lambda: None)
+        yield from self._delegate(self.fit)
+
+
 def _same_evidence(left, right):
     """Exact nested evidence equality, including NumPy pose arrays."""
     if isinstance(left, np.ndarray) or isinstance(right, np.ndarray):
@@ -135,13 +158,16 @@ class StructureCandidateScanner:
 
     def scan(self, frame, *, floor, floor_source, cancelled=None, budget_seconds=None,
              on_progress=None, candidate_order=None, preferred_map_id=None,
-             preferred_material_committed=None, planned_map_ids=None, first_material_committed=None):
+             preferred_material_committed=None, planned_map_ids=None, first_material_committed=None,
+             prepare_entry=None, on_entry_evidence=None, deadline=None):
         if floor not in self.catalog.floors or floor_source not in ("operator-declared", "current-frame-verified"):
             raise ValueError("s1-structure-floor-evidence-required")
         if not isinstance(frame, np.ndarray) or frame.ndim != 3 or frame.shape[2] != 3 or frame.dtype != np.uint8:
             raise ValueError("s1-structure-frame-invalid")
         if budget_seconds is not None and (not math.isfinite(budget_seconds) or budget_seconds < 0):
             raise ValueError("s1-structure-budget-invalid")
+        if deadline is not None and not math.isfinite(deadline):
+            raise ValueError('observation-deadline-invalid')
         cancelled = cancelled or (lambda: False)
         started = self.clock()
         # Own immutable bytes. Neither callers nor fit helpers can turn this
@@ -194,11 +220,25 @@ class StructureCandidateScanner:
                 scanSkipped=status in ("preferred-material-committed", "first-material-committed"),
                 reason="supported-geometry-is-not-complete-identity-competition")
 
-        work = _StructureFitWork(snapshot, order, floor, fit_one, cancelled, bounds, preferred)
+        fit_work = _StructureFitWork(snapshot, order, floor, fit_one, cancelled, bounds, preferred)
+        deadline = min(deadline if deadline is not None else float('inf'),
+            started+budget_seconds if budget_seconds is not None else float('inf'))
+        entry = prepare_entry(snapshot, floor, deadline=deadline) if prepare_entry is not None else None
+        work = _ObservationWork(snapshot, entry, fit_work)
+
+        def entry_evidence():
+            return dict(frameKey=frame_key, resourceKey=self.catalog.resource_key, floor=floor,
+                role='identity-entry', rows=copy.deepcopy(work.entry_rows or []))
 
         def accept_fit(job):
             nonlocal first_verified_pose_elapsed
-            map_id, fit = job.map_id, work.last_fit
+            if job.phase == 'entry-evidence':
+                if on_entry_evidence is not None and on_entry_evidence(entry_evidence()) is True:
+                    return 'subset-unresolved'
+                return None
+            if job.phase != 'canonical-fit':
+                return None
+            map_id, fit = job.map_id, fit_work.last_fit
             if "obsolete" in str(fit.get("reason", "")):
                 return "cancelled"
             checked.append(map_id)
@@ -236,11 +276,14 @@ class StructureCandidateScanner:
             return None
 
         status = ObservationWorkScheduler(clock=self.clock).drive(work,
-            deadline=started+budget_seconds if budget_seconds is not None else None,
+            deadline=deadline,
             cancelled=cancelled, on_job_finished=accept_fit)
         if status == "complete" and set(order) != set(self.catalog.map_ids):
             status = "subset-unresolved"
-        return report(status)
+        result = report(status)
+        if entry is not None and status != 'cancelled':
+            result['entryEvidence'] = entry_evidence()
+        return result
 
     @staticmethod
     def rank_rows(report, pack):
@@ -285,14 +328,32 @@ class StructureEvidenceSession:
         self._priority_history = OrderedDict()
         self._committed_generation = None
         self._session_id, self._ticket = uuid.uuid4().hex, None
+        self._entry_evidence = None
 
     def begin_observation(self, floor):
         if self._ended or floor not in self.catalog.floors:
             raise ValueError("s1-structure-session-unavailable")
         self.generation += 1
         self._current, self._floor = None, floor
+        self._entry_evidence = None
         self._ticket = ObservationTicket(self._session_id, self.round_key, self.generation, floor)
         return self._ticket
+
+    def commit_entry_evidence(self, report, ticket):
+        """Separate entry channel; it never changes the canonical pose ledger."""
+        if (self._ended or ticket != self._ticket or self._committed_generation == self.generation
+                or self.catalog.season != 's0' or self._entry_evidence is not None
+                or not isinstance(report, dict) or report.get('role') != 'identity-entry'
+                or report.get('resourceKey') != self.catalog.resource_key
+                or report.get('floor') != self._floor
+                or not isinstance(report.get('frameKey'), str) or len(report['frameKey']) != 64
+                or not isinstance(report.get('rows'), list)
+                or any(not isinstance(row, dict) or row.get('mapId') not in self.catalog.map_ids
+                       for row in report['rows'])
+                or self._current is not None and self._current['frameKey'] != report['frameKey']):
+            return False
+        self._entry_evidence = copy.deepcopy(report)
+        return True
 
     def commit(self, report, ticket):
         """Accept monotonic updates of ONE observation, never independent votes.
@@ -344,6 +405,8 @@ class StructureEvidenceSession:
                 or any(not verified_pose(report.get("poses", {}).get(mid)) for mid in supported)):
             return False
         previous = self._current
+        if self._entry_evidence is not None and self._entry_evidence['frameKey'] != report['frameKey']:
+            return False
         if previous is not None:
             if (seq <= previous.get("updateSeq", 1) or report["frameKey"] != previous["frameKey"]
                     or report.get("floorSource") != previous.get("floorSource")
@@ -448,10 +511,12 @@ class StructureEvidenceSession:
         """Withdraw current-frame choices without inventing negative evidence."""
         self.generation += 1
         self._current, self._floor, self._ticket = None, None, None
+        self._entry_evidence = None
 
     def end_round(self):
         self.generation += 1
         self._history.clear()
         self._priority_history.clear()
         self._ticket = None
+        self._entry_evidence = None
         self._current, self._floor, self._ended = None, None, True

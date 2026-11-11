@@ -1,13 +1,17 @@
 """Real sequential work lifecycle and scanner use; no game IO or timing claims."""
 import unittest
+import time
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
 
 from entry_evidence_work import EntryEvidenceWork, FrameSnapshot, ObservationWorkScheduler
-from s1_structure_selection import StructureCandidateScanner
+from s1_structure_selection import StructureCandidateScanner, StructureCatalog, StructureEvidenceSession
+from map_identity_engine import MapIdentityEngine
 from test_s1_structure_selection import catalog, pose
 import test_main_entry_jobs as main_fixture
+import test_side_entry_jobs as side_fixture
 
 
 class CounterWork(EntryEvidenceWork):
@@ -145,6 +149,128 @@ class ObservationSchedulerTests(unittest.TestCase):
         self.assertEqual(calls, ['a', 'b', 'c'])
         self.assertEqual(report['supportedMapIds'], ['a', 'b', 'c'])
         self.assertFalse(report['identityHardGatePassed'])
+
+
+class EntryObservationTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture = main_fixture.MainEntryJobTests('runTest')
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+
+    def engine(self, *, unique=False):
+        front = self.fixture.source(rotated=('map-b',) if unique else ())
+        self.fixture.observations(front)
+        engine = MapIdentityEngine.__new__(MapIdentityEngine)
+        engine.entry_identity, engine.side_entry_identity = front, None
+        engine.identity_floors, engine.identity_profile_id = ('2',), 'shared-structure'
+        engine.side_entry_error, engine.entry_advisory = None, None
+        engine.native_similarity_index = engine.entry_shared_reference_provider = None
+        maps = [SimpleNamespace(id=mid, name=mid, layers={'2': None}) for mid in ('map-a', 'map-b')]
+        engine.pack = SimpleNamespace(maps=maps, by_id={m.id: m for m in maps}, mode='nightmare')
+        return engine
+
+    def scan(self, engine, **options):
+        c = StructureCatalog('s0', 'nightmare', 'real-fixture-base', ('map-a', 'map-b'), ('2',))
+        scanner = StructureCandidateScanner(c, lambda *a, **kw: dict(success=False, reason='unknown'),
+            clock=time.perf_counter)
+        with patch.object(engine, 'rank', side_effect=AssertionError('old rank')), \
+             patch.object(engine.entry_identity, 'rank', side_effect=AssertionError('old main rank')):
+            return scanner.scan(self.fixture.frame, floor='2', floor_source='operator-declared',
+                prepare_entry=engine.prepare_entry_observation, **options)
+
+    def test_real_entry_plan_keeps_matching_rival_separate_from_canonical_poses(self):
+        report = self.scan(self.engine())
+        self.assertEqual(report['checkedMapIds'], ['map-a', 'map-b'])
+        self.assertEqual(report['supportedMapIds'], [])
+        entries = report['entryEvidence']['rows']
+        self.assertEqual({r['mapId'] for r in entries}, {'map-a', 'map-b'})
+        self.assertFalse(any(r['identityHardGatePassed'] for r in entries))
+        self.assertFalse(report['identityHardGatePassed'])
+
+    def test_unique_real_main_evidence_can_stop_without_running_canonical_fit(self):
+        updates = []
+        def accept(evidence):
+            updates.append(evidence)
+            return any(row['identityHardGatePassed'] for row in evidence['rows'])
+        report = self.scan(self.engine(unique=True), on_entry_evidence=accept)
+        self.assertEqual(len(updates), 1)
+        self.assertEqual([r['mapId'] for r in updates[0]['rows'] if r['identityHardGatePassed']], ['map-a'])
+        self.assertEqual(report['status'], 'subset-unresolved')
+        self.assertEqual(report['checkedMapIds'], [])
+        self.assertEqual(report['unscannedMapIds'], ['map-a', 'map-b'])
+        self.assertFalse(report['identityHardGatePassed'])
+
+    def test_closing_before_competing_probe_keeps_both_maps_unknown(self):
+        engine = self.engine(unique=True)
+        work = engine.prepare_entry_observation(self.fixture.frame, '2', deadline=float('inf'))
+        phases = []
+        for _ in range(3):
+            job = work.next_job()
+            phases.append(job.phase)
+            job.run()
+        self.assertEqual(phases, ['entry-scope', 'main:observe', 'main:probe'])
+        pending = work.next_job()
+        self.assertEqual(pending.map_id, 'map-b')
+        rows = work.finish()
+        self.assertEqual({r['mapId'] for r in rows}, {'map-a', 'map-b'})
+        self.assertFalse(any(r['identityHardGatePassed'] for r in rows))
+        with self.assertRaisesRegex(ValueError, 'entry-job-not-current'):
+            pending.run()
+
+    def test_entry_ticket_cannot_change_pose_or_be_used_by_s1_or_late_frame(self):
+        c = StructureCatalog('s0', 'nightmare', 'base', ('a', 'b'), ('1',))
+        s = StructureEvidenceSession(c, 'round')
+        ticket = s.begin_observation('1')
+        evidence = dict(role='identity-entry', frameKey='1'*64, resourceKey='base', floor='1',
+            rows=[dict(mapId='a', identityHardGatePassed=True)])
+        self.assertTrue(s.commit_entry_evidence(evidence, ticket))
+        self.assertFalse(s.snapshot()['uniqueIdentityVerified'])
+        self.assertEqual(s.snapshot()['currentSupportedMapIds'], [])
+        s.revoke_current()
+        self.assertFalse(s.commit_entry_evidence(evidence, ticket))
+        s1 = StructureEvidenceSession(catalog(), 'round')
+        s1ticket = s1.begin_observation('-1')
+        self.assertFalse(s1.commit_entry_evidence(dict(evidence, floor='-1', resourceKey='base'), s1ticket))
+
+    def test_source_preparation_keeps_native_rank_and_s1_role_limits(self):
+        from difficult_native_identity import NativeDifficultCandidateEngine
+        engine = NativeDifficultCandidateEngine.__new__(NativeDifficultCandidateEngine)
+        engine.qt_rank_ready = False
+        engine.qt_rank_gaps = ('native-base-rank-unavailable',)
+        with self.assertRaisesRegex(ValueError, 'native-base-rank-unavailable'):
+            engine.prepare_entry_observation(self.fixture.frame, '2', deadline=1.)
+        engine.qt_rank_ready, engine.qt_season = True, 's1'
+        with self.assertRaisesRegex(ValueError, 'proposal-only-entry-evidence'):
+            engine.prepare_entry_observation(self.fixture.frame, '-1', deadline=1.)
+
+    def test_main_rival_resource_error_cannot_fall_through_to_side_identity(self):
+        engine = self.engine()
+        engine.identity_profile_id = 'native'
+        side = side_fixture.SideEntryJobTests('runTest')
+        side.setUp()
+        self.addCleanup(side.doCleanups)
+        locator = engine.side_entry_identity = side.source(('map-a',))
+        side.observe()
+
+        class NoExit(EntryEvidenceWork):
+            def _jobs(self):
+                yield from ()
+            def finish(self, **kwargs):
+                self.close()
+                return [], dict(reason='entry-no-reliable-exit', complete=True, entryObserved=False)
+
+        original = engine.entry_identity._probe_entry
+        def fail_rival(frame, entry, *args):
+            if entry[0]['mapId'] == 'map-b':
+                raise OSError('missing required main rival')
+            return original(frame, entry, *args)
+        with patch.object(locator, 'prepare_rank_entry', side_effect=lambda frame, *a, **kw: NoExit(frame)), \
+             patch.object(locator, 'check_entry_evidence', return_value={}), \
+             patch.object(engine.entry_identity, '_probe_entry', side_effect=fail_rival):
+            work = engine.prepare_entry_observation(self.fixture.frame, '2', deadline=float('inf'))
+            with self.assertRaisesRegex(OSError, 'missing required main rival'):
+                ObservationWorkScheduler().drive(work)
+            self.assertFalse(any(row['identityHardGatePassed'] for row in work.finish()))
 
 
 if __name__ == '__main__':

@@ -27,8 +27,9 @@ class EntryEvidenceJob:
 class EntryEvidenceWork:
     """A single worker owns each work item and executes its jobs sequentially."""
     def __init__(self, frame):
-        self.frame = (frame.pixels if isinstance(frame, FrameSnapshot) else FrameSnapshot(frame).pixels
-                      if frame is not None else None)
+        self.frame_snapshot = (frame if isinstance(frame, FrameSnapshot) else
+                               FrameSnapshot(frame) if frame is not None else None)
+        self.frame = self.frame_snapshot.pixels if self.frame_snapshot is not None else None
         self._complete = self._closed = self._failed = False
         self._pending = self._result = None
         self._steps = self._jobs()

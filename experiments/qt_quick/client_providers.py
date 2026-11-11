@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import sys
 import threading
+import time
 from types import MappingProxyType
 from client_paths import APP_ROOT, PRODUCTION, runtime_paths
 
@@ -147,7 +148,8 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
     def structure_scan(frame, *, floor, floor_source="operator-declared", cancelled=None, budget_seconds=None,
                        on_progress=None, candidate_order=None, preferred_map_id=None,
                        preferred_material_committed=None, private_coordinate_report=None, planned_map_ids=None,
-                       first_material_committed=None, pose_priors=None, collect_fit_diagnostics=False):
+                       first_material_committed=None, pose_priors=None, collect_fit_diagnostics=False,
+                       on_entry_evidence=None, deadline=None):
         check_current()
         if not getattr(engine, 'qt_rank_ready', True):
             raise ProviderUnavailable(';'.join(getattr(engine, 'qt_rank_gaps', ())) or 'recognition-rank-unavailable')
@@ -159,7 +161,7 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
             raise ProviderUnavailable('private-coordinate-provider-unavailable')
         fit = (lambda f, mid, fl, cancel, **kw: private_fit(
             f, mid, fl, cancel, report=private_coordinate_report, **kw)) if fixed else host.fit
-        scanner = StructureCandidateScanner(catalog, fit,
+        scanner = StructureCandidateScanner(catalog, fit, clock=time.perf_counter,
             prepare_fit=None if fixed else host.prepare_structure_scan)
         def progress(value):
             check_current()
@@ -168,7 +170,10 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
             cancelled=cancelled, budget_seconds=budget_seconds,
             on_progress=progress if on_progress is not None else None, candidate_order=candidate_order,
             preferred_map_id=preferred_map_id, preferred_material_committed=preferred_material_committed,
-            planned_map_ids=planned_map_ids, first_material_committed=first_material_committed)
+            planned_map_ids=planned_map_ids, first_material_committed=first_material_committed,
+            prepare_entry=(engine.prepare_entry_observation if catalog.season == 's0'
+                and getattr(engine, 'qt_native_base', None) is not None else None),
+            on_entry_evidence=on_entry_evidence, deadline=deadline)
         check_current()
         report["posePriorOutcomes"] = [{key: event[key] for key in
             ("mapId", "floor", "accepted", "fallback", "elapsedMs") if key in event}

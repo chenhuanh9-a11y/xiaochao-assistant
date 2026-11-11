@@ -97,6 +97,21 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertTrue(result["success"], result)
         return result
 
+    def test_identity_rank_cannot_overwrite_new_group_intent_on_same_frame(self):
+        self.assertTrue(self.dispatch('start_round')['success'])
+        rank = self.engine.rank
+        def change_intent(*args, **kwargs):
+            rows = rank(*args, **kwargs)
+            self.runtime._group_intent_generation += 1
+            return rows
+        with patch.object(self.engine, 'rank', side_effect=change_intent):
+            result = self.dispatch('capture_now')
+        self.assertFalse(result['success'], result)
+        self.assertEqual(result['reason'], 'stale-context')
+        self.assertTrue(result['stale'])
+        self.assertFalse(self.runtime.snapshot()['identityLocked'])
+        self.assertIsNone(self.runtime._render)
+
     def test_ui_snapshot_does_not_copy_solver_evidence_or_change_candidate_identity(self):
         class WorkerEvidence:
             def __deepcopy__(self, memo):

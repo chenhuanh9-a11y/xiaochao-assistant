@@ -815,6 +815,37 @@ class MapIdentityEngine(NightmareCandidateEngine):
                 if recovery_work is not None:
                     original_group_recovery=recovery_work.original_proposals
                 side_diagnostics=dict(reason='side-resource-unavailable',error=str(error),complete=False)
+        # A registered identity does not suppress the new source-family scan.
+        # Both searches share the original request budget; source rows remain
+        # advisory and cannot replace the registered identity or authorize pose/display.
+        source_candidates=(self._rank_source_structure_candidates(
+            frame,budget_seconds=remaining(),floor=str(floor)) if _established_members is None
+            else dict(candidates=[],candidateCount=0,reason='established-group-only'))
+        return self._collect_observation_rows(frame, floor, allowed, started, started+budget,
+            entry_rows, entry_diagnostics, side_rows, side_diagnostics, side_winner,
+            passport_rows, passport_diagnostics, passport_selected, fallback_allowed,
+            entry_unresolved, side_producer, source_candidates, original_group_recovery,
+            gate_report, limit, established=_established_members is not None)
+
+    def prepare_entry_observation(self, frame, floor, *, deadline):
+        """Prepare source jobs; the common scanner owns their execution."""
+        from map_observation_work import MapObservationWork
+        return MapObservationWork(self, frame, floor, deadline=deadline)
+
+    def collect_observation_rows(self, work):
+        return self._collect_observation_rows(work.frame, work.floor, work.allowed,
+            work.started, work.deadline, work.entry_rows, work.entry_diagnostics,
+            work.side_rows, work.side_diagnostics, work.side_winner, work.passport_rows,
+            work.passport_diagnostics, work.passport_selected, work.fallback_allowed,
+            work.entry_unresolved, work.side_producer, work.source_candidates,
+            work.original_group_recovery, work.gate_report, len(self.pack.maps),
+            established=False)
+
+    def _collect_observation_rows(self, frame, floor, allowed, started, deadline,
+            entry_rows, entry_diagnostics, side_rows, side_diagnostics, side_winner,
+            passport_rows, passport_diagnostics, passport_selected, fallback_allowed,
+            entry_unresolved, side_producer, source_candidates, original_group_recovery,
+            gate_report, limit, *, established):
         registered_identity_candidates=[dict(mapId=str(row.get('mapId')),
             score=float(row.get('score',0.0)),identityEvidence=row.get('identityEvidence'),
             identityVerified=bool(row.get('identityVerified')))
@@ -823,12 +854,6 @@ class MapIdentityEngine(NightmareCandidateEngine):
             registered_identity_candidates.append(dict(mapId=str(side_winner.get('mapId')),
                 score=float(side_winner.get('score',0.0)),
                 identityEvidence=side_winner.get('identityEvidence'),identityVerified=True))
-        # A registered identity does not suppress the new source-family scan.
-        # Both searches share the original request budget; source rows remain
-        # advisory and cannot replace the registered identity or authorize pose/display.
-        source_candidates=(self._rank_source_structure_candidates(
-            frame,budget_seconds=remaining(),floor=str(floor)) if _established_members is None
-            else dict(candidates=[],candidateCount=0,reason='established-group-only'))
         source_candidates=dict(source_candidates,
             registeredIdentityCandidates=registered_identity_candidates,
             evaluatedAlongsideRegisteredIdentity=bool(registered_identity_candidates),
@@ -839,7 +864,7 @@ class MapIdentityEngine(NightmareCandidateEngine):
         # icon-only advisory pass. Unresolved inputs keep that fallback intact.
         evidence=(dict(candidates=[],entryKind='main',reason='tilemap-entry-verified')
                   if any(row['identityVerified'] for row in entry_rows) or side_winner is not None
-                  else self.entry_advisory(frame) if self.entry_advisory is not None and _established_members is None
+                  else self.entry_advisory(frame) if self.entry_advisory is not None and not established
                   else dict(candidates=[],entryKind='unknown'))
         evidence['tilemapEntry']=entry_diagnostics
         evidence['tilemapCandidates']=entry_rows
@@ -923,7 +948,7 @@ class MapIdentityEngine(NightmareCandidateEngine):
                 rows, entry_rows, entry_diagnostics, str(floor),
                 self.entry_shared_reference_provider, lambda:self.entry_identity.geometry(frame),
                 side_rows=side_rows,side_diagnostics=side_diagnostics,
-                deadline=started+budget,prior=(self.native_similarity_context_provider()
+                deadline=deadline,prior=(self.native_similarity_context_provider()
                     if getattr(self,'native_similarity_context_provider',None) else None),
                 required_map_ids=tuple(sorted(group_required))) if self.native_similarity_index is not None else dict(status='none',reason='similarity-root-not-configured')
         diagnostics['elapsedMs'] = (time.perf_counter()-started)*1000
