@@ -12,6 +12,67 @@ sys.path.insert(0, str(ROOT / "tools"))
 import build_qt_client as build
 
 
+class ProgramOnlyInputTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.folder = Path(temporary.name)
+        self.root = self.folder / 'resources'
+        self.rows = {}
+        for name in ('assets/brand/xingtu.ico', 'assets/brand/xingtu-round.png',
+                     'assets/support/wechat.png', 'assets/custom-maps/manifest.json'):
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(('synthetic UI asset:' + name).encode())
+            self.rows[name] = dict(bytes=path.stat().st_size, sha256=build.sha256(path))
+        self.inventory = self.folder / 'inventory.json'
+        self.save()
+
+    def save(self):
+        self.inventory.write_text(json.dumps(dict(schema='xingtu-qt-resource-inventory-v1',
+            profileId=build.LIGHT_PROFILE, resourceVersion='synthetic-ui-only', files=self.rows)), encoding='utf-8')
+
+    def test_program_ui_input_reaches_exact_projection_without_bundled_base(self):
+        _, resources, omitted, replaced, contract = build.validate_resources(
+            self.root, self.inventory, instance='production')
+        self.assertTrue(contract['success'])
+        self.assertEqual(resources, self.rows)
+        self.assertEqual((omitted, replaced), ({}, {}))
+        self.assertEqual(build.included_resource_contexts('production', resources), [])
+        stage = self.folder / 'stage'
+        shutil.copytree(self.root, stage / '_internal')
+        output = self.folder / 'output'
+        output.mkdir()
+        _, projection = build.write_production_files_include(stage, resources, output)
+        self.assertIsNone(projection['managedBaseManifest'])
+        self.assertEqual(projection['families']['base'], [])
+        for name in self.rows:
+            self.assertIn('_internal/' + name, projection['installedFiles'])
+
+    def test_program_ui_inventory_still_checks_bytes(self):
+        (self.root / 'assets/brand/xingtu-round.png').write_bytes(b'changed UI asset')
+        with self.assertRaisesRegex(ValueError, 'Resource size/hash does not match inventory'):
+            build.validate_resources(self.root, self.inventory, instance='production')
+
+    def test_program_ui_inventory_still_requires_the_exact_root(self):
+        (self.root / 'assets/brand/undeclared.png').write_bytes(b'undeclared')
+        with self.assertRaisesRegex(ValueError, 'Inventory must cover the exact resource root'):
+            build.validate_resources(self.root, self.inventory, instance='production')
+
+    def test_program_only_input_does_not_inherit_reviewed_map_release_identity(self):
+        release = json.loads((ROOT / build.S1_PRODUCTION_LOCK).read_text(encoding='utf-8'))['release']
+        self.assertIsNone(build.production_s1_release(self.rows, release['resourceVersion']))
+        self.assertEqual(build.included_resource_contexts('production', self.rows, release['resourceVersion']), [])
+
+    def test_program_ui_inventory_requires_both_product_brand_assets(self):
+        name = 'assets/brand/xingtu-round.png'
+        (self.root / name).unlink()
+        del self.rows[name]
+        self.save()
+        with self.assertRaisesRegex(ValueError, 'Required program UI assets missing'):
+            build.validate_resources(self.root, self.inventory, instance='production')
+
+
 class InstallerProjectionTests(unittest.TestCase):
     def test_setup_numeric_and_display_versions_remain_separate(self):
         # Source contract only: this does not compile Inno or inspect a PE.

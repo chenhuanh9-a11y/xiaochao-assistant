@@ -77,6 +77,7 @@ QT_LICENSE_ROOT = ROOT / "experiments/qt_quick/qt-licenses"
 RUNTIME_DISTRIBUTIONS = ("PySide6-Essentials", "shiboken6", "numpy", "opencv-python-headless", "Pillow", "psutil")
 BRAND_ICON = "assets/brand/xingtu.ico"
 BRAND_ICON_SHA256 = "7aad9827252a62999ff214c4cb0cf08dd8f64473f584dd82ca2b4a2fee353b6b"
+PROGRAM_UI_RESOURCES = (BRAND_ICON, "assets/brand/xingtu-round.png")
 # Runtime libraries from LGPL-capable QtBase/QtDeclarative/QtSvg. Unexpected
 # modules stop the build for review rather than inheriting the app's license.
 QT_LGPL_MODULES = set("""Concurrent Core DBus Gui Network OpenGL OpenGLWidgets PrintSupport
@@ -758,6 +759,8 @@ def production_s1_release(resources, resource_version="", *, source=None, bundle
     """
     if bundled_packages:
         raise ValueError("Production Setup no longer bundles optional author packages; use map-package downloads")
+    if program_only_resource_inputs(resources):
+        return None  # No base bytes are being built or granted a release identity.
     if any(name.casefold().startswith("seasons/s1/difficulty2/") for name in resources):
         raise ValueError("Production Setup cannot include retired S1 difficulty2 resources")
     lock_path = _local_file(ROOT, S1_PRODUCTION_LOCK)
@@ -812,6 +815,8 @@ def production_s1_release(resources, resource_version="", *, source=None, bundle
 
 def included_resource_contexts(instance, resources, resource_version="", *, source=None, bundled_packages=()):
     """Declarations follow verified release identity; they are not authority."""
+    if instance == "production" and program_only_resource_inputs(resources):
+        return []
     include_s1 = instance in PRIVATE_S1_INSTANCES
     if instance == "production":
         include_s1 = production_s1_release(resources, resource_version, source=source, bundled_packages=bundled_packages) is not None
@@ -833,6 +838,7 @@ def validate_resources(root, inventory, *, bundled_packages=(), instance="client
     rows = declaration.get("files")
     if not isinstance(rows, dict) or not rows:
         raise ValueError("Resource inventory requires a nonempty path -> {bytes, sha256} files object")
+    program_only = instance == "production" and program_only_resource_inputs(rows)
     production_release = (production_s1_release(rows, declaration["resourceVersion"], source=source, bundled_packages=bundled_packages)
                           if instance == "production" else None)
     for name, row in rows.items():
@@ -856,10 +862,14 @@ def validate_resources(root, inventory, *, bundled_packages=(), instance="client
     # The source version describes this client; the input's resourceVersion is
     # retained independently in the profile/record. Never ship an old EXE version.
     replaced = {"version.json": retained.pop("version.json")} if "version.json" in retained else {}
-    missing = set(REQUIRED_RESOURCES) - set(retained)
+    missing = set(PROGRAM_UI_RESOURCES if program_only else REQUIRED_RESOURCES) - set(retained)
     if missing:
-        raise ValueError(f"Required two-mode base metadata missing: {sorted(missing)}")
-    contract = check_package(root)
+        label = "program UI assets" if program_only else "two-mode base metadata"
+        raise ValueError(f"Required {label} missing: {sorted(missing)}")
+    # The exact input inventory was checked above. Map-provider validation only
+    # applies when those providers are actually among this build's inputs.
+    contract = (dict(success=True, resourceMode="program-only", checkedFiles=len(rows))
+                if program_only else check_package(root))
     if not contract["success"]:
         raise ValueError(f"Packaged runtime path contract rejected: {contract['errors']}")
     if instance in PRIVATE_S1_INSTANCES or production_release:
@@ -922,7 +932,7 @@ RESOURCE_INSTALLATION_POLICY = dict(existingBasePlane="user-imported-catalog-onl
 def resource_file_family(relative):
     """Strict families used by the generated production [Files] projection."""
     relative = relative.casefold()
-    if relative in _PROGRAM_IDENTITY:
+    if relative in _PROGRAM_IDENTITY or relative.startswith(("_internal/assets/brand/", "_internal/assets/support/")):
         return "program"
     if relative.startswith("_internal/assets/custom-maps/"):
         return "editor"
@@ -933,6 +943,10 @@ def resource_file_family(relative):
             or relative == "_internal/difficult-native-manifest.json"):
         return "base"
     return "program"
+
+
+def program_only_resource_inputs(resources):
+    return all(resource_file_family("_internal/" + name) in {"program", "editor"} for name in resources)
 
 
 BUNDLED_AUTHOR_PREFIXES = ("assets/zhan10-native/", "assets/zhan10-legacy-clean/")
