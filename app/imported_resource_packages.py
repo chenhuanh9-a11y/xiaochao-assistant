@@ -6,6 +6,7 @@ establishes component semantic usability by an algorithm.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
 import os
@@ -100,6 +101,7 @@ class PackageView:
         self.resource_root = Path(os.path.abspath(resource_root))
         self.component_ref = component_ref
         self._manifest_identity = None
+        self._manifest_cache = None
         self._assert_current = assert_current or (lambda: None)
 
     def _package_root(self):
@@ -131,20 +133,24 @@ class PackageView:
             _reject('manifest-replaced')
         return raw, stamp, digest
 
-    def _read_manifest(self, package_root):
-        raw, stamp, digest = self._read_manifest_bytes(package_root)
-        try:
-            manifest = files._json(raw)
-        except (TypeError, ValueError) as error:
-            raise files.ImportRejected('resource-package-invalid-manifest') from error
-        return manifest, stamp, digest
-
     def _load(self):
         self._assert_current()
         package_root = self._package_root()
-        manifest, stamp, digest = self._read_manifest(package_root)
+        # Read and verify the actual file on every access. Only decoding the
+        # same already validated declarations is reusable; replacement, byte
+        # changes and a superseded selection must never hit this cache.
+        raw, stamp, digest = self._read_manifest_bytes(package_root)
         ref = self.component_ref
-        components, inventory = self._validate_manifest(manifest, ref)
+        cached = self._manifest_cache
+        if cached is None or cached[0] != ref:
+            try:
+                manifest = files._json(raw)
+            except (TypeError, ValueError) as error:
+                raise files.ImportRejected('resource-package-invalid-manifest') from error
+            components, inventory = self._validate_manifest(manifest, ref)
+            cached = (ref, manifest, components, inventory)
+            self._manifest_cache = cached
+        _, manifest, components, inventory = cached
         data_root = files._target(package_root, 'data')
         self._assert_current()
         return package_root, data_root, manifest, components, inventory, stamp, digest
@@ -372,12 +378,12 @@ class PackageView:
 
     @property
     def manifest(self):
-        return self._load()[2]
+        return deepcopy(self._load()[2])
 
     @property
     def component(self):
         components = self._load()[3]
-        return components[self.component_ref.component_id]
+        return deepcopy(components[self.component_ref.component_id])
 
     @property
     def inventory(self):

@@ -82,6 +82,55 @@ class ImportedResourcePackageTests(unittest.TestCase):
         self.assertEqual(base.manifest['formatVersion'], 1)
         self.assertEqual(display.dependencies['base'], self.base_ref)
 
+    def test_repeated_consumers_reuse_decoding_but_still_read_current_manifest(self):
+        view = self.view()
+        original_json = packages.files._json
+        manifest_path = self.package_root / 'manifest.json'
+        with patch.object(packages.files, '_json', wraps=original_json) as decode:
+            self.assertEqual(view.root, self.base_root)
+            exposed = view.manifest
+            exposed['components'][0]['contexts'].clear()
+            view.component['dependencies']['foreign'] = {'componentId': 'missing'}
+            self.assertEqual(view.read('index.json'), self.base_bytes)
+            self.assertEqual(view.component['contexts'], [{'season': 's0', 'mode': 'nightmare'}])
+            self.assertEqual(view.dependencies, {})
+            self.assertEqual(decode.call_count, 1)
+            # Decoded declarations are reusable, not a cached filesystem verdict.
+            manifest_path.write_bytes(self.manifest_bytes.replace(b'"v1"', b'"v2"'))
+            with self.assertRaisesRegex(ValueError, 'manifest-changed'):
+                view.root
+
+    def test_reused_decoding_rejects_same_byte_manifest_replacement_and_stale_selection(self):
+        current = [True]
+        def guard():
+            if not current[0]:
+                raise ValueError('selection-superseded')
+        view = packages.PackageView(self.resource_root, self.base_ref, assert_current=guard)
+        self.assertEqual(view.read('index.json'), self.base_bytes)
+        current[0] = False
+        with self.assertRaisesRegex(ValueError, 'selection-superseded'):
+            view.root
+        current[0] = True
+        manifest_path = self.package_root / 'manifest.json'
+        original_stamp = manifest_path.stat()
+        retained = self.package_root / 'retained-manifest.json'
+        manifest_path.rename(retained)
+        manifest_path.write_bytes(self.manifest_bytes)
+        os.utime(manifest_path, ns=(original_stamp.st_atime_ns, original_stamp.st_mtime_ns))
+        with self.assertRaisesRegex(ValueError, 'manifest-replaced'):
+            view.root
+
+    def test_reused_decoding_is_bound_to_the_complete_component_reference(self):
+        view = self.view()
+        self.assertEqual(view.root, self.base_root)
+        view.component_ref = self.display_ref
+        self.assertEqual(view.root, self.display_root)
+        self.assertEqual(view.component['type'], 'display')
+        (self.data_root / 'unregistered').mkdir()
+        view.component_ref = packages.ComponentRef('demo', 'v1', 'unregistered', self.manifest_sha256)
+        with self.assertRaisesRegex(ValueError, 'component-identity-mismatch'):
+            view.root
+
     def test_undeclared_other_component_and_installation_fallback_are_refused(self):
         installation = Path(self.temp.name) / 'install'
         fallback = installation / '_internal' / 'secret.json'
