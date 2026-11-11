@@ -76,7 +76,7 @@ def dispose_view(view):
 
 
 class PickerInputIntegrationTests(unittest.TestCase):
-    def run_selection(self, hook):
+    def run_selection(self, hook, close_key=0x70):
         native = HookNative() if hook else Native()
         source = FixtureSource() if hook else None
         keys = NativeShortcutBackend(native, source=source)
@@ -120,19 +120,19 @@ class PickerInputIntegrationTests(unittest.TestCase):
         press(0xA4 if hook else 0x12, False)
         self.assertEqual(commits, [])
         self.assertTrue(window.isVisible())
-        press(0x70, True)
-        self.assertEqual(commits, ["n1"])
+        press(close_key, True)
+        self.assertEqual(commits, [] if close_key == 0x1b else ["n1"])
         self.assertFalse(service.visible)
         self.assertFalse(window.isVisible())
         self.assertFalse(windows.snapshot["map-picker"]["visible"])
         self.assertEqual(keys._picker_keys, {})
-        self.assertEqual(actions, [], "selection must not also execute candidate-next")
-        press(0x70, True)  # Repeat while held is still not a new action.
+        self.assertEqual(actions, [], "picker key must not also execute an internal action")
+        press(close_key, True)  # Repeat while held is still not a new action.
         self.assertEqual(actions, [])
-        press(0x70, False)
-        press(0x70, True); press(0x70, False)
-        self.assertEqual(commits, ["n1"])
-        self.assertEqual(actions, ["candidate-next"])
+        press(close_key, False)
+        press(close_key, True); press(close_key, False)
+        self.assertEqual(commits, [] if close_key == 0x1b else ["n1"])
+        self.assertEqual(actions, ["escape" if close_key == 0x1b else "candidate-next"])
         self.assertEqual(warnings, [])
 
     def test_hook_packet_selects_real_service_closes_qml_and_restores_action(self):
@@ -140,6 +140,12 @@ class PickerInputIntegrationTests(unittest.TestCase):
 
     def test_poll_selects_real_service_closes_qml_and_restores_action(self):
         self.run_selection(False)
+
+    def test_hook_escape_closes_real_picker_only_and_restores_action(self):
+        self.run_selection(True, 0x1b)
+
+    def test_poll_escape_closes_real_picker_only_and_restores_action(self):
+        self.run_selection(False, 0x1b)
 
     def test_queued_assistant_f1_losing_foreground_does_not_select(self):
         native, source = HookNative(), FixtureSource()
