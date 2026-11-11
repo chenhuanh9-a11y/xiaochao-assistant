@@ -1,4 +1,4 @@
-"""S1 structural proposals, not a new identity or live-display authority.
+"""Shared structural proposals, not a new identity or live-display authority.
 
 Partial walls can establish a current pose without identifying a whole layout.
 A failed local solver is UNKNOWN, never negative identity evidence. This module
@@ -28,13 +28,30 @@ class StructureCatalog:
     floors: tuple[str, ...]
 
     def __post_init__(self):
-        if (self.season != "s1" or self.mode not in ("difficulty2", "difficult", "nightmare")
+        if (self.season not in ("s0", "s1")
+                or self.mode not in (("difficult", "nightmare") if self.season == "s0" else
+                                     ("difficulty2", "difficult", "nightmare"))
                 or not self.resource_key or not self.map_ids or len(set(self.map_ids)) != len(self.map_ids)
-                or self.floors != ("-1", "-2", "-3", "-4")):
+                or any(type(mid) is not str or not mid for mid in self.map_ids)
+                or not self.floors or any(type(floor) is not str or not floor for floor in self.floors)
+                or len(set(self.floors)) != len(self.floors)
+                or self.season == "s1" and self.floors != ("-1", "-2", "-3", "-4")
+                or self.season == "s0" and not set(self.floors) <= {"B1", "1", "2"}):
             raise ValueError("s1-structure-catalog-invalid")
 
     @classmethod
     def from_engine(cls, engine):
+        if getattr(engine, "qt_season", None) == "s0":
+            # Only the decoded base supplies S0 scope. Package presence grants
+            # no ranking, identity, group or display qualification.
+            base = getattr(engine, "qt_native_base", None)
+            if (base is None or base.season != "s0" or base.mode != engine.pack.mode
+                    or engine.pack is not base.pack):
+                raise ValueError("s0-structure-catalog-context-mismatch")
+            ref = base.component_ref  # Guarded read of the existing component identity.
+            key = f"{ref.package_id}/{ref.resource_version}/{ref.component_id}/{ref.manifest_sha256}"
+            return cls("s0", engine.pack.mode, key, tuple(sorted(base.pack.by_id)),
+                       tuple(base.pack.floors))
         from s1_native_resources import MODE_LAYOUTS
         mode = engine.pack.mode
         if (getattr(engine, "qt_season", None) != "s1" or mode not in MODE_LAYOUTS
@@ -95,7 +112,7 @@ class StructureCandidateScanner:
             raise ValueError("s1-structure-floor-evidence-required")
         if not isinstance(frame, np.ndarray) or frame.ndim != 3 or frame.shape[2] != 3 or frame.dtype != np.uint8:
             raise ValueError("s1-structure-frame-invalid")
-        if budget_seconds is not None and (not math.isfinite(budget_seconds) or budget_seconds <= 0):
+        if budget_seconds is not None and (not math.isfinite(budget_seconds) or budget_seconds < 0):
             raise ValueError("s1-structure-budget-invalid")
         cancelled = cancelled or (lambda: False)
         started = self.clock()
@@ -217,7 +234,7 @@ class StructureCandidateScanner:
             score = float(score) if isinstance(score, (int, float)) and math.isfinite(score) else 0.
             rows.append(dict(mapId=mid, name=pack.by_id[mid].name, floor=report["floor"],
                 score=score*100, strongSuggestion=False, identityHardGatePassed=False,
-                identityEvidence="s1-current-structure-proposal", reason="结构匹配，地图身份待确认",
+                identityEvidence=f"{report['season']}-current-structure-proposal", reason="结构匹配，地图身份待确认",
                 structurePose=copy.deepcopy(fit), structureScan=dict(
                     scanComplete=report["scanComplete"], competitionComplete=False,
                     unknownMapIds=report["unknownMapIds"], unscannedMapIds=report["unscannedMapIds"])))

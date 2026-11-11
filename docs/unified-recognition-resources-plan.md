@@ -1,6 +1,6 @@
 # 四模式识别、贴合与资源导入统一方案
 
-核查日期：2026-11-11。状态：**P0 调查/设计完成；P1 空资源默认入口及 P2 四组合基础/controls、作者与结构显示、S1 预处理、基础包内相似组登记、导入即启用和缺基础禁选/禁作者导入已接线；S0 困难识别仍关闭，S1 保留观测资格限制；完整资源池及四模式实帧回放尚未完成**。本文件同时作为现状清单、设计和实施台账，不另建重复任务说明。第 2–4 节现状引用绑定原核查 commit，后续实施状态另见第 8 节。
+核查日期：2026-11-11。状态：**P0 调查/设计完成；P1 空资源默认入口及 P2 四组合基础/controls、作者与结构显示、S1 预处理、基础包内相似组登记、导入即启用和缺基础禁选/禁作者导入已接线；P3 首个切片接入 S0 未确认结构候选，旧 S0 候选控制器尚未退出；S0 困难识别仍关闭，S1 保留观测资格限制；完整资源池及四模式实帧回放尚未完成**。本文件同时作为现状清单、设计和实施台账，不另建重复任务说明。第 2–4 节现状引用绑定原核查 commit，后续实施状态另见第 8 节。
 
 **2026-11-11 用户修订**：项目实际复核的相似组直接登记在识别基础结构包内，随其版本制包、导入和更新。本轮交付采用这一归属；历史台账中的独立登记包、专用发布索引和联网来源认证要求已撤销，历史证据保留，不能继续作为新增交付前提。
 
@@ -590,3 +590,26 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 - `e1163a8` 的联合回归 run 42966691551：data/runtime 两个旧前提断言失败，分别仍禁止任何带 groups 的读取、要求 imported registry 为 None。现在严格核只读实际基础表路径、registry 与 bundle 的同一实例/同组件 FileRef；另构造真实无接口/无表的旧归档，经保存、激活和默认 factory 仍为 None，保留不回退程序常量的反例。没有放宽登记名单、资源绑定或求解断言；两个完整模块共 29 项通过（102.912 秒）。
 - 同 commit 的 display-integration 首三模块（joint activation/author UI/browse）分别 761.205/284.512/345.013 秒，后在 browse-modes fixture setup 中取消，没有 assertion failure；取消来源未确证。六资源分片的日志总跨度依次为 2:24.673、12:36.941、16:25.516、6:54.440、14:45.775、25:02.514，最后一项含取消后的清理，不能称为完整成功耗时。
 - 把整个 `test_client_imported_author_joint_activation` 从 integration 移到 packaging（实测旧组 2 分 25 秒）；把整个 `test_client_imported_fast_structure` 从 runtime 移到 display-data（实测旧组 6 分 54 秒、该模块 274.466 秒），为自动导入新增回归留空间。现 77 模块精确多重集保持，六组 11/33/20/4/4/5；18 matrix、25 分钟、各模块独立进程和失败汇总不变。加减 e116 秒数只说明平衡依据，不能当作新 commit 全程耗时或远端通过；仍需绑定新 head 核验。
+
+### P3 第一切片：默认 S0 未确认候选进入实际 S1 扫描与证据会话
+
+- **范围与基线**：本切片只改「地图识别」，消费「楼层判断」已经给出的当前层，不修改楼层检测或控件。基于 #133 最新已推送 `8165c4004847bf8c6c1c4a7e4d15146b93a304ca`；开工 `git fetch` 与交付前 `ls-remote` 均核同一头。沿用 `E:/codex project/worktrees/p3-pip/星图` 和 `codex/pr133-p3-s1-unify-20261111`，工作目录外的派单路径不写入。#133 主 checkout 仅 fetch，桌面 P2、混合客户端及其分支均未操作。
+- **#131 计划与 #133 台账的差异**：#131 的 3.1 原文是先适配 S0/S1 再抽公共循环；#133 的 3.1/第 5 节已改成以实际 S1 新候选调度为主链，禁止反向迁回 S0，本次采用 #133。#131 原 3.2/4.3 的独立相似组登记组件被 #133 的基础包内登记替代；本次只消费既有基础包，不新增登记、不回退代码常量。#133 第 8 节已经完成默认外置工厂与部分资格接线，不能把旧现场清单当作当前入口；导入自动启用和作者依赖均沿用 #133。P4 首可用显示及纹理复用属于后续范围，本次未改。
+- **实际替代调用**：此前默认 imported S0 的 `_rank_identity` 在没有入口硬确认、没有有效或待确认的登记相似组时，只留下旧 `engine.rank` 的建议排序。现在该分支转入 S1 原有的一次观察提交方法（改名 `_rank_structure_candidates`）→ provider `attach_structure_scanner` → 同一个 `StructureCandidateScanner.scan` → `StructureEvidenceSession.commit` → 候选列表。没有新增另一套 S0 扫描循环或会话；S1 的 streaming 主链和原 scanner 别名继续调用原实现。
+- **资源与资格**：S0 catalog 只能从默认工厂实际解码的 `qt_native_base` 取完整地图和实际楼层，并沿用已有组件版本/清单身份；不扫描目录、不新增 hash、不借 S1 的负层语义。S0 困难数据可构造 catalog，但 scanner 实际入口再次检查原 `qt_rank_ready`，不能用装配 scanner 绕过禁用。S1 固定负层范围、无侧门、自动楼层/live 限制和私测策略均未扩大。相似组仍只取基础包登记，登记缺口或已确认入口不得被结构候选覆盖。
+- **预算与状态**：S0 入口检索和新增结构候选共享原 1.85 秒合作预算；剩余为零时报告 `budget-unresolved`，全部保留未扫/未知，不调用 fitter。一次在途 fit 仍可超预算，本次没有端到端耗时承诺。候选分数只取当前结构 residual，不与旧入口或建议分数相加；单个支持项也不变成唯一身份，未知不排除。候选与当前 pose 仍由原 ticket/epoch/frame/engine/intent guard 提交；关图、换代与结束本局的原撤销链复用，迟到结果不能恢复当前候选。历史支持/冲突仍为诊断，不产生相似组或新资格。
+- **四模式行为**：S0 噩梦只有未确认的 imported 默认入口会增加当前帧结构候选；入口确认、登记相似组和人工确认保持原处理。S0 困难的 rank/live/学习继续关闭，本次只验证其 catalog/预算语义和实际禁用入口。S1 困难、S1 噩梦的扫描、候选和私测显示策略沿原链，未接入 S0 控制流程。相邻模块「地图资源」「手动选图」「路线贴合」「路线显示」会消费这些候选上下文，本次未改其导入、人工确认、求解或显示授权规则。
+- **明确未完成**：旧 `MapIdentityEngine.rank`、`rank_established_group` 的入口/侧门控制与 source-family 检索仍执行；未把它们包装后宣称已经退役。完整 P3 尚需把真实入口证据逐项迁入 S1 streaming 调度/提交，整理预算续扫和候选池，再删除这些旧控制器。当前 S0 首先跑旧入口链，预算可能已经耗完；结构候选为空仍是合法未确认，不能据此宣传识别准确率提升。legacy 非导入 provider 的 S0 分支未迁移。P3 退出条件尚未满足，保持草稿，**识别逻辑改动需 huan 确认后才能合并**。
+- **与 P2 的接缝**：未修改 `client_imported_*`、导入/准入/资源页/设置页/赛季选择和 `.github/workflows/qt-next-integration-windows.yml`。共同接缝为 `client_providers.py` 的 scanner 装配、`client_live_runtime.py` 的候选提交及本文档；P2 若也改这些位置，合并时须核对，不能覆盖对方改动。新增回归为独立模块，未改 P2 的测试分片，需按下面命令显式运行。
+
+本地验证（Windows CPython 3.13；共同环境 `PYTHONPATH=app;tools;tests;experiments/qt_quick`、`QT_QPA_PLATFORM=offscreen`，临时文件指向工作目录内 `tmp`）：
+
+| 实际命令（前缀 `python -m unittest`） | 结果与证据范围 |
+| --- | --- |
+| `test_client_structure_unification.SharedStructureRuntimeTests.test_unresolved_default_s0_publishes_shared_structure_proposals_without_identity test_client_structure_unification.SharedStructureRuntimeTests.test_catalog_uses_imported_base_identity_and_real_s0_floors -v`（修改运行代码前） | 2 项，1 失败/1 错误，7.223 秒：默认入口 scanner 调用 0 次，S0 catalog 被拒绝。 |
+| `test_s1_structure_selection test_s1_candidate_runtime test_s1_scan_observation_reuse test_client_structure_unification test_s1_preferred_candidate test_s1_runtime_pose_prior test_s1_native_candidate_preview -q` | 87 项通过，22.248 秒；新切片 6 项包含实际 ZIP/保存/catalog/默认工厂→runtime→scanner/session、旧包代际拒绝、零预算、关图后迟到与 rank 禁用。捕获和楼层观测用替身，正向 fit 是明确的合成 pose；全黑负例使用实际共享 solver。最后扣除资源准备耗时并补入真实入口预算耗尽反例后，`test_client_structure_unification -q` 完整 6 项复跑通过（17.991 秒），旧入口消耗预算的时间仅在该反例中模拟，实际入口检索未替换。 |
+| `test_client_live_runtime test_client_imported_group_runtime test_native_similarity_runtime -q` | 85 项通过，37.736 秒；原入口/登记相似组/当前帧提交和生命周期回归，包含合成证据替身，不等于真实游戏验收。 |
+| `test_floor_contract test_floor_observation_evidence test_s0_floor_highlight_geometry test_s0_vertical_controls test_s1_floor_observation test_imported_s0_observation test_client_s1_floor_observation -q` | 53 项：52 通过、1 跳过，4.124 秒；原私人楼层画面未配置，不使用或索要私人素材。实际合成像素/外置控件读取覆盖原 S0/S1 层语义。 |
+| `test_client_imported_difficult_provider -v` | 2 项通过，51.714 秒；真实合成困难包导入/启用/默认工厂，验证 rank/live/学习仍关闭、开始本局不采集。 |
+
+合计 227 项，226 通过、1 跳过；没有真实游戏/完整四模式实帧/物理显示/准确率/性能验收。不合并，不打 tag、不发布、不构建 Setup；本切片只交新分支及指向 #133 分支的草稿 PR，远端检查另核实际 head。

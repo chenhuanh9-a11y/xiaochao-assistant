@@ -1115,8 +1115,9 @@ class LiveRuntime:
         self._identity_source = "group-default" if is_registered_identity_group(state) else "native-similarity"
         return True
 
-    def _rank_s1_structure(self, engine, frame, floor, epoch, frame_id, cancelled):
+    def _rank_structure_candidates(self, engine, frame, floor, epoch, frame_id, cancelled, *, budget_seconds=None):
         """Current geometry proposals; never promote a map/group to identity."""
+        started = time.monotonic()
         from s1_structure_selection import StructureCatalog, StructureEvidenceSession, StructureCandidateScanner
         catalog = StructureCatalog.from_engine(engine)
         with self._lock:
@@ -1135,29 +1136,40 @@ class LiveRuntime:
             locked_map = self._s1_round_locked_map()
             if locked_map and locked_map not in catalog.map_ids:
                 return None, None, "locked-map-resource-unavailable"
+        scan = (getattr(engine, 'qt_s1_structure_scan', None) if catalog.season == 's1'
+                else getattr(engine, 'qt_structure_scan', None))
+        if not callable(scan):
+            from client_providers import attach_structure_scanner
+            attach_structure_scanner(engine, catalog)
+            scan = engine.qt_structure_scan
         obsolete = lambda: (self._cancelled(cancelled) or epoch != self._epoch
             or frame_id != self._frame_id or engine is not self._engine
             or intent_generation != self._group_intent_generation)
-        report = engine.qt_s1_structure_scan(frame, floor=str(floor),
+        if budget_seconds is None:
+            budget_seconds = (self._recorded_s1_scan_budget if self._s1_provisional_enabled()
+                              else S1_STRUCTURE_CANDIDATE_BUDGET_SECONDS)
+        else:
+            budget_seconds = max(0., budget_seconds - (time.monotonic() - started))
+        report = scan(frame, floor=str(floor),
             floor_source="current-frame-verified", cancelled=obsolete,
-            budget_seconds=self._recorded_s1_scan_budget if self._s1_provisional_enabled() else S1_STRUCTURE_CANDIDATE_BUDGET_SECONDS,
+            budget_seconds=budget_seconds,
             **({"planned_map_ids": (locked_map,)} if locked_map else {}))
         rows = StructureCandidateScanner.rank_rows(report, engine.pack)
         with self._lock:
             if obsolete() or not self._identity_observation_current() or not session.commit(report, ticket):
                 return None, None, "stale-structure-observation"
             self._identity_rank_rows = rows
-            self._identity_source = "s1-structure-candidates"
+            self._identity_source = f"{catalog.season}-structure-candidates"
             self._automatic_candidate_rows = [dict(row, key=row["mapId"], identityKind="candidate") for row in rows]
             self._update_candidates(rows, floor)
             # Cursor only. It does not confirm or authorize a map/pose.
             if rows and self._gate.selected_id not in report["supportedMapIds"]:
                 self._gate.select(rows[0]["mapId"])
-        self._recognition_diagnostic("identity-rank", "s1-current-structure-proposals",
-            inputs=dict(floor=floor, frameId=frame_id, budgetSeconds=S1_STRUCTURE_CANDIDATE_BUDGET_SECONDS),
+        self._recognition_diagnostic("identity-rank", f"{catalog.season}-current-structure-proposals",
+            inputs=dict(floor=floor, frameId=frame_id, budgetSeconds=budget_seconds),
             structureEvidence={key:value for key,value in report.items() if key != "poses"})
         self._notify("structure-candidates", reason=("s1-current-candidate-display" if self._s1_provisional_enabled()
-            else "s1-structure-candidates-awaiting-confirmation"),
+            else f"{catalog.season}-structure-candidates-awaiting-confirmation"),
             supportedMapIds=report["supportedMapIds"], scanComplete=report["scanComplete"], identityVerified=False)
         if self._s1_provisional_enabled() and rows:
             # A fresh observation always starts at its current highest-ranked
@@ -1760,7 +1772,8 @@ class LiveRuntime:
 
     def _rank_identity(self, engine, frame, floor, epoch, frame_id, cancelled, *, rediscover=False):
         if self._season == "s1" and callable(getattr(engine, "qt_s1_structure_scan", None)):
-            return self._rank_s1_structure(engine, frame, floor, epoch, frame_id, cancelled)
+            return self._rank_structure_candidates(engine, frame, floor, epoch, frame_id, cancelled)
+        started = time.monotonic()
         with self._lock:
             previous, prior = self._identity_native, self._identity_prior
             context = self._identity_context()
@@ -1910,6 +1923,14 @@ class LiveRuntime:
         seed = seeds.get(selected)
         if seed is None and len(accepted) == 1 and accepted[0].get("mapId") == selected:
             seed = accepted[0].get("difficultEntry")
+        if (self._season == 's0' and getattr(engine, 'qt_native_base', None) is not None
+                and not selected and not grouped and not block_member_unique and not accepted):
+            # First P3 slice: replace unresolved advisory-list publication with
+            # the actual S1 scanner/session. Entry/group confirmation above is
+            # still authoritative, and is explicitly not migrated in this slice.
+            # Both searches share the existing budget; unknown never excludes.
+            return self._rank_structure_candidates(engine, frame, floor, epoch, frame_id, cancelled,
+                budget_seconds=max(0., INITIAL_IDENTITY_BUDGET_SECONDS - (time.monotonic() - started)))
         return selected, seed, False
 
     def _stage_current_member_material(self, action, payload, state, *, manual_choice=None):
@@ -2556,11 +2577,13 @@ class LiveRuntime:
             rows.append(dict(key=item.id, mapId=item.id, name=str(getattr(item, "name", item.id)),
                 floor=str(floor), score=score,
                 selectionSeason=self._season,
-                structureSupported=evidence.get("identityEvidence") == "s1-current-structure-proposal",
+                structureSupported=evidence.get("identityEvidence") in (
+                    "s0-current-structure-proposal", "s1-current-structure-proposal"),
                 structureFrameId=self._frame_id, structureGeneration=self._frame_generation, structureRoundId=self._round,
                 reason="当前帧支持的未锁定候选，可直接切换显示" if self._s1_provisional_enabled() else
                        "入口结构已确认" if evidence.get("identityHardGatePassed") is True else
-                       "结构匹配，地图身份待确认" if evidence.get("identityEvidence") == "s1-current-structure-proposal" else
+                       "结构匹配，地图身份待确认" if evidence.get("identityEvidence") in (
+                           "s0-current-structure-proposal", "s1-current-structure-proposal") else
                        "请对照地图人工选择"))
         self._candidate_rows = rows
 
