@@ -122,6 +122,7 @@ class ImportedResourceServiceTests(unittest.TestCase):
         original = self.archive.read_bytes()
         self.import_zip()
         self.assertEqual(self.errors[-1]['errorCode'], 'legacy-format-unsupported')
+        self.assertEqual(self.service.message, '旧图包格式已停用，请获取新版资源包；已有文件已保留。')
         self.assertEqual(self.archive.read_bytes(), original)
         self.assertFalse((self.resolver.root / 'packages').exists())
         self.assertEqual(self.changes, [])
