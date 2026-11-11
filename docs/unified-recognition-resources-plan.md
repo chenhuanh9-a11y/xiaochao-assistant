@@ -652,3 +652,12 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 - 独立终审发现异常任务仍可重放并重复写入局部证据。新增 probe 异常及 observation 中断两例修前都失败（0.065 秒）；现在执行体抛出任何异常会先终止该次证据、关闭生成器并保留未完成，再原样重抛。旧任务不能重跑，失败不会被叫作预算耗尽或产生身份；单用 finally 清 pending 会跳过失败竞争者，因此不采用。修正后上述同一组合包含新增两例，共 57 项通过（74.954 秒）。
 - 新 `test_main_entry_jobs` 与已存在但未注册的 `test_group_review_lifecycle` 整模块接入 CI，原 80 模块不减少，现 82 个资源模块；18 matrix、25 分钟、两个比较 baseline、独立进程与失败汇总保持。
 - 这一步抽出实际生产者工作与合法范围，尚未移走默认 S0 的外层 `engine.rank` 控制器；passport、side recovery 和最终相似组生产仍待同样拆分，再接入共用 scanner/ticket/deadline。完整 P3 仍未完成，不把兼容收集入口当作最终统一调度。
+
+### P3 出口锚定入口的逐项生产准备
+
+- 实际 `MapLocalEntryIdentity.rank_entry` 改为收集 `prepare_rank_entry` 的 observation、geometry、每份合法 passport 的局部墙面 probe、每个原始 fit 的 refinement/verify，再执行原竞争归约。任务之间可交还调度；局部连续拟合、原对应关系、祖先恢复验证、房间及连接端口证据、全部当前出口交叉检查保留，没有把整段旧 rank 塞进一个回调。
+- 首个经验证入口的原速度策略保持：返回可用的当前帧位姿并标明 `selectionPolicy=first-verified-entry`、`competitionComplete=false`、全局竞争未完成，后续地图仍未知。本次不把这项旧兼容资格重写为完整全池竞争，也未额外授权自动显示。后续共用调度与 P4 须独立处理这些资格。
+- 正门和 passport 复用同一个 `EntryEvidenceWork`，统一自有只读帧、当前任务、结束及异常清理；原 `MainEntryJob` 名称作为该内部任务类型的别名保留。补测归约异常揭示：生成器在取下一项时抛异常，后续再取可错误得到 complete=true（修前 1 项失败，0.155 秒）。现在任务执行和生成器推进抛出的异常都会先终止本次工作，再原样重抛；失败后不能跳过竞争者或重复写入。
+- 新模块 10 项用实际 component JSON 读取、墙面对应与连续拟合、refinement、房间/端口证据及真实候选消费者，覆盖首个已验证位姿、过滤范围、暂停/关闭、全候选失败、覆盖缺口、方向未定、两类异常、预算、帧所有权、黑帧及不支持楼层。出口检测输入与最终图像/其他出口验证在正向策略案例隔离；黑帧调用原检测，不代表实帧、游戏、GUI 或延迟验收。拆分前先跑旧实际入口的正例通过，新分步接口因尚不存在而失败（2 项中 1 error，0.199 秒），失败记录保留。
+- 父提交 `3fc6f27` 的真实旧函数与新函数分别运行相同明确合成输入：首个通过、全失败、过滤成员、覆盖缺口、方向未定、方向不符、正门家族失败、passport 不可用、黑帧、不支持楼层、零预算共 11 例的完整候选行与资格诊断相同。耗时仅在双方执行后从比较中排除；旧结果未注入新求解。入口/门资源等组合 56 项通过（4.534 秒）；运行链组合 `python -B -m unittest -v test_passport_entry_jobs test_main_entry_jobs test_group_review_lifecycle test_entry_resource_io test_client_structure_unification test_client_imported_group_runtime test_native_similarity_runtime test_client_known_floor_recovery` 共 75 项通过（105.932 秒）。
+- 新 passport 测试整体加入既有 data 分片，原 82 个资源模块保留，现 83 个、六组 12/38/18/7/3/5；18 matrix、25 分钟、两个 baseline 和逐模块失败汇总不变。完整 P3 仍待 side recovery/最终登记组证据拆分，以及默认共用 scanner/ticket/deadline 接线和旧全局控制器退出，未据本次准备宣称完成。

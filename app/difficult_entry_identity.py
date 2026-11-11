@@ -1,10 +1,10 @@
 """Read-only entry hypotheses. The existing identity/pose consumers own state."""
 import json,time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 import numpy as np
 import cv2
+
+from entry_evidence_work import EntryEvidenceJob as MainEntryJob, EntryEvidenceWork
 
 
 def entry_geometry(frame):
@@ -52,14 +52,7 @@ def entry_corners(frame,context):
     return rows
 
 
-@dataclass
-class MainEntryJob:
-    map_id: str | None
-    phase: str
-    run: Callable[[], None]
-
-
-class MainEntryEvidence:
+class MainEntryEvidence(EntryEvidenceWork):
     """One observation's source work; its caller owns deadline and cancellation.
 
     The scanning worker runs jobs sequentially. Probe every eligible source
@@ -75,30 +68,10 @@ class MainEntryEvidence:
                         if entry[0]['floor'] == self.floor
                         and (map_id is None or entry[0]['mapId'] == map_id)
                         and (candidate_map_ids is None or entry[0]['mapId'] in candidate_map_ids)]
-        self.frame = (np.frombuffer(frame.tobytes(order='C'), dtype=frame.dtype).reshape(frame.shape)
-                      if self.floor_indexed else None)
         self.context, self.query = None, []
         self.rows, self.competitive, self.evaluated_map_ids = [], [], []
-        self._complete = self._closed = False
         self._verification_unavailable = False
-        self._failed = False
-        self._pending = self._result = None
-        self._steps = self._jobs()
-
-    def _job(self, map_id, phase, function):
-        def run():
-            if self._closed or self._pending is not job:
-                raise ValueError('entry-job-not-current')
-            try:
-                function()
-            except BaseException:
-                self._closed, self._failed, self._complete = True, True, False
-                self._pending = None
-                self._steps.close()
-                raise
-            self._pending = None
-        job = MainEntryJob(map_id, phase, run)
-        return job
+        super().__init__(frame if self.floor_indexed else None)
 
     def _observe(self):
         self.context = self.engine.geometry(self.frame)
@@ -136,21 +109,10 @@ class MainEntryEvidence:
             for row in self.competitive:
                 yield self._job(row['mapId'], 'verify', lambda row=row: self._verify(row))
 
-    def next_job(self):
-        if self._closed:
-            return None
-        if self._pending is None:
-            try:
-                self._pending = next(self._steps)
-            except StopIteration:
-                self._complete = True
-        return self._pending
-
     def finish(self, *, elapsed_ms=0.):
         if self._result is not None:
             return self._result
-        self._closed, self._pending = True, None
-        self._steps.close()
+        self._close()
         if not self.floor_indexed:
             self._result = ([], dict(reason='entry-floor-not-indexed', complete=True, elapsedMs=0.))
         elif self._complete and len(self.query) < 3:
