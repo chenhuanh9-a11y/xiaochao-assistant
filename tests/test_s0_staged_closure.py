@@ -68,7 +68,6 @@ class StagedS0ClosureTests(unittest.TestCase):
         source = self.fixture.source_root / name
         source.parent.mkdir(parents=True); source.write_bytes(b'source-owned-support')
         row = dict(bytes=source.stat().st_size, sha256=build.sha256(source))
-        self.fixture.lock['release']['s0BaseFiles']['_internal/' + name] = row
         # Supply the current main entry's non-resource prerequisites. These are
         # synthetic presence/version/brand inputs, never runnable client code.
         qt = self.fixture.source_root / 'experiments/qt_quick'
@@ -82,7 +81,6 @@ class StagedS0ClosureTests(unittest.TestCase):
         icon.parent.mkdir(parents=True)
         icon.write_bytes((self.stage / '_internal' / build.BRAND_ICON).read_bytes())
         self.fixture.inventory.write_text(json.dumps(self.fixture.declaration), encoding='utf-8')
-        self.fixture.lock['release']['s0BaseFiles']['_internal/' + build.BRAND_ICON] = icon_row
         # Add source bytes to tracked payload and update the exact synthetic
         # source/version lock; the real source and inventory validators run.
         self.fixture.commit(); self.fixture.source = build.source_identity(self.fixture.git('rev-parse', 'HEAD'))
@@ -129,11 +127,11 @@ class StagedS0ClosureTests(unittest.TestCase):
             self.assertIs(call.args[1], resources)
             self.assertEqual(call.kwargs['resource_version'], plan['resourceVersion'])
             self.assertIs(call.kwargs['source'], self.fixture.source)
-        self.assertIn('_internal/' + name, report['families']['base'])
+        self.assertIn('_internal/' + name, report['families']['program'])
         self.assertEqual(report['stagedFiles']['_internal/' + name], row)
-        manifest = json.loads((self.stage / report['managedBaseManifest']).read_text(encoding='utf-8'))
-        self.assertIn(dict(path='_internal/' + name, **row), manifest['files'])
-        self.assertTrue(any(path.endswith('/payload/_internal/' + name) for path in report['installedFiles']))
+        self.assertIsNone(report['managedBaseManifest'])
+        self.assertIn('_internal/' + name, report['installedFiles'])
+        self.assertFalse(any('/payload/' in path for path in report['installedFiles']))
         self.assertIn(name.replace('/', '\\'), include.read_text(encoding='utf-8-sig'))
 
 

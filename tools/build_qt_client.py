@@ -1011,6 +1011,8 @@ def production_file_projection(stage, resources, *, bundled_author_paths=(), res
         bundled_packages=("difficult-zhan10",) if bundled_author_paths else ())
     stage = Path(stage).resolve()
     families = dict(program=[], base=[], editor=[], **{"optional-author": []})
+    program_inputs = {"_internal/" + name: row for name, row in resources.items()
+                      if resource_file_family("_internal/" + name) == "program"}
     seen = set()
     for path in sorted(stage.rglob("*")):
         if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
@@ -1018,6 +1020,11 @@ def production_file_projection(stage, resources, *, bundled_author_paths=(), res
         if not path.is_file():
             continue
         name = path.relative_to(stage).as_posix()
+        if name in program_inputs:
+            row = program_inputs[name]
+            if (not isinstance(row, dict) or path.stat().st_size != row.get("bytes")
+                    or sha256(path) != str(row.get("sha256")).lower()):
+                raise ValueError("Staged program resource bytes differ from the input inventory: " + name)
         if name.casefold().startswith("_internal/seasons/"):
             if not production_release:
                 raise ValueError("Production resource projection does not support season resources")
@@ -1033,8 +1040,9 @@ def production_file_projection(stage, resources, *, bundled_author_paths=(), res
         families[resource_file_family(name)].append(name)
     verify_bundled_author_defaults(stage, resources, bundled_author_paths)
     expected = {"_internal/" + name for name in resources
-                if name not in bundled_author_paths and resource_file_family("_internal/" + name) != "program"}
-    actual = set(families["base"]) | set(families["editor"]) | set(families["optional-author"])
+                if name not in bundled_author_paths}
+    actual = (set(families["base"]) | set(families["editor"]) | set(families["optional-author"])
+              | (set(families["program"]) & program_inputs.keys()))
     if actual != expected:
         raise ValueError(f"Resource projection differs from exact inventory: missing={sorted(expected-actual)}, extra={sorted(actual-expected)}")
     if production_release:

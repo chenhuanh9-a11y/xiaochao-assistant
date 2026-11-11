@@ -59,10 +59,50 @@ class ProgramOnlyInputTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Inventory must cover the exact resource root'):
             build.validate_resources(self.root, self.inventory, instance='production')
 
+    def test_projection_requires_declared_program_ui_bytes(self):
+        stage = self.folder / 'stage'
+        shutil.copytree(self.root, stage / '_internal')
+        image = stage / '_internal/assets/brand/xingtu-round.png'
+        original = image.read_bytes()
+        for contents in (None, b'changed staged image', b'x' * len(original)):
+            with self.subTest(contents=contents):
+                if contents is None:
+                    image.unlink()
+                else:
+                    image.write_bytes(contents)
+                with self.assertRaises(ValueError):
+                    build.production_file_projection(stage, self.rows)
+                image.write_bytes(original)
+
     def test_program_only_input_does_not_inherit_reviewed_map_release_identity(self):
         release = json.loads((ROOT / build.S1_PRODUCTION_LOCK).read_text(encoding='utf-8'))['release']
         self.assertIsNone(build.production_s1_release(self.rows, release['resourceVersion']))
         self.assertEqual(build.included_resource_contexts('production', self.rows, release['resourceVersion']), [])
+
+    def test_projection_accepts_exact_mixed_case_program_input(self):
+        name = 'assets/brand/Logo.png'
+        path = self.root / name
+        path.write_bytes(b'mixed-case declared image')
+        self.rows[name] = dict(bytes=path.stat().st_size, sha256=build.sha256(path))
+        self.save()
+        _, resources, _, _, _ = build.validate_resources(self.root, self.inventory, instance='production')
+        stage = self.folder / 'stage'
+        shutil.copytree(self.root, stage / '_internal')
+        families = build.production_file_projection(stage, resources)
+        self.assertIn('_internal/' + name, families['program'])
+
+    def test_projection_rejects_case_renamed_changed_program_input(self):
+        stage = self.folder / 'stage'
+        shutil.copytree(self.root, stage / '_internal')
+        image = stage / '_internal/assets/brand/xingtu-round.png'
+        size = image.stat().st_size
+        renamed = image.rename(image.with_name('case-move.png')).rename(image.with_name('Xingtu-Round.png'))
+        renamed.write_bytes(b'x' * size)
+        self.assertEqual(renamed.stat().st_size, self.rows['assets/brand/xingtu-round.png']['bytes'])
+        self.assertNotEqual(build.sha256(renamed), self.rows['assets/brand/xingtu-round.png']['sha256'])
+        self.assertIn('Xingtu-Round.png', {p.name for p in renamed.parent.iterdir()})
+        with self.assertRaisesRegex(ValueError, 'Resource projection differs from exact inventory'):
+            build.production_file_projection(stage, self.rows)
 
     def test_program_ui_inventory_requires_both_product_brand_assets(self):
         name = 'assets/brand/xingtu-round.png'
@@ -110,6 +150,8 @@ class InstallerProjectionTests(unittest.TestCase):
         self.resources.update({"recognition/native/index.json": {}})
         for name in self.resources:
             self.write(self.stage / "_internal" / name, b"bundled:" + name.encode())
+            path = self.stage / "_internal" / name
+            self.resources[name] = dict(bytes=path.stat().st_size, sha256=build.sha256(path))
         for name in ("第五人格小抄助手.exe", "version.json", "installation-profile.json",
                      "_internal/version.json", "_internal/installation-profile.json", "_internal/app/service.py"):
             self.write(self.stage / name, b"new-program")
