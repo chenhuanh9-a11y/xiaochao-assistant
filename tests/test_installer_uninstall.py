@@ -6,7 +6,9 @@ import os
 from pathlib import Path
 import sys
 import subprocess
+import shutil
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -159,11 +161,13 @@ class InstallerUninstallTests(unittest.TestCase):
         finally:
             api.CloseHandle(handle)
 
-    def _invoke(self, root, result, registry, profile, *, lease=None):
+    def _invoke(self, root, result, registry, profile, *, lease=None, timeout=None):
         argv = ["--install-root", str(root), "--result-directory", str(result),
                 "--parent-pid", "1", "--parent-created", "1",
                 "--parent-executable", sys.executable, "--parent-sha256", "a" * 64,
                 "--lock-handle", "5"]
+        if timeout is not None:
+            argv += ["--timeout-seconds", str(timeout)]
         return uninstall.main(argv, registry_provider=registry,
                               owner_sid_provider=lambda: self.sid,
                               profile_provider=lambda: profile,
@@ -258,6 +262,164 @@ class InstallerUninstallTests(unittest.TestCase):
         self.assertFalse(later.parent.exists())
         self.assertTrue((root / '_star_map_uninstall_runtime/python313.dll').exists())
         self.assertTrue((root / '_star_map_uninstall_runtime/installation-profile.json').exists())
+
+    def test_time_limit_after_real_deletions_stops_and_allows_clean_retry(self):
+        root, resources, _startup, profile = self._production_tree()
+        result = self.case / 'timeout-result'
+        result.mkdir()
+        registry = _RegistryFixture(root, sid=self.sid)
+        original = uninstall._mark_delete
+        deleted = []
+
+        def slow_real_delete(api, handle, relative):
+            original(api, handle, relative)
+            deleted.append(relative)
+            time.sleep(0.3)
+
+        started = time.monotonic()
+        # Only delay actual native deletes. Identity, scan, OS handles, lease,
+        # mutation state, receipt and retry all execute the production path.
+        with patch.dict(os.environ, {'LOCALAPPDATA': str(self.local)}), \
+                patch.object(uninstall, '_mark_delete', side_effect=slow_real_delete):
+            code = self._invoke(root, result, registry, profile, timeout=1)
+        self.assertEqual(code, 2)
+        receipt = self._receipt(result)
+        self.assertEqual(receipt['errorCode'], 'cleanup-time-limit')
+        self.assertEqual(receipt['mutationStarted'], 'True')
+        self.assertIn('已停止', receipt['message'])
+        self.assertTrue(deleted)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertTrue((root / 'star-map-uninstall-helper.exe').exists())
+        self.assertTrue((root / 'unins000.dat').exists())
+        self.assertTrue((root / '_star_map_uninstall_runtime/installation-profile.json').exists())
+        after_timeout = sorted(str(p.relative_to(root)) for p in root.rglob('*'))
+        time.sleep(0.2)
+        self.assertEqual(after_timeout, sorted(str(p.relative_to(root)) for p in root.rglob('*')))
+        retry = self.case / 'timeout-retry'
+        retry.mkdir()
+        with patch.dict(os.environ, {'LOCALAPPDATA': str(self.local)}):
+            code = self._invoke(root, retry, registry, profile)
+        self.assertEqual(code, 0, (retry / 'error.txt').read_text('utf-8-sig')
+                         if (retry / 'error.txt').exists() else '')
+        self.assertEqual(self._receipt(retry)['status'], 'cleared')
+        self.assertFalse(resources.exists())
+
+    def test_missing_program_after_incomplete_install_still_clears_owned_data(self):
+        root, resources, _startup, profile = self._production_tree()
+        (root / '星图.exe').unlink()
+        (root / 'XingtuGameWatcher.exe').unlink()
+        result = self.case / 'incomplete-result'
+        result.mkdir()
+        with patch.dict(os.environ, {'LOCALAPPDATA': str(self.local)}):
+            code = self._invoke(root, result, _RegistryFixture(root, sid=self.sid), profile)
+        self.assertEqual(code, 0, (result / 'error.txt').read_text('utf-8-sig')
+                         if (result / 'error.txt').exists() else '')
+        self.assertFalse(resources.exists())
+        self.assertTrue((root / 'star-map-uninstall-helper.exe').exists())
+
+    def test_timeout_after_external_lock_deletion_leaves_retryable_empty_tail(self):
+        root, resources, _startup, profile = self._production_tree()
+        registry = _RegistryFixture(root, sid=self.sid)
+        first = self.case / 'external-tail-timeout'
+        first.mkdir()
+        original = uninstall._ExternalLease.delete
+
+        def slow_real_lock_delete(lease):
+            original(lease)
+            time.sleep(1.1)
+
+        with patch.dict(os.environ, {'LOCALAPPDATA': str(self.local)}), \
+                patch.object(uninstall._ExternalLease, 'delete', slow_real_lock_delete):
+            self.assertEqual(self._invoke(root, first, registry, profile, timeout=1), 2)
+        self.assertEqual(self._receipt(first)['errorCode'], 'cleanup-time-limit')
+        self.assertTrue(resources.exists())
+        self.assertFalse((resources / 'work/map-packages/import.lock').exists())
+        self.assertFalse(any(p.is_file() for p in resources.rglob('*')))
+        retry = self.case / 'external-tail-retry'
+        retry.mkdir()
+        with patch.dict(os.environ, {'LOCALAPPDATA': str(self.local)}):
+            code = self._invoke(root, retry, registry, profile)
+        self.assertEqual(code, 0, (retry / 'error.txt').read_text('utf-8-sig')
+                         if (retry / 'error.txt').exists() else '')
+        self.assertFalse(resources.exists())
+
+    def test_missing_lock_with_unknown_empty_directory_does_not_enter_empty_tail_recovery(self):
+        root, resources, _startup, profile = self._production_tree()
+        (resources / 'packages/package.zip').unlink()
+        (resources / 'packages').rmdir()
+        (resources / 'work/map-packages/import.lock').unlink()
+        unknown = resources / 'unknown-owner'
+        unknown.mkdir()
+        result = self.case / 'unknown-empty-tail'
+        result.mkdir()
+        with patch.dict(os.environ, {'LOCALAPPDATA': str(self.local)}):
+            self.assertEqual(self._invoke(root, result, _RegistryFixture(root, sid=self.sid), profile), 2)
+        self.assertEqual(self._receipt(result)['errorCode'], 'external-resource-lock-missing')
+        self.assertEqual(self._receipt(result)['mutationStarted'], 'False')
+        self.assertTrue(unknown.exists())
+        self.assertTrue((root / 'work/nightmare-memory/ui-settings.json').exists())
+
+    @contextmanager
+    def _running_python_image(self, directory):
+        image = directory / '星图.exe'
+        shutil.copyfile(sys.executable, image)
+        dll = directory / 'python313.dll'
+        shutil.copyfile(Path(sys.base_prefix) / 'python313.dll', dll)
+        ready = directory / 'running-image.ready'
+        code = 'import pathlib,sys; pathlib.Path(sys.argv[1]).write_text("ready"); sys.stdin.read(1)'
+        process = subprocess.Popen([str(image), '-S', '-c', code, str(ready)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env={**os.environ, 'PYTHONHOME': sys.base_prefix},
+            creationflags=subprocess.CREATE_NO_WINDOW)
+        try:
+            deadline = time.monotonic() + 5
+            while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(ready.exists(), 'synthetic executable did not become ready')
+            self.assertIsNone(process.poll())
+            ready.unlink()
+            yield image, dll
+        finally:
+            try:
+                if process.poll() is None:
+                    process.communicate(b'x', timeout=5)
+                else:
+                    process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate(timeout=5)
+                self.fail('synthetic process needed forced teardown; not a graceful-exit pass')
+
+    def test_running_exact_install_image_blocks_then_exit_allows_retry(self):
+        root, _resources, _startup, profile = self._production_tree()
+        ownership = root / '_installer-owned-files.txt'
+        with ownership.open('a', encoding='utf-8') as stream:
+            stream.write('python313.dll\n')
+        registry = _RegistryFixture(root, sid=self.sid)
+        result = self.case / 'running-result'
+        result.mkdir()
+        with self._running_python_image(root), \
+                patch.dict(os.environ, {'LOCALAPPDATA': str(self.local)}):
+            code = self._invoke(root, result, registry, profile)
+            self.assertEqual(code, 2)
+            self.assertEqual(self._receipt(result)['mutationStarted'], 'False')
+            self.assertTrue((root / 'work/nightmare-memory/ui-settings.json').exists())
+        retry = self.case / 'running-retry'
+        retry.mkdir()
+        with patch.dict(os.environ, {'LOCALAPPDATA': str(self.local)}):
+            self.assertEqual(self._invoke(root, retry, registry, profile), 0)
+
+    def test_foreign_running_image_with_same_name_is_untouched(self):
+        root, _resources, _startup, profile = self._production_tree()
+        foreign = self.case / 'other-install'
+        foreign.mkdir()
+        result = self.case / 'foreign-running-result'
+        result.mkdir()
+        with self._running_python_image(foreign) as (image, dll), \
+                patch.dict(os.environ, {'LOCALAPPDATA': str(self.local)}):
+            self.assertEqual(self._invoke(root, result, _RegistryFixture(root, sid=self.sid), profile), 0)
+            self.assertTrue(image.exists())
+            self.assertTrue(dll.exists())
 
     def test_metadata_cannot_be_written_between_read_and_delete_plan(self):
         root, _resources, _startup, profile = self._production_tree()

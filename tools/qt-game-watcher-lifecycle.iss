@@ -10,8 +10,12 @@ var
 function RunGameWatcherControl(const Directory, Command: String; var Code: Integer): Boolean;
 begin
   Code := -1;
-  Result := Exec(AddBackslash(Directory) + 'XingtuGameWatcher.exe', Command,
-    Directory, SW_HIDE, ewWaitUntilTerminated, Code);
+  if IsUninstaller then
+    Result := RunBoundedUninstallProcess(AddBackslash(Directory) + 'XingtuGameWatcher.exe',
+      Command, Directory, 15000, Code)
+  else
+    Result := Exec(AddBackslash(Directory) + 'XingtuGameWatcher.exe', Command,
+      Directory, SW_HIDE, ewWaitUntilTerminated, Code);
 end;
 
 function CaptureGameWatcher(var Reason: String): Boolean;

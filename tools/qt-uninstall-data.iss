@@ -4,10 +4,32 @@
 #ifndef UninstallHelperInventorySHA256
   #error UninstallHelperInventorySHA256 is required; perform a full helper freeze
 #endif
+type
+  { Inno 6.7.3 uses a 32-bit loader, including x64-compatible installations. }
+  TUninstallStartup = record
+    Size, Reserved, Desktop, Title, X, Y, XSize, YSize, XChars, YChars,
+      Fill, Flags: LongWord;
+    ShowWindow, ReservedSize: Word;
+    ReservedData: LongWord;
+    Input, Output, Error: THandle;
+  end;
+  TUninstallProcess = record
+    Process, Thread: THandle;
+    Pid, Tid: LongWord;
+  end;
+  TUninstallMessage = record
+    Window: THandle;
+    Message, WParam, LParam, Time: LongWord;
+    X, Y: Integer;
+    PrivateData: LongWord;
+  end;
 var
+  MaintenanceMutex: THandle;
   UninstallLease: THandle;
   UninstallRunnerRoot, UninstallResultRoot: String;
   UninstallMayHaveChanged, UninstallCleanupComplete: Boolean;
+  UninstallProcessUncertain: Boolean;
+  UninstallAttempt: Integer;
 
 function UninstallCreateFile(Path: String; Access, Sharing, Security,
   Disposition, Flags, Template: LongWord): THandle;
@@ -27,6 +49,133 @@ function UninstallLastError: LongWord;
 function UninstallDeleteByHandle(Handle: THandle; InfoClass: LongWord;
   var DeleteFile: Byte; Size: LongWord): Boolean;
   external 'SetFileInformationByHandle@kernel32.dll stdcall';
+function UninstallCreateProcess(ApplicationName, CommandLine: String;
+  ProcessSecurity, ThreadSecurity: LongWord; InheritHandles: Boolean;
+  Flags, Environment: LongWord; Directory: String;
+  var Startup: TUninstallStartup; var Process: TUninstallProcess): Boolean;
+  external 'CreateProcessW@kernel32.dll stdcall';
+function UninstallWait(Handle: THandle; Milliseconds: LongWord): LongWord;
+  external 'WaitForSingleObject@kernel32.dll stdcall';
+function UninstallTerminate(Handle: THandle; Code: LongWord): Boolean;
+  external 'TerminateProcess@kernel32.dll stdcall';
+function UninstallExitCode(Handle: THandle; var Code: LongWord): Boolean;
+  external 'GetExitCodeProcess@kernel32.dll stdcall';
+function UninstallTicks: Int64;
+  external 'GetTickCount64@kernel32.dll stdcall';
+function UninstallPeekMessage(var Message: TUninstallMessage;
+  Window: THandle; First, Last, Remove: LongWord): Boolean;
+  external 'PeekMessageW@user32.dll stdcall';
+function UninstallTranslateMessage(var Message: TUninstallMessage): Boolean;
+  external 'TranslateMessage@user32.dll stdcall';
+function UninstallDispatchMessage(var Message: TUninstallMessage): LongWord;
+  external 'DispatchMessageW@user32.dll stdcall';
+function InstallerMaintenanceMutex(Security: LongWord; InitialOwner: Boolean;
+  Name: String): THandle;
+  external 'CreateMutexW@kernel32.dll stdcall';
+
+function AcquireInstallerMaintenance: Boolean;
+var Error: LongWord;
+begin
+  Result := True;
+  if MaintenanceMutex <> 0 then Exit;
+  { Closing the data lock before native removal otherwise permits another
+    Setup to restore files while uninstall is deleting them. Both entry points
+    atomically create this same mutex and hold it until process exit. }
+  MaintenanceMutex := InstallerMaintenanceMutex(0, False,
+    ExpandConstant('Global\XingtuMaintenance-{#InstallerAppId}'));
+  Error := UninstallLastError;
+  if (MaintenanceMutex = 0) or (Error = 183) then begin
+    if MaintenanceMutex <> 0 then UninstallCloseHandle(MaintenanceMutex);
+    MaintenanceMutex := 0;
+    SuppressibleMsgBox('本渠道的安装或卸载仍在进行，或当前账号无法取得维护锁。请等待其结束后再重试。', mbError, MB_OK, IDOK);
+    Result := False;
+  end;
+end;
+
+function InitializeSetup: Boolean;
+begin
+  Result := AcquireInstallerMaintenance;
+end;
+
+procedure UninstallPumpMessages;
+var Message: TUninstallMessage; I: Integer;
+begin
+  { Bound the pump too: an input flood must not defeat the worker deadline. }
+  for I := 1 to 32 do begin
+    if not UninstallPeekMessage(Message, 0, 0, 0, 1) then Break;
+    UninstallTranslateMessage(Message);
+    UninstallDispatchMessage(Message);
+  end;
+end;
+
+function RunBoundedUninstallProcess(const Executable, Params, Directory: String;
+  Timeout: LongWord; var Code: Integer): Boolean;
+var Startup: TUninstallStartup; Process: TUninstallProcess;
+  Started: Int64; State, NativeCode: LongWord; Caption: String;
+  Form: TUninstallProgressForm;
+begin
+  Result := False;
+  Code := -1;
+  Form := nil;
+  if UninstallProcessUncertain then Exit;
+  Startup.Size := SizeOf(Startup);
+  Startup.Flags := 1;
+  Startup.ShowWindow := SW_HIDE;
+  { CreateProcess returns the exact child handle. No PID/name lookup or kill. }
+  if not UninstallCreateProcess(Executable, AddQuotes(Executable) + ' ' + Params,
+    0, 0, False, $08000000, 0, Directory, Startup, Process) then Exit;
+  UninstallProcessUncertain := True;
+  try
+    UninstallCloseHandle(Process.Thread);
+    Started := UninstallTicks;
+    { DeinitializeUninstall runs after Inno frees its progress form. }
+    Form := UninstallProgressForm;
+    if Form <> nil then begin
+      Caption := Form.StatusLabel.Caption;
+      Form.CancelButton.Enabled := False;
+    end;
+    repeat
+      State := UninstallWait(Process.Process, 100);
+      if State = 0 then begin
+        UninstallProcessUncertain := False;
+        if UninstallExitCode(Process.Process, NativeCode) then begin
+          Code := Integer(NativeCode);
+          Result := True;
+        end;
+        Exit;
+      end;
+      if (State <> 258) or (UninstallTicks - Started >= Timeout) then Break;
+      if Form <> nil then
+        Form.StatusLabel.Caption := Caption + '（已等待 ' +
+          IntToStr((UninstallTicks - Started) div 1000) + ' 秒）';
+      UninstallPumpMessages;
+    until False;
+    { Stop only this invocation. Do not trust an old result or expose Retry
+      until Windows confirms that this exact process can no longer mutate. }
+    Log('UNINSTALL_WORKER_LIMIT_REACHED');
+    UninstallTerminate(Process.Process, 1460);
+    Started := UninstallTicks;
+    repeat
+      State := UninstallWait(Process.Process, 100);
+      if State = 0 then begin
+        UninstallProcessUncertain := False;
+        Break;
+      end;
+      UninstallPumpMessages;
+    until (State <> 258) or (UninstallTicks - Started >= 5000);
+  finally
+    if UninstallProcessUncertain then begin
+      UninstallTerminate(Process.Process, 1460);
+      if UninstallWait(Process.Process, 5000) = 0 then
+        UninstallProcessUncertain := False;
+    end;
+    UninstallCloseHandle(Process.Process);
+    if Form <> nil then begin
+      Form.StatusLabel.Caption := Caption;
+      Form.CancelButton.Enabled := not UninstallProcessUncertain;
+    end;
+  end;
+end;
 
 function UninstallHoldingDirectory: String;
 begin
@@ -98,33 +247,13 @@ begin
 end;
 
 procedure FinishUninstallEntries;
-var Key, Previous: String; Root, View: Integer;
 begin
-  RemoveOwnedUninstallShortcut(ExpandConstant('{group}\{#InstallerAppName}.lnk'));
-  RemoveOwnedUninstallShortcut(ExpandConstant('{autodesktop}\{#InstallerAppName}.lnk'));
 #ifdef ProductionInstaller
-  RemoveOwnedUninstallShortcut(ExpandConstant('{group}\卸载星图.lnk'));
+  { Keep current native shortcuts/registration until Inno removes them. }
   RemoveOwnedUninstallShortcut(ExpandConstant('{group}\卸载星图（保留个人资料）.lnk'));
   RemoveOwnedUninstallShortcut(ExpandConstant('{userdesktop}\第五人格小抄助手.lnk'));
   RemoveOwnedUninstallShortcut(ExpandConstant('{userprograms}\第五人格小抄助手\第五人格小抄助手.lnk'));
 #endif
-  Key := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' +
-    ExpandConstant('{#InstallerAppId}_is1');
-  for View := 0 to 1 do begin
-#ifdef ProductionInstaller
-    if View = 0 then Root := HKCU64 else Root := HKCU32;
-#else
-    if View = 0 then Root := HKLM64 else Root := HKLM32;
-#endif
-    if RegKeyExists(Root, Key) then begin
-      if not RegQueryStringValue(Root, Key, 'InstallLocation', Previous) or
-        (CompareText(InstallerNormalizedDirectory(Previous),
-          InstallerNormalizedDirectory(ExpandConstant('{app}'))) <> 0) then
-        RaiseException('卸载登记现在指向其他位置，未清理未知登记。');
-      if not RegDeleteKeyIncludingSubkeys(Root, Key) then
-        RaiseException('本次安装的卸载登记未能清除，请检查权限后重试。');
-    end;
-  end;
 end;
 
 procedure ReleaseUninstallLease;
@@ -132,6 +261,26 @@ begin
   if (UninstallLease <> 0) and (UninstallLease <> THandle(-1)) then
     UninstallCloseHandle(UninstallLease);
   UninstallLease := 0;
+end;
+
+procedure FinishUninstallData;
+var Path: String; Disposition: Byte;
+begin
+  { The exact helper has exited, and ordinary product writers were removed.
+    Finish the data critical section before native removes the retry runtime.
+    The process-lifetime maintenance mutex continues to exclude Setup. }
+  Disposition := 1;
+  if (UninstallLease = 0) or not UninstallDeleteByHandle(UninstallLease, 4, Disposition, 1) then
+    RaiseException('资料尚未全部清除，资源锁文件无法移除。请关闭本安装的资源任务后重试。');
+  ReleaseUninstallLease;
+  Path := ExpandConstant('{app}\work\map-packages\import.lock');
+  if not UninstallSafeAbsolute(Path) or FileExists(Path) then
+    RaiseException('资料尚未全部清除，资源锁仍被占用。请关闭相关任务后重试。');
+  if DirExists(ExtractFileDir(Path)) and not RemoveDir(ExtractFileDir(Path)) then
+    RaiseException('资料尚未全部清除，资源目录仍有剩余项或无法移除。请核对后重试。');
+  Path := ExpandConstant('{app}\work');
+  if not UninstallSafeAbsolute(Path) or (DirExists(Path) and not RemoveDir(Path)) then
+    RaiseException('资料尚未全部清除，资料目录仍有剩余项或无法移除。请核对后重试。');
 end;
 
 procedure AcquireUninstallLease;
@@ -155,8 +304,9 @@ begin
     (GetSHA256OfFile(Inventory) <> '{#UninstallHelperInventorySHA256}') or
     not LoadStringsFromFile(Inventory, Lines) or (GetArrayLength(Lines) = 0) then
     RaiseException('卸载检查程序的文件清单无法验证，请使用对应安装包修复后重试。');
-  UninstallRunnerRoot := ExpandConstant('{tmp}\xingtu-uninstall-runner');
-  UninstallResultRoot := ExpandConstant('{tmp}\xingtu-uninstall-result');
+  UninstallAttempt := UninstallAttempt + 1;
+  UninstallRunnerRoot := ExpandConstant('{tmp}\xingtu-uninstall-runner-') + IntToStr(UninstallAttempt);
+  UninstallResultRoot := ExpandConstant('{tmp}\xingtu-uninstall-result-') + IntToStr(UninstallAttempt);
   if not UninstallSafeAbsolute(UninstallRunnerRoot) or
     not UninstallSafeAbsolute(UninstallResultRoot) or
     not CreateDir(UninstallRunnerRoot) or not CreateDir(UninstallResultRoot) then
@@ -184,6 +334,7 @@ end;
 procedure ClearOwnedInstallation;
 var Params, ParentImage, Detail, Receipt: String; Code: Integer; Size: LongWord;
   Created, Exited, KernelTime, UserTime: Int64;
+  PreviouslyChanged: Boolean;
 begin
   SetLength(ParentImage, 32768);
   Size := UninstallModuleName(0, ParentImage, 32768);
@@ -195,23 +346,28 @@ begin
     ' --result-directory ' + AddQuotes(UninstallResultRoot) +
     ' --parent-pid ' + IntToStr(UninstallCurrentPid) + ' --parent-created ' + IntToStr(Created) +
     ' --parent-executable ' + AddQuotes(ParentImage) + ' --parent-sha256 ' + GetSHA256OfFile(ParentImage) +
-    ' --lock-handle ' + IntToStr(UninstallLease);
+    ' --lock-handle ' + IntToStr(UninstallLease) + ' --timeout-seconds 120';
   Code := -1;
+  PreviouslyChanged := UninstallMayHaveChanged;
   UninstallMayHaveChanged := True;
-  if not Exec(UninstallRunnerRoot + '\star-map-uninstall-helper.exe', Params,
-    UninstallRunnerRoot, SW_HIDE, ewWaitUntilTerminated, Code) then
-    RaiseException('卸载检查程序未完成，不能确认资料清理结果。请保留安装目录并修复后重试。');
+  if not RunBoundedUninstallProcess(UninstallRunnerRoot + '\star-map-uninstall-helper.exe', Params,
+    UninstallRunnerRoot, 135000, Code) then begin
+    if UninstallProcessUncertain then
+      RaiseException('清理未完成，且尚未确认检查程序停止。现在不要重试或启动星图；请重启电脑后重新卸载。');
+    RaiseException('卸载检查程序无法启动、已崩溃或超过等待时间，现已确认停止。资料可能只清除了一部分；请关闭相关任务后重试。');
+  end;
   Receipt := UninstallResultRoot + '\result.ini';
   if (GetIniString('result', 'status', '', Receipt) = 'error') and
     (GetIniString('result', 'mutationStarted', '', Receipt) = 'False') then
-    UninstallMayHaveChanged := False;
+    UninstallMayHaveChanged := PreviouslyChanged;
   if (Code <> 0) or (GetIniString('result', 'status', '', Receipt) <> 'cleared') then begin
     Detail := UninstallReadText(UninstallResultRoot + '\error.txt') +
       UninstallReadText(UninstallResultRoot + '\remaining.txt');
     Log('UNINSTALL_FULL_CLEAR_FAILED ' + Detail);
     if UninstallSafeAbsolute(ExpandConstant('{app}\.xingtu-uninstall-failed.txt')) then
       SaveStringToFile(ExpandConstant('{app}\.xingtu-uninstall-failed.txt'), Detail, False);
-    RaiseException('资料没有全部清除，Windows 程序卸载尚未开始。已删除的部分不能自动撤回；请按剩余项处理后重试。' + #13#10 + Detail);
+    RaiseException('资料尚未全部清除，程序卸载尚未开始。已删除的部分不能自动撤回。' + #13#10 +
+      GetIniString('result', 'message', '请关闭相关任务并核对剩余项，再重试；安装文件缺失时用对应安装包修复。', Receipt));
   end;
   Log('UNINSTALL_OWNED_DATA_CLEARED_BEFORE_NATIVE');
 end;
@@ -219,6 +375,7 @@ end;
 function InitializeUninstall: Boolean;
 begin
   Result := False;
+  if not AcquireInstallerMaintenance then Exit;
   if not UninstallSafeAbsolute(ExpandConstant('{app}')) then begin
     SuppressibleMsgBox('安装路径含链接或无法访问，卸载未开始。', mbError, MB_OK, IDOK);
     Exit;
@@ -228,54 +385,94 @@ begin
     SuppressibleMsgBox('上次升级仍有未完成的恢复步骤，请先完成恢复，再进行卸载。资料尚未删除。', mbError, MB_OK, IDOK);
     Exit;
   end;
-  if not UninstallSilent then
-    if MsgBox('卸载将永久清除本次安装的程序、设置、缓存、图包、自建路线图库及迁移备份，不经过回收站。' + #13#10 +
-      '已确认属于本次安装的外置资料也会清除。其他实例和外部原始文件不在范围内。' + #13#10 +
-      '需要保留资料时请取消卸载；更新版本请运行安装包的升级入口。继续卸载？',
-      mbConfirmation, MB_YESNO or MB_DEFBUTTON2) <> IDYES then Exit;
+  { The native ConfirmUninstall message owns the only full-clear confirmation. }
   Result := True;
 end;
 
+procedure InitializeUninstallProgressForm;
+begin
+  UninstallProgressForm.PageNameLabel.Caption := '正在卸载星图';
+  UninstallProgressForm.PageDescriptionLabel.Caption := '核对本安装、清除资料，然后移除程序。';
+end;
+
+procedure CheckUninstallExecutable(const Path: String);
+var Handle: THandle;
+begin
+  if not UninstallSafeAbsolute(Path) then
+    RaiseException('程序路径无法安全确认，请使用对应安装包修复后重试。');
+  if not FileExists(Path) then Exit;
+  Handle := UninstallCreateFile(Path, $40000000, 0, 0, 3, $80, 0);
+  if Handle = THandle(-1) then
+    RaiseException('本安装的星图仍在运行、程序文件被占用或无权访问。请退出本安装的星图和资源任务，再点“重试”；不会关闭游戏或其他安装。');
+  UninstallCloseHandle(Handle);
+end;
+
+function UninstallNativeEntriesGone: Boolean;
+var Key: String;
+begin
+  Key := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' +
+    ExpandConstant('{#InstallerAppId}_is1');
+#ifdef ProductionInstaller
+  Result := not RegKeyExists(HKCU64, Key) and not RegKeyExists(HKCU32, Key) and
+    not FileExists(ExpandConstant('{group}\卸载星图.lnk'));
+#else
+  Result := not RegKeyExists(HKLM64, Key) and not RegKeyExists(HKLM32, Key);
+#endif
+  Result := Result and not FileExists(ExpandConstant('{group}\{#InstallerAppName}.lnk')) and
+    not FileExists(ExpandConstant('{autodesktop}\{#InstallerAppName}.lnk'));
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
-var Reason, Path: String; Disposition: Byte;
+var Reason, Path: String;
 begin
   if CurUninstallStep = usUninstall then begin
+    repeat
+    try
+    UninstallProgressForm.StatusLabel.Caption := '正在核对本安装和文件占用…';
+    CheckUninstallExecutable(ExpandConstant('{app}\{#InstallerExeName}'));
+    CheckUninstallExecutable(ExpandConstant('{app}\第五人格小抄助手.exe'));
     AcquireUninstallLease;
     if FileExists(ExpandConstant('{app}\work\pending-installer-upgrade.json')) or
       FileExists(ExpandConstant('{app}\work\map-packages\pending-resource-reset.json')) then
       RaiseException('升级恢复状态发生变化，请先完成恢复；资料尚未删除。');
     CheckUninstallShortcuts;
 #ifdef ProductionInstaller
-    if not InstalledExecutableAvailable then RaiseException('星图仍在运行或程序文件被占用，请退出后重试。');
+    UninstallProgressForm.StatusLabel.Caption := '正在关闭本安装的游戏启动监听…';
     if not DisableGameWatcher(Reason) then RaiseException(Reason);
 #endif
     PrepareUninstallRunner;
+    UninstallProgressForm.StatusLabel.Caption := '正在清除本安装的资料，最多等待约两分钟…';
     ClearOwnedInstallation;
+    FinishUninstallEntries;
+    FinishUninstallData;
 #ifdef ProductionInstaller
     CommitGameWatcherUninstall;
 #endif
+    Break;
+    except
+      Reason := GetExceptionMessage;
+      ReleaseUninstallLease;
+      Log('UNINSTALL_STOPPED_BEFORE_NATIVE ' + Reason);
+      if UninstallProcessUncertain then begin
+        SuppressibleMsgBox(Reason, mbError, MB_OK, IDOK);
+        Abort;
+      end;
+      if UninstallSilent or (SuppressibleMsgBox(Reason + #13#10 +
+        '必要的卸载入口已保留。处理原因后可重试，或取消后稍后重新卸载。',
+        mbError, MB_RETRYCANCEL, IDCANCEL) <> IDRETRY) then Abort;
+    end;
+    until False;
+    UninstallProgressForm.StatusLabel.Caption := '资料清理完成，正在移除程序和入口…';
   end;
   if CurUninstallStep = usPostUninstall then begin
-    FinishUninstallEntries;
-    Disposition := 1;
-    if (UninstallLease = 0) or not UninstallDeleteByHandle(UninstallLease, 4, Disposition, 1) then
-      RaiseException('资料清理没有完成，剩余资源锁文件：' + ExpandConstant('{app}\work\map-packages\import.lock'));
-    ReleaseUninstallLease;
-    Path := ExpandConstant('{app}\work\map-packages\import.lock');
-    if not UninstallSafeAbsolute(Path) or FileExists(Path) then
-      RaiseException('资料清理没有完成，剩余资源锁文件：' + Path);
-    if DirExists(ExtractFileDir(Path)) and not RemoveDir(ExtractFileDir(Path)) then
-      RaiseException('资料清理没有完成，剩余目录：' + ExtractFileDir(Path));
-    Path := ExpandConstant('{app}\work');
-    if not UninstallSafeAbsolute(Path) or (DirExists(Path) and not RemoveDir(Path)) then
-      RaiseException('资料清理没有完成，剩余目录：' + Path);
-    { Native removal already tried the install root while our locked work tree existed.
-      Retry only the empty install root; never consume later/unknown neighbours. }
+    { Native failures cannot be rolled back here. Never consume unknown neighbours. }
     Path := ExpandConstant('{app}');
     if not UninstallSafeAbsolute(Path) or FileExists(Path) or
       (DirExists(Path) and not RemoveDir(Path)) then
-      RaiseException('安装目录仍有剩余项或无法移除：' + Path);
-    UninstallCleanupComplete := True;
+      SuppressibleMsgBox('卸载尚未全部完成：下面的位置仍有剩余项或无法移除，卸载入口可能已移除。请保留并核对剩余项，联系星图维护者处理；当前安装包不会接管未登记的非空目录。' + #13#10 + Path, mbError, MB_OK, IDOK)
+    else if not UninstallNativeEntriesGone then
+      SuppressibleMsgBox('卸载尚未全部完成：安装登记或快捷方式仍有剩余项，不能确认卸载入口仍可用。请保留现状，联系星图维护者核对后处理。', mbError, MB_OK, IDOK)
+    else UninstallCleanupComplete := True;
   end;
   if CurUninstallStep = usDone then begin
     if UninstallCleanupComplete then
@@ -289,7 +486,7 @@ var Reason: String;
 begin
   ReleaseUninstallLease;
 #ifdef ProductionInstaller
-  if UninstallMayHaveChanged then CommitGameWatcherUninstall
+  if UninstallMayHaveChanged or UninstallProcessUncertain then CommitGameWatcherUninstall
   else if not RestoreGameWatcher(Reason) then
     SuppressibleMsgBox(Reason, mbError, MB_OK, IDOK);
 #endif
