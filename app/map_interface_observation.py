@@ -37,10 +37,25 @@ def region_pixels(
     )
     return frame[y0:y1:step, x0:x1:step]
 
-def neutral_ratio(frame: np.ndarray, region: tuple[float, ...], tinted: bool = False) -> float:
-    pixels = region_pixels(
-        frame, region, policy=CLIENT_COMPONENT_POLICIES["ui-roi"],
-    ).astype(np.int16)
+def _probe_pixels(frame, region, *, stride, policy, excluded_bounds, exposure):
+    """Apply pointwise exclusions/gain only to the pixels this probe samples."""
+    pixels = region_pixels(frame, region, stride=stride, policy=policy)
+    if excluded_bounds:
+        pixels = pixels.copy()
+        height, width = frame.shape[:2]
+        x0, y0, _x1, _y1 = normalized_rect_to_client((width, height), region[:4], policy=policy)
+        for left, top, right, bottom in excluded_bounds:
+            ix0, iy0 = max(0, (left-x0+stride-1)//stride), max(0, (top-y0+stride-1)//stride)
+            ix1, iy1 = min(pixels.shape[1], (right-x0+stride-1)//stride), min(pixels.shape[0], (bottom-y0+stride-1)//stride)
+            if ix0 < ix1 and iy0 < iy1:
+                pixels[iy0:iy1, ix0:ix1] = 0
+    return pixels if exposure == 1. else cv2.convertScaleAbs(pixels, alpha=exposure)
+
+
+def neutral_ratio(frame: np.ndarray, region: tuple[float, ...], tinted: bool = False,
+                  *, excluded_bounds=(), exposure=1.) -> float:
+    pixels = _probe_pixels(frame, region, stride=2, policy=CLIENT_COMPONENT_POLICIES["ui-roi"],
+                           excluded_bounds=excluded_bounds, exposure=exposure).astype(np.int16)
     if not pixels.size:
         return 0.0
     maximum = pixels.max(axis=2)
@@ -52,12 +67,13 @@ def neutral_ratio(frame: np.ndarray, region: tuple[float, ...], tinted: bool = F
         mask = (mean >= 90) & (mean <= 230) & ((maximum - minimum) <= 55)
     return float(mask.mean())
 
-def backdrop_ratio(frame: np.ndarray) -> float:
+def backdrop_ratio(frame: np.ndarray, *, excluded_bounds=(), exposure=1.) -> float:
     # OpenCV uses BGR; the original detector's condition is blue >= red-4 and blue >= green-8.
     # The backdrop spans most of the screen; stride 4 still samples roughly
     # 94k pixels at 2560x1417 and avoids spending live latency on redundant
     # neighboring pixels.
-    p = region_pixels(frame, BACKDROP, stride=4).astype(np.int16)
+    p = _probe_pixels(frame, BACKDROP, stride=4, policy="full-client",
+                      excluded_bounds=excluded_bounds, exposure=exposure).astype(np.int16)
     if not p.size:
         return 0.0
     blue, green, red = p[:, :, 0], p[:, :, 1], p[:, :, 2]

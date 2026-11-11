@@ -124,21 +124,26 @@ def _rail(gray, width, plus, minus, floor_right):
     if end<=start:
         return None
     middle=round((xp+xm)/2);half=max(1,round(.002*width));side=max(half+1,round(.010*width))
-    band=gray[start:end].astype(np.float32)
+    radius=round(.005*width)
+    left=max(0,middle-radius-side-half)
+    right=min(gray.shape[1],middle+radius+side+half+1)
+    band=gray[start:end,left:right].astype(np.float32)
     best=None
     for x in range(middle-round(.005*width),middle+round(.005*width)+1):
         if x-side-half<floor_right or x+side+half>=gray.shape[1]:
             continue
-        center=band[:,x-half:x+half+1].mean(axis=1)
-        left=band[:,x-side-half:x-side+half+1].mean(axis=1)
-        right=band[:,x+side-half:x+side+half+1].mean(axis=1)
-        support=float((center-np.maximum(left,right)>=12).mean())
+        local=x-left
+        center=band[:,local-half:local+half+1].mean(axis=1)
+        left_values=band[:,local-side-half:local-side+half+1].mean(axis=1)
+        right_values=band[:,local+side-half:local+side+half+1].mean(axis=1)
+        support=float((center-np.maximum(left_values,right_values)>=12).mean())
         if best is None or support>best['support']:
             best=dict(support=support,x=x,startY=start,endY=end)
     return best if best is not None and best['support']>=.85 else None
 
 
-def observe_s1_map_ui_geometry(frame, *, floor_search_right=.92, minimum_height=600, parameters=None):
+def observe_s1_map_ui_geometry(frame, *, floor_search_right=.92, minimum_height=600, parameters=None,
+                                excluded_bounds=()):
     """Finite per-frame evidence only; no map/floor/runtime authority here.
 
     S1 retains its 600px default. S0 may pass its independently replayed
@@ -160,9 +165,19 @@ def observe_s1_map_ui_geometry(frame, *, floor_search_right=.92, minimum_height=
     # Isolate bytes before *all* preprocessing. Blurring the full frame would
     # let floor pixels across the boundary change external shape evidence.
     # Keep global coordinates, but never sample or convolve the floor ROI.
-    band=np.ascontiguousarray(frame[:,right:])
+    band=np.array(frame[:,right:],copy=True,order='C') if excluded_bounds else np.ascontiguousarray(frame[:,right:])
     if not band.size:
         return dict(verified=False,reason='s1-map-ui-empty-search-band')
+    for bounds in excluded_bounds:
+        if (not isinstance(bounds,(tuple,list)) or len(bounds)!=4
+                or any(type(value) is not int for value in bounds)):
+            return dict(verified=False,reason='s1-map-ui-exclusion-invalid')
+        x0,y0,x1,y1=bounds
+        if not (0<=x0<x1<=width and 0<=y0<y1<=height):
+            return dict(verified=False,reason='s1-map-ui-exclusion-invalid')
+        start,end=max(right,x0)-right,min(width,x1)-right
+        if start<end:
+            band[y0:y1,start:end]=0
     gray=np.zeros((height,width),np.uint8)
     gray[:,right:]=cv2.GaussianBlur(cv2.cvtColor(band,cv2.COLOR_BGR2GRAY),
                                   (0,0),max(1,scale_width/1920))

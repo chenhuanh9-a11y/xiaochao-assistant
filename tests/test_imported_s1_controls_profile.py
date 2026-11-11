@@ -108,6 +108,17 @@ class ImportedS1Controls(unittest.TestCase):
                     np.testing.assert_array_equal(frame, original)
         self.assertEqual(detector.SOURCE_REPLAY_FLOORS, before_floors)
 
+    def test_open_map_with_unverified_independent_ui_reports_that_failure(self):
+        result = self.observe(mathematical_frame((-2,)), self.profile())
+        self.assertTrue(result['mapOpen'], result)
+        self.assertIsNone(result['selectedFloor'])
+        self.assertEqual(result['reason'], 's1-floor-independent-ui-unverified')
+        self.assertFalse(result['observedFloorValidated'])
+        from diagnostic_privacy import safe_record
+        safe = safe_record(dict(floorRead=result, username='MapUiPrivateFixture'))
+        self.assertEqual(safe['floorRead']['reason'], result['reason'])
+        self.assertNotIn('MapUiPrivateFixture', json.dumps(safe))
+
     def test_fixed_and_expanded_regions_are_both_consumed_without_constant_fallback(self):
         frame = bright_frame((-3,))
         self.assertEqual(self.observe(frame, self.profile())['selectedFloor'], -3)
@@ -193,16 +204,24 @@ class ImportedS1Controls(unittest.TestCase):
         value['fixedSearchRegion'] = [.82, .10, .10, .50]
         controls = self.profile(value)
         frame = bright_frame((-4,))
-        original = detector.observe_s1_map_ui_geometry
+        import independent_map_ui as shared_ui
+        original = shared_ui.observe_s1_map_ui_geometry
         masked = []
         def geometry(image, **kwargs):
             self.assertIs(kwargs['parameters'], controls.map_ui)
             self.assertAlmostEqual(kwargs['floor_search_right'], .92)
-            # The second corroboration receives an actual localized floor
-            # mask. Delegate every solver decision to the real shape observer.
-            masked.append(int(image[250:540, 1660:1710].max()) == 0)
-            return original(image, **kwargs)
-        with patch.object(detector, 'observe_s1_map_ui_geometry', side_effect=geometry):
+            # Exclusions now apply inside narrow-band preprocessing. Prove
+            # that even changing their source pixels cannot change evidence.
+            exclusions = kwargs['excluded_bounds']
+            masked.append(any(x0 <= 1660 and y0 <= 250 and x1 >= 1710 and y1 >= 540
+                              for x0, y0, x1, y1 in exclusions))
+            result = original(image, **kwargs)
+            changed = image.copy()
+            for x0, y0, x1, y1 in exclusions:
+                changed[y0:y1, x0:x1] = 255
+            self.assertEqual(original(changed, **kwargs), result)
+            return result
+        with patch.object(shared_ui, 'observe_s1_map_ui_geometry', side_effect=geometry):
             result = self.observe(frame, controls)
         self.assertEqual(result['selectedFloor'], -4, result)
         self.assertTrue(any(masked))

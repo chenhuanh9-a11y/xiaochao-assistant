@@ -15,8 +15,7 @@ import numpy as np
 
 from client_space_geometry import centered_safe_viewport
 from floor_contract import floor_contract
-from map_interface_observation import MAP_REGIONS, detect_map_interface, neutral_ratio
-from s1_map_ui_geometry import observe_s1_map_ui_geometry
+from map_interface_observation import detect_map_interface
 
 
 CAPABILITY = "s1-floor-only-manual-map-use"
@@ -191,7 +190,8 @@ def _detect_s1_floor(frame, *, season, mode, frame_id=None, expected_frame_id=No
                          width if external_parameters else None), **map_parameters)
         if independent is None:
             return dict(out, reason="s1-floor-localization-ui-unverified" if localized
-                        and out["mapOpen"] is True else "s1-floor-map-not-open")
+                        and out["mapOpen"] is True else "s1-floor-independent-ui-unverified"
+                        if out["mapOpen"] is True else "s1-floor-map-not-open")
     if out["mapOpen"] is not True:
         if column.get("selectedFloor") is None:
             return dict(out, reason="s1-floor-map-not-open")
@@ -228,16 +228,6 @@ def _s1_independent_map_evidence(frame, observation, *, floor_bounds=None, floor
         return None
     if observation.get("shapeAccepted") is not True:
         return None
-    required = observation.get("requiredBackdropRatio")
-    backdrop = observation.get("backdropRatio", 0.0)
-    if required is None or backdrop < required:
-        return None
-    independent = ("closeButton", "zoomControl", "bottomControls")
-    # Excluding floor pixels cannot increase a ratio with the same denominator.
-    # Skip the temporary frame for ordinary closed gameplay missing any anchor.
-    raw_ratios = observation.get("ratios", {})
-    if any(raw_ratios.get(name, 0.0) < MAP_REGIONS[name][4] for name in independent):
-        return None
     # Broad legacy UI rectangles overlap the floor search at their left edge.
     # Zero that entire area in a temporary measurement frame so a moved or
     # oversized floor highlight cannot supply its own corroborating anchor.
@@ -258,11 +248,7 @@ def _s1_independent_map_evidence(frame, observation, *, floor_bounds=None, floor
                           round(viewport.left + viewport.width * bounds[2]),
                           round(viewport.top + viewport.height * bounds[3]))
         floor_search_right = bounds[2]
-    anchor_frame = frame.copy()
-    anchor_frame[y0:y1, x0:x1] = 0
-    geometry_frame = frame.copy() if full_client_search else frame
-    if full_client_search:
-        geometry_frame[y0:y1, x0:x1] = 0
+    exclusions = [(x0, y0, x1, y1)]
     if floor_bounds is not None:
         if (not isinstance(floor_bounds, (list, tuple)) or len(floor_bounds) != 4
                 or any(type(value) is not int for value in floor_bounds)):
@@ -270,28 +256,22 @@ def _s1_independent_map_evidence(frame, observation, *, floor_bounds=None, floor
         fx0, fy0, fx1, fy1 = floor_bounds
         if not (0 <= fx0 < fx1 <= width and 0 <= fy0 < fy1 <= height):
             return None
-        anchor_frame[fy0:fy1, fx0:fx1] = 0
-        if not full_client_search:
-            geometry_frame = frame.copy()
-        geometry_frame[fy0:fy1, fx0:fx1] = 0
-    ratios = {name: neutral_ratio(anchor_frame, MAP_REGIONS[name]) for name in independent}
-    if all(ratios.get(name, 0.0) >= MAP_REGIONS[name][4] for name in independent):
-        geometry = observe_s1_map_ui_geometry(geometry_frame, floor_search_right=floor_search_right,
-                                              parameters=map_ui)
-        if geometry.get("verified") is True:
-            if floor_scale is not None:
-                # New search-domain columns must sit beside the independent
-                # control group; a signed list elsewhere on an open map is not
-                # the floor HUD. Only disjoint shape pixels supply this proof.
-                shapes = geometry["shapes"]
-                center = (fx0 + fx1) / 2
-                gap = (shapes["plus"]["center"][0] - center) / floor_scale
-                if (not .025 <= gap <= .16
-                        or shapes["close"]["center"][1] > fy0 + .075 * floor_scale
-                        or fy1 > shapes["minus"]["center"][1] + .075 * floor_scale):
-                    return None
-            return "s1-signed-controls-ui-geometry"
-    return None
+        exclusions.append((fx0, fy0, fx1, fy1))
+    from independent_map_ui import observe_independent_map_ui
+    evidence = observe_independent_map_ui(frame, observation, excluded_bounds=tuple(exclusions),
+        floor_search_right=floor_search_right, parameters=map_ui)
+    if evidence['verified'] is not True:
+        return None
+    if floor_scale is not None:
+        # The signed column must sit beside the independent control group.
+        shapes = evidence['geometry']['shapes']
+        center = (fx0 + fx1) / 2
+        gap = (shapes['plus']['center'][0] - center) / floor_scale
+        if (not .025 <= gap <= .16
+                or shapes['close']['center'][1] > fy0 + .075 * floor_scale
+                or fy1 > shapes['minus']['center'][1] + .075 * floor_scale):
+            return None
+    return 's1-signed-controls-ui-geometry'
 
 
 def _observe_signed_column(frame, width, height, *, search_bounds=None,
