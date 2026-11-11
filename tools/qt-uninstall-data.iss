@@ -1,32 +1,32 @@
-﻿{ Production uninstaller data choices. Included inside [Code], after the shared
-  lock/path/executable helpers. Native Inno event order and CreateCustomForm:
-  https://jrsoftware.org/ishelp/topic_scriptevents.htm
-  https://jrsoftware.org/ishelp/topic_isxfunc_createcustomform.htm
-
-  An optional external COPY is a user backup. Temporary same-volume RENAMES
-  preserve the one original object across historical native uninstall logs.
-  They are not a backup and are removed after a successful keep/clear operation.
-  No recursive delete or main-EXE execution. The shared watcher lifecycle owns
-  same-user startup registration cleanup; no network or journal deletion. }
+{ Shared full uninstall. Upgrades never call this entry.
+  usUninstall is the last abortable boundary before native Inno removal.
+  https://jrsoftware.org/ishelp/topic_scriptevents.htm }
+#ifndef UninstallHelperInventorySHA256
+  #error UninstallHelperInventorySHA256 is required; perform a full helper freeze
+#endif
 var
-  UninstallFiles, UninstallHashes, UninstallDirectories: TStringList;
-  UninstallHolding, UninstallBackupParent, UninstallBackupPath: String;
-  UninstallBackupFinalParent: String;
-  UninstallScanFailure, UninstallScanPath: String;
-  UninstallManifestHash, UninstallHashesHash: String;
-  UninstallDeleteData, UninstallMakeBackup, UninstallBackupComplete: Boolean;
-  UninstallHoldingCreated, UninstallDataFinalized, UninstallDeleteStarted: Boolean;
-  UninstallBackupBox: TNewCheckBox;
-  UninstallBackupEdit: TNewEdit;
-  UninstallBrowseButton: TNewButton;
+  UninstallLease: THandle;
+  UninstallRunnerRoot, UninstallResultRoot: String;
+  UninstallMayHaveChanged, UninstallCleanupComplete: Boolean;
 
+function UninstallCreateFile(Path: String; Access, Sharing, Security,
+  Disposition, Flags, Template: LongWord): THandle;
+  external 'CreateFileW@kernel32.dll stdcall';
+function UninstallCloseHandle(Handle: THandle): Boolean;
+  external 'CloseHandle@kernel32.dll stdcall';
+function UninstallCurrentPid: LongWord;
+  external 'GetCurrentProcessId@kernel32.dll stdcall';
+function UninstallCurrentProcess: THandle;
+  external 'GetCurrentProcess@kernel32.dll stdcall';
+function UninstallProcessTimes(Handle: THandle; var Created, Exited, Kernel, User: Int64): Boolean;
+  external 'GetProcessTimes@kernel32.dll stdcall';
+function UninstallModuleName(Module: THandle; Buffer: String; Size: LongWord): LongWord;
+  external 'GetModuleFileNameW@kernel32.dll stdcall';
 function UninstallLastError: LongWord;
   external 'GetLastError@kernel32.dll stdcall';
-function UninstallGetDriveType(RootPath: String): LongWord;
-  external 'GetDriveTypeW@kernel32.dll stdcall';
-function UninstallGetFinalPath(Handle: THandle; Buffer: String;
-  BufferLength, Flags: LongWord): LongWord;
-  external 'GetFinalPathNameByHandleW@kernel32.dll stdcall';
+function UninstallDeleteByHandle(Handle: THandle; InfoClass: LongWord;
+  var DeleteFile: Byte; Size: LongWord): Boolean;
+  external 'SetFileInformationByHandle@kernel32.dll stdcall';
 
 function UninstallHoldingDirectory: String;
 begin
@@ -34,9 +34,7 @@ begin
 end;
 
 function UninstallSafeAbsolute(Path: String): Boolean;
-var
-  Parent: String;
-  Attributes, Error: LongWord;
+var Parent: String; Attributes, Error: LongWord;
 begin
   Result := False;
   repeat
@@ -52,612 +50,247 @@ begin
   Result := True;
 end;
 
-function UninstallSafeRelative(const Relative: String): Boolean;
-var
-  Rest, Part: String;
-  P: Integer;
-begin
-  Result := False;
-  if (Relative = '') or (Pos('/', Relative) > 0) or (Pos(':', Relative) > 0) or
-    (Pos(#13, Relative) > 0) or (Pos(#10, Relative) > 0) or (Relative[1] = '\') then Exit;
-  Rest := Relative;
-  while Rest <> '' do begin
-    P := Pos('\', Rest);
-    if P = 0 then begin Part := Rest; Rest := ''; end
-    else begin Part := Copy(Rest, 1, P - 1); Delete(Rest, 1, P); end;
-    if (Part = '') or (Part = '.') or (Part = '..') or
-      (Part[Length(Part)] = ' ') or (Part[Length(Part)] = '.') then Exit;
-  end;
-  Result := UninstallSafeAbsolute(ExpandConstant('{app}\') + Relative);
-end;
-
-function UninstallDataFile(const Relative: String): Boolean;
-var
-  Path, Ext: String;
-begin
-  Path := Lowercase(Relative);
-  Ext := Lowercase(ExtractFileExt(Relative));
-  Result := False;
-  { The held cooperative lock is never copied, relocated or deleted. }
-  if Path = 'work\map-packages\import.lock' then Exit;
-  Result := (Pos('work\', Path) = 1) or
-    (Pos('assets\custom-maps\', Path) = 1) or
-    (Pos('_internal\assets\', Path) = 1) or
-    (Pos('_internal\references\', Path) = 1) or
-    ((Pos('_internal\', Path) = 1) and
-      ((Ext = '.json') or (Ext = '.jsonl') or (Ext = '.png') or
-       (Ext = '.jpg') or (Ext = '.jpeg') or (Ext = '.webp') or
-       (Ext = '.bmp') or (Ext = '.npz') or (Ext = '.npy') or (Ext = '.idvm')));
-end;
-
-function InspectUninstallDirectory(const Relative: String; Depth: Integer;
-  var Entries: Integer): Boolean;
-var
-  Find: TFindRec;
-  Name, Full: String;
-  Error: LongWord;
-begin
-  Result := False;
-  UninstallScanPath := Relative;
-  if Depth > 32 then begin
-    UninstallScanFailure := '目录超过 32 层：' + Relative;
-    Exit;
-  end;
-  if not UninstallSafeRelative(Relative) then begin
-    UninstallScanFailure := '目录路径不安全或无法读取：' + Relative;
-    Exit;
-  end;
-  Full := ExpandConstant('{app}\') + Relative;
-  if not DirExists(Full) then begin
-    Result := not FileExists(Full);
-    if not Result then UninstallScanFailure := '应为目录的位置存在文件：' + Relative;
-    Exit;
-  end;
-  UninstallDirectories.Add(Relative);
-  if not FindFirst(Full + '\*', Find) then begin
-    Result := UninstallLastError = 2; { Empty only, not access denied. }
-    if not Result then UninstallScanFailure := '无法枚举目录：' + Relative;
-    Exit;
-  end;
-  try
-    repeat
-      if (Find.Name <> '.') and (Find.Name <> '..') then begin
-        Entries := Entries + 1;
-        Name := Relative + '\' + Find.Name;
-        UninstallScanPath := Name;
-        if Entries > 50000 then begin
-          UninstallScanFailure := '所选资料超过本次安全检查上限 50,000 项；已检查 ' +
-            IntToStr(Entries) + ' 项，停止位置：' + Name;
-          Exit;
-        end;
-        if (Find.Attributes and $400) <> 0 then begin
-          UninstallScanFailure := '所选资料含目录链接或重解析点：' + Name;
-          Exit;
-        end;
-        if not UninstallSafeRelative(Name) then begin
-          UninstallScanFailure := '资料路径不安全或无法读取：' + Name;
-          Exit;
-        end;
-        if (Find.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then begin
-          if not InspectUninstallDirectory(Name, Depth + 1, Entries) then Exit;
-        end else if UninstallDataFile(Name) then begin
-          UninstallFiles.Add(Name);
-          UninstallHashes.Add(GetSHA256OfFile(ExpandConstant('{app}\') + Name));
-        end;
-      end;
-      if not FindNext(Find) then begin
-        Error := UninstallLastError;
-        Result := Error = 18; { ERROR_NO_MORE_FILES only. }
-        if not Result then UninstallScanFailure := '目录枚举未能完整结束：' + Relative;
-        Break;
-      end;
-    until False;
-  finally
-    FindClose(Find);
-  end;
-end;
-
-function UninstallNeedsWorkScan: Boolean;
-begin
-  { Production 1.1.1 and 1.1.2 reject work/ from both their exact [Files]
-    projection and ownership list. Inno does not own these runtime objects.
-    Keeping them in place needs no scan, hash, copy or relocation. }
-  Result := UninstallMakeBackup or UninstallDeleteData;
-end;
-
-procedure RewindUninstallScan(FilesCount, DirectoriesCount: Integer);
-begin
-  { An incomplete read must never become a partial backup/clear manifest. }
-  while UninstallFiles.Count > FilesCount do
-    UninstallFiles.Delete(UninstallFiles.Count - 1);
-  while UninstallHashes.Count > FilesCount do
-    UninstallHashes.Delete(UninstallHashes.Count - 1);
-  while UninstallDirectories.Count > DirectoriesCount do
-    UninstallDirectories.Delete(UninstallDirectories.Count - 1);
-end;
-
-function InspectChosenUninstallWork(var Entries: Integer): Boolean;
-var
-  SavedFiles, SavedDirectories, SavedEntries, Answer: Integer;
-  Success: Boolean;
-  Choices: String;
-begin
-  Result := True;
-  if not UninstallNeedsWorkScan then begin
-    Log('UNINSTALL_RUNTIME_DATA_KEPT_IN_PLACE_WITHOUT_SCAN');
-    Exit;
-  end;
-  SavedFiles := UninstallFiles.Count;
-  SavedDirectories := UninstallDirectories.Count;
-  SavedEntries := Entries;
-  repeat
-    UninstallScanFailure := '';
-    try
-      Success := InspectUninstallDirectory('work', 0, Entries);
-    except
-      Success := False;
-      UninstallScanFailure := '无法读取资料：' + UninstallScanPath + #13#10 + GetExceptionMessage;
-    end;
-    if Success then Exit;
-    RewindUninstallScan(SavedFiles, SavedDirectories);
-    Entries := SavedEntries;
-    if UninstallScanFailure = '' then UninstallScanFailure := '无法完整检查所选资料。';
-    Log('UNINSTALL_RUNTIME_SCAN_INCOMPLETE ' + UninstallScanFailure);
-    if UninstallDeleteData then
-      Choices := '是：重试检查；否：取消清除和备份，保留全部资料继续卸载；取消：停止卸载。'
-    else
-      Choices := '是：重试检查；否：不备份，保留全部资料继续卸载；取消：停止卸载。';
-    Answer := SuppressibleMsgBox(UninstallScanFailure + #13#10 +
-      '尚未备份、移动或删除任何资料。默认保留资料不需要检查历史备份内容。' + #13#10#13#10 + Choices,
-      mbError, MB_YESNOCANCEL or MB_DEFBUTTON3, IDCANCEL);
-    if Answer = IDNO then begin
-      { The button explicitly changes both choices. Do not imply that omitted
-        work files were backed up or cleared, or silently continue a clear. }
-      UninstallDeleteData := False;
-      UninstallMakeBackup := False;
-      Log('UNINSTALL_RUNTIME_DATA_KEPT_IN_PLACE_AFTER_EXPLICIT_FALLBACK');
-      Exit;
-    end;
-    if Answer <> IDYES then begin Result := False; Exit; end;
-  until False;
-end;
-
-function UninstallObjectMatches(const Path, Digest: String): Boolean;
-begin
-  Result := False;
-  try
-    Result := UninstallSafeAbsolute(Path) and FileExists(Path) and
-      (GetSHA256OfFile(Path) = Digest);
-  except
-    Result := False;
-  end;
-end;
-
-function UninstallFinalDirectory(const Path: String): String;
-var
-  Handle: THandle;
-  Buffer: String;
-  Count: LongWord;
+function UninstallReadText(const Path: String): String;
+var Lines: TArrayOfString; I: Integer;
 begin
   Result := '';
-  if not DirExists(Path) or not UninstallSafeAbsolute(Path) then Exit;
-  { Directory handle + normalized volume-GUID path resolves 8.3 and SUBST aliases.
-    No file data access and no fallback to an unverified lexical path. }
-  Handle := CreateFileW(Path, 0, 7, 0, 3, $02000000, 0);
-  if Handle = THandle(-1) then Exit;
+  if LoadStringsFromFile(Path, Lines) then
+    for I := 0 to GetArrayLength(Lines) - 1 do Result := Result + Lines[I] + #13#10;
+end;
+
+procedure CheckUninstallShortcut(const Path: String);
+var Shell, Link: Variant; Target, App: String;
+begin
+  if not UninstallSafeAbsolute(Path) then RaiseException('快捷方式含链接或无法读取，尚未删除资料：' + Path);
+  if DirExists(Path) then RaiseException('快捷方式位置是目录，尚未删除资料：' + Path);
+  if not FileExists(Path) then Exit;
   try
-    SetLength(Buffer, 32768);
-    Count := UninstallGetFinalPath(Handle, Buffer, 32768, 1);
-    if (Count > 0) and (Count < 32768) then
-      Result := Lowercase(AddBackslash(Copy(Buffer, 1, Count)));
-  finally
-    CloseHandle(Handle);
+    Shell := CreateOleObject('WScript.Shell');
+    Link := Shell.CreateShortcut(Path);
+    Target := RemoveBackslashUnlessRoot(ExpandFileName(String(Link.TargetPath)));
+    App := AddBackslash(RemoveBackslashUnlessRoot(ExpandFileName(ExpandConstant('{app}'))));
+    if (CompareText(Target, App + '{#InstallerExeName}') <> 0) and
+      (CompareText(Target, App + '第五人格小抄助手.exe') <> 0) and
+      (CompareText(Target, ExpandConstant('{uninstallexe}')) <> 0) then
+      RaiseException('快捷方式现在指向其他程序，未删除资料或入口：' + Path);
+  except
+    RaiseException('无法确认快捷方式属于本次安装，尚未删除资料：' + Path + #13#10 + GetExceptionMessage);
   end;
 end;
 
-function UninstallBackupLocationAllowed(const Parent: String): Boolean;
-var
-  AppPath, Target: String;
-  DriveType: LongWord;
+procedure CheckUninstallShortcuts;
 begin
-  Result := False;
-  if Length(Parent) < 3 then Exit;
-  if (Parent[2] <> ':') or (Parent[3] <> '\') then Exit;
-  DriveType := UninstallGetDriveType(AddBackslash(ExtractFileDrive(Parent)));
-  if (DriveType <> 2) and (DriveType <> 3) then Exit; { removable or fixed local }
-  AppPath := UninstallFinalDirectory(ExpandConstant('{app}'));
-  Target := UninstallFinalDirectory(Parent);
-  { The user selects an existing local parent; only a new, unique child is
-    created later. Mapped network drives and unresolved aliases fail closed. }
-  Result := (AppPath <> '') and (Target <> '') and (Pos(AppPath, Target) <> 1);
+  CheckUninstallShortcut(ExpandConstant('{group}\{#InstallerAppName}.lnk'));
+  CheckUninstallShortcut(ExpandConstant('{autodesktop}\{#InstallerAppName}.lnk'));
+#ifdef ProductionInstaller
+  CheckUninstallShortcut(ExpandConstant('{group}\卸载星图.lnk'));
+  CheckUninstallShortcut(ExpandConstant('{group}\卸载星图（保留个人资料）.lnk'));
+  CheckUninstallShortcut(ExpandConstant('{userdesktop}\第五人格小抄助手.lnk'));
+  CheckUninstallShortcut(ExpandConstant('{userprograms}\第五人格小抄助手\第五人格小抄助手.lnk'));
+#endif
 end;
 
-procedure UninstallBackupChoiceChanged(Sender: TObject);
+procedure RemoveOwnedUninstallShortcut(const Path: String);
 begin
-  UninstallBackupEdit.Enabled := UninstallBackupBox.Checked;
-  UninstallBrowseButton.Enabled := UninstallBackupBox.Checked;
+  CheckUninstallShortcut(Path);
+  if FileExists(Path) and not DeleteFile(Path) then
+    RaiseException('快捷方式未能移除：' + Path);
 end;
 
-procedure BrowseUninstallBackup(Sender: TObject);
-var
-  Folder: String;
+procedure FinishUninstallEntries;
+var Key, Previous: String; Root, View: Integer;
 begin
-  Folder := UninstallBackupEdit.Text;
-  if BrowseForFolder('选择安装目录之外的备份位置', Folder, True) then
-    UninstallBackupEdit.Text := Folder;
-end;
-
-function ChooseUninstallData: Boolean;
-var
-  Form: TSetupForm;
-  Text: TNewStaticText;
-  DeleteBox: TNewCheckBox;
-  NextButton, CancelButton: TNewButton;
-  Summary: String;
-  Answer: Integer;
-begin
-  Result := False;
-  UninstallDeleteData := False;
-  UninstallMakeBackup := False;
-  { A silent invocation cannot opt into destructive choices or backup copies. }
-  if UninstallSilent then begin Result := True; Exit; end;
-  #if Ver >= EncodeVer(6, 6, 0)
-  Form := CreateCustomForm(540, 365, True, True);
-  #else
-  Form := CreateCustomForm;
-  Form.ClientWidth := ScaleX(540);
-  Form.ClientHeight := ScaleY(365);
-  #endif
-  try
-    Form.Caption := '星图卸载向导 · 个人资料';
-    Form.Position := poScreenCenter;
-    Text := TNewStaticText.Create(Form);
-    Text.Parent := Form;
-    Text.SetBounds(ScaleX(20), ScaleY(16), ScaleX(500), ScaleY(64));
-    Text.AutoSize := False;
-    Text.WordWrap := True;
-    Text.Caption := '默认只卸载程序，保留本机资料。不勾选备份不会删除资料。' + #13#10 +
-      '资料范围：本安装目录内的设置、图包及资源、自定义路线、日志、截图和历史备份。';
-    DeleteBox := TNewCheckBox.Create(Form);
-    DeleteBox.Parent := Form;
-    DeleteBox.SetBounds(ScaleX(20), ScaleY(87), ScaleX(500), ScaleY(26));
-    DeleteBox.Caption := '同时清除上述资料（不经过回收站）';
-    DeleteBox.Checked := False;
-    UninstallBackupBox := TNewCheckBox.Create(Form);
-    UninstallBackupBox.Parent := Form;
-    UninstallBackupBox.SetBounds(ScaleX(20), ScaleY(128), ScaleX(500), ScaleY(26));
-    UninstallBackupBox.Caption := '卸载前另存一份资料备份（可选）';
-    UninstallBackupBox.Checked := False;
-    UninstallBackupBox.OnClick := @UninstallBackupChoiceChanged;
-    UninstallBackupEdit := TNewEdit.Create(Form);
-    UninstallBackupEdit.Parent := Form;
-    UninstallBackupEdit.SetBounds(ScaleX(20), ScaleY(163), ScaleX(401), ScaleY(24));
-    UninstallBackupEdit.Text := ExpandConstant('{userdocs}');
-    UninstallBrowseButton := TNewButton.Create(Form);
-    UninstallBrowseButton.Parent := Form;
-    UninstallBrowseButton.SetBounds(ScaleX(431), ScaleY(161), ScaleX(89), ScaleY(28));
-    UninstallBrowseButton.Caption := '浏览…';
-    UninstallBrowseButton.OnClick := @BrowseUninstallBackup;
-    UninstallBackupChoiceChanged(nil);
-    Text := TNewStaticText.Create(Form);
-    Text.Parent := Form;
-    Text.SetBounds(ScaleX(20), ScaleY(207), ScaleX(500), ScaleY(91));
-    Text.AutoSize := False;
-    Text.WordWrap := True;
-    Text.Caption := '外部 ZIP、安装目录外的文件及未识别的邻近文件不在清除范围。游戏启动绑定单独停用，外部防重复提示记录保留。' + #13#10 +
-      '默认保留时，work 内资料原地不动；旧安装记录拥有的资源会临时移位保护，不另复制备份。' + #13#10 +
-      '下一步可核对选择；取消或关闭此向导不会移动、备份或删除资料。';
-    NextButton := TNewButton.Create(Form);
-    NextButton.Parent := Form;
-    NextButton.SetBounds(ScaleX(328), ScaleY(317), ScaleX(92), ScaleY(30));
-    NextButton.Caption := '下一步';
-    NextButton.Default := True;
-    NextButton.ModalResult := mrOK;
-    CancelButton := TNewButton.Create(Form);
-    CancelButton.Parent := Form;
-    CancelButton.SetBounds(ScaleX(430), ScaleY(317), ScaleX(90), ScaleY(30));
-    CancelButton.Caption := '取消';
-    CancelButton.Cancel := True;
-    CancelButton.ModalResult := mrCancel;
-    while Form.ShowModal = mrOK do begin
-      UninstallBackupParent := Trim(UninstallBackupEdit.Text);
-      if UninstallBackupBox.Checked and not UninstallBackupLocationAllowed(UninstallBackupParent) then
-        MsgBox('请选择安装目录之外、已存在且不含链接的本地备份位置。', mbError, MB_OK)
-      else begin
-        if DeleteBox.Checked then Summary := '已选择清除资料；查看程序卸载结果后还需最后确认。清除不能通过回收站恢复。'
-        else Summary := '仅卸载程序，个人资料和地图资源保留在原安装目录。';
-        if UninstallBackupBox.Checked then
-          Summary := Summary + #13#10 + '另存备份到：' + UninstallBackupParent + '\卸载备份-<时间>'
-        else Summary := Summary + #13#10 + '不另存备份。';
-        Summary := Summary + #13#10#13#10 + '是：继续；否：返回修改；取消：退出卸载。';
-        Answer := MsgBox(Summary, mbConfirmation, MB_YESNOCANCEL or MB_DEFBUTTON3);
-        if Answer = IDYES then begin
-          UninstallDeleteData := DeleteBox.Checked;
-          UninstallMakeBackup := UninstallBackupBox.Checked;
-          if UninstallMakeBackup then
-            UninstallBackupFinalParent := UninstallFinalDirectory(UninstallBackupParent);
-          Result := True;
-          Break;
-        end;
-        if Answer = IDCANCEL then Break;
-      end;
-    end;
-  finally
-    Form.Free;
-  end;
-end;
-
-function BackupUninstallResources: Boolean;
-var
-  I: Integer;
-  Source, Destination: String;
-begin
-  Result := False;
-  if not UninstallBackupLocationAllowed(UninstallBackupParent) then Exit;
-  if UninstallFinalDirectory(UninstallBackupParent) <> UninstallBackupFinalParent then Exit;
-  UninstallBackupPath := AddBackslash(UninstallBackupParent) + '卸载备份-' +
-    GetDateTimeString('yyyymmdd-hhnnss-zzz', '-', ':');
-  if not CreateDir(UninstallBackupPath) then Exit;
-  if UninstallFinalDirectory(UninstallBackupPath) <>
-    UninstallBackupFinalParent + Lowercase(ExtractFileName(UninstallBackupPath)) + '\' then Exit;
-  if not SaveStringToFile(UninstallBackupPath + '\INCOMPLETE.txt',
-    '备份状态以文件名为准：INCOMPLETE 表示未完成；COMPLETED 表示清单全部复制并核对成功。', False) then Exit;
-  for I := 0 to UninstallFiles.Count - 1 do begin
-    Source := ExpandConstant('{app}\') + UninstallFiles[I];
-    Destination := UninstallBackupPath + '\files\' + UninstallFiles[I];
-    if not UninstallObjectMatches(Source, UninstallHashes[I]) or
-      not UninstallSafeAbsolute(Destination) or
-      not ForceDirectories(ExtractFileDir(Destination)) or
-      not FileCopy(Source, Destination, True) or
-      not UninstallObjectMatches(Source, UninstallHashes[I]) or
-      not UninstallObjectMatches(Destination, UninstallHashes[I]) then Exit;
-  end;
-  UninstallFiles.SaveToFile(UninstallBackupPath + '\paths.txt');
-  UninstallHashes.SaveToFile(UninstallBackupPath + '\sha256.txt');
-  if not RenameFile(UninstallBackupPath + '\INCOMPLETE.txt',
-    UninstallBackupPath + '\COMPLETED.txt') then Exit;
-  UninstallBackupComplete := True;
-  Result := True;
-end;
-
-function OptionalUninstallBackup: Boolean;
-var
-  Success: Boolean;
-  Reason: String;
-  Answer: Integer;
-begin
-  Result := True;
-  if not UninstallMakeBackup then Exit;
-  repeat
-    Reason := '无法完整复制或核对资料，请检查可用空间、目录权限和文件占用。';
-    try
-      Success := BackupUninstallResources;
-    except
-      Success := False;
-      Reason := GetExceptionMessage;
-    end;
-    if Success then Exit;
-    Answer := SuppressibleMsgBox('备份未完成：' + Reason + #13#10 +
-      '原资料尚未移动或删除。不完整备份（如已创建）保留在：' + UninstallBackupPath + #13#10#13#10 +
-      '是：重试；否：不备份继续；取消：停止卸载。',
-      mbError, MB_YESNOCANCEL or MB_DEFBUTTON3, IDCANCEL);
-    if Answer = IDNO then begin
-      if UninstallDeleteData then
-        if SuppressibleMsgBox('将不另存备份，并在卸载后清除已选择的资料，无法通过回收站恢复。仍要继续？',
-          mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) <> IDYES then begin
-          Result := False; Exit;
-        end;
-      UninstallMakeBackup := False;
-      Exit;
-    end;
-    if Answer <> IDYES then begin Result := False; Exit; end;
-  until False;
-end;
-
-function CleanupUninstallHolding: Boolean;
-begin
-  Result := False;
-  if not UninstallHoldingCreated then begin Result := True; Exit; end;
-  { Never recursively delete a holding directory or an object we did not stage. }
-  if not UninstallSafeAbsolute(UninstallHolding) then Exit;
-  if DirExists(UninstallHolding + '\files') then
-    if not RemoveDir(UninstallHolding + '\files') then Exit;
-  { Cleanup may have partially succeeded before an exception. Missing audit
-    files are acceptable only after every original was restored or cleared. }
-  if FileExists(UninstallHolding + '\paths.txt') then begin
-    if not UninstallObjectMatches(UninstallHolding + '\paths.txt', UninstallManifestHash) then Exit;
-    if not DeleteFile(UninstallHolding + '\paths.txt') then Exit;
-  end;
-  if FileExists(UninstallHolding + '\sha256.txt') then begin
-    if not UninstallObjectMatches(UninstallHolding + '\sha256.txt', UninstallHashesHash) then Exit;
-    if not DeleteFile(UninstallHolding + '\sha256.txt') then Exit;
-  end;
-  Result := RemoveDir(UninstallHolding);
-end;
-
-procedure RestoreUninstallResources;
-var
-  I: Integer;
-  Source, Destination: String;
-  Success: Boolean;
-begin
-  if not UninstallHoldingCreated or UninstallDataFinalized or UninstallDeleteStarted then Exit;
-  Success := True;
-  for I := 0 to UninstallFiles.Count - 1 do begin
-    Source := UninstallHolding + '\files\' + IntToStr(I);
-    Destination := ExpandConstant('{app}\') + UninstallFiles[I];
-    if FileExists(Source) then begin
-      { No overwrite, even if a new destination happens to have equal bytes. }
-      if not UninstallObjectMatches(Source, UninstallHashes[I]) or
-        not UninstallSafeRelative(UninstallFiles[I]) or FileExists(Destination) or DirExists(Destination) or
-        not ForceDirectories(ExtractFileDir(Destination)) or
-        not RenameFile(Source, Destination) then Success := False;
-    end else if not UninstallObjectMatches(Destination, UninstallHashes[I]) then Success := False;
-  end;
-  if Success then Success := CleanupUninstallHolding;
-  UninstallDataFinalized := Success;
-  if Success then Log('UNINSTALL_DATA_KEPT_WITHOUT_BACKUP_COPY')
-  else begin
-    Log('UNINSTALL_DATA_RESTORE_INCOMPLETE ' + UninstallHolding);
-    SuppressibleMsgBox('部分资料未能放回原位，未覆盖后来出现的文件。请保留以下目录及其中的 paths.txt、sha256.txt，核对后恢复：' +
-      UninstallHolding + #13#10 + '本次卸载的数据保留步骤未完成。', mbError, MB_OK, IDOK);
-  end;
-end;
-
-function PrepareUninstallData: Boolean;
-var
-  I, Entries: Integer;
-  Source, Destination: String;
-begin
-  Result := False;
-  UninstallFiles := TStringList.Create;
-  UninstallHashes := TStringList.Create;
-  UninstallDirectories := TStringList.Create;
-  Entries := 0;
-  UninstallScanFailure := '';
-  if not InspectUninstallDirectory('_internal', 0, Entries) or
-    not InspectUninstallDirectory('assets\custom-maps', 0, Entries) then
-    RaiseException('无法安全检查原安装资源，尚未开始卸载：' + UninstallScanFailure);
-  if not InspectChosenUninstallWork(Entries) then Exit;
-  if not OptionalUninstallBackup then Exit;
-  UninstallHolding := UninstallHoldingDirectory;
-  if not UninstallSafeAbsolute(UninstallHolding) or not CreateDir(UninstallHolding) then
-    RaiseException('无法创建临时保留目录，尚未开始卸载。若有上次中断资料，请先核对：' + UninstallHolding);
-  UninstallHoldingCreated := True;
-  { Write the complete path/hash recovery mapping BEFORE the first rename. }
-  UninstallFiles.SaveToFile(UninstallHolding + '\paths.txt');
-  UninstallHashes.SaveToFile(UninstallHolding + '\sha256.txt');
-  UninstallManifestHash := GetSHA256OfFile(UninstallHolding + '\paths.txt');
-  UninstallHashesHash := GetSHA256OfFile(UninstallHolding + '\sha256.txt');
-  if not CreateDir(UninstallHolding + '\files') then
-    RaiseException('无法建立临时保留目录，尚未开始卸载；原资料未移动。');
-  for I := 0 to UninstallFiles.Count - 1 do begin
-    Source := ExpandConstant('{app}\') + UninstallFiles[I];
-    Destination := UninstallHolding + '\files\' + IntToStr(I);
-    if not UninstallObjectMatches(Source, UninstallHashes[I]) or
-      not UninstallSafeAbsolute(Destination) or not RenameFile(Source, Destination) then
-      RaiseException('无法安全保留原资料，卸载已停止；正在还原已移动的文件。');
-  end;
-  Log('UNINSTALL_DATA_RETAINED_BY_RENAME ' + IntToStr(UninstallFiles.Count));
-  Result := True;
-end;
-
-procedure ClearSelectedUninstallData;
-var
-  I: Integer;
-  Path: String;
-  Success: Boolean;
-begin
-  { Destructive commit exists only after native result presentation and a new
-    explicit clear confirmation. Inno's post/done events do NOT prove success. }
-  if not UninstallDeleteData or not UninstallHoldingCreated then Exit;
-  for I := 0 to UninstallFiles.Count - 1 do
-    if not UninstallObjectMatches(UninstallHolding + '\files\' + IntToStr(I), UninstallHashes[I]) then begin
-      RestoreUninstallResources;
-      RaiseException('资料在卸载期间发生变化，未执行清除；已尝试保留原资料。');
-    end;
-  UninstallDeleteStarted := True;
-  Success := True;
-  for I := 0 to UninstallFiles.Count - 1 do begin
-    Path := UninstallHolding + '\files\' + IntToStr(I);
-    if not UninstallObjectMatches(Path, UninstallHashes[I]) or not DeleteFile(Path) then begin
-      Success := False;
-      Log('UNINSTALL_DATA_CLEAR_RETAINED ' + UninstallFiles[I]);
+  RemoveOwnedUninstallShortcut(ExpandConstant('{group}\{#InstallerAppName}.lnk'));
+  RemoveOwnedUninstallShortcut(ExpandConstant('{autodesktop}\{#InstallerAppName}.lnk'));
+#ifdef ProductionInstaller
+  RemoveOwnedUninstallShortcut(ExpandConstant('{group}\卸载星图.lnk'));
+  RemoveOwnedUninstallShortcut(ExpandConstant('{group}\卸载星图（保留个人资料）.lnk'));
+  RemoveOwnedUninstallShortcut(ExpandConstant('{userdesktop}\第五人格小抄助手.lnk'));
+  RemoveOwnedUninstallShortcut(ExpandConstant('{userprograms}\第五人格小抄助手\第五人格小抄助手.lnk'));
+#endif
+  Key := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' +
+    ExpandConstant('{#InstallerAppId}_is1');
+  for View := 0 to 1 do begin
+#ifdef ProductionInstaller
+    if View = 0 then Root := HKCU64 else Root := HKCU32;
+#else
+    if View = 0 then Root := HKLM64 else Root := HKLM32;
+#endif
+    if RegKeyExists(Root, Key) then begin
+      if not RegQueryStringValue(Root, Key, 'InstallLocation', Previous) or
+        (CompareText(InstallerNormalizedDirectory(Previous),
+          InstallerNormalizedDirectory(ExpandConstant('{app}'))) <> 0) then
+        RaiseException('卸载登记现在指向其他位置，未清理未知登记。');
+      if not RegDeleteKeyIncludingSubkeys(Root, Key) then
+        RaiseException('本次安装的卸载登记未能清除，请检查权限后重试。');
     end;
   end;
-  if Success then Success := CleanupUninstallHolding;
-  if Success then begin
-    { Empty directories only; never consume new or unrecognised neighbours. }
-    for I := UninstallDirectories.Count - 1 downto 0 do
-      if UninstallSafeRelative(UninstallDirectories[I]) then
-        RemoveDir(ExpandConstant('{app}\') + UninstallDirectories[I]);
-    UninstallDataFinalized := True;
-    Log('UNINSTALL_SELECTED_DATA_CLEARED');
-  end else begin
-    Log('UNINSTALL_DATA_CLEAR_INCOMPLETE ' + UninstallHolding);
-    SuppressibleMsgBox('资料没有全部清除。已清除的部分不能自动撤回；其余文件和路径清单保留在：' +
-      UninstallHolding + #13#10 + '未选择或后来新增的文件不会被递归删除。', mbError, MB_OK, IDOK);
+end;
+
+procedure ReleaseUninstallLease;
+begin
+  if (UninstallLease <> 0) and (UninstallLease <> THandle(-1)) then
+    UninstallCloseHandle(UninstallLease);
+  UninstallLease := 0;
+end;
+
+procedure AcquireUninstallLease;
+var Path: String;
+begin
+  Path := ExpandConstant('{app}\work\map-packages\import.lock');
+  if not UninstallSafeAbsolute(Path) or not ForceDirectories(ExtractFileDir(Path)) then
+    RaiseException('安装路径含链接或无法访问，尚未开始卸载。');
+  UninstallLease := UninstallCreateFile(Path, $C0010000, 0, 0, 4, $80, 0);
+  if UninstallLease = THandle(-1) then begin
+    UninstallLease := 0;
+    RaiseException('星图或资源任务正在使用资料，请关闭任务后重试。');
   end;
 end;
 
-procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
-var
-  WatcherReason: String;
+procedure PrepareUninstallRunner;
+var Inventory, Relative, Source, Target, Digest: String; Lines: TArrayOfString; I: Integer;
 begin
-  if CurUninstallStep = usUninstall then begin
-    { Abort here is an Inno-supported pre-uninstall exit. No native removals yet. }
-    if not InstalledExecutableAvailable or not AcquireResourceLock then
-      RaiseException('星图或资源任务正在运行，尚未开始卸载。请退出后重试。');
-    { A different installer may have left recovery state while this wizard
-      waited for the user's choice. Only this locked recheck is authoritative. }
-    if FileExists(ExpandConstant('{app}\work\pending-installer-upgrade.json')) or
-      FileExists(ExpandConstant('{app}\work\map-packages\pending-resource-reset.json')) then
-      RaiseException('资源升级尚未恢复，不能卸载或移动其恢复证据。请先核对程序与资源。');
-    if not DisableGameWatcher(WatcherReason) then RaiseException(WatcherReason);
-    if not PrepareUninstallData then Abort;
-    { All cancellable preparation succeeded. Native removal starts after this
-      event returns; never re-enable Run against removed/partial program files. }
-    CommitGameWatcherUninstall;
-  end;
-  if CurUninstallStep = usPostUninstall then begin
-    if not UninstallDeleteData then RestoreUninstallResources;
-  end;
-  if CurUninstallStep = usDone then begin
-    { Inno invokes usPostUninstall AND usDone even when RemovedAll=False.
-      usDone follows its native result/restart dialog. Never infer success. }
-    if UninstallDeleteData then begin
-      if SuppressibleMsgBox('请结合刚才的 Windows 卸载结果：程序可能仍有未移除的文件。' + #13#10 +
-        '仍要永久清除此前选择的设置、图包、路线、日志、截图和历史备份吗？' + #13#10 +
-        '是：清除资料；否：保留原资料。清除不经过回收站。',
-        mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then
-        ClearSelectedUninstallData
-      else begin
-        UninstallDeleteData := False;
-        RestoreUninstallResources;
-      end;
-    end;
-    if UninstallBackupComplete then
-      SuppressibleMsgBox('另存的资料备份已完整核对，保存在：' + UninstallBackupPath + #13#10 +
-        '备份不会随本次卸载清除。', mbInformation, MB_OK, IDOK);
+  Inventory := ExpandConstant('{app}\_uninstall-helper-files.txt');
+  if not UninstallSafeAbsolute(Inventory) or not FileExists(Inventory) or
+    (GetSHA256OfFile(Inventory) <> '{#UninstallHelperInventorySHA256}') or
+    not LoadStringsFromFile(Inventory, Lines) or (GetArrayLength(Lines) = 0) then
+    RaiseException('卸载检查程序的文件清单无法验证，请使用对应安装包修复后重试。');
+  UninstallRunnerRoot := ExpandConstant('{tmp}\xingtu-uninstall-runner');
+  UninstallResultRoot := ExpandConstant('{tmp}\xingtu-uninstall-result');
+  if not UninstallSafeAbsolute(UninstallRunnerRoot) or
+    not UninstallSafeAbsolute(UninstallResultRoot) or
+    not CreateDir(UninstallRunnerRoot) or not CreateDir(UninstallResultRoot) then
+    RaiseException('无法创建独立的卸载检查目录，尚未删除资料。');
+  for I := 0 to GetArrayLength(Lines) - 1 do begin
+    if (Length(Lines[I]) < 66) or (Copy(Lines[I], 65, 1) <> ' ') then
+      RaiseException('卸载检查程序的文件清单无效。');
+    Digest := Copy(Lines[I], 1, 64);
+    Relative := Copy(Lines[I], 66, Length(Lines[I]));
+    if (Pos('..', Relative) > 0) or (Pos(':', Relative) > 0) or
+      (Pos('/', Relative) > 0) or (Relative[1] = '\') or
+      ((CompareText(Relative, 'star-map-uninstall-helper.exe') <> 0) and
+       (Pos('_star_map_uninstall_runtime\', Relative) <> 1)) then
+      RaiseException('卸载检查程序含无效的相对路径。');
+    Source := ExpandConstant('{app}\') + Relative;
+    Target := AddBackslash(UninstallRunnerRoot) + Relative;
+    if not UninstallSafeAbsolute(Source) or not UninstallSafeAbsolute(Target) or
+      not FileExists(Source) or (GetSHA256OfFile(Source) <> Digest) or
+      not ForceDirectories(ExtractFileDir(Target)) or not FileCopy(Source, Target, True) or
+      (GetSHA256OfFile(Target) <> Digest) or (GetSHA256OfFile(Source) <> Digest) then
+      RaiseException('卸载检查程序已变化或无法完整复制，尚未删除资料。');
   end;
 end;
 
-procedure DeinitializeUninstall;
-var
-  WatcherReason: String;
+procedure ClearOwnedInstallation;
+var Params, ParentImage, Detail, Receipt: String; Code: Integer; Size: LongWord;
+  Created, Exited, KernelTime, UserTime: Int64;
 begin
-  try
-    { Also restores partial staging after cancellation or a preparation error. }
-    RestoreUninstallResources;
-  finally
-    { Pending only when native removal never started. Backup cancellation and
-      preparation failure must not silently discard the user's previous opt-in. }
-    if not RestoreGameWatcher(WatcherReason) then
-      SuppressibleMsgBox(WatcherReason, mbError, MB_OK, IDOK);
-    if UninstallFiles <> nil then UninstallFiles.Free;
-    if UninstallHashes <> nil then UninstallHashes.Free;
-    if UninstallDirectories <> nil then UninstallDirectories.Free;
-    ReleaseResourceLock;
+  SetLength(ParentImage, 32768);
+  Size := UninstallModuleName(0, ParentImage, 32768);
+  if (Size = 0) or (Size >= 32768) or not UninstallProcessTimes(UninstallCurrentProcess,
+    Created, Exited, KernelTime, UserTime) then
+    RaiseException('无法核实当前卸载器进程，尚未删除资料。');
+  SetLength(ParentImage, Size);
+  Params := '--install-root ' + AddQuotes(ExpandConstant('{app}')) +
+    ' --result-directory ' + AddQuotes(UninstallResultRoot) +
+    ' --parent-pid ' + IntToStr(UninstallCurrentPid) + ' --parent-created ' + IntToStr(Created) +
+    ' --parent-executable ' + AddQuotes(ParentImage) + ' --parent-sha256 ' + GetSHA256OfFile(ParentImage) +
+    ' --lock-handle ' + IntToStr(UninstallLease);
+  Code := -1;
+  UninstallMayHaveChanged := True;
+  if not Exec(UninstallRunnerRoot + '\star-map-uninstall-helper.exe', Params,
+    UninstallRunnerRoot, SW_HIDE, ewWaitUntilTerminated, Code) then
+    RaiseException('卸载检查程序未完成，不能确认资料清理结果。请保留安装目录并修复后重试。');
+  Receipt := UninstallResultRoot + '\result.ini';
+  if (GetIniString('result', 'status', '', Receipt) = 'error') and
+    (GetIniString('result', 'mutationStarted', '', Receipt) = 'False') then
+    UninstallMayHaveChanged := False;
+  if (Code <> 0) or (GetIniString('result', 'status', '', Receipt) <> 'cleared') then begin
+    Detail := UninstallReadText(UninstallResultRoot + '\error.txt') +
+      UninstallReadText(UninstallResultRoot + '\remaining.txt');
+    Log('UNINSTALL_FULL_CLEAR_FAILED ' + Detail);
+    if UninstallSafeAbsolute(ExpandConstant('{app}\.xingtu-uninstall-failed.txt')) then
+      SaveStringToFile(ExpandConstant('{app}\.xingtu-uninstall-failed.txt'), Detail, False);
+    RaiseException('资料没有全部清除，Windows 程序卸载尚未开始。已删除的部分不能自动撤回；请按剩余项处理后重试。' + #13#10 + Detail);
   end;
+  Log('UNINSTALL_OWNED_DATA_CLEARED_BEFORE_NATIVE');
 end;
 
 function InitializeUninstall: Boolean;
 begin
   Result := False;
+  if not UninstallSafeAbsolute(ExpandConstant('{app}')) then begin
+    SuppressibleMsgBox('安装路径含链接或无法访问，卸载未开始。', mbError, MB_OK, IDOK);
+    Exit;
+  end;
   if FileExists(ExpandConstant('{app}\work\pending-installer-upgrade.json')) or
-      FileExists(ExpandConstant('{app}\work\map-packages\pending-resource-reset.json')) then begin
-    SuppressibleMsgBox('上次资源升级尚未完成，请先核对恢复程序与资源；卸载不会覆盖或清除待恢复资料。',
-      mbError, MB_OK, IDOK);
+    FileExists(ExpandConstant('{app}\work\map-packages\pending-resource-reset.json')) then begin
+    SuppressibleMsgBox('上次升级仍有未完成的恢复步骤，请先完成恢复，再进行卸载。资料尚未删除。', mbError, MB_OK, IDOK);
     Exit;
   end;
-  if DirExists(UninstallHoldingDirectory) or FileExists(UninstallHoldingDirectory) then begin
-    SuppressibleMsgBox('检测到上次中断的卸载保留目录，请先按路径清单核对恢复，不能覆盖或忽略：' +
-      UninstallHoldingDirectory, mbError, MB_OK, IDOK);
-    Exit;
+  if not UninstallSilent then
+    if MsgBox('卸载将永久清除本次安装的程序、设置、缓存、图包、自建路线图库及迁移备份，不经过回收站。' + #13#10 +
+      '已确认属于本次安装的外置资料也会清除。其他实例和外部原始文件不在范围内。' + #13#10 +
+      '需要保留资料时请取消卸载；更新版本请运行安装包的升级入口。继续卸载？',
+      mbConfirmation, MB_YESNO or MB_DEFBUTTON2) <> IDYES then Exit;
+  Result := True;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var Reason, Path: String; Disposition: Byte;
+begin
+  if CurUninstallStep = usUninstall then begin
+    AcquireUninstallLease;
+    if FileExists(ExpandConstant('{app}\work\pending-installer-upgrade.json')) or
+      FileExists(ExpandConstant('{app}\work\map-packages\pending-resource-reset.json')) then
+      RaiseException('升级恢复状态发生变化，请先完成恢复；资料尚未删除。');
+    CheckUninstallShortcuts;
+#ifdef ProductionInstaller
+    if not InstalledExecutableAvailable then RaiseException('星图仍在运行或程序文件被占用，请退出后重试。');
+    if not DisableGameWatcher(Reason) then RaiseException(Reason);
+#endif
+    PrepareUninstallRunner;
+    ClearOwnedInstallation;
+#ifdef ProductionInstaller
+    CommitGameWatcherUninstall;
+#endif
   end;
-  if not InstalledExecutableAvailable then begin
-    SuppressibleMsgBox('星图正在运行，或安装目录不可写。请退出后再卸载；资料尚未改变。', mbError, MB_OK, IDOK);
-    Exit;
+  if CurUninstallStep = usPostUninstall then begin
+    FinishUninstallEntries;
+    Disposition := 1;
+    if (UninstallLease = 0) or not UninstallDeleteByHandle(UninstallLease, 4, Disposition, 1) then
+      RaiseException('资料清理没有完成，剩余资源锁文件：' + ExpandConstant('{app}\work\map-packages\import.lock'));
+    ReleaseUninstallLease;
+    Path := ExpandConstant('{app}\work\map-packages\import.lock');
+    if not UninstallSafeAbsolute(Path) or FileExists(Path) then
+      RaiseException('资料清理没有完成，剩余资源锁文件：' + Path);
+    if DirExists(ExtractFileDir(Path)) and not RemoveDir(ExtractFileDir(Path)) then
+      RaiseException('资料清理没有完成，剩余目录：' + ExtractFileDir(Path));
+    Path := ExpandConstant('{app}\work');
+    if not UninstallSafeAbsolute(Path) or (DirExists(Path) and not RemoveDir(Path)) then
+      RaiseException('资料清理没有完成，剩余目录：' + Path);
+    { Native removal already tried the install root while our locked work tree existed.
+      Retry only the empty install root; never consume later/unknown neighbours. }
+    Path := ExpandConstant('{app}');
+    if not UninstallSafeAbsolute(Path) or FileExists(Path) or
+      (DirExists(Path) and not RemoveDir(Path)) then
+      RaiseException('安装目录仍有剩余项或无法移除：' + Path);
+    UninstallCleanupComplete := True;
   end;
-  Result := ChooseUninstallData;
+  if CurUninstallStep = usDone then begin
+    if UninstallCleanupComplete then
+      Log('UNINSTALL_DATA_CLEAR_COMPLETED_NATIVE_ENTRIES_REQUIRE_FINAL_VERIFICATION')
+    else SuppressibleMsgBox('卸载清理未完成，请保留剩余项并按前面的错误提示处理。', mbError, MB_OK, IDOK);
+  end;
+end;
+
+procedure DeinitializeUninstall;
+var Reason: String;
+begin
+  ReleaseUninstallLease;
+#ifdef ProductionInstaller
+  if UninstallMayHaveChanged then CommitGameWatcherUninstall
+  else if not RestoreGameWatcher(Reason) then
+    SuppressibleMsgBox(Reason, mbError, MB_OK, IDOK);
+#endif
 end;
