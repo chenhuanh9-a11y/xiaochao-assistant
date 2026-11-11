@@ -19,6 +19,7 @@ from imported_native_base import decode_native_base
 from imported_resource_archive import save_archive
 from imported_resource_packages import PackageView
 from structure_pose_solver import StructurePoseSolver
+from structure_pose_resources import StructureFitResources
 import test_export_native_base_package as exported_fixture
 import test_imported_resource_reader as reader_fixture
 
@@ -159,7 +160,9 @@ class StructurePoseResourceTests(unittest.TestCase):
                                  observation_bounds=(0, 0, 1280, 720))
 
     def test_regions_share_real_inputs_and_next_frame_rechecks_them(self):
-        with patch.object(fast, 'load_prepared', wraps=fast.load_prepared) as loaded, \
+        preparation = self.preparation_path()
+        with patch.object(resource_snapshot_io, 'read_stable_file',
+                          wraps=resource_snapshot_io.read_stable_file) as read, \
              patch.object(self.engine, 'qt_shared_provider', wraps=self.provider) as provider:
             self.assertFalse(self.regions()['success'])
             self.assertEqual(len(self.observed), 3)
@@ -167,16 +170,103 @@ class StructurePoseResourceTests(unittest.TestCase):
             self.assertIsNotNone(first_prepared)
             self.assertTrue(all(reference is first_reference and prepared is first_prepared
                                 for reference, prepared in self.observed))
-            # One preparation plus a real return-boundary check, regardless
-            # of the number of source-independent regions attempted.
-            self.assertEqual(loaded.call_count, 2)
+            # Initial acquisition reads before/after decoding, then the result
+            # boundary reads the actual payload once. Region reuse cannot
+            # remove that final read or acquire the arrays a second time.
+            def preparation_reads():
+                return sum(Path(call.args[0]).samefile(preparation)
+                           for call in read.call_args_list)
+            self.assertEqual(preparation_reads(), 3)
             self.assertEqual(provider.call_count, 2)
             self.assertIsNone(self.host._fit_resources)
             self.frame = self.frame.copy()
             self.assertFalse(self.regions()['success'])
-            self.assertEqual(loaded.call_count, 4)
+            self.assertEqual(preparation_reads(), 6)
             self.assertEqual(provider.call_count, 4)
             self.assertIsNone(self.host._fit_resources)
+
+    def test_cache_eviction_does_not_redecode_used_preparation_at_result_boundary(self):
+        source = self.engine.qt_fast_structure_source
+        reference = self.provider('shared-structure', self.map_id, '1')
+        # Keep initial acquisition warm; the fit's own record must remain
+        # valid even if the global array cache evicts it during geometry work.
+        self.assertIsNotNone(fast.load_prepared(reference, source=source))
+        def evict(count, reference):
+            with fast._prepared_lock:
+                fast._prepared.clear()
+        with patch.object(source, 'decode', wraps=source.decode) as decoded, \
+             patch.object(resource_snapshot_io, 'read_stable_file',
+                          wraps=resource_snapshot_io.read_stable_file) as read:
+            self.assertFalse(self.regions(after=evict)['success'])
+        self.assertEqual(decoded.call_count, 0)
+        self.assertEqual(len(self.observed), 3)
+        self.assertTrue(all(prepared is self.observed[0][1] for _, prepared in self.observed))
+        preparation = self.preparation_path()
+        self.assertEqual(sum(Path(call.args[0]).samefile(preparation)
+                             for call in read.call_args_list), 3)
+        self.assertIsNone(self.host._fit_resources)
+
+    def test_damage_after_first_offer_is_rejected_at_final_result_boundary(self):
+        offered = []
+        path = self.preparation_path()
+        def callback(result):
+            offered.append(result)
+            path.write_bytes(b'changed-after-first-offer')
+        self.host.usable_fit_callback = callback
+        def fit(*args, **kwargs):
+            reference = self.host._shared_structure_reference('shared-structure', self.map_id, '1')
+            self.assertIsNotNone(self.host._load_fast_structure_prepared(reference))
+            residual = canonical_residual_evidence(dict(verified=True),
+                basis='game-rendered-shared-structure', coordinate_pack_id='fixture')
+            return dict(success=True, matrixSourceToClient=np.eye(3),
+                        selectedRouteCurrentFrameResidual=residual)
+        with patch.object(self.host, '_fit_observation', side_effect=fit):
+            with self.assertRaisesRegex(ValueError, 'structure-fit-preparation-changed'):
+                self.host.fit(self.frame, self.map_id, '1', lambda: False)
+        self.assertEqual(len(offered), 1)
+        self.assertIsNone(self.host._fit_resources)
+
+    def test_cold_decode_rechecks_actual_required_bytes_and_preserves_optional_miss(self):
+        source = self.engine.qt_fast_structure_source
+        reference = self.provider('shared-structure', self.map_id, '1')
+        for path in (reference.path, source.root / source.index_path, self.preparation_path()):
+            raw = path.read_bytes()
+            with self.subTest(path=path):
+                with fast._prepared_lock:
+                    fast._prepared.clear()
+                original_decode = source.decode
+                def changed(payload, ref):
+                    result = original_decode(payload, ref)
+                    path.write_bytes(b'changed-during-cold-decode')
+                    return result
+                try:
+                    # The actual provider decoder runs before the controlled
+                    # file change; no prepared arrays or verdict are mocked.
+                    with patch.object(source, 'decode', side_effect=changed):
+                        if path.samefile(self.preparation_path()):
+                            use = source.acquire_prepared_use(reference)
+                            self.assertIsNone(use.prepared)
+                        else:
+                            with self.assertRaisesRegex(ValueError, 'file-integrity-mismatch'):
+                                source.acquire_prepared_use(reference)
+                    with fast._prepared_lock:
+                        self.assertFalse(any(key[0] == 'imported' and key[1][-1] == id(reference)
+                                             for key in fast._prepared))
+                finally:
+                    path.write_bytes(raw)
+
+    def test_prepared_use_for_another_reference_cannot_enter_the_fit(self):
+        source = self.engine.qt_fast_structure_source
+        first = self.provider('shared-structure', self.map_id, '1')
+        second = self.provider('shared-structure', self.map_id, '2')
+        use = source.acquire_prepared_use(first)
+        self.assertIsNotNone(use.prepared)
+        self.assertIsNot(first, second)
+        scope = StructureFitResources(self.engine)
+        with patch.object(source, 'acquire_prepared_use', return_value=use):
+            with self.assertRaisesRegex(ValueError, 'structure-fit-preparation-source-changed'):
+                scope.prepared(second)
+        self.assertEqual(scope.preparations, {})
 
     def test_changed_reference_bytes_reject_the_operation(self):
         def damage(count, reference):

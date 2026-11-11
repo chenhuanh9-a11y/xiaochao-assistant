@@ -55,8 +55,16 @@ class StructureFitResources:
     def prepared(self, reference, *, cancelled=None):
         key = id(reference)
         if key not in self.preparations:
-            value = self._load_prepared(reference, cancelled=cancelled)
-            self.preparations[key] = (reference, value)
+            acquire = getattr(self.source, 'acquire_prepared_use', None)
+            use = None
+            if callable(acquire):
+                use = acquire(reference, cancelled=cancelled)
+                if use.reference is not reference or use.source is not self.source:
+                    raise ValueError('structure-fit-preparation-source-changed')
+                value = use.prepared
+            else:
+                value = self._load_prepared(reference, cancelled=cancelled)
+            self.preparations[key] = (reference, value, use)
         return self.preparations[key][1]
 
     def _load_prepared(self, reference, *, cancelled=None):
@@ -76,7 +84,10 @@ class StructureFitResources:
             # itself may legitimately return a decoded cache entry.
             if reference is not None and id(reference) not in self.preparations and reader is not None:
                 reader(reference.path)
-        for reference, prepared in self.preparations.values():
+        for reference, prepared, use in self.preparations.values():
+            if use is not None:
+                use.check_current()
+                continue
             current = self._load_prepared(reference)
             if prepared is not None and (current is None or current.shape != prepared.shape
                     or current.pitch != prepared.pitch

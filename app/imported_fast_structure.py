@@ -156,6 +156,11 @@ class ImportedFastStructureSource:
     def decode(self, raw, reference):
         return decode_prepared(raw, reference)
 
+    def acquire_prepared_use(self, reference, *, cancelled=None):
+        """Let one solve retain a value plus its loader-verified resource binding."""
+        from fast_structure_alignment import _acquire_imported_prepared
+        return _acquire_imported_prepared(reference, self, cancelled)
+
     def validate_all(self, provider, *, compare_derived=True, cancelled=None):
         """Explicit resource operation, never ordinary factory or frame work."""
         from fast_structure_alignment import prepare

@@ -30,6 +30,23 @@ class PreparedStructure:
     shape: tuple
 
 
+@dataclass(frozen=True)
+class ImportedPreparedUse:
+    """A loader-produced value bound to the actual immutable resource read."""
+
+    reference: object
+    prepared: PreparedStructure | None
+    source: object
+    identity: tuple | None
+
+    def check_current(self):
+        # Revalidate actual index/reference/prepared bytes without retrieving
+        # arrays or depending on the lifetime of the global prepared cache.
+        current = self.source.read(self.reference)
+        if self.prepared is not None and (current is None or current[1] != self.identity):
+            raise ValueError('structure-fit-preparation-changed')
+
+
 _prepared = OrderedDict()
 _prepared_lock = threading.Lock()
 PREPARED_CACHE_MAX_BYTES = 512 * 1024 * 1024
@@ -134,9 +151,13 @@ def load_prepared(reference, *, source=None, cancelled=None):
 
 
 def _load_imported_prepared(reference, source, cancelled):
+    return _acquire_imported_prepared(reference, source, cancelled).prepared
+
+
+def _acquire_imported_prepared(reference, source, cancelled):
     payload = source.read(reference, cancelled=cancelled)
     if payload is None:
-        return None
+        return ImportedPreparedUse(reference, None, source, None)
     raw, identity = payload
     key = ('imported', identity)
     with _prepared_lock:
@@ -151,9 +172,12 @@ def _load_imported_prepared(reference, source, cancelled):
             # Optional arrays can be unavailable, but their owner/reference
             # must still be current before returning to the normal solver.
             source.read(reference, cancelled=cancelled)
-            return None
-    if source.read(reference, cancelled=cancelled) is None:
-        return None
+            return ImportedPreparedUse(reference, None, source, None)
+    current = source.read(reference, cancelled=cancelled)
+    if current is None:
+        return ImportedPreparedUse(reference, None, source, None)
+    if current[1] != identity:
+        raise ValueError('structure-fit-preparation-changed')
     published = None
     if entry is None:
         with _prepared_lock:
@@ -170,7 +194,7 @@ def _load_imported_prepared(reference, source, cancelled):
                 if _prepared.get(key) is published:
                     _prepared.pop(key)
         raise
-    return result
+    return ImportedPreparedUse(reference, result, source, identity)
 
 
 def sample_edges(edge, limit):
