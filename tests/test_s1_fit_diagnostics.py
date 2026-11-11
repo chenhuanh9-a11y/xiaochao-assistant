@@ -284,22 +284,29 @@ class AutomaticEvidenceTests(unittest.TestCase):
             self.assertEqual(recorder.automatic_saved_count, 0)
 
     @unittest.skipUnless(os.name == 'nt', 'Windows handle storage')
-    def test_saved_crop_mapping_is_distinct_from_solver_component(self):
+    def test_saved_full_frame_mapping_is_distinct_from_solver_component(self):
+        import cv2
         with tempfile.TemporaryDirectory() as folder:
             recorder = FailureSampleRecorder()
             recorder.automatic_enabled = True
             value = evidence()
             value['privatePath'] = 'PRIVATE_NAME'
+            frame = np.arange(40 * 60 * 3, dtype=np.uint8).reshape(40, 60, 3)
             result = recorder.record_automatic(root=folder, reason='no-current-supported-candidates',
-                frame=np.zeros((40, 60, 3), np.uint8), diagnostic=dict(evidenceKind='live-client-capture', fitEvidence=value),
+                frame=frame, diagnostic=dict(evidenceKind='live-client-capture', fitEvidence=value),
                 current=lambda: True, crop_bounds=(10, 12, 20, 16), crop_provenance='color-component-unvalidated')
             self.assertTrue(result['saved'], result)
             rows = [json.loads(line) for line in (Path(folder)/'failures/automatic-v2/automatic-failures.jsonl').read_bytes().splitlines()]
             saved = rows[-1]['diagnostic']['fitEvidence']
             self.assertEqual(saved['frameShapeHW'], [40, 60])
-            self.assertEqual(saved['cropOriginClientXY'], [10, 12])
-            self.assertEqual(saved['cropShapeHW'], [16, 20])
+            self.assertEqual(saved['cropBounds'], [0, 0, 60, 40])
+            self.assertEqual(saved['cropOriginClientXY'], [0, 0])
+            self.assertEqual(saved['cropShapeHW'], [40, 60])
             self.assertEqual(saved['sampleScaleXY'], [1, 1])
+            self.assertEqual(rows[-1]['cropProvenance'], 'full-client-capture')
+            decoded = cv2.imdecode(np.frombuffer(
+                (Path(folder)/rows[-1]['samplePath']).read_bytes(), np.uint8), cv2.IMREAD_UNCHANGED)
+            np.testing.assert_array_equal(decoded, frame)
             self.assertEqual(saved['observations'][0]['observationBounds'], [4, 5, 55, 36])
             self.assertNotIn('PRIVATE_NAME', json.dumps(rows))
 
