@@ -251,9 +251,42 @@ def _base_payloads(source):
     payloads[PACK] = _encoded(converted)
     payloads[COORDINATES] = _encoded(coordinates)
     payloads[EXIT] = _encoded(exit_template)
+    fast_index = _add_fast_preparations(payloads, typed)
     payloads['resource-context.json'] = _encoded(dict(schema='xingtu-native-recognition-base-v1',
-        season='s0', mode='nightmare', runtimeInterfaces=INTERFACES))
+        season='s0', mode='nightmare', runtimeInterfaces=dict(INTERFACES, fastStructureIndex=fast_index)))
     return payloads, len(ids)
+
+
+def _add_fast_preparations(payloads, typed):
+    """Generate static solver inputs from the exact exported typed products.
+
+    This is a producer operation. Imported runtime frames only read the saved
+    arrays through the same fast-structure source used by S1.
+    """
+    from fast_structure_alignment import prepare
+    from imported_fast_structure import INDEX_KIND, INDEX_PATH
+    from shared_structure_reference import load_shared_structure
+
+    entries = []
+    for (mid, floor), row in sorted(typed.items()):
+        original = row['resourcePath']
+        binding = {key: row[key] for key in ('profile', 'mapId', 'floor', 'variant')}
+        reference = load_shared_structure(original, expected_binding=binding,
+            read_resource=lambda path: payloads[path.as_posix()])
+        if reference is None:
+            _reject('fast-prepared-source-invalid:' + mid + '/' + floor)
+        prepared = prepare(reference.clean_mask)
+        # Map and floor form a declared key, so equal source basenames in
+        # different directories cannot overwrite another prepared layer.
+        target = _relative(f'references/fast-structure/{mid}/{floor}.npz')
+        output = BytesIO()
+        np.savez_compressed(output, distance=prepared.distance, chains=prepared.chains,
+            rays=prepared.rays, pitch=np.asarray(prepared.pitch), shape=np.asarray(prepared.shape, dtype=np.int64),
+            sourceMetadata=np.asarray(_encoded(reference.metadata).decode('utf-8')))
+        payloads[target] = output.getvalue()
+        entries.append(dict(binding=binding, referenceResource=original, preparedResource=target))
+    payloads[INDEX_PATH] = _encoded(dict(schemaVersion=1, resourceKind=INDEX_KIND, entries=entries))
+    return INDEX_PATH
 
 
 def _s0_difficult_base_payloads(source):
@@ -819,10 +852,13 @@ def _round_trip(path, destination, *, season='s0', mode='nightmare'):
         _reject('roundtrip-controls-floors')
     from imported_native_base import decode_native_base
     bundle = decode_native_base(base, season='s0', mode='nightmare')
+    bundle.fast_structure_source.validate_all(
+        lambda profile, mid, floor: bundle.resources.load(profile, mid, floor), compare_derived=True)
     return dict(mapCount=len(pack.maps), typedLayerCount=len(resources.entries),
                 mainEntries=len(main.entries), localEntries=len(local.entries),
                 controlsTemplates=len(controls.templates.labels),
-                controlsLabels=list(controls.templates.label_values), **_group_report(bundle))
+                controlsLabels=list(controls.templates.label_values),
+                fastPreparedLayerCount=len(bundle.fast_structure_source.entries), **_group_report(bundle))
 
 
 def _discard_owned_temporary(path, identity):
