@@ -94,21 +94,108 @@ class LegacyBridgeTests(unittest.TestCase):
         with self.assertRaisesRegex(bridge.LegacyBridgeError, 'unique-current-user'):
             self.prepare()
 
-    def test_known_unmigrated_resource_roots_stop_before_copy(self):
+    def test_external_resources_and_editor_assets_are_copied_as_one_quarantined_bundle(self):
+        external = self.root / 'external-resources'
+        for relative in ('work/map-packages/import.lock',
+                         'work/map-packages/package/map.json', 'assets/custom-maps/manifest.json'):
+            path = external / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('synthetic-' + relative, encoding='utf-8')
+        roots = ('assets/custom-maps', '_internal/assets/custom-maps',
+                 '_internal/qt-editor-base', 'work/imported-resources')
+        for relative in roots:
+            self.write(relative + '/manifest.json', 'synthetic-' + relative)
+        result = self.prepare(external_root=external)
+        self.assertEqual(result['status'], 'prepared-native-unverified')
+        self.assertEqual(result['assetRoots'], sorted(('external', 'outer-custom-maps',
+            'internal-custom-maps', 'editor-base', 'imported-resources')))
+        prepared = self.target / '.legacy-upgrade-prepared/work/map-packages/legacy-unverified/asset-roots'
+        for relative in ('work/map-packages/package/map.json',
+                         'assets/custom-maps/manifest.json'):
+            self.assertEqual((prepared / 'external' / relative).read_bytes(),
+                             (external / relative).read_bytes())
+        for label, relative in zip(('outer-custom-maps', 'internal-custom-maps',
+                                    'editor-base', 'imported-resources'), roots):
+            self.assertEqual((prepared / label / 'manifest.json').read_bytes(),
+                             (self.source / relative / 'manifest.json').read_bytes())
+        self.assertFalse((prepared / 'external/work/map-packages/import.lock').exists())
+        self.assertEqual((external / 'work/map-packages/import.lock').read_text(),
+                         'synthetic-work/map-packages/import.lock')
+        self.assertEqual(len(result['inventorySha256']), 64)
+
+    def test_external_root_requires_the_existing_resource_lock(self):
         external = self.root / 'external-resources'
         external.mkdir()
-        with self.assertRaisesRegex(bridge.LegacyBridgeError, 'external-resource-migration'):
+        with self.assertRaisesRegex(bridge.LegacyBridgeError, 'external-resource-lock-missing'):
             self.prepare(external_root=external)
         self.assertFalse(self.target.exists())
-        for relative in ('assets/custom-maps', '_internal/assets/custom-maps',
-                         '_internal/qt-editor-base', 'work/imported-resources'):
-            with self.subTest(relative=relative):
-                self.write(relative + '/manifest.json', '{}')
-                with self.assertRaisesRegex(bridge.LegacyBridgeError, 'gallery-resource-migration'):
-                    self.prepare()
-                self.assertFalse(self.target.exists())
-                (self.source / relative / 'manifest.json').unlink()
-                (self.source / relative).rmdir()
+
+    def test_external_resource_lock_busy_fails_without_copy(self):
+        from resource_transaction import resource_runtime_lease
+        external = self.root / 'external-resources'
+        path = external / 'work/map-packages/import.lock'
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b'')
+        (external / 'work/map-packages/package').mkdir()
+        (external / 'work/map-packages/package/payload.bin').write_bytes(b'package')
+        original = self.snapshot()
+        with resource_runtime_lease(external):
+            with self.assertRaisesRegex(ValueError, 'resource-import-busy-or-recovery-required'):
+                self.prepare(external_root=external)
+        self.assertFalse(self.target.exists())
+        self.assertEqual(self.snapshot(), original)
+        self.assertEqual((external / 'work/map-packages/package/payload.bin').read_bytes(), b'package')
+
+    def test_asset_changes_between_inventory_and_copy_are_rejected(self):
+        external = self.root / 'external-resources'
+        path = external / 'assets/custom-maps/map.bin'
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b'before')
+        lock = external / 'work/map-packages/import.lock'
+        lock.parent.mkdir(parents=True)
+        lock.write_bytes(b'')
+        real_inventory = bridge.legacy_migration._inventory
+        first = True
+        def inventory(*args, **kwargs):
+            nonlocal first
+            result = real_inventory(*args, **kwargs)
+            if first:
+                first = False
+                path.write_bytes(b'changed')
+            return result
+        with patch.object(bridge.legacy_migration, '_inventory', side_effect=inventory):
+            with self.assertRaisesRegex(ValueError, 'copy-mismatch|source-changed'):
+                self.prepare(external_root=external)
+        self.assertEqual((external / 'assets/custom-maps/map.bin').read_bytes(), b'changed')
+        self.assertFalse((self.target / '.legacy-upgrade-prepared/work').exists())
+
+    def test_interrupted_asset_copy_resumes_same_bundle_without_touching_sources(self):
+        external = self.root / 'external-resources'
+        path = external / 'assets/custom-maps/map.bin'
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b'asset bytes')
+        lock = external / 'work/map-packages/import.lock'
+        lock.parent.mkdir(parents=True)
+        lock.write_bytes(b'')
+        original = self.snapshot()
+        rename = bridge.legacy_migration.rename_no_replace
+        failed = False
+        def interrupt(source, target):
+            nonlocal failed
+            if not failed and Path(source).name == 'map.bin.migration-copy':
+                failed = True
+                raise OSError('synthetic process interruption')
+            return rename(source, target)
+        with patch.object(bridge.legacy_migration, 'rename_no_replace', side_effect=interrupt):
+            with self.assertRaises(ValueError):
+                self.prepare(external_root=external)
+        self.assertTrue(failed)
+        result = self.prepare(external_root=external)
+        self.assertEqual(result['status'], 'prepared-native-unverified')
+        copied = self.target / '.legacy-upgrade-prepared/work/map-packages/legacy-unverified/asset-roots/external/assets/custom-maps/map.bin'
+        self.assertEqual(copied.read_bytes(), b'asset bytes')
+        self.assertEqual(self.snapshot(), original)
+        self.assertEqual((external / 'assets/custom-maps/map.bin').read_bytes(), b'asset bytes')
 
     def test_repository_qtifw_wrapper_and_program_payload_are_distinct(self):
         program = self.source / 'program'
@@ -168,7 +255,7 @@ class LegacyBridgeTests(unittest.TestCase):
             self.write('_internal/assets/custom-maps/new-map/manifest.json', '{}')
             with bridge._closed_source(source, tool, program) if os.name == 'nt' else nullcontext():
                 yield
-        with self.assertRaisesRegex(bridge.LegacyBridgeError, 'gallery-resource-migration'):
+        with self.assertRaisesRegex(bridge.LegacyBridgeError, 'asset-root-set-changed'):
             self.prepare(source_guard=guard)
         self.assertFalse(self.target.exists())
 
@@ -180,7 +267,7 @@ class LegacyBridgeTests(unittest.TestCase):
             external.mkdir()
             return result
         with patch.object(bridge.legacy_migration, 'migrate', side_effect=copy_then_external):
-            with self.assertRaisesRegex(bridge.LegacyBridgeError, 'external-resource-migration'):
+            with self.assertRaisesRegex(bridge.LegacyBridgeError, 'asset-root-set-changed'):
                 self.prepare(external_root=external)
         self.assertTrue((self.target / '.legacy-upgrade-prepared/legacy-migration.json').is_file())
         self.assertTrue((self.source / 'work/user-routes/edited.json').is_file())
