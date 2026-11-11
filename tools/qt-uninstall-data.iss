@@ -39,6 +39,11 @@ var
 
 function ContinueUninstallRecovery(FromSetup: Boolean): Boolean; forward;
 
+function InstallerWorkerExitUncertain: Boolean;
+begin
+  Result := UninstallProcessUncertain;
+end;
+
 function HasUninstallRecovery: Boolean;
 var Key: String;
 begin
@@ -164,7 +169,10 @@ begin
   Startup.ShowWindow := SW_HIDE;
   { CreateProcess returns the exact child handle. No PID/name lookup or kill. }
   if not UninstallCreateProcess(Executable, AddQuotes(Executable) + ' ' + Params,
-    0, 0, False, $08000000, 0, Directory, Startup, Process) then Exit;
+    0, 0, False, $08000000, 0, Directory, Startup, Process) then begin
+    Code := Integer(UninstallLastError);
+    Exit;
+  end;
   UninstallProcessUncertain := True;
   try
     UninstallCloseHandle(Process.Thread);
@@ -183,10 +191,17 @@ begin
         if UninstallExitCode(Process.Process, NativeCode) then begin
           Code := Integer(NativeCode);
           Result := True;
-        end;
+        end else Code := Integer(UninstallLastError);
         Exit;
       end;
-      if (State <> 258) or (UninstallTicks - Started >= Timeout) then Break;
+      if State <> 258 then begin
+        Code := Integer(UninstallLastError);
+        Break;
+      end;
+      if UninstallTicks - Started >= Timeout then begin
+        Code := 1460; { Windows ERROR_TIMEOUT; not a helper exit code. }
+        Break;
+      end;
       if Form <> nil then
         Form.StatusLabel.Caption := Caption + '（已等待 ' +
           IntToStr((UninstallTicks - Started) div 1000) + ' 秒）';

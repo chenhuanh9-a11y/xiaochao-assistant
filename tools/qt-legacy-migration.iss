@@ -1,14 +1,14 @@
 { Parent-leased production migration. Historical QtIFW tools are never run. }
 var
   LegacySourcePage: TInputDirWizardPage;
-  LegacyMigrationPrepared, LegacyNativeStarted, LegacyAssetsCommitted: Boolean;
+  LegacyMigrationPrepared, LegacyNativeStarted, LegacyAssetsCommitted, LegacyRetirementComplete: Boolean;
 
 procedure InitializeWizard;
 begin
   LegacySourcePage := CreateInputDirPage(wpSelectDir, '旧版资料迁移',
     '从旧版升级时，请选择原安装目录；全新安装可留空。',
     '设置和自建路线将复制到新的空安装目录。旧地图资源整套隔离保存，需要按当前规则重新导入。' + #13#10 +
-    '旧版维护入口暂不退出，原资料保留；本草稿不会自动启动程序，也不代表完整升级验收。', False, '');
+    '新程序和资料逐项核实后，才移除属于旧安装的入口和已迁移原件。未能证明归属或资料有变化时会停止并保留恢复记录。', False, '');
   LegacySourcePage.Add('原安装目录（全新安装留空）：');
 end;
 
@@ -19,7 +19,9 @@ end;
 
 function LegacyCompletionText: String;
 begin
-  if LegacyAssetsCommitted then
+  if LegacyRetirementComplete then
+    Result := '新程序、迁移资料和旧安装退出均已核实，迁移临时副本已清理。旧地图资源保持隔离，仍须按当前规则重新导入；需要的基础包也须另行导入。'
+  else if LegacyAssetsCommitted then
     Result := '新程序安装及资料副本已核实。已复制的旧地图资源保持隔离，缺少的基础包及旧格式图包需要重新导入；旧版维护入口尚未退出，整体升级未完成。'
   else Result := '资料迁移尚未完成，不能启动星图。请保留新旧目录和恢复记录，再运行同一安装包续办。';
 end;
@@ -41,8 +43,8 @@ begin
       if not CreateDir(ResourceResetSession) then RaiseException('无法创建独立迁移回执目录。');
     end;
     ExtractAndVerifyResetHelper;
-    if FileExists(ResourceResetRoot + '\.legacy-upgrade-prepared\handoff-plan.json') and
-      FileExists(ResourceResetRoot + '\work\pending-installer-upgrade.json') then begin
+    if FileExists(ResourceResetRoot + '\work\pending-installer-upgrade.json') or
+      FileExists(ResourceResetRoot + '\work\installer-upgrades\legacy-recovery.json') then begin
       if not CallResourceReset('legacy-status', False, Result, ResultDir) then Exit;
     end else if not CallResourceReset('legacy-prepare', True, Result, ResultDir) then Exit;
     ResourceResetSessionId := GetIniString('result', 'sessionId', '', ResultDir + '\result.ini');
@@ -55,10 +57,17 @@ begin
       Exit;
     end;
     if (ResourceResetInstallerStatus = 'native-in-progress') or
-      (ResourceResetInstallerStatus = 'native-complete') then begin
+      (ResourceResetInstallerStatus = 'native-complete') or
+      (ResourceResetInstallerStatus = 'completed') then begin
+      LegacyMigrationPrepared := True;
+      LegacyNativeStarted := True;
       { Return a reason after recovery so Inno cannot install native files twice. }
       if CallResourceReset('legacy-resume', False, Result, ResultDir) then begin
         LegacyAssetsCommitted := GetIniString('result', 'migrationCommitted', '', ResultDir + '\result.ini') = 'True';
+        if not (GetIniString('result', 'upgradeComplete', '', ResultDir + '\result.ini') = 'True') then
+          if not CallResourceReset('legacy-retire', False, Result, ResultDir) then Exit;
+        LegacyRetirementComplete := GetIniString('result', 'upgradeComplete', '', ResultDir + '\result.ini') = 'True';
+        if LegacyRetirementComplete then ResourceResetFailureCode := 0;
         Result := LegacyCompletionText;
       end;
       if Result = '' then Result := '上次安装结果尚未核实，保留现场，不能再次安装原生程序。';
@@ -86,9 +95,22 @@ begin
   ResourceResetFailureCode := 64;
   if CallResourceReset('legacy-native-complete', False, Reason, ResultDir) and
     (ResourceResetInstallerStatus = 'native-complete') then
-    if CallResourceReset('legacy-commit', False, Reason, ResultDir) then
+    if CallResourceReset('legacy-commit', False, Reason, ResultDir) then begin
       LegacyAssetsCommitted := GetIniString('result', 'migrationCommitted', '', ResultDir + '\result.ini') = 'True';
-  Log('LEGACY_OLD_ENTRY_PENDING');
+      if LegacyAssetsCommitted and CallResourceReset('legacy-retire', False, Reason, ResultDir) then
+        LegacyRetirementComplete :=
+          (GetIniString('result', 'upgradeComplete', '', ResultDir + '\result.ini') = 'True') and
+          (GetIniString('result', 'oldEntryRetired', '', ResultDir + '\result.ini') = 'True') and
+          (GetIniString('result', 'installerFinalized', '', ResultDir + '\result.ini') = 'True');
+    end;
+  if LegacyRetirementComplete then begin
+    ResourceResetFailureCode := 0;
+    ResourceResetFinalized := True;
+    UpgradeCommitted := True;
+    Log('LEGACY_RETIREMENT_VERIFIED');
+  end else Log('LEGACY_OLD_ENTRY_PENDING ' + Reason);
+  if not LegacyRetirementComplete and (Reason <> '') then
+    SuppressibleMsgBox(Reason, mbError, MB_OK, IDOK);
   SuppressibleMsgBox(LegacyCompletionText, mbInformation, MB_OK, IDOK);
 end;
 

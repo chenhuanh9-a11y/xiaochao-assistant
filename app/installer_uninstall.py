@@ -388,7 +388,7 @@ def _size(info):
 
 
 def _open_handle(api, path, *, directory, delete=False, read=False, write=False, read_control=False,
-                 share=None, creation=_OPEN_EXISTING):
+                 share=None, creation=_OPEN_EXISTING, allow_hardlinks=False):
     access = (_FILE_READ_ATTRIBUTES | (_DELETE if delete else 0)
               | (_GENERIC_READ if read else 0) | (_GENERIC_WRITE if write else 0)
               | (_READ_CONTROL if read_control else 0))
@@ -407,7 +407,7 @@ def _open_handle(api, path, *, directory, delete=False, read=False, write=False,
     if bool(info.attributes & _ATTR_DIRECTORY) != bool(directory):
         api.CloseHandle(handle)
         raise UninstallError("path-kind-changed", remaining=(path,))
-    if not directory and int(info.links) != 1:
+    if not directory and int(info.links) != 1 and not allow_hardlinks:
         api.CloseHandle(handle)
         raise UninstallError("hard-link-refused", remaining=(path,))
     return handle, info
@@ -702,6 +702,38 @@ class _TreePlan:
             return "delete"
         return self._app_classification(relative, is_dir)
 
+    def _journal_alias(self, relative):
+        # Completed upgrade journals retain identity pins as internal links.
+        # Only their owned metadata namespace may enter group verification;
+        # ordinary data, native entries and recovery retain the single-link rule.
+        return self.mode == 'app' and re.fullmatch(
+            r'work/installer-upgrades/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/'
+            r'(?:objects|pins|generations|published)/[0-9a-f-]+\.json', relative) is not None
+
+    def _journal_links(self):
+        groups = {}
+        for node in self.nodes:
+            if node.get('journal_alias') and node.get('handle'):
+                groups.setdefault(node['identity'], []).append(node)
+        for nodes in groups.values():
+            for node in nodes:
+                self.checkpoint()
+                info = _handle_info(self.api, node['handle'])
+                if (int(info.links) != len(nodes) or _file_id(info) != node['identity']
+                        or _handle_path(self.api, node['handle']) != _path_key(node['path'])):
+                    raise UninstallError('hard-link-refused', remaining=(node['relative'],))
+                # Reopen each original name: a held file identity alone must
+                # not adopt a replacement at the same path after scanning.
+                probe, current = _open_handle(self.api, node['path'], directory=False,
+                    share=_FILE_SHARE_READ | 4, allow_hardlinks=True)
+                try:
+                    if (_file_id(current) != node['identity'] or int(current.links) != len(nodes)
+                            or _handle_path(self.api, probe) != _path_key(node['path'])):
+                        raise UninstallError('hard-link-refused', remaining=(node['relative'],))
+                finally:
+                    self.api.CloseHandle(probe)
+        return {identity: len(nodes) for identity, nodes in groups.items()}
+
     def scan(self, *, exe_name=None):
         self.exe_name = exe_name or _APP_EXE
         _safe_ancestors(self.root)
@@ -723,6 +755,7 @@ class _TreePlan:
         self.nodes.append(dict(path=self.root, relative="", directory=True, action=root_action,
                                handle=root_handle, identity=_file_id(root_info)))
         self._walk(self.root, "")
+        self._journal_links()
         return self
 
     def _walk(self, directory_path, relative_directory):
@@ -783,29 +816,34 @@ class _TreePlan:
                 self.exe_name.casefold(), '第五人格小抄助手.exe'}
             recovery_file = self.mode == 'recovery' and not is_dir
             recovery_lock = recovery_file and rel == 'work/map-packages/import.lock'
+            journal_alias = not is_dir and action == 'delete' and self._journal_alias(rel)
             handle, info = _open_handle(self.api, path, directory=is_dir,
-                                        delete=delete_access,
+                                        delete=delete_access and not journal_alias,
                                         write=main_image or recovery_lock or recovery_file and path.suffix.casefold() in {'.exe', '.dll', '.pyd'},
                                         read=recovery_file,
                                         read_control=self.mode == 'recovery',
-                                        share=0 if recovery_lock else _FILE_SHARE_READ if recovery_file else None)
+                                        share=(_FILE_SHARE_READ | 4) if journal_alias else
+                                              0 if recovery_lock else _FILE_SHARE_READ if recovery_file else None,
+                                        allow_hardlinks=journal_alias)
             self.handles.append(handle)
             if _handle_path(self.api, handle) != _path_key(path):
                 raise UninstallError("entry-physical-path-mismatch", remaining=(rel,))
             node = dict(path=path, relative=rel, directory=is_dir, action=action,
-                        handle=handle, identity=_file_id(info))
+                        handle=handle, identity=_file_id(info), journal_alias=journal_alias)
             self.nodes.append(node)
             if is_dir:
                 self._walk(path, rel)
 
     def assert_unchanged(self):
         self.checkpoint()
+        journal_links = self._journal_links()
         for node in self.nodes:
             self.checkpoint()
             if node["handle"] is None:
                 continue
             info = _handle_info(self.api, node["handle"])
-            if not node['directory'] and int(info.links) != 1:
+            expected_links = journal_links[node['identity']] if node.get('journal_alias') else 1
+            if not node['directory'] and int(info.links) != expected_links:
                 raise UninstallError('hard-link-refused', remaining=(node['relative'],))
             if _file_id(info) != node["identity"]:
                 raise UninstallError("preflight-object-changed", remaining=(node["relative"] or ".",))
@@ -846,7 +884,22 @@ class _TreePlan:
                 continue
             if mutation_started is not None:
                 mutation_started()
-            _mark_delete(self.api, node["handle"], node["relative"])
+            if node.get('journal_alias'):
+                # Scan handles carry no DELETE access. Obtain one exclusive
+                # DELETE handle for this name, denying rename/unlink through
+                # every alias while we verify and remove this same object.
+                deleting, info = _open_handle(self.api, node['path'], directory=False,
+                    delete=True, share=_FILE_SHARE_READ, allow_hardlinks=True)
+                try:
+                    if _file_id(info) != node['identity']:
+                        raise UninstallError('hard-link-refused', remaining=(node['relative'],))
+                    links = self._journal_links()[node['identity']]
+                    _mark_delete(self.api, deleting, node['relative'],
+                                 expected_links=links, expected_path=node['path'])
+                finally:
+                    self.api.CloseHandle(deleting)
+            else:
+                _mark_delete(self.api, node["handle"], node["relative"])
             self.api.CloseHandle(node["handle"])
             self.handles.remove(node["handle"])
             node["handle"] = None
@@ -895,11 +948,12 @@ class _TreePlan:
                     and node.get("action") == "preserve-dir") and not node.get("deleted")]
 
 
-def _mark_delete(api, handle, relative):
+def _mark_delete(api, handle, relative, *, expected_links=1, expected_path=None):
     if not handle:
         raise UninstallError("delete-handle-unavailable", remaining=(relative,))
     current = _handle_info(api, handle)
-    if not current.attributes & _ATTR_DIRECTORY and int(current.links) != 1:
+    if (expected_path is not None and _handle_path(api, handle) != _path_key(expected_path)
+            or not current.attributes & _ATTR_DIRECTORY and int(current.links) != expected_links):
         raise UninstallError('hard-link-refused', remaining=(relative,))
     info = _DispositionInfo(True)
     if not api.SetFileInformationByHandle(handle, _FILE_DISPOSITION_INFO,

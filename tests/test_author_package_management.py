@@ -9,6 +9,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'app'))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import author_package_management as manager
+import local_path_safety as path_safety
 import star_map_import as importer
 from test_live_author_import import LiveAuthorImportTests, CORE, SUJU, NATIVE, LEGACY, WANG, NIGHTINGALE
 
@@ -181,7 +182,8 @@ class ManagedAuthorTests(unittest.TestCase):
         self.assertTrue(state['nightmare-suju']['canRemove'])
 
     def test_confirmation_receipt_swap_and_junction_target_fail_closed(self):
-        self.f.live(self.f.package('nightmare-suju',{SUJU:b'image'}))
+        installed=self.f.live(self.f.package('nightmare-suju',{SUJU:b'image'}))
+        self.assertEqual(installed['status'],'author-installed-live')
         plan=self.plan()
         receipt=self.f.receipt();original=receipt.read_bytes()
         receipt.write_bytes(original+b'\n')
@@ -189,17 +191,33 @@ class ManagedAuthorTests(unittest.TestCase):
             manager.remove_author_package_live(self.f.root,'nightmare-suju',application_idle=True,
                 expected_receipt_sha256=plan['receiptSha256'], expected_plan_sha256=plan['planSha256'])
         receipt.write_bytes(original)
-        real=Path.lstat
         junction=self.f.root/'_internal/assets/suju'
-        def lstat(path, *args, **kwargs):
-            result=real(path,*args,**kwargs)
-            if path==junction:
-                return SimpleNamespace(st_mode=result.st_mode,st_file_attributes=0x400)
-            return result
-        # Windows reparse attribute seam, no admin-created real junction required.
-        with patch.object(Path,'lstat',lstat):
-            with self.assertRaisesRegex(importer.ImportRejected,'linked-target'):
-                self.plan()
+        if path_safety._get_attributes is not None:
+            # Windows uses GetFileAttributesW before Path.lstat; inject at that seam.
+            queried=[]
+            def attributes(name):
+                path=Path(name)
+                queried.append(path)
+                return 0x400 if path==junction else 0xFFFFFFFF
+            with patch.object(path_safety,'_get_attributes',attributes):
+                with self.assertRaisesRegex(importer.ImportRejected,'linked-target') as rejected:
+                    self.plan()
+            self.assertIn(junction,queried)
+        else:
+            real=Path.lstat
+            queried=[]
+            def lstat(path, *args, **kwargs):
+                result=real(path,*args,**kwargs)
+                queried.append(path)
+                if path==junction:
+                    return SimpleNamespace(st_mode=result.st_mode,st_file_attributes=0x400)
+                return result
+            # POSIX fallback seam, no admin-created real junction required.
+            with patch.object(Path,'lstat',lstat):
+                with self.assertRaisesRegex(importer.ImportRejected,'linked-target') as rejected:
+                    self.plan()
+            self.assertIn(junction,queried)
+        self.assertEqual(str(rejected.exception),f'linked-target: {junction}')
         self.assertEqual((self.f.root/SUJU).read_bytes(),b'image')
         self.assertEqual(receipt.read_bytes(),original)
 

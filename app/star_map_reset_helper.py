@@ -235,7 +235,8 @@ def main(argv=None, *, maintenance_provider=None):
                                            'pending', 'resume-committed', 'installer-pending',
                                            'start-native', 'native-complete', 'resume-native-complete',
                                            'legacy-prepare', 'legacy-start-native', 'legacy-native-complete',
-                                           'legacy-commit', 'legacy-status', 'legacy-cancel', 'legacy-resume'), required=True)
+                                           'legacy-commit', 'legacy-status', 'legacy-cancel', 'legacy-resume',
+                                           'legacy-retire'), required=True)
     for name in ('install-root', 'result-directory', 'target-report', 'target-report-sha256',
                  'source-commit', 'display-version', 'numeric-version', 'parent-created',
                  'parent-executable', 'parent-sha256'):
