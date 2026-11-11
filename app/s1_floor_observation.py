@@ -116,15 +116,16 @@ def detect_s1_floor(frame, *, season, mode, frame_id=None, expected_frame_id=Non
     from imported_s1_controls_profile import S1ControlsProfile
     if not isinstance(controls, S1ControlsProfile):
         raise ValueError('s1-controls-profile-required')
-    context = controls.for_context(season, mode)
+    parameters = controls.observation_parameters(season, mode)
+    context = parameters.context
     if context is None:
         raise ValueError('s1-controls-context-unsupported')
     def bounds(region):
         x, y, width, height = region
         return x, y, x + width, y + height
     result = _detect_s1_floor(frame, **kwargs, floor_context=context,
-        fixed_search_bounds=bounds(controls.fixed_search_region),
-        expanded_search_bounds=bounds(controls.expanded_search_region), map_ui=controls.map_ui)
+        fixed_search_bounds=bounds(parameters.fixed_search_region),
+        expanded_search_bounds=bounds(parameters.expanded_search_region), map_ui=parameters.map_ui)
     controls.assert_current()
     # The external parameter path has not had source-image replay, including
     # profiles numerically equal to the defaults. Payload declarations cannot

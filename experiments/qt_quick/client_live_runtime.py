@@ -5762,7 +5762,8 @@ class LiveRuntime:
         settings = dict(getattr(self, "_settings", None) or {}, gameSeason=self._season)
         if self._manual_alignment and self._s1_floor_observer_available(engine):
             from s1_floor_observation import detect_s1_floor
-            read = detect_s1_floor(frame, season=self._season, mode=self._mode)
+            read = detect_s1_floor(frame, season=self._season, mode=self._mode,
+                                   controls=getattr(engine, 'qt_controls_profile', None))
             read = dict(read, rawSelectedFloor=read.get("selectedFloor"),
                         controlGeometryVerified=False, floorSource="current-frame")
             if read.get("automaticFloorEligible") is not True:
@@ -5778,7 +5779,8 @@ class LiveRuntime:
             return observation, floor, read
         if self._season == "s1" and self._s1_candidate_available(engine=engine):
             from s1_floor_observation import detect_s1_floor
-            floor_read = detect_s1_floor(frame, season=self._season, mode=engine.pack.mode)
+            floor_read = detect_s1_floor(frame, season=self._season, mode=engine.pack.mode,
+                                         controls=getattr(engine, 'qt_controls_profile', None))
             selected = floor_read.get("selectedFloor")
             if selected is not None and (type(selected) is not int or selected not in (-1, -2, -3, -4)
                     or floor_read.get("observedFloorValidated") is not True

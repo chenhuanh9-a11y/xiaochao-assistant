@@ -784,3 +784,5 @@ python -m unittest test_client_progressive_display test_client_progressive_pixel
 该片未完成观察域与先验策略拆分：scanner 的全客户区边界仍可能触发多区域搜索，扫描实例尚未完整接入 runtime 的 group/settings/steady。S0 困难及导入 S1 的资格缺口也未因此解除。需继续整理实际编排，再绑定同提交实帧回放判断性能阶段是否达到。
 
 同一准备来源的索引、typed reference 和 prepared arrays 现由 `PackageView.read_many` 在一次组件读取中处理。单文件与批量读取共享同一 payload 实现；每个文件仍检查路径归属、无链接、常规文件、稳定读取、实际字节数与既有摘要，整批返回前重查 manifest 内容/文件身份及当前选择。`ComponentResourceReader` 对两条入口沿用相同 JSON/NPZ 预检查。可选准备失败时仍重读必需索引与参考；取消、资源替换和必需文件损坏不能降为普通准备缺失。这只合并重复资源操作，不改变求解顺序、预算、候选、位姿或显示资格，性能收益须另以同提交回放记录。
+
+楼层观察现在先从实际 S0/S1 profile 取得一次只读参数，再由原像素检测流程消费；观察返回前重新检查所属 profile。S0 完整观察内的固定/扩展/用户 ROI、独立地图 UI 与点击矩形校验共享本次参数；点击消费者继续使用原 profile 重新核对，不保存这个局部参数对象。S1 的固定/扩展范围与地图 UI 参数同次取得，两个 runtime 观察分支传入实际外置 profile；`external-controls-unreviewed` 及现有身份/启动资格限制保留。S0 观察过程中 manifest 已替换时，原内部失败收敛可能仍返回地图打开结果，现改为在返回边界拒绝；真实 manifest 替换反例先失败后通过。这里统一参数消费与资源生命周期，没有据合成字形测试提升 S1 source replay 或实机资格。

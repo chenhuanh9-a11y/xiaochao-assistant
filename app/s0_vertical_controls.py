@@ -237,6 +237,17 @@ def _observe_s0_map_geometry(frame, mode, read, observation, *, controls=None):
 
 
 def observe_s0_map(frame, mode, *, settings=None, season="s0", controls=None):
+    """Own one profile scope around the complete current-frame observation."""
+    from imported_controls_profile import S0ControlsProfile
+    if not isinstance(controls, S0ControlsProfile):
+        return _observe_s0_map(frame, mode, settings=settings, season=season, controls=controls)
+    parameters = controls.observation_parameters(season, mode)
+    result = _observe_s0_map(frame, mode, settings=settings, season=season, controls=parameters)
+    controls.assert_current()
+    return result
+
+
+def _observe_s0_map(frame, mode, *, settings=None, season="s0", controls=None):
     """Compose same-frame signed controls, canvas proof and calibrated geometry."""
     from floor_control_region import apply_floor_region, locate_vertical_floor_controls
     from map_interface_observation import detect_map_interface

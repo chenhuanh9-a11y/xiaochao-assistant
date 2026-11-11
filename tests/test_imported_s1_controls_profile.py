@@ -286,6 +286,19 @@ class ImportedS1Controls(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'resource-catalog-superseded'):
                 self.observe(bright_frame(), controls)
 
+    def test_one_observation_reads_parameters_between_two_current_view_checks(self):
+        controls = self.profile()
+        frame = bright_frame((-2,))
+        for mode in ('difficult', 'nightmare'):
+            with self.subTest(mode=mode), \
+                 patch.object(controls, 'assert_current', wraps=controls.assert_current) as current:
+                for count in (2, 4):
+                    result = self.observe(frame, controls, mode)
+                    self.assertEqual(result['selectedFloor'], -2, result)
+                    self.assertFalse(result['observedFloorValidated'])
+                    self.assertFalse(result['automaticFloorEligible'])
+                    self.assertEqual(current.call_count, count)
+
     def test_package_manifest_and_payload_integrity_are_not_bypassed(self):
         package = self.package()
         package.payload_path.write_bytes(package.payload_path.read_bytes() + b' ')
