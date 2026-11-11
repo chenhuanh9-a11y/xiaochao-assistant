@@ -130,7 +130,10 @@ class UninstallWiringTests(unittest.TestCase):
         self.assertIn('CommitResourceReset', production)
         self.assertNotIn('ClearOwnedInstallation;', production)
         target = (ROOT / 'tools/qt-installer-target.iss').read_text('utf-8-sig')
-        self.assertIn('资料迁移入口尚未接通', target)
+        # The migration entry is now connected; old-root overwrite and running
+        # the historical uninstaller must remain explicitly forbidden.
+        self.assertIn('选择另一个新目录安装', target)
+        self.assertIn('不会先调用旧卸载器', target)
         self.assertIn('维护工具', target)
         self.assertNotIn('Exec(', target)
         self.assertIn("CurrentId := ExpandConstant('{#InstallerAppId}')", target)
