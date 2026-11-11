@@ -1,0 +1,11 @@
+{
+  "repo": "chenhuanh9-a11y/xiaochao-assistant",
+  "internal": ["docs/**/*.md"],
+  "check": { "workflow": "qt-next-integration-windows.yml", "job": "joint" },
+  "review": {
+    "points": "ops/review-points.md",
+    "status": "xingtu-delivery-review",
+    "command": ["/home/ubuntu/.agent-autoloop/bin/xingtu-delivery-review.sh", "{input}"]
+  },
+  "admin_merge": []
+}
