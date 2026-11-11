@@ -17,7 +17,7 @@ from route_scopes import SCOPES
 
 
 def import_resources(android_root, output):
-    android_root, output = Path(android_root).resolve(), Path(output).absolute()
+    android_root, output = Path(android_root).resolve(), Path(output).resolve()
     if output.exists():
         raise ValueError("Output already exists; preserve the existing route resources")
     if output.is_relative_to(android_root):
