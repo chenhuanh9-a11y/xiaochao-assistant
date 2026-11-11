@@ -1,20 +1,15 @@
-"""Guarded Windows lifecycle acceptance runner for disposable test machines.
+"""Preflight-only lifecycle acceptance planner.
 
-Without --execute this only validates inputs and emits a plan. Each scenario
-uses explicit command adapters; observations are performed independently after
-each command. A prepared legacy copy can never satisfy an installed assertion.
+Specifications are untrusted data. Native lifecycle execution stays disabled
+until a separately authenticated disposable Windows runner is implemented.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
-import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import platform
-import subprocess
-import sys
-import time
 
 SCENARIOS = {"fresh-install", "qtifw-to-inno", "inno-upgrade", "reinstall", "full-clear",
              "cancel", "interrupted-retry", "occupied-file", "no-admin", "incomplete-previous",
@@ -22,6 +17,8 @@ SCENARIOS = {"fresh-install", "qtifw-to-inno", "inno-upgrade", "reinstall", "ful
 REQUIRED_ASSERTIONS = {"installed", "settings", "custom-content", "resource-evidence",
                        "shortcut", "startup", "user-registration", "machine-registration",
                        "old-maintenance-entry", "no-prepared-only"}
+PACKAGES = ("setup", "historicalQtIfw", "historicalInno")
+OBSERVATIONS = {"path", "content-sha256", "json-value"}
 
 
 def sha256(path: Path) -> str:
@@ -32,153 +29,188 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _path_errors(value: object, label: str, roots: list[Path], *, allow_root: bool = True) -> tuple[Path | None, list[str]]:
+    errors: list[str] = []
+    if not isinstance(value, str) or not value:
+        return None, [f"{label} must be a non-empty absolute path"]
+    # Reject Windows traversal and network/device paths even when planning on Linux.
+    win = PureWindowsPath(value)
+    if ".." in Path(value).parts or ".." in win.parts or value.startswith(("\\\\", "//")) or win.drive.startswith("\\"):
+        return None, [f"{label} contains traversal or a network/device path"]
+    path = Path(value)
+    if not path.is_absolute():
+        return None, [f"{label} must be absolute"]
+    try:
+        absolute = path.absolute()
+        # Reject any symlink/reparse-like component before resolving it.
+        cursor = Path(absolute.anchor)
+        for part in absolute.parts[1:]:
+            cursor = cursor / part
+            if cursor.is_symlink():
+                return None, [f"{label} traverses a symbolic link"]
+        resolved = absolute.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return None, [f"{label} cannot be safely resolved"]
+    if not allow_root and any(resolved == root for root in roots):
+        errors.append(f"{label} must be below an allowed root")
+    if roots and not any(resolved == root or root in resolved.parents for root in roots):
+        errors.append(f"{label} is outside allowedRoots")
+    return resolved, errors
+
+
 def validate(spec: dict, execute: bool = False) -> list[str]:
-    errors = []
-    if not isinstance(spec.get("allowedRoots"), list) or not spec["allowedRoots"]:
+    errors: list[str] = []
+    if not isinstance(spec, dict):
+        return ["spec must be an object"]
+    if execute:
+        errors.append("native execution is disabled: no authenticated disposable Windows runner is configured")
+    raw_roots = spec.get("allowedRoots")
+    if not isinstance(raw_roots, list) or not raw_roots:
         errors.append("allowedRoots must explicitly name disposable test roots")
-    if execute and (platform.system() != "Windows" or spec.get("disposableWindows") is not True or
-                    spec.get("productIdentityVerified") is not True):
-        errors.append("execution requires disposable Windows and verified product identity")
-    packages = spec.get("packages", {})
-    for label in ("setup", "historicalQtIfw", "historicalInno"):
+        raw_roots = []
+    roots: list[Path] = []
+    for value in raw_roots:
+        root, found = _path_errors(value, "allowedRoots entry", [])
+        errors.extend(found)
+        if root is not None:
+            roots.append(root)
+    packages = spec.get("packages")
+    if not isinstance(packages, dict):
+        errors.append("packages must be an object")
+        packages = {}
+    for label in PACKAGES:
         item = packages.get(label)
-        if label in {"setup", "historicalQtIfw", "historicalInno"} and not item:
+        if not isinstance(item, dict):
             errors.append(f"missing package declaration: {label}")
             continue
-        path = Path(item.get("path", ""))
-        if not path.is_file():
-            errors.append(f"package unavailable: {label}")
-        elif item.get("sha256", "").lower() != sha256(path):
-            errors.append(f"package hash mismatch: {label}")
-        if not item.get("version") or not item.get("sourceCommit"):
+        path, found = _path_errors(item.get("path"), f"package {label} path", roots)
+        errors.extend(found)
+        if path is not None:
+            try:
+                if not path.is_file():
+                    errors.append(f"package unavailable: {label}")
+                elif not isinstance(item.get("sha256"), str) or len(item["sha256"]) != 64 or item["sha256"].lower() != sha256(path):
+                    errors.append(f"package hash mismatch: {label}")
+            except OSError:
+                errors.append(f"package unreadable: {label}")
+        if not isinstance(item.get("version"), str) or not item["version"] or not isinstance(item.get("sourceCommit"), str) or not item["sourceCommit"]:
             errors.append(f"package provenance incomplete: {label}")
-    cases = spec.get("scenarios", [])
-    if not cases:
+    cases = spec.get("scenarios")
+    if not isinstance(cases, list) or not cases:
         errors.append("no lifecycle scenarios configured")
-    for case in cases:
-        if case.get("name") not in SCENARIOS:
-            errors.append(f"unknown scenario: {case.get('name')}")
-        if not case.get("root"):
-            errors.append(f"scenario has no isolated root: {case.get('name')}")
-        if case.get("name") == "qtifw-to-inno" and not packages.get("historicalQtIfw"):
+        cases = []
+    for index, case in enumerate(cases):
+        where = f"scenario {index}"
+        if not isinstance(case, dict):
+            errors.append(f"{where} must be an object")
+            continue
+        name = case.get("name")
+        if name not in SCENARIOS:
+            errors.append(f"unknown scenario: {name}")
+        root, found = _path_errors(case.get("root"), f"{where} root", roots, allow_root=False)
+        errors.extend(found)
+        if name == "qtifw-to-inno" and not packages.get("historicalQtIfw"):
             errors.append("real historical QtIFW package required")
-        if case.get("name") == "inno-upgrade" and not packages.get("historicalInno"):
+        if name == "inno-upgrade" and not packages.get("historicalInno"):
             errors.append("historical Inno package required")
+        steps = case.get("steps", [])
+        if not isinstance(steps, list):
+            errors.append(f"{where} steps must be a list")
+            continue
+        for step_index, step in enumerate(steps):
+            step_label = f"{where} step {step_index}"
+            if not isinstance(step, dict):
+                errors.append(f"{step_label} must be an object")
+                continue
+            # There are deliberately no executable command fields in the accepted schema.
+            if any(key in step for key in ("command", "executable", "script", "interpreter", "args", "arguments")):
+                errors.append(f"{step_label} requests a command; only named trusted adapters may execute")
+            adapter = step.get("action")
+            if adapter is not None:
+                errors.append(f"{step_label} uses unsupported action adapter: {adapter}")
+            for check in step.get("observe", []):
+                errors.extend(_validate_observation(check, roots, root, step_label))
+        assertions = case.get("assertions", [])
+        if not isinstance(assertions, list):
+            errors.append(f"{where} assertions must be a list")
+        else:
+            for check in assertions:
+                errors.extend(_validate_observation(check, roots, root, where))
+        for evidence in case.get("resultEvidence", []):
+            if not isinstance(evidence, dict):
+                errors.append(f"{where} resultEvidence entries must be objects")
     return errors
 
 
-def observe(checks: list[dict]) -> list[dict]:
-    rows = []
-    for check in checks:
-        kind = check["kind"]
-        if kind == "path":
-            path = Path(check["path"])
-            try:
-                state = "present" if path.exists() else "absent"
-                detail = {"path": str(path), "kind": "path"}
-            except PermissionError:
-                state, detail = "access-denied", {"path": str(path), "kind": "path"}
-        elif kind == "content-sha256":
-            path = Path(check["path"])
-            try:
-                state = sha256(path) if path.is_file() else "absent"
-                detail = {"path": str(path), "kind": kind}
-            except PermissionError:
-                state, detail = "access-denied", {"path": str(path), "kind": kind}
-        elif kind == "json-value":
-            path = Path(check["path"])
-            try:
-                value = json.loads(path.read_text(encoding="utf-8"))
-                for part in check["field"].split("."):
-                    value = value[part]
-                state, detail = value, {"path": str(path), "kind": kind, "field": check["field"]}
-            except PermissionError:
-                state, detail = "access-denied", {"path": str(path), "kind": kind}
-            except (OSError, ValueError, KeyError, TypeError):
-                state, detail = "not-checked", {"path": str(path), "kind": kind}
-        elif kind == "registry":
-            if os.name != "nt":
-                state, detail = "not-checked", {"kind": "registry", "reason": "Windows only"}
-            else:
-                proc = subprocess.run(["reg.exe", "query", check["key"], "/v", check["value"]],
-                                      capture_output=True, text=True, timeout=15)
-                state = "present" if proc.returncode == 0 else "absent" if proc.returncode == 1 else "not-checked"
-                detail = {"kind": "registry", "key": check["key"], "value": check["value"],
-                          "exitCode": proc.returncode, "output": proc.stdout[-1000:]}
-        else:
-            state, detail = "not-checked", {"kind": kind}
-        expected = check.get("expected")
-        rows.append({"label": check["label"], "state": state, "expected": expected,
-                     "passed": expected is not None and state == expected, **detail})
-    return rows
+def _validate_observation(check: object, roots: list[Path], scenario_root: Path | None, label: str) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(check, dict):
+        return [f"{label} observation must be an object"]
+    kind = check.get("kind")
+    if kind == "registry":
+        return [f"{label} registry observations are disabled until product identity is independently verified"]
+    if kind not in OBSERVATIONS:
+        return [f"{label} has unsupported observation kind: {kind}"]
+    path, found = _path_errors(check.get("path"), f"{label} observation path", roots, allow_root=False)
+    errors.extend(found)
+    if scenario_root is not None and path is not None and path != scenario_root and scenario_root not in path.parents:
+        errors.append(f"{label} observation path is outside its scenario root")
+    if kind == "json-value" and (not isinstance(check.get("field"), str) or not check["field"]):
+        errors.append(f"{label} JSON observation needs a field selector")
+    return errors
 
 
 def run(spec: dict, execute: bool, adapter: str | None = None) -> dict:
     errors = validate(spec, execute)
-    report = {"schema": "xingtu.inno-lifecycle-report.v1", "evidenceIsSimulated": False,
-              "executionRequested": execute, "platform": platform.platform(),
-              "packages": spec.get("packages", {}), "scenarios": [], "inputErrors": errors}
-    if errors:
-        report["status"] = "blocked"
-        return report
-    for case in spec["scenarios"]:
-        row = {"name": case["name"], "root": case["root"], "steps": [], "observations": [],
-               "status": "skipped" if not execute else "failed"}
-        if execute:
-            root = Path(case["root"]).resolve()
-            if not any(root.is_relative_to(Path(p).resolve()) for p in spec["allowedRoots"]):
-                row.update(status="blocked", error="scenario root outside allowedRoots")
-                report["scenarios"].append(row)
-                continue
-            for step in case.get("steps", []):
-                command = [str(x).replace("{root}", str(root)) for x in step["command"]]
-                started = time.monotonic()
-                try:
-                    proc = subprocess.run(command, cwd=str(root), capture_output=True, text=True,
-                                          timeout=min(int(step.get("timeoutSeconds", 300)), 1800), shell=False)
-                    result = {"label": step["label"], "command": command, "exitCode": proc.returncode,
-                              "durationSeconds": round(time.monotonic() - started, 3),
-                              "stdout": proc.stdout[-2000:], "stderr": proc.stderr[-2000:]}
-                    row["steps"].append(result)
-                    row["observations"].extend(observe(step.get("observe", [])))
-                    if proc.returncode != step.get("expectedExitCode", 0):
-                        row.update(status="failed", error="unexpected process exit")
-                        break
-                except subprocess.TimeoutExpired:
-                    row["steps"].append({"label": step["label"], "timedOut": True,
-                                         "durationSeconds": round(time.monotonic() - started, 3)})
-                    row.update(status="failed", error="process timed out; no forced termination or cleanup claimed")
-                    break
-            else:
-                checks = case.get("assertions", [])
-                assertion_rows = observe(checks)
-                row["assertions"] = assertion_rows
-                names = {x.get("label") for x in checks}
-                missing = REQUIRED_ASSERTIONS - names
-                failing = [x["label"] for x in assertion_rows if not x["passed"]]
-                observed_bad = [x["label"] for x in row["observations"] if x["state"] in {"access-denied", "not-checked"}]
-                prepared_only = any(x.get("status") == "prepared-native-unverified" or
-                                    x.get("nativeInstalled") is False for x in case.get("resultEvidence", []))
-                row.update(status="passed" if not (missing or failing or observed_bad or prepared_only) else "failed",
-                           missingAssertions=sorted(missing), failedAssertions=failing,
-                           unverifiedObservations=observed_bad,
-                           reason="prepared legacy copy is not native installation" if prepared_only else None)
-        report["scenarios"].append(row)
-    report["status"] = "passed" if execute and all(x["status"] == "passed" for x in report["scenarios"]) else "blocked" if not execute else "failed"
+    report = {"schema": "xingtu.inno-lifecycle-report.v2", "executionRequested": execute,
+              "executionEnabled": False, "status": "blocked", "platform": platform.platform(),
+              "inputErrors": errors, "scenarios": []}
+    if not errors and not execute:
+        for case in spec["scenarios"]:
+            report["scenarios"].append({"name": case["name"], "status": "preflight-only",
+                                        "execution": "disabled; no trusted isolated runner configured"})
     return report
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("spec", type=Path)
-    parser.add_argument("--execute", action="store_true", help="run only in a declared disposable Windows environment")
+    parser.add_argument("--execute", action="store_true", help="refused until an authenticated disposable Windows runner exists")
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
     spec = json.loads(args.spec.read_text(encoding="utf-8"))
-    report = run(spec, args.execute)
-    args.report.parent.mkdir(parents=True, exist_ok=True)
-    args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"{report['status']}: {args.report}")
+    # Validate report destination before creating anything. A spec cannot authorize an
+    # arbitrary report location: it must be inside one of its declared roots.
+    errors = validate(spec, args.execute)
+    raw_roots = spec.get("allowedRoots", []) if isinstance(spec, dict) else []
+    roots = []
+    for value in raw_roots:
+        root, _ = _path_errors(value, "allowedRoots entry", [])
+        if root is not None:
+            roots.append(root)
+    report_path, report_errors = _path_errors(str(args.report.absolute()), "report path", roots, allow_root=False)
+    errors.extend(report_errors)
+    if errors:
+        report = {"schema": "xingtu.inno-lifecycle-report.v2", "executionRequested": args.execute,
+                  "executionEnabled": False, "status": "blocked", "platform": platform.platform(),
+                  "inputErrors": errors, "scenarios": []}
+    else:
+        report = run(spec, args.execute)
+    if report_path is None or report_errors:
+        print("blocked: report destination failed boundary validation")
+        return 2
+    try:
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        # Re-check after directory creation to catch a newly introduced symlink.
+        checked, found = _path_errors(str(report_path), "report path", roots, allow_root=False)
+        if found or checked != report_path:
+            print("blocked: report destination changed during validation")
+            return 2
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        print("blocked: report could not be written safely")
+        return 2
+    print(f"{report['status']}: {report_path}")
     return 0 if report["status"] == "passed" else 2
 
 
