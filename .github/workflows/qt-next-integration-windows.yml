@@ -213,6 +213,7 @@ jobs:
               $modules = @(
                 'test_s0_predecessor_closure', 'test_s0_staged_closure',
                 'test_resource_zip_io', 'test_imported_resource_archive',
+                'test_resource_snapshot_io_allocation',
                 'test_imported_resource_packages', 'test_imported_resource_catalog',
                 'test_imported_resource_selection', 'test_imported_resource_activation',
                 'test_imported_resource_inventory', 'test_owned_directory_publication',

@@ -24,7 +24,9 @@ def read_stable_file(path, max_bytes, *, no_links, reject, identity=None):
         before = os.fstat(handle.fileno())
         if not stat.S_ISREG(before.st_mode) or before.st_size > max_bytes:
             reject('invalid-metadata-file')
-        raw = handle.read(max_bytes + 1)
+        # The initial fstat gives a tighter read bound than the caller's cap.
+        # Read one extra byte so growth past the observed size remains visible.
+        raw = handle.read(before.st_size + 1)
         after = os.fstat(handle.fileno())
 
     signature = lambda info: (info.st_dev, info.st_ino, info.st_size,

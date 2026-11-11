@@ -484,3 +484,8 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 - 最终纯查询实现的健康重复与坏 PNG/坏 manifest 恢复两项通过（185.759 秒），实际连接 Runtime 资源失效，恢复后重新取得 author-route 与透明像素，catalog bytes 不变。独立 Reviewer 对最终恢复项另跑 1 项/两 subtests（121.574 秒）通过。此前初版完整 4 项通过（220.038 秒），改为唯一失效拥有者后只重跑受影响两项，不把两次合称一次全量。原基础启用 UI 7 项（45.308 秒）、默认空资源 QtClient 与保存服务 9 项（2.213 秒）通过；取消/关闭时仅延迟实际 helper 来控制时机，未替换校验、事务或 engine。
 - 远端 `eea64f0` 四条 workflow 成功，联合工作流 16 组成功，display 组约 25 分钟时取消；此前三个模块分别完成 6/312.437s、4/232.421s、7/583.698s，joint 模块被中断，不能算通过。joint 与新增作者 UI 归独立 integration 组，原 64 模块全保留再加 1 个，共 65，六组 10/31/16/3/3/2，18 个 matrix 项；25 分钟上限、逐模块进程、失败汇总及历史 baseline 不变，分组实际远端结果待核。
 - 当前默认 `routeChoices` 与图库仍由空 imported browse 返回；设置中的作者选项尚未接入新组件，旧“显示资源尚未通过解码校验”提示也待该下游一起替换。因此本切片证明组件选择与显式 profile 显示消费者，不证明默认作者选择/图库完整旅程。Coordinator 清视图与 QtClient timer 重准备未在本新增 UI 组中完整执行；实际文件选择器、真实作者素材、实帧、游戏及 Setup 同样未验收。下一切片接公共 browse 与有界像素 provider，不能硬编码新作者选项补通过。
+
+### 共享小文件读取的分配修复
+
+- 实测共享 `read_stable_file` 读取 8,192 B 文件、传入 128 MiB cap 时，原 `read(cap + 1)` 的 tracemalloc 峰值为 134,227,354 B，单次 0.023985 秒。改为已核 regular/max-bound 的首次 fstat 尺寸加 1，峰值为 18,305 B，单次 0.000399 秒；同一 Windows 11 / CPython 3.13.3 真实文件测量，不是应用端到端或冷启动时间。不能仅凭 CI 被中断的读取堆栈把它判为全部超时根因。
+- 分配回归原实现实际失败（峰值 134,227,874 B）；修后三项通过，覆盖真实分配、首次 fstat 后追加字节仍拒绝、精确 cap 接受及超限拒绝。原路径换 inode 同 bytes、Windows ctime/fstat 域和读中变化等 5 项定向检查通过（0.035 秒）。长度、前后 fstat、重新打开路径身份、链接检查和原错误映射保持。新模块加入 data 组，原 65 模块不删减，共 66，六组 10/32/16/3/3/2；既有分片与时限保留。
