@@ -2110,7 +2110,8 @@ class ClientCoordinator(QObject):
                         window=dict(name="aligned", visible=False))
 
     def _notify_first_valid_output(self, public):
-        if public.get("provisional") or public.get("identityPhase") in {"UNLOCKED", "GROUP_LOCKED"}:
+        if (public.get("reviewStatus") == "pending" or public.get("provisional")
+                or public.get("identityPhase") in {"UNLOCKED", "GROUP_LOCKED"}):
             return
         success_key = ("success", public.get("roundId"), public.get("mapId"))
         if success_key not in self._notified:

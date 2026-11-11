@@ -593,6 +593,42 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 - 同 commit 的 display-integration 首三模块（joint activation/author UI/browse）分别 761.205/284.512/345.013 秒，后在 browse-modes fixture setup 中取消，没有 assertion failure；取消来源未确证。六资源分片的日志总跨度依次为 2:24.673、12:36.941、16:25.516、6:54.440、14:45.775、25:02.514，最后一项含取消后的清理，不能称为完整成功耗时。
 - 把整个 `test_client_imported_author_joint_activation` 从 integration 移到 packaging（实测旧组 2 分 25 秒）；把整个 `test_client_imported_fast_structure` 从 runtime 移到 display-data（实测旧组 6 分 54 秒、该模块 274.466 秒），为自动导入新增回归留空间。现 77 模块精确多重集保持，六组 11/33/20/4/4/5；18 matrix、25 分钟、各模块独立进程和失败汇总不变。加减 e116 秒数只说明平衡依据，不能当作新 commit 全程耗时或远端通过；仍需绑定新 head 核验。
 
+### P4 第一切片：首可用显示、继续复核与内容复用
+
+本切片基于 `6da9e50851da74679da23a1a4183988b5ce42926`，分支 `agent/pr133-p4-1-progressive-display`，草稿 PR 指向 `codex/unified-resource-runtime-20261110`。主模块为「路线贴合」「路线显示」「地图资源」（仅实际显示来源校验），相邻影响「地图识别」「楼层判断」「本局与快捷键」。涉及识别与显示授权逻辑，实施已获本次派单授权，合并前仍须 huan 确认；本切片不合并、不发版，不代表完整 P4 或四模式统一完成。
+
+- 替代原 `LiveRuntime._solve_observation` 等待 host 全部返回后才唯一显示的调用顺序：共享 host 可先提供当前 canonical 残差已验证的结果；首显与最终结果复用该方法内同一 `publish_fit` 提交者，分别标记 `reviewStatus=pending/complete` 与 `poseFinalVerified`。暂定只提交可撤销的显示授权，不更新持久 pose、局内 group、身份或贴合记忆，不发送最终识别完成通知。
+- 已有 `single_map_structure.solve.validate` 的点/区域证据通过后，只有不要求显式墙产品且当前 canonical 残差通过时才提前交付；随后保留原 `partial_wall_geometry` 细化、最终残差、单 pose/歧义检查。原墙细化可以给出不同的最终变换，直接更新同内容画面的变换；显式墙产品仍须先通过原墙验证。其余成功 host 结果在外层 peer/多岛复核前交付，未开放模式的 live 资格保持原拒绝。
+- 首显与最终提交继续核对当前帧/楼层、epoch/cycle/generation、采集上下文、引擎、组选择意图、显示代际、实际来源资源身份及登记组；在最终提交前重新解析来源身份。失败、异常、取消或失效只撤销该次暂定 token，不能撤销更新的显示 owner，也不能恢复已关图/换图/换层/结束/资源换代的画面。兄弟成员 material ACK 与 S1 候选 ticket 保留原协议，不借首显扩大资格。
+- 暂定和最终使用同一不可写 RGBA 数组；不同授权 token 通过现有 `LiveImages` 的内容 scope 复用稳定 URL，`ClientAligned.qml` 继续只更新变换。作者/图层真实内容变化仍走原显示解析与图片获取，作者变更不改身份、楼层或结构 pose。未修改 provider、候选算法、工作流或 P5 范围。
+
+新增回归边界：`test_client_progressive_display` 的阻塞 peer 测试保留生产 host/运行时，传感器与捕获使用合成替身；墙细化修正测试保留实际 host → 原 recovery solver → 墙细化入口 → 最终提交，仅替换图像证据传感器。另有最终修正、无效/异常撤销、取消、关闭/结束、换图/层/资源、相同路径换资源、强制墙/残差拒绝和四组合参数反例。四组合正例是合成资源，S1 只走原手动试验资格，不代表四组合真实资源或自动识别已验收。
+
+| 尚未统一的外围 | 当前保留与退出条件 |
+| --- | --- |
+| ROI/恢复 | `_fit_observation` 的默认/显式 ROI、多岛及各恢复策略仍在；应在同一 FrameObservation 下逐一迁移并证明无门、遮挡、错岛等回放等价，不能删除必要恢复以称统一。 |
+| context | epoch、capture、settings/display、组意图及 structure ticket 校验仍按实际调用保留；后续统一构造/验证须覆盖换图、换层、关图、结束、资源替换及迟到反例后再移除重复 guard。 |
+| 提交与候选 | 本切片统一首显/终态的局部提交；兄弟成员 ACK、S1 候选及旧 S0 控制器仍存。P3 草稿 #138 仅第一切片，不能据此移除旧控制器或宣称候选统一；须在默认生产链替代后联合退出。 |
+
+与 P2/P3 的重叠是 `client_live_runtime.py` 和本台账；按同一基线副本实施，整合时保留双方资源/候选改动，重放首显/复核及取消检查。本切片没有修改 #135 的回放文件，也没有修改 `client_providers.py`。既有源版本绑定和索引失效保护保留，不为新源码重绑旧冻结索引。
+
+交付前复查远端基线已到 `06ef751226c5eecfe4c07e0a4b27098a1333af70`：相对派工基线只有持续集成分组和台账追加，生产接缝未变。本分支保留派工基线，台账放在非重叠位置，不修改工作流；父分支已有更新留给正常 PR 整合保留。
+
+验证环境为 Python 3.13、PySide6 6.11.1、OpenCV 5.0.0。最终定向联合检查 **333 项通过，13.326 秒**，命令如下；`work/tmp` 为本任务临时目录，未运行无关全库或改 CI。
+
+```powershell
+$env:TEMP=Join-Path (Get-Location) 'work/tmp'; $env:TMP=$env:TEMP
+$env:PYTHONPATH='app;tests;experiments/qt_quick'
+$env:QT_QPA_PLATFORM='offscreen'; $env:QT_QUICK_BACKEND='software'; $env:QSG_RENDER_LOOP='basic'
+python -m unittest test_client_progressive_display test_client_progressive_pixels test_client_live_runtime test_client_group_queue test_client_aligned_transform test_client_fit_reporting test_s1_runtime_pose_prior test_structure_cache_memory test_s1_manual_alignment test_client_route_reprojection test_client_custom_display test_client_route_preferences test_client_session test_client_map_input test_client_known_floor_recovery test_shared_recovery_residual_contract test_client_coordinator test_client_imported_admission test_client_g_cycle_admission -q
+```
+
+`test_client_progressive_pixels` 保留实际 runtime → coordinator → `LiveImages.publish/requestImage` → 未修改的 `ClientAligned.qml`，捕获、图片与 fit/复核 verdict 为合成受控替身。首个正确离屏像素出现后，在 scenegraph 线程只读实际 Image 的 `textureProvider().texture()`，核对 C++ 指针、生命周期编号、实际 Python 所有权及 `destroyed`：修正前后同一个 `QSGSoftwarePixmapTexture`，期间销毁 0，正常 teardown 销毁 1；路线图片请求 1 次，两个授权 token 的发布保留同 URL/同图片。取样同时核对四色旧位置离开后透明、新位置进入后着色；故意冻结消费者最终矩阵时，同一像素断言拒绝该结果。无效分支清空图片源、隐藏窗口，纹理仍可缓存到正常 teardown。pending material ACK 拒绝、complete 新 token ACK 成功，待复核期间没有隐藏窗口。
+
+软件后端 `comparisonKey` 为 0，不能单用该值证明复用；上述指针/生命周期与像素观测对应 [Qt 6.11.1 Image 的实际纹理缓存](https://github.com/qt/qtdeclarative/blob/v6.11.1/src/quick/items/qquickimage.cpp)及[软件纹理实现](https://github.com/qt/qtdeclarative/blob/v6.11.1/src/quick/scenegraph/adaptations/software/qsgsoftwarepixmaptexture.cpp)。没有观测构造函数或 `createTexture()` 调用次数，不把首次观测计成创建调用，也不声称 GPU 上传或驱动资源已测。
+
+两条独立受控探针各 1 次：修正/撤销分支从测试事件注入到正确抓屏像素验证完成约 951/911ms，host 提交 pending 约 306/313ms（含提交，不是纯求解），受控复核阻塞约 63/62ms，释放后到修正像素验证/撤销约 54/1ms。首显与修正的计时终点紧随各自像素比对成功落点，撤销终点核对实际图片源与窗口状态，不包含 teardown/清理；释放起点在解除阻塞之前记录。fit 是替身，生产计算耗时未知；这不是连续游戏样本或生产百分位。真实资源回放、物理显示、真实游戏均未验证；500/300ms 仍是目标，不能把注入到离屏像素当作游戏按键到物理像素耗时。
+
 ### 专属资源后缀与真实文件选择入口
 
 - 按用户要求，公共结构制包 CLI 输出 `.xingtu-base`，作者路线制包 CLI 输出 `.xingtu-route`，错误后缀在处理输入前拒绝。底层制包与归档 API 仍使用原 ZIP 容器语义。实际 CLI 正例两项通过（24.505 秒），名称协议及下载缓存合计 16 项通过（0.219 秒）。下载地址含专属后缀时保留至本地缓存文件名，旧/无类型地址仍用内部 `.zip` 传输名。

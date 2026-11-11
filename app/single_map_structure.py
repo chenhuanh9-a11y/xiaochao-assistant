@@ -1407,6 +1407,16 @@ def solve(assistant, frame, map_id, floor, profile, route, *, cancelled=None, _c
         point_target=target.copy()
         geometry_verified=selected.get('success') and geometry['graph']['regionalEdgeVerified']
         support=int(geometry.get('acceptedPointCount') or 0)
+        offer = getattr(assistant, '_offer_structure_pose', None)
+        if (shared and geometry_verified and wall_args.get('source_wall_mask') is None
+                and callable(offer) and getattr(assistant, 'usable_fit_callback', None) is not None):
+            # This existing point-only proof can already satisfy the final
+            # policy when no explicit wall product is mandatory. Display it
+            # provisionally, then keep the original wall refinement and all
+            # ambiguity checks below. Explicit-wall products still wait.
+            point_residual = current_residual(point_target)
+            if residual_verified(point_residual) and not (cancelled and cancelled()):
+                offer(point_target.copy(), point_residual, context, 'shared-established-group-recovery')
         # A point proposal can pass a coarse regional check while retaining
         # a biased translation. Independent wall-normal holdouts refine its
         # position as well; regional visibility alone is not subpixel tracking.
