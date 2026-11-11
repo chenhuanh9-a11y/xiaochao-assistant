@@ -39,7 +39,7 @@ public sealed partial class LiveRuntime
 
     // Original Qt S1 supplies an explicit full-frame observation domain. The
     // Host deliberately skips 0059 there, even when the setting is enabled.
-    private bool SteadyEnabled => _selection.Season == "s0" && _steadySettingEnabled
+    private bool SteadyEnabled => _selection.Season == "s0" && !IsStructureProvisional && _steadySettingEnabled
         && Environment.GetEnvironmentVariable("IDENTITYV_IDVB0059_STEADY") != "0";
     private bool SteadyMaterialReady => _geometryGroup is { } group && ReferenceEquals(_steadyOwner, group.Model)
         && _steadyFloors.Values.Any(row => ReferenceEquals(row.Owner, group.Model));

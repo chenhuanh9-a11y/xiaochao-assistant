@@ -23,6 +23,7 @@ internal sealed class RecordedCapture(Dictionary<string, JsonObject> index) : IC
     public void FailNext(string reason="recorded-capture-unavailable")=>nextFailure=reason;
     public void ThrowNext(Exception error)=>nextError=error;
     public int Calls { get; private set; }
+    public string? SelectedId => selected?["id"]?.GetValue<string>();
     public Action<byte[],int,int,int>? TransformPixels {get;set;}
     public bool IsBound => true;
     // Explicitly changed only by isolated provenance-boundary tests.

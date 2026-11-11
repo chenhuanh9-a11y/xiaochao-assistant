@@ -18,6 +18,7 @@ public sealed partial class LiveRuntime
         lock (_sync)
         {
             RequireCurrent(epoch, token, captured, bound);
+            if(_selection.Season=="s0"&&(_mapId is null||_identitySource=="group-default"))return null;
             // Selected S1 identities share renewal/Core commit, but measure
             // full-client geometry and never enter S0's group/scale cache lane.
             s1Manual=request.Action=="observe_manual_floor" && _manualAlignmentSession && S1ManualIdentity && S1FloorObserverAvailable;

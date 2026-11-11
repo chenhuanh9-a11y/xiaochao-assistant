@@ -1,0 +1,922 @@
+{
+  "scope": "Derived static exit widget anchors for the source-bound S0 native difficult references. No pose or identity authority. Missing sources remain unknown.",
+  "sources": {
+    "derivation": "static_exit_markers.json",
+    "catalogSha256": "0990e423a001fd217e4e97abbd1ffb363ed94f2af6b8a73e0916148b8759143e"
+  },
+  "rules": {
+    "widget": {
+      "anchor": [
+        0.5,
+        0.5
+      ]
+    },
+    "voxelSize": [
+      60,
+      70,
+      60
+    ],
+    "iconPath": "system/battle_adv/map/btn_exit_nml.png"
+  },
+  "records": [
+    {
+      "levelId": 103001,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            920,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            445,
+            1830
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            2010,
+            995
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103002,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            920,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            450,
+            1415
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            1050,
+            1295
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103003,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            920,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            1285,
+            1470
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            810,
+            1595
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103004,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            920,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            325,
+            810
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            815,
+            1050
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103005,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            920,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            1595,
+            990
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            1285,
+            1590
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103006,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            920,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            1410,
+            985
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            570,
+            1535
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103007,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            920,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            390,
+            1895
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            925,
+            810
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103008,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            920,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            1170,
+            505
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            815,
+            930
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103009,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            920,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            2135,
+            690
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            1355,
+            1050
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103010,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            920,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            445,
+            1830
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            2010,
+            995
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103011,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            800,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            445,
+            1590
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            2075,
+            870
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103012,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            920,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            1170,
+            2015
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            875,
+            1470
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103013,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            920,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            1110,
+            1115
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            1465,
+            1830
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103014,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            920,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            1050,
+            1645
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            2135,
+            1590
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103015,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            920,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            990,
+            1835
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            150,
+            565
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103016,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            920,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            205,
+            1050
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            445,
+            1050
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103017,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            920,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            1950,
+            1055
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            1535,
+            1290
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103018,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            680,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            690,
+            1535
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            1770,
+            1535
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103019,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            920,
+            204
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            385,
+            1170
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            1355,
+            1110
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103020,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            1040,
+            264
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            2075,
+            630
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            450,
+            995
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103021,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            920,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            1895,
+            870
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            875,
+            2070
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103022,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            920,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            2010,
+            1285
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            1230,
+            995
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103023,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            920,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            985,
+            1470
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            385,
+            1590
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103025,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            800,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            145,
+            1770
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            1290,
+            1115
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103026,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            1040,
+            384
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            270,
+            1415
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            995,
+            1410
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103027,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            1280,
+            264
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            745,
+            1410
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            2310,
+            1525
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103028,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            800,
+            564
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            2255,
+            1050
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            1470,
+            1295
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103029,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            800,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            510,
+            1955
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            1955,
+            1890
+          ]
+        }
+      ]
+    },
+    {
+      "levelId": 103030,
+      "staticExitInputsComplete": true,
+      "issues": [],
+      "marks": [
+        {
+          "kind": "front-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            1160,
+            444
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 2,
+          "mapPlaneXZ": [
+            510,
+            1645
+          ]
+        },
+        {
+          "kind": "side-door",
+          "worldFloor": 3,
+          "mapPlaneXZ": [
+            1950,
+            1165
+          ]
+        }
+      ]
+    }
+  ]
+}

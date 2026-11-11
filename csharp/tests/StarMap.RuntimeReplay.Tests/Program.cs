@@ -5,9 +5,11 @@ using StarMap.Runtime;
 
 bool dragGroupOnly=args.Length is 4 or 5 && args[0]=="--drag-group-only";
 bool s0ObserveOnly=args.Length is 5 or 6 && args[0]=="--s0-index-observe-only";
-if (dragGroupOnly || s0ObserveOnly || args.Length == 5 && args[0] is "--projection-author-only" or "--projection-only" or "--current-group-only" or "--identity-prior-only" or "--unselected-floor-only" or "--map-recovery-only" or "--map-recovery-late-only" or "--passive-refresh-only" or "--passive-context-only" or "--s1-rich-sequence-only" or "--current-pose-only" or "--s1-floor-observer-only" or "--manual-confirm-only" or "--manual-learning-only" or "--manual-storage-safety-only" or "--floor-click-only" or "--floor-click-session-only" or "--map-close-detector-only" or "--map-close-busy-only" or "--map-close-failure-only" or "--drag-only")
+bool s0FloorPoseOnly=args.Length==4 && args[0]=="--s0-floor-pose-only";
+bool s0PreparationOnly=args.Length==4 && args[0]=="--s0-preparation-gate-only";
+if (dragGroupOnly || s0ObserveOnly || s0FloorPoseOnly || s0PreparationOnly || args.Length == 5 && args[0] is "--s0-index-runtime-only" or "--projection-author-only" or "--projection-only" or "--current-group-only" or "--identity-prior-only" or "--unselected-floor-only" or "--map-recovery-only" or "--map-recovery-late-only" or "--passive-refresh-only" or "--passive-context-only" or "--s1-rich-sequence-only" or "--current-pose-only" or "--s1-floor-observer-only" or "--manual-confirm-only" or "--manual-learning-only" or "--manual-storage-safety-only" or "--floor-click-only" or "--floor-click-session-only" or "--map-close-detector-only" or "--map-close-busy-only" or "--map-close-failure-only" or "--drag-only")
 {
-    string priorOnlyOutput = Path.GetFullPath(args[dragGroupOnly||s0ObserveOnly?args.Length-1:4]);
+    string priorOnlyOutput = Path.GetFullPath(args[dragGroupOnly||s0ObserveOnly||s0FloorPoseOnly||s0PreparationOnly?args.Length-1:4]);
     if (Directory.Exists(priorOnlyOutput)) throw new IOException("Preserve previous evidence; use a new output.");
     Directory.CreateDirectory(priorOnlyOutput);
     var priorOnlyChecks = new List<object>(); var priorOnlyFailures = new List<string>();
@@ -19,6 +21,12 @@ if (dragGroupOnly || s0ObserveOnly || args.Length == 5 && args[0] is "--projecti
         };
         if(args[0]=="--s0-index-observe-only")
             await S0IndexObservation.Run(args[1],args[2],args[3],priorOnlyOutput,priorOnlyCheck,args.Length==6?args[4]:null);
+        else if(args[0]=="--s0-index-runtime-only")
+            await S0StructureIndexRuntimeRegression.Run(args[1],args[2],args[3],priorOnlyOutput,priorOnlyCheck);
+        else if(s0FloorPoseOnly)
+            await S0FloorPoseRegression.Run(args[1],args[2],priorOnlyOutput,priorOnlyCheck);
+        else if(s0PreparationOnly)
+            await S0PreparationGateRegression.Run(args[1],args[2],priorOnlyOutput,priorOnlyCheck);
         else if(args[0]=="--projection-author-only")
             await ProjectionAuthorRegression.Run(args[1],args[2],args[3],priorOnlyOutput,priorOnlyCheck);
         else if(args[0]=="--projection-only")
@@ -291,31 +299,27 @@ await Run("resource-invalidation-during-missing-material-revokes-canonical-direc
         "resource invalidation directly prevents old canonical material recovery without an earlier close");
 });
 
-await Run("S0-front-similarity-and-human-A1-consume-real-Host-fit", async () =>
+await Run("S0-door-index-preview-and-human-A1-consume-real-Host-fit", async () =>
 {
     await Ask("end_round");
     await Ask("set_context", new { season = "s0", mode = "nightmare", profileId = "shared-structure" });
     await Ask("start_round"); port.Select("batch01-event-000006"); await Ask("capture_now");
     var grouped = runtime.ReadState();
     Save("s0-front-initial-observation", grouped);
-    var originalDecision = JsonNode.Parse(File.ReadAllBytes(Path.Combine(Path.GetDirectoryName(oracle)!,
-        "s0-identity-consumer-python-01", "batch01-event-000006", "decision.json")))!;
-    Check(grouped.IdentityLocked && grouped.IdentityKind == "group"
-        && grouped.IdentityGroupId == originalDecision["state"]!["groupId"]!.GetValue<string>()
-        && grouped.IdentityMemberIds.SequenceEqual(Ids(originalDecision["memberIds"]))
-        && grouped.Context.MapId == originalDecision["selectedMapId"]!.GetValue<string>(),
-        "registered group and display reference match the independent original consumer without claiming a unique map");
-    Check(grouped.Candidates[0].IdentityKind == "group" && !grouped.Candidates[0].IdentityVerified
-        && grouped.Candidates[0].MemberIds.Contains("nightmare-12"), "automatic candidates fold the registered group and retain A1 as a member");
+    Check(!grouped.IdentityLocked && grouped.IdentityKind == "candidate" && grouped.Context.MapId is null
+        && grouped.RecognitionPath=="structure-index" && grouped.RemainingMapIds.Count==26 && grouped.IdentityGroupId is null,
+        "door-triggered index keeps the unresolved full nightmare pool without manufacturing registered-family recognition");
+    Check(grouped.Candidates.Count==26 && grouped.Candidates.All(row=>!row.IdentityVerified)
+        && grouped.Candidates.Any(row=>row.MapId=="nightmare-12"), "surviving candidates retain the user's A1 choice without injecting that answer");
     Check(grouped.NativeGeometryVerified && grouped.Display.CanonicalVerified && runtime.TryReadRender(out _),
-        "registered group initial reference still requires actual Host fit and canonical material");
+        "conditional candidate preview requires actual Host fit and canonical material");
     Check(JsonSerializer.Serialize(runtime.ReadSnapshot()).Length < 200000,
         "native condition samples stay outside published runtime snapshots");
     await Ask("close_map");
     Check(!runtime.TryReadRender(out _), "group close withdraws current material");
     port.Select("batch01-event-000006"); await Ask("capture_now");
-    Check(runtime.ReadState().IdentityKind == "group" && runtime.ReadState().IdentitySource == "group-default",
-        "reopening revalidates the group instead of making its reference a durable unique identity");
+    Check(runtime.ReadState() is {IdentityKind:"candidate",IdentityLocked:false,RecognitionPath:"structure-index"},
+        "reopening retains the entered index and does not promote its displayed member to identity");
     var selected = await Ask("confirm_route", new { mapId = "nightmare-12" });
     var state = runtime.ReadState();
     var expected = JsonNode.Parse(File.ReadAllBytes(Path.Combine(oracle, "batch01-event-000006", "downstream-fit.json")))!["candidates"]!
@@ -330,6 +334,9 @@ await Run("S0-front-similarity-and-human-A1-consume-real-Host-fit", async () =>
 
 await Run("registered-group-choice-retains-predecessor-until-material-ready", async () =>
 {
+    // Controlled no-door pixels exercise ordinary discovery compatibility.
+    // Default untouched-frame index behavior is tested separately.
+    runtime.Shutdown();port.TransformPixels=S0GlyphAblation.Create(oracle,port);runtime=new(port,root);
     await Ask("end_round");
     await Ask("set_context", new { season = "s0", mode = "nightmare", profileId = "shared-structure" });
     await Ask("start_round"); port.Select("batch01-event-000006"); await Ask("capture_now");
@@ -362,8 +369,10 @@ await Run("registered-group-choice-retains-predecessor-until-material-ready", as
         && runtime.ReadState().GroupChoice is { HeldMapId: "nightmare-12", Status: "confirmed" }
         && runtime.TryReadRender(out var accepted) && ReferenceEquals(accepted, nextPending) && !accepted!.IsLive,
         "Recorded material-ready ACK commits target identity pose grant and pixels together without live authority");
-    var expected = JsonNode.Parse(File.ReadAllBytes(Path.Combine(oracle, "batch01-event-000006", "downstream-fit.json")))!["candidates"]!
-        .AsArray().Single(row => row!["mapId"]!.GetValue<string>() == "nightmare-12")!["fit"]!;
+    var expected = JsonNode.Parse(File.ReadAllBytes(Path.Combine(Path.GetDirectoryName(oracle)!,
+        "runtime-identity-entry-original-01","comparison-no-glyph-01.json")))!["cases"]!.AsArray()
+        .Single(row=>row!["id"]!.GetValue<string>()=="manual-desired")!["steps"]!.AsArray()
+        .SelectMany(row=>row!["fits"]!.AsArray()).First(row=>row!["mapId"]!.GetValue<string>()=="nightmare-12")!["fit"]!;
     MatrixEqual(runtime.ReadState().NativePose!.ToMatrix(), expected["matrixSourceToClient"]!, "group choice uses independent original Host geometry");
     var duplicate = await Ask("select_group_member", GroupPayload("nightmare-12"));
     Check(duplicate.Receipt is { Success: true, Reason: "already-current" } && runtime.ReadPendingGroupMaterial() is null,
@@ -434,8 +443,9 @@ await Run("unconfirmed-desired-member-survives-failed-target-floor", async () =>
     await Ask("end_round");
 });
 
+runtime.Shutdown();port.TransformPixels=null;runtime=new(port,root);
 foreach (string id in new[] { "batch02-event-000053", "batch02-event-000097", "batch02-event-000147" })
-await Run(id + "-automatic-S0-identity-reaches-canonical-material", async () =>
+await Run(id + "-default-door-index-reaches-canonical-material", async () =>
 {
     await Ask("end_round");
     string mode = index[id]["mode"]!.GetValue<string>();
@@ -443,16 +453,13 @@ await Run(id + "-automatic-S0-identity-reaches-canonical-material", async () =>
     await Ask("start_round"); port.Select(id);
     var result = await Ask("capture_now"); var state = runtime.ReadState();
     // All independent answers are opened after the production solve finishes.
-    var expected = JsonNode.Parse(File.ReadAllBytes(Path.Combine(Path.GetDirectoryName(oracle)!,
-        "s0-identity-consumer-python-01", id, "decision.json")))!;
-    string map = expected["selectedMapId"]!.GetValue<string>();
-    Check(expected["uniqueHardIdentityCandidate"]!.GetValue<bool>() && state.IdentityKind == "map"
-        && state.IdentityLocked && state.IdentitySource == "automatic-hard-gate" && state.Context.MapId == map,
-        id + " full current-rank predicate commits the independently recognized unique map");
-    var fit = JsonNode.Parse(File.ReadAllBytes(Path.Combine(oracle, id, "downstream-fit.json")))!["candidates"]!
-        .AsArray().Single(row => row!["mapId"]!.GetValue<string>() == map)!["fit"]!;
-    Check(result.Receipt.Success && state.NativeGeometryVerified, id + " actual entry candidate reaches Host fit");
-    MatrixEqual(state.NativePose!.ToMatrix(), fit["matrixSourceToClient"]!, id + " original Host matrix is consumed");
+    string map=state.ProvisionalMapId!;
+    Check(state is {IdentityKind:"candidate",IdentityLocked:false,Context.MapId:null,RecognitionPath:"structure-index"}
+        && map is not null && state.RemainingMapIds.Contains(map),id+" actual default door route does not reuse old-ranker identity acceptance");
+    var fit = JsonNode.Parse(File.ReadAllBytes(Path.Combine(Path.GetDirectoryName(oracle)!,
+        "s0-index-cold-host-python-02", id, map+".json")))!;
+    Check(result.Receipt.Success && state.NativeGeometryVerified, id + " actual index candidate reaches Host fit");
+    MatrixEqual(state.NativePose!.ToMatrix(), fit["matrixSourceToClient"]!, id + " independent original cold Host matrix is consumed");
     Check(state.Display.CanonicalVerified && runtime.TryReadRender(out var packet) && !packet!.IsLive
         && !runtime.ReadSnapshot().LiveAuthorization, id + " verified material remains Recorded");
     Save(id + "-automatic-runtime", state);

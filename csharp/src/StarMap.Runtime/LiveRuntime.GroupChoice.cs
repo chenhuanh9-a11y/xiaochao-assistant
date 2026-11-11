@@ -157,6 +157,8 @@ public sealed partial class LiveRuntime
             RequireCurrent(epoch, token);
             bool cancelWaiting = _heldGroupMember is not null && _desiredGroupChoice is { } desired
                 && desired.Map != _mapId && Text(request.Payload, "mapId") == _mapId;
+            if(Text(request.Payload,"mapId") is { } requestedMember&&_structurePool is { } pool&&!pool.Remaining.Contains(requestedMember))
+                return Receipt(request,false,"map-excluded-this-round");
             plan = GroupMemberChoicePlanner.Plan(GroupChoiceState(cancelWaiting), new(request.Action,
                 Text(request.Payload, "mapId"), Text(request.Payload, "groupId"), GroupNumber(request.Payload, "groupGeneration"),
                 GroupNumber(request.Payload, "cycleId"), Text(request.Payload, "floor")));

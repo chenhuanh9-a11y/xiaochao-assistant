@@ -9,10 +9,10 @@ namespace StarMap.Runtime;
 
 public sealed partial class LiveRuntime
 {
-    private sealed record FloorReferenceBasis(SharedStructureData Reference, DisplayAffine ReferenceToCanonical);
+    private sealed record FloorFitPose(SharedStructureData Reference, DisplayAffine NativeToClient);
     // Scope/cache metadata only. All live geometry belongs to this existing Core model.
     private sealed record GeometryGroup(RoundLayerGroup Model, BoundResources Resources, string Round,
-        string Window, ClientFrameContext Capture, IReadOnlyDictionary<string, FloorReferenceBasis> Bases);
+        string Window, ClientFrameContext Capture, IReadOnlyDictionary<string, FloorFitPose> FloorPoses);
     private GeometryGroup? _geometryGroup;
 
     private bool GeometryGroupCurrent(GeometryGroup? group, CapturedClientFrame frame, BoundResources bound, string map) =>
@@ -25,29 +25,19 @@ public sealed partial class LiveRuntime
     {
         GeometryGroup? previous;
         lock (_sync) previous = GeometryGroupCurrent(_geometryGroup, frame, bound, entry.MapId) ? _geometryGroup : null;
-        if (previous is null) return null;
+        if (previous is null || !previous.Model.VerifiedFloors.Contains(entry.Floor)
+            || !previous.FloorPoses.TryGetValue(entry.Floor,out var stored)) return null;
+        var reference=bound.LoadReference(entry).Value;
+        if(reference is null || !ReferenceEquals(stored.Reference,reference))return null;
         var model = previous.Model;
         var verified = model.VerifiedFloors.ToHashSet(StringComparer.Ordinal);
         var relations = model.Relations.Keys.ToHashSet(StringComparer.Ordinal);
-        EstablishedGroupContext? geometry = null; S0HostPosePrior? committed = null;
-        if (model.CanonicalPoseForFloor(entry.Floor) is { } canonical)
-        {
-            var reference = bound.LoadReference(entry).Value;
-            DisplayAffine? basis = previous.Bases.TryGetValue(entry.Floor, out var stored)
-                && ReferenceEquals(stored.Reference, reference) ? stored.ReferenceToCanonical : null;
-            if (basis is null && reference is not null)
-            {
-                var declared = new DisplayBridgeResolver(new OpenCvDisplayRasterValidator()).ResolveDisplayReference(
-                    bound.Catalog, entry, "shared-structure", DisplayAffine.Identity, neutral: true);
-                if (declared.Accepted && declared.CanonicalPackId == bound.Coordinates.PackId) basis = declared.ReferenceToCanonical;
-            }
-            if (basis is { } b && Matrix3.Multiply(canonical, new(b.ToArray())) is { } native)
-            {
-                geometry = new(entry.MapId, entry.Floor, "shared-structure", native.ToArray(), verified,
-                    model.CanonicalGeometryVerifiedFloors.ToHashSet(StringComparer.Ordinal), relations);
-                if (verified.Contains(entry.Floor)) committed = new(owner, epoch, entry, native.ToArray());
-            }
-        }
+        // RootPose/relations belong to the shared display scene. Another
+        // floor may update that root; solver hints use this floor's own commit.
+        var native=stored.NativeToClient.ToArray();
+        var geometry=new EstablishedGroupContext(entry.MapId,entry.Floor,"shared-structure",native,verified,
+            model.CanonicalGeometryVerifiedFloors.ToHashSet(StringComparer.Ordinal),relations);
+        var committed=new S0HostPosePrior(owner,epoch,entry,native);
         return new(owner, epoch, entry.Mode, entry.Season, entry.MapId, model.RouteProfileId,
             verified, relations, committed, geometry);
     }
@@ -55,7 +45,7 @@ public sealed partial class LiveRuntime
     private GeometryGroup? StageGeometryGroup(PreparedRuntimeDisplay prepared, IReadOnlyDictionary<string, object?> residual,
         CapturedClientFrame frame, string map, string floor, DisplayAffine canonical)
     {
-        if (frame.Context is null || prepared.CanonicalBasis?.ReferenceToCanonical is not { } basis) return null;
+        if (frame.Context is null || prepared.CanonicalBasis?.ReferenceToCanonical is null) return null;
         var bound = _resources!;
         var previous = GeometryGroupCurrent(_geometryGroup, frame, bound, map) ? _geometryGroup : null;
         var profile = prepared.Material.Layer is not null ? prepared.Selection.EffectiveProfileId
@@ -80,11 +70,11 @@ public sealed partial class LiveRuntime
             candidate.MarkDisplayed(floor, GroupPixels(material), false,
                 renderProfileVerified: residual.GetValueOrDefault("poseVerifiedAgainstRenderedProfile") is true,
                 canonicalGeometryVerified: canonicalVerified, sourceStructureVerified: sourceVerified);
-        var bases = previous?.Bases.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal)
-            ?? new Dictionary<string, FloorReferenceBasis>(StringComparer.Ordinal);
-        if (previous is null || !previous.Model.Relations.ContainsKey(floor)) bases.Clear();
-        bases[floor] = new(prepared.NativeReference, basis);
-        return new(candidate, bound, _roundId!, frame.Stamp.WindowIdentity, frame.Context, bases);
+        var poses = previous?.FloorPoses.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal)
+            ?? new Dictionary<string, FloorFitPose>(StringComparer.Ordinal);
+        if (previous is null || !previous.Model.Relations.ContainsKey(floor)) poses.Clear();
+        poses[floor] = new(prepared.NativeReference, prepared.NativeToClient);
+        return new(candidate, bound, _roundId!, frame.Stamp.WindowIdentity, frame.Context, poses);
     }
 
     private static object?[] DisplaySignature(CapturedClientFrame frame) =>

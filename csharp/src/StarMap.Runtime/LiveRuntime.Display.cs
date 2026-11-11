@@ -271,12 +271,13 @@ public sealed partial class LiveRuntime
                 new(false, false, false, layer is null ? prepared.Material.Reason : "canonical-fit-basis-mismatch",
                     selection.PreferredProfileId, selection.EffectiveProfileId, selection.DisplayKind));
         }
-        var stagedGroup = _selection.Season == "s0" && frame.Context is not null
+        bool needsGroup=_selection.Season=="s0"&&!IsStructureProvisional&&frame.Context is not null;
+        var stagedGroup = needsGroup
             ? StageGeometryGroup(prepared, residual, frame, map, floor, canonical) : null;
-        if (_selection.Season == "s0" && frame.Context is not null && stagedGroup is null)
+        if (needsGroup && stagedGroup is null)
             return new(alignment, null, null, new(false, false, false, "round-group-pose-commit-rejected"));
         alignment ??= new(floors: _resources!.Passports.Floors);
-        var priorGroup = GeometryGroupCurrent(_geometryGroup, frame, _resources!, map) ? _geometryGroup : null;
+        var priorGroup = !IsStructureProvisional&&GeometryGroupCurrent(_geometryGroup, frame, _resources!, map) ? _geometryGroup : null;
         SeedGroupCore(alignment, priorGroup);
         alignment.BeginObservation(new(_roundId!), map, floor, generation, [frame.Stamp.FrameId, _resources!.Id]);
         var candidate = new AlignmentCandidate(map, floor, new(canonical.ToArray()), "initial-structure-v2", generation,

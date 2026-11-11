@@ -99,14 +99,70 @@ internal static class IdentityEntryRuntimeRegression
 
     internal static async Task Run(string resources, string originalReplay, string originalRuntime, string output, Action<bool, string> check)
     {
+        await RunDoorIndex(resources,originalReplay,originalRuntime,output,check);
+        await RunOrdinaryWithoutDoorGlyph(resources,originalReplay,originalRuntime,output,check);
+    }
+
+    private static async Task RunDoorIndex(string resources,string replay,string originalRuntime,string output,Action<bool,string> check)
+    {
+        var index=JsonNode.Parse(await File.ReadAllBytesAsync(Path.Combine(replay,"all-samples.json")))!["samples"]!.AsArray()
+            .ToDictionary(row=>row!["id"]!.GetValue<string>(),row=>row!.AsObject());
+        var summary=JsonNode.Parse(await File.ReadAllBytesAsync(Path.Combine(originalRuntime,"summary.json")))!;
+        var observations=new JsonArray();
+        foreach(var scenario in summary["cases"]!.AsArray())
+        {
+            string directory=scenario!["directory"]!.GetValue<string>(),name=scenario["name"]!.GetValue<string>();
+            var port=new RecordedCapture(index);var runtime=new LiveRuntime(port,resources);var tickets=new SessionSequencer();
+            try
+            {
+                await Ask("set_context",new {season="s0",mode="nightmare",profileId="shared-structure"});await Ask("start_round");
+                foreach(string path in Directory.EnumerateFiles(directory,"*-capture_now.json").Order(StringComparer.Ordinal))
+                {
+                    var source=JsonNode.Parse(await File.ReadAllBytesAsync(path))!;string id=source["input"]!["id"]!.GetValue<string>();
+                    port.Select(id,false);int calls=port.Calls;var result=await Ask("capture_now");var state=runtime.ReadState();
+                    bool available=runtime.TryReadRender(out var packet);
+                    observations.Add(JsonSerializer.SerializeToNode(new {name,id,state,receipt=result.Receipt,available,materialMap=packet?.MapId}));
+                    await File.WriteAllTextAsync(Path.Combine(output,"runtime-door-index-entry.json"),observations.ToJsonString(new JsonSerializerOptions{WriteIndented=true}));
+                    check(port.Calls==calls+1 && state.RecognitionPath=="structure-index" && state.RemainingMapIds.Count==26
+                        && state.EliminatedMapIds.Count==0,name+"/"+id+" default door-entered nightmare route remains indexed across the original chronological sequence");
+                    check(!state.IdentityLocked && state.Context.MapId is null && state.IdentityGroupId is null && NativeIdentity(runtime) is null,
+                        name+"/"+id+" unavailable marker coordinates cannot publish old-ranker identity or manufacture a family");
+                    check(state.Context.FloorId==source["after"]!["floor"]?.GetValue<string>() && !runtime.ReadSnapshot().LiveAuthorization,
+                        name+"/"+id+" observed target floor agrees with the independent original and Recorded stays non-live");
+                    if(available)
+                    {
+                        check(packet!.MapId==state.ProvisionalMapId && state.RemainingMapIds.Contains(packet.MapId)
+                            && packet.Stamp.FrameId==state.Context.FrameId && state.NativePose?.FloorId==state.Context.FloorId
+                            && state.NativeGeometryVerified && state.Display.CanonicalVerified,
+                            name+"/"+id+" displayed candidate is a surviving fresh-frame target-floor fit");
+                        var original=JsonNode.Parse(await File.ReadAllBytesAsync(Path.Combine(Path.GetDirectoryName(replay)!,
+                            "s0-index-cold-host-python-02",id,packet!.MapId+".json")))!;
+                        var wanted=original["matrixSourceToClient"]!.Deserialize<double[][]>()!;
+                        check(state.NativePose!.ToMatrix().SelectMany(row=>row).Zip(wanted.SelectMany(row=>row))
+                            .All(pair=>Math.Abs(pair.First-pair.Second)<=1e-5),name+"/"+id+" selected preview consumes the independent original Host matrix after solving");
+                    }
+                    else check(!state.NativeGeometryVerified && !state.Display.CanonicalVerified,
+                        name+"/"+id+" unknown fit retains candidate evidence without old geometry or display authority");
+                }
+            }
+            finally{runtime.Shutdown();}
+            Task<RuntimeOperationResult> Ask(string action,object? payload=null)=>runtime.DispatchAsync(new(action,
+                JsonSerializer.SerializeToElement(payload??new {}),new(tickets.Issue(),runtime.ReadSnapshot().Context)),default).AsTask();
+        }
+    }
+
+    private static async Task RunOrdinaryWithoutDoorGlyph(string resources, string originalReplay, string originalRuntime, string output, Action<bool, string> check)
+    {
+        originalRuntime=Path.Combine(Path.GetDirectoryName(originalRuntime)!,"no-glyph-01");
         var index = JsonNode.Parse(await File.ReadAllBytesAsync(Path.Combine(originalReplay, "all-samples.json")))!["samples"]!.AsArray()
             .ToDictionary(row => row!["id"]!.GetValue<string>(), row => row!.AsObject());
         var summary = JsonNode.Parse(await File.ReadAllBytesAsync(Path.Combine(originalRuntime, "summary.json")))!;
         var observations = new JsonArray();
-        foreach (var scenario in summary["cases"]!.AsArray())
+        foreach (var scenario in summary["cases"]!.AsArray().Where(row=>row!["name"]!.GetValue<string>().StartsWith("automatic-",StringComparison.Ordinal)))
         {
             string directory = scenario!["directory"]!.GetValue<string>(), name = scenario["name"]!.GetValue<string>();
-            var port = new RecordedCapture(index); var runtime = new LiveRuntime(port, resources); var tickets = new SessionSequencer();
+            var port = new RecordedCapture(index);port.TransformPixels=S0GlyphAblation.Create(originalReplay,port);
+            var runtime = new LiveRuntime(port, resources); var tickets = new SessionSequencer();
             int publishedRanks = 0;
             try
             {
@@ -123,9 +179,10 @@ internal static class IdentityEntryRuntimeRegression
                     observations.Add(JsonSerializer.SerializeToNode(new { name, id, state, publishedRanks }));
                     await File.WriteAllTextAsync(Path.Combine(output, "runtime-identity-entry.json"), new JsonObject {
                         ["observations"] = observations.DeepClone(),
-                        ["scope"] = "Actual automatic Runtime entry; source original Runtime public dispatch with saved PNG capture and explicit material ACK seam. No manually supplied map, pose, prior or identity result. Published native-state object changes observe the RankS0 writer; no GUI/game/unique identity claim."
+                        ["scope"] = "Controlled door-glyph pixel ablation for ordinary-discovery compatibility; actual Runtime reobserves transformed pixels. Default untouched-frame index entry is tested independently. No supplied map, pose, prior or identity result. Native-state changes observe RankS0; no GUI/game claim."
                     }.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
                     int sourceRanks = source["countsAfter"]!["identity-stage-result"]!.GetValue<int>();
+                    check(state.RecognitionPath=="ordinary",name+"/"+id+" controlled no-door input actually uses ordinary discovery");
                     check(publishedRanks == sourceRanks, name + "/" + id + " actual identity publication count follows original Runtime entry");
                     var expected = source["after"]!;
                     check(state.Context.MapId == expected["mapId"]!.GetValue<string>()
@@ -156,7 +213,7 @@ internal static class IdentityEntryRuntimeRegression
             Task<RuntimeOperationResult> Ask(string action, object? payload = null) => runtime.DispatchAsync(new(action,
                 JsonSerializer.SerializeToElement(payload ?? new { }), new(tickets.Issue(), runtime.ReadSnapshot().Context)), default).AsTask();
         }
-        await Transactions(Path.Combine(Path.GetDirectoryName(originalRuntime)!, "comparison.json"));
+        await Transactions(Path.Combine(Path.GetDirectoryName(originalRuntime)!, "comparison-no-glyph-01.json"));
 
         async Task Transactions(string path)
         {
@@ -164,7 +221,8 @@ internal static class IdentityEntryRuntimeRegression
             foreach (var scenario in input["cases"]!.AsArray().Where(row => row!["id"]!.GetValue<string>() is "manual-current" or "manual-desired" or "reset"))
             {
                 string name = scenario!["id"]!.GetValue<string>();
-                var port = new RecordedCapture(index); var runtime = new LiveRuntime(port, resources); var tickets = new SessionSequencer();
+                var port = new RecordedCapture(index);port.TransformPixels=S0GlyphAblation.Create(originalReplay,port);
+                var runtime = new LiveRuntime(port, resources); var tickets = new SessionSequencer();
                 int published = 0, expectedPublications = 0;
                 try
                 {

@@ -367,8 +367,8 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 _roundActive = true; _roundId = Guid.NewGuid().ToString("N");
                 _manualAlignmentSession=manualAlignment;
                 _probeMisses = 0;
-                _structureSession = _resources.StructureCatalog is { } catalog ? new(catalog, _roundId) : null;
-                _structurePool = _resources.StructureCatalog is { } structure
+                _structureSession = _resources.UsesS1StructureFit && _resources.StructureCatalog is { } catalog ? new(catalog, _roundId) : null;
+                _structurePool = _resources.UsesS1StructureFit && _resources.StructureCatalog is { } structure
                     ? new(_roundId, structure.ResourceKey, structure.MapIds) : null;
                 _recognitionPath = "ordinary";
                 _structureIndexEntered = false;
@@ -382,7 +382,8 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         lock (_sync)
         {
             AdvanceOwnedEpoch(); RevokeFrame("round-ended"); ClearIdentity(); _roundActive = false;
-            _roundId = null; _structurePool = null; ClearFloor(); Publish(); return Receipt(request, true, _reason);
+            _roundId = null; _structurePool = null; _structureIndexEntered=false;_recognitionPath="ordinary";
+            ClearFloor(); Publish(); return Receipt(request, true, _reason);
         }
     }
 
@@ -538,6 +539,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
                 return Receipt(request, false, _reason);
             }
         }
+        using var s0Observation=bound.Passports.Season=="s0"?new S0PreparedObservation():null;
         for (int attempt = 0; attempt < maxProbes; attempt++)
         {
             CheckCurrent(epoch, token);
@@ -583,6 +585,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             if (acquisition.Frame is null) return recovery is not null ? Unprepared("capture-unavailable")
                 : FailCaptureAcquisition(request, epoch, acquisition.Reason.Length > 0 ? acquisition.Reason : "capture-unavailable", Preparation("capture-unavailable"));
             captured = acquisition.Frame;
+            s0Observation?.Clear();
             if (_capture.BindingScope != captureBinding || !_capture.IsCurrent(captured.Stamp))
                 return FailCurrent(request, epoch, "capture-context-obsolete", Preparation("capture-obsolete"));
             stageStarted = Stopwatch.GetTimestamp();
@@ -591,7 +594,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             stageStarted = Stopwatch.GetTimestamp();
             floorRead = FloorObservation.Observe(frame, bound.Passports.Season, bound.Passports.Mode,
                 _options.FloorSettings is { } settings ? JsonNode.Parse(settings.GetRawText())?.AsObject() : null,
-                s1Manual ? S1FloorUse.ManualMap : bound.StructureCatalog is not null ? S1FloorUse.StructureCandidate : _options.S1FloorUse, frameCurrent: true);
+                s1Manual ? S1FloorUse.ManualMap : bound.UsesS1StructureFit ? S1FloorUse.StructureCandidate : _options.S1FloorUse, frameCurrent: true);
             observationMs = Stopwatch.GetElapsedTime(stageStarted).TotalMilliseconds;
             lock (_sync)
             {
@@ -601,6 +604,19 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             // override/expiry policy belongs to an accepted observation below;
             // a late rejected usable frame must not clear the user's floor.
             observedFloor = floorRead.AutomaticEligible ? floorRead.FloorId : null;
+            bool observeS0;
+            lock(_sync)
+            {
+                RequireCurrent(epoch,token,captured,bound);
+                observeS0=s0Observation is not null&&S0DiscoveryRequired
+                    &&(floorRead.MapOpen==true || bound.Passports.Mode=="nightmare"&&floorRead.MapObservation["detected"]?.GetValue<bool>()==true);
+            }
+            if(observeS0)
+            {
+                s0Observation!.Replace(captured,frame);
+                s0Observation.Entered=ObserveS0StructureEntry(epoch,token,captured,bound,s0Observation.Preparation!,out var anchor);
+                s0Observation.Anchor=anchor;
+            }
             // A positive map with unreadable floor is retained for manual
             // correction, not treated as a missing-map recovery opportunity.
             // Late usable geometry still cannot pass the preparation deadline.
@@ -679,13 +695,18 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         bool transient;
         lock(_sync){RequireCurrent(epoch,token,captured,bound);transient=DragCycleCurrent;}
         if(transient)return TryTransientFloorProjection(request,epoch,token,captured,bound,floor);
-        using var current = ToBgr(captured);
+        using var current=ToBgr(captured);
+        if(s0Observation is {Entered:true} && ReferenceEquals(s0Observation.Capture,captured))
+        {
+            var indexed=ScanStructure(request,epoch,token,captured,bound,floor,current,preparation,s0Observation.Preparation,s0Observation.Anchor);
+            return await RetryDesiredGroupChoice(request,epoch,token,indexed).ConfigureAwait(false);
+        }
         // Original Runtime re-enters identity ranking only when no map is
         // selected. A provisional group display member also owns this slot;
         // reopening with less structure must not restart discovery implicitly.
         if (map is null || IsStructureProvisional)
         {
-            if (bound.StructureCatalog is not null)
+            if (bound.UsesS1StructureFit)
                 return ScanStructure(request, epoch, token, captured, bound, floor, current, preparation);
             if (bound.Passports.Mode == "difficult" && floor == "2")
             {
@@ -724,7 +745,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
         JsonObject fit; SharedStructureData? source; JsonArray? stages = null, events = null;
         PreparedSteadyFit? steady = null;
         JsonObject steadyDiagnostic = new() { ["attempted"] = false, ["reason"] = "steady-disabled" };
-        if (bound.StructureCatalog is not null)
+        if (bound.UsesS1StructureFit)
         {
             // client_live_runtime._solve_observation calls the S1 Host with
             // explicit full-client bounds; that path does not request steady.
@@ -782,7 +803,7 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             var main = _diagnostics.TryGetProperty("stage", out var stage) && stage.GetString() == "main-entry"
                 ? _diagnostics : JsonSerializer.SerializeToElement(new { });
             JsonElement? floorEvidence = _diagnostics.TryGetProperty("floor", out var currentFloor) ? currentFloor : null;
-            _diagnostics = JsonSerializer.SerializeToElement(new { stage = bound.StructureCatalog is null ? "s0-host-fit" : "shared-fit", identitySource = _identitySource,
+            _diagnostics = JsonSerializer.SerializeToElement(new { stage = bound.UsesS1StructureFit ? "shared-fit" : "s0-host-fit", identitySource = _identitySource,
                 floor = floorEvidence,
                 nativeReferenceKey = entry.StableKey, priorUsed = stages?.Any(row => row?["stage"]?.ToString() == "fast-prior") == true,
                 fit, stages, events, main, steadyAttempt = steadyDiagnostic, geometryGroup = _geometryGroup?.Model.Snapshot() }, Json);
@@ -1007,19 +1028,22 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             Marshal.Copy(frame.Bgra.Slice(row * frame.Stride, frame.Width * 4).ToArray(), 0, bgra.Ptr(row), frame.Width * 4);
         var bgr = new Mat(); Cv2.CvtColor(bgra, bgr, ColorConversionCodes.BGRA2BGR); return bgr;
     }
-    private sealed class BoundResources(ResourceCatalog catalog, EntryPassportCatalog passports, S0IdentityRankPipeline? identity, StructureCatalog? structureCatalog)
+    private sealed class BoundResources(ResourceCatalog catalog, EntryPassportCatalog passports, S0IdentityRankPipeline? identity, StructureCatalog? structureCatalog,string id)
     {
         private readonly object referenceSync = new();
         private readonly LinkedList<(string Key, SharedStructureData Reference)> references = new();
         private readonly Lazy<AuthorCoordinateAdapter> coordinates = new(() => ReadCoordinates(passports));
         public AuthorCoordinateAdapter Coordinates => coordinates.Value;
-        public string Id { get; } = Guid.NewGuid().ToString("N");
+        public string Id { get; } = id;
         public ResourceCatalog Catalog { get; } = catalog;
         public DisplayMaterialPreparer DisplayMaterials { get; } = new(Math.Max(1,passports.Floors.Count*2));
         public List<RuntimeSceneSources> Scenes { get; } = [];
         public EntryPassportCatalog Passports { get; } = passports;
         public S0IdentityRankPipeline? Identity { get; } = identity;
         public StructureCatalog? StructureCatalog { get; } = structureCatalog;
+        public bool UsesS1StructureFit => Passports.Season=="s1";
+        private readonly Lazy<ConfirmedFrontGroupRegistry> families=new(()=>new(catalog,passports));
+        public ConfirmedFrontGroupRegistry RegisteredFamilies => families.Value;
         private static AuthorCoordinateAdapter ReadCoordinates(EntryPassportCatalog passports)
         {
             string relative = "references/nightmare-canonical-coordinate-pack.json";
@@ -1062,8 +1086,10 @@ public sealed partial class LiveRuntime : ISessionRuntime, IRuntimeRecoveryContr
             if (!catalog.Entries.Any(e => e.Mode == selection.Mode && e.Season == selection.Season && e.StructureStatus == ResourceBindingStatus.Ready))
                 throw new InvalidDataException("context-structure-resources-unavailable");
             FloorObservation.PrepareResources(selection.Season);
-            return new(catalog, passports, selection.Season == "s0" ? new(catalog, passports) : null,
-                selection.Season == "s1" ? StructureCatalog.FromResources(catalog, selection.Mode) : null);
+            string id=Guid.NewGuid().ToString("N");
+            var structure=selection.Season=="s1"?StructureCatalog.FromResources(catalog,selection.Mode)
+                :StructureCatalog.FromS0Resources(catalog,passports,id);
+            return new(catalog, passports, selection.Season == "s0" ? new(catalog, passports) : null,structure,id);
         }
     }
 }

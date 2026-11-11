@@ -25,6 +25,8 @@ public sealed class NativeSimilarityState
     public NativeIdentityContext? Context { get; }
     private NativeSimilarityState(JsonObject data,NativeIdentityContext? context) { this.data=data.DeepClone().AsObject(); Context=context; }
     public static NativeSimilarityState Empty() => new(Initial(),null);
+    /// <summary>An unrecognized identity in an explicit owner context; grants no family or member evidence.</summary>
+    public static NativeSimilarityState ForContext(NativeIdentityContext context) => new(Initial(),context);
     public IReadOnlyList<string> MemberIds => System.Array.AsReadOnly(Strings(data["members"]));
     public string? ProvisionalMemberId => data["provisionalMemberId"]?.GetValue<string>();
     public string State => Text(data,"state");

@@ -134,7 +134,7 @@ public sealed partial class LiveRuntime
             using var pixels=ToBgr(captured);
             var read=FloorObservation.Observe(pixels,bound.Passports.Season,bound.Passports.Mode,
                 _options.FloorSettings is { } settings?JsonNode.Parse(settings.GetRawText())?.AsObject():null,
-                _manualAlignmentSession?S1FloorUse.ManualMap:bound.StructureCatalog is not null?S1FloorUse.StructureCandidate:_options.S1FloorUse);
+                _manualAlignmentSession?S1FloorUse.ManualMap:bound.UsesS1StructureFit?S1FloorUse.StructureCandidate:_options.S1FloorUse);
             bool project=false;string? target=null;
             lock(_sync)
             {
