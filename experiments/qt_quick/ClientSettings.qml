@@ -452,7 +452,7 @@ Item {
                         seasons: settingsService.seasonOptions
                         season: root.draftSeason; mode: root.preferences.gameMode
                         enabled: !settingsService.busy
-                        onContextRequested: function(season, mode) { settingsService.setValue("gameSeason", season); settingsService.setValue("gameMode", mode) }
+                        onContextRequested: function(season, mode) { settingsService.setGameContext(season, mode) }
                     }
                     Item { Layout.fillWidth: true }
                 }

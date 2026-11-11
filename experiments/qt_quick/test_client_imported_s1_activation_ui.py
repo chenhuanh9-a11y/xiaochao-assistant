@@ -64,11 +64,27 @@ class ImportedS1ActivationUiTests(unittest.TestCase):
         self.assertFalse(self.service.busy, self.service.message)
 
     def save(self):
-        self.service.importArchive(QUrl.fromLocalFile(str(self.source.output)).toString())
+        # Dormant history is the precondition for explicit switch/retry tests;
+        # product import activates automatically in its own regressions.
+        from imported_resource_archive import save_archive
+        save_archive(self.source.output, self.resolver.root)
+        self.service.listPackages()
         self.wait()
         self.assertFalse(self.errors, self.errors)
         self.assertFalse(self.changes)
         return self.service.packageRows[0]['key']
+
+    def test_product_import_activates_s1_base_and_controls_without_live_authority(self):
+        self.service.importArchive(QUrl.fromLocalFile(str(self.source.output)).toString())
+        self.wait()
+        self.assertFalse(self.errors, self.errors)
+        self.assertEqual(self.changes, [True])
+        self.assertEqual(self.service.availableContexts, ['s1:difficult'])
+        self.assertFalse(self.resolver.snapshot().resolve_context('s1', 'difficult').gaps)
+        engine = self.factories.get_engine('difficult', season='s1')
+        self.assertTrue(engine.qt_native_base.ready)
+        self.assertFalse(engine.qt_live_ready)
+        self.assertFalse(engine.memory_store.root.exists())
 
     def test_qml_pointer_click_activates_data_and_preserves_unavailable_floor_notice(self):
         key = self.save()

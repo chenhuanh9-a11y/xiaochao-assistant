@@ -641,7 +641,8 @@ def _remove_owned_stage(stage: Path, root: Path, ownership) -> bool:
         return False
 
 
-def save_archive(zip_path, resource_root, *, expected_archive_sha256=None, cancelled=None) -> ArchiveSummary:
+def save_archive(zip_path, resource_root, *, expected_archive_sha256=None, cancelled=None,
+                 validate_components=None) -> ArchiveSummary:
     """Validate, stage and atomically save one complete immutable version."""
     _check_cancelled(cancelled)
     try:
@@ -674,6 +675,8 @@ def save_archive(zip_path, resource_root, *, expected_archive_sha256=None, cance
                 ownership = _new_stage_ownership(stage)
                 _extract_archive(archive, stage, parsed, cancelled, ownership)
                 _validate_staged(stage, parsed[3])
+                if validate_components is not None:
+                    validate_components(tuple(packages.PackageView(stage, ref) for ref in parsed[3]))
                 _check_cancelled(cancelled)
                 # Keep the original descriptor through extraction. Closing its
                 # context checks the source stamp/path before any publication,

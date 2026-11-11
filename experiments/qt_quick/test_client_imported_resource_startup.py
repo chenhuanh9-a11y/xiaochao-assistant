@@ -17,10 +17,11 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 os.environ.setdefault('QT_QUICK_BACKEND', 'software')
-from PySide6.QtCore import QTimer, QUrl, QObject, QMetaObject
+from PySide6.QtCore import QTimer, QUrl, QObject, QMetaObject, QPointF, Qt
 from PySide6.QtGui import QGuiApplication, QFontDatabase
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtQml import QQmlEngine, QQmlExpression
+from PySide6.QtTest import QTest
 
 import client
 from client_paths import WORK_ROOT
@@ -49,11 +50,12 @@ class ImportedResourceStartupTests(unittest.TestCase):
             legacy.parent.mkdir(parents=True)
             legacy.write_bytes(b'{"legacy":"must remain untouched"}')
             import zipfile
-            from test_client_imported_resources import resource_zip
-            bad_zip, good_zip = root / 'old.zip', root / 'new.zip'
+            from test_export_s0_difficult_native_base_package import S0DifficultSourceFixture
+            source = S0DifficultSourceFixture(root / 'source')
+            source.export()
+            bad_zip, good_zip = root / 'old.zip', source.output
             with zipfile.ZipFile(bad_zip, 'w') as archive:
                 archive.writestr('map-package.json', '{}')
-            resource_zip(good_zip)
             capture = FixtureCapture()
             capture.is_current = lambda *args, **kwargs: True
             holder = dict(errors=[], phase='empty', visited=[])
@@ -88,10 +90,12 @@ class ImportedResourceStartupTests(unittest.TestCase):
             def collect():
                 instance = holder.get('client')
                 if (instance is None or not getattr(instance, '_initialized', False) or instance.session.busy
-                        or instance.backend.busy or instance.route_choices.busy or instance.resources.busy):
+                        or instance.backend.busy or instance.route_choices.busy or instance.resources.busy
+                        or instance.settings.busy):
                     return
                 if holder['phase'] == 'empty':
                     holder['state'] = dict(capabilities=instance.providers.capabilities(),
+                        seasonOptions=instance.settings.seasonOptions,
                         rows=list(instance.resources.packageRows), warnings=list(instance.warnings),
                         mainVisible=instance.main.isVisible(), resourceRootCreated=instance.resource_resolver.root.exists(),
                         sameResolver=all(owner is instance.resource_resolver for owner in (
@@ -155,6 +159,21 @@ class ImportedResourceStartupTests(unittest.TestCase):
                     holder['renderIndex'] += 1
                     if holder['renderIndex'] < 2:
                         return
+                if not holder.get('contextRequested'):
+                    if instance.main.property('page') != 'home':
+                        instance.coordinator.navigate('home')
+                        return
+                    button = instance.main.findChild(QQuickItem, 'homeGameContextDifficult')
+                    if button is None or not button.isVisible() or button.width() <= 0:
+                        return
+                    self.assertTrue(button.isEnabled(), 'imported S0 difficult base must enable its real home mode button')
+                    point = button.mapToScene(QPointF(button.width() / 2, button.height() / 2)).toPoint()
+                    holder['contextRequested'] = True
+                    QTest.mouseClick(instance.main, Qt.LeftButton, Qt.NoModifier, point)
+                    return
+                if instance.session.appliedMode != 'difficult':
+                    return
+                holder['appliedMode'] = instance.session.appliedMode
                 poll.stop()
                 instance.coordinator.requestClose()
             def collect_result():
@@ -193,7 +212,7 @@ class ImportedResourceStartupTests(unittest.TestCase):
                     stack.enter_context(patch('ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID', return_value=0))
                 try:
                     poll.start()
-                    watchdog.start(6000)
+                    watchdog.start(90000)
                     result = client.main()
                     instance = holder.get('client')
                     details = dict(constructed=instance is not None,
@@ -219,8 +238,11 @@ class ImportedResourceStartupTests(unittest.TestCase):
             self.assertEqual(state['previews'], [])
             self.assertEqual(state['profiles'], [])
             self.assertFalse(state['resourceRootCreated'])
+            self.assertTrue(all(not capability['available'] for row in state['seasonOptions']
+                                for capability in row['capabilities'].values()))
             self.assertEqual(holder['errors'][0]['errorCode'], 'legacy-format-unsupported')
-            self.assertEqual(holder['savedRows'][0]['status'], 'saved-unverified')
+            self.assertEqual(holder['savedRows'][0]['status'], 'selected')
+            self.assertEqual(holder['savedRows'][0]['selectedContexts'], ['s0:difficult'])
             self.assertEqual(holder['qmlCount'], 1)
             self.assertEqual(holder['visited'], ['gallery', 'downloads'])
             self.assertEqual(holder['finalWarnings'], [])
@@ -232,7 +254,13 @@ class ImportedResourceStartupTests(unittest.TestCase):
             self.assertEqual(set(capability['resourceGaps']),
                              {'recognition-base-missing', 'controls-profile-missing'})
             self.assertEqual(legacy.read_bytes(), b'{"legacy":"must remain untouched"}')
-            self.assertFalse((root / 'work/imported-resources/catalog.json').exists())
+            self.assertTrue((root / 'work/imported-resources/catalog.json').exists())
+            self.assertEqual(instance.resources.availableContexts, ['s0:difficult'])
+            available = [row['id'] + ':' + mode for row in instance.settings.seasonOptions
+                         for mode, capability in row['capabilities'].items() if capability['available']]
+            self.assertEqual(available, ['s0:difficult'])
+            self.assertEqual(holder['appliedMode'], 'difficult')
+            self.assertEqual(instance.settings.persistedValues['gameMode'], 'difficult')
 
     def test_readonly_selfcheck_can_report_an_uninitialized_explicit_source_root(self):
         import json

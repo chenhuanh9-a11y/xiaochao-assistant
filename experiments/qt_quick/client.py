@@ -162,6 +162,10 @@ class QtClient:
         self.resources = ImportedResourceService(self.resource_resolver, paths=self.paths,
                                                 engine_factories=self.providers)
         self.resources.setLeaseProvider(self.session)
+        self.settings.setAvailableContexts(self.resources.availableContexts)
+        self.resources.availabilityChanged.connect(lambda:
+            self.settings.setAvailableContexts(self.resources.availableContexts))
+        QTimer.singleShot(0, self.resources.listPackages)
         self.online_packages = OnlinePackagesService(self.sandbox, self.resources,
             index_url=None if probe_output else os.environ.get("STAR_MAP_PACKAGE_INDEX_URL"),
             save_only=True,
@@ -170,6 +174,7 @@ class QtClient:
         self.gallery_images = ImportedGalleryImages()
         self.backend = Backend(self.sandbox, resource_resolver=self.resource_resolver,
                                gallery_images=self.gallery_images, defer_loading=True)
+        self.backend.setContextAvailability(self.resources.contextAvailable)
         self.route_choices = Backend(self.sandbox, resource_resolver=self.resource_resolver)
         self.resources.resourcesChanged.connect(self.route_choices.refresh)
         self.resources.resourcesChanged.connect(self._schedule_resource_preparation)

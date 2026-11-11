@@ -39,6 +39,13 @@ class ContextActivationPlan:
     rows: tuple[ActivationAuthorRow, ...]
 
 
+@dataclass(frozen=True)
+class PackageActivationPlan:
+    contexts: tuple[ContextActivationPlan, ...]
+    catalog_stamp: dict | None
+    rows: tuple[ActivationAuthorRow, ...]
+
+
 _ROLE_TYPES = {'recognitionBase': 'recognition-base', 'controls': 'controls-profile'}
 _TRANSIENT_CODES = frozenset({
     'resource-catalog-superseded', 'resource-inventory-superseded',
@@ -153,20 +160,12 @@ def _matching_choices(resolver, old_ref, old_identity, base_ref,
     return tuple(choices)
 
 
-def plan_context_activation(resolver, base_ref, controls_ref, *, season, mode, cancelled=None):
-    """Plan explicit author choices for a proposed base/controls context.
-
-    Only the catalog, manifests and display registration documents are read.
-    Saved candidate images are not opened or decoded. No catalog or package is
-    modified, and ``activate_context`` remains responsible for final admission.
-    """
+def _context_plan(snapshot, resolver, base_ref, controls_ref, *, season, mode, cancelled):
     if not isinstance(base_ref, ComponentRef) or not isinstance(controls_ref, ComponentRef):
         raise catalog.ResourceCatalogError('resource-catalog-reference-invalid')
     context_key = f'{season}:{mode}'
     if context_key not in catalog.CONTEXTS:
         raise catalog.ResourceCatalogError('native-base-context-unsupported')
-
-    snapshot = resolver.snapshot()
 
     def operation_current():
         files._check_cancelled(cancelled)
@@ -245,3 +244,60 @@ def plan_context_activation(resolver, base_ref, controls_ref, *, season, mode, c
     operation_current()
     snapshot.assert_current()
     return ContextActivationPlan(base_ref, controls_ref, season, mode, stamp, tuple(rows))
+
+
+def validate_contexts(contexts):
+    if not isinstance(contexts, tuple) or not 1 <= len(contexts) <= 4:
+        raise catalog.ResourceCatalogError('native-base-contexts-invalid')
+    seen = set()
+    normalized = []
+    for context in contexts:
+        if not isinstance(context, tuple) or len(context) != 4:
+            raise catalog.ResourceCatalogError('native-base-contexts-invalid')
+        season, mode, base_ref, controls_ref = context
+        key = (season, mode)
+        if f'{season}:{mode}' not in catalog.CONTEXTS:
+            raise catalog.ResourceCatalogError('native-base-context-unsupported')
+        if key in seen:
+            raise catalog.ResourceCatalogError('native-base-context-duplicate')
+        if not isinstance(base_ref, ComponentRef) or not isinstance(controls_ref, ComponentRef):
+            raise catalog.ResourceCatalogError('resource-catalog-reference-invalid')
+        seen.add(key)
+        normalized.append((season, mode, base_ref, controls_ref))
+    return tuple(normalized)
+
+
+def plan_context_activations(resolver, contexts, *, cancelled=None):
+    """Plan one reviewed package selection for one to four contexts.
+
+    All context decisions share one immutable catalog snapshot. Saved
+    candidate images are not opened or decoded and no catalog/package is
+    modified. Final admission remains the activation transaction's job.
+    """
+    contexts = validate_contexts(contexts)
+    snapshot = resolver.snapshot()
+    plans = tuple(_context_plan(snapshot, resolver, base_ref, controls_ref,
+        season=season, mode=mode, cancelled=cancelled)
+        for season, mode, base_ref, controls_ref in contexts)
+    rows_by_key = {}
+    for plan in plans:
+        for row in plan.rows:
+            previous = rows_by_key.get(row.key)
+            if previous is not None and previous != row:
+                raise catalog.ResourceCatalogError('resource-author-plan-conflict')
+            rows_by_key[row.key] = row
+    snapshot.assert_current()
+    return PackageActivationPlan(plans, snapshot.catalog_stamp,
+        tuple(rows_by_key.values()))
+
+
+def plan_context_activation(resolver, base_ref, controls_ref, *, season, mode, cancelled=None):
+    """Plan explicit author choices for a proposed base/controls context.
+
+    Only the catalog, manifests and display registration documents are read.
+    Saved candidate images are not opened or decoded. No catalog or package is
+    modified, and ``activate_context`` remains responsible for final admission.
+    """
+    plan, = plan_context_activations(resolver,
+        ((season, mode, base_ref, controls_ref),), cancelled=cancelled).contexts
+    return plan

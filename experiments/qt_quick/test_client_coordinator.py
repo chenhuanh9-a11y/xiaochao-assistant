@@ -87,6 +87,20 @@ class CoordinatorTests(unittest.TestCase):
             timer.stop()
         self.app.processEvents()
 
+    def test_missing_imported_base_blocks_direct_context_request_before_preferences_or_render(self):
+        self.resources.contextAvailable = lambda season, mode: False
+        self.session.snapshot = dict(roundActive=False, resourceLocked=False)
+        before = deepcopy(self.settings.persistedValues)
+        self.settings.setValue = Mock()
+        self.settings.saveFields = Mock()
+        self.runtime.invalidate.reset_mock()
+        self.coordinator.requestGameContext('s1', 'difficult')
+        self.assertEqual(self.settings.persistedValues, before)
+        self.settings.setValue.assert_not_called()
+        self.settings.saveFields.assert_not_called()
+        self.runtime.invalidate.assert_not_called()
+        self.assertIn('基础结构包', self.coordinator.message)
+
     def test_gallery_author_persists_only_matching_context_and_runtime_alias(self):
         self.backend.busy = False
         self.backend.season = self.session.currentSeason = "s1"

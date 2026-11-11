@@ -56,6 +56,8 @@ class ImportedS1NightmareProviderTests(unittest.TestCase):
         self.service.importArchive(QUrl.fromLocalFile(str(self.source.output)).toString())
         self.wait()
         self.assertFalse(self.errors, self.errors)
+        self.assertEqual(self.changes, [True])
+        self.assertEqual(self.service.availableContexts, ['s1:nightmare'])
         self.key = self.service.packageRows[0]['key']
 
     def close(self):
@@ -131,6 +133,7 @@ class ImportedS1NightmareProviderTests(unittest.TestCase):
         self.assertIn('不可用', self.service.message)
 
     def test_other_context_or_controls_cannot_be_used_for_nightmare_base(self):
+        before = (self.resolver.root / 'catalog.json').read_bytes()
         self.assertFalse(self.service.activatePackage(self.key, 's1', 'difficult'))
         self.assertFalse(self.service.activatePackage(self.key, 's0', 'nightmare'))
         # Observe saved component refs without selecting or changing their mode.
@@ -144,8 +147,8 @@ class ImportedS1NightmareProviderTests(unittest.TestCase):
             self.paths.installation_root / 'difficult-controls', controls_fixture.document(('difficult',)))
         with self.assertRaisesRegex(ImportedProviderUnavailable, 'controls-base-floors-mismatch'):
             build_native_engine(base, other.view, self.paths, season='s1', mode='nightmare')
-        self.assertFalse((self.resolver.root / 'catalog.json').exists())
-        self.assertFalse(self.changes)
+        self.assertEqual((self.resolver.root / 'catalog.json').read_bytes(), before)
+        self.assertEqual(self.changes, [True])
 
 
 if __name__ == '__main__':

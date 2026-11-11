@@ -107,6 +107,7 @@ class Backend(QObject):
         super().__init__()
         self.paths = runtime_paths(sandbox)
         self.resource_resolver = resource_resolver
+        self._context_available = None
         self.gallery_images = gallery_images
         self._defer_loading = bool(defer_loading)
         self._active, self._refresh_pending = not self._defer_loading, False
@@ -369,6 +370,10 @@ class Backend(QObject):
             return
         if (season, mode) == (self._season, self._mode):
             return
+        if self._context_available is not None and not self._context_available(season, mode):
+            self._message = '请先导入此模式的基础结构包。'
+            self.changed.emit()
+            return
         # A combined selection is one transition, not a visit to an intermediate
         # season/difficulty. Preserve only the real view being left.
         self.viewChanging.emit(self.viewKey)
@@ -393,6 +398,11 @@ class Backend(QObject):
     @Slot(str)
     def setMode(self, value):
         self.setContext(self._season, value)
+
+    def setContextAvailability(self, provider):
+        if not callable(provider):
+            raise TypeError('context availability must be callable')
+        self._context_available = provider
 
     @Slot(str)
     def setProfile(self, value):

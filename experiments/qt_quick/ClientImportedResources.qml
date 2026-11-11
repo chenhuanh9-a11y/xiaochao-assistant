@@ -48,7 +48,7 @@ Item {
         Label { text: "本地资源"; color: "#142b4b"; font.pixelSize: 18; font.bold: true }
         Label {
             Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#354f75"; font.pixelSize: 14
-            text: "基础结构、楼层控件和作者显示分别管理。保存新版本不会改变当前启用的资源。"
+            text: "基础结构包包含楼层控件，导入后自动启用对应模式。请先导入基础包，再导入该模式的作者图。"
         }
         RowLayout {
             spacing: 8; Layout.fillWidth: true
@@ -94,7 +94,7 @@ Item {
                                 AppButton {
                                     objectName: "activatePackageButton-" + packageDelegate.modelData.key + modelData.objectSuffix
                                     enabled: panel.refreshAllowed && !panel.operationPending && !panel.recoveryPending
-                                    text: modelData.label
+                                    text: packageDelegate.modelData.selectedContexts.indexOf(modelData.context) >= 0 ? "重新校验此版本" : modelData.label
                                     onClicked: resourceService.activatePackage(packageDelegate.modelData.key, modelData.season, modelData.mode)
                                 }
                                 Label {
@@ -133,7 +133,7 @@ Item {
                 Label {
                     anchors.centerIn: parent; width: Math.min(parent.width, 440)
                     visible: packages.count === 0; horizontalAlignment: Text.AlignHCenter
-                    text: resourceService.busy ? "正在读取本地资源…" : "尚未导入资源。请导入新版资源 ZIP，补齐需要的基础结构、控件或显示资源。"
+                    text: resourceService.busy ? "正在读取本地资源…" : "尚未导入资源。请先导入所需模式的基础结构包；楼层控件已随包提供。"
                     color: "#526785"; wrapMode: Text.Wrap; font.pixelSize: 14
                 }
             }

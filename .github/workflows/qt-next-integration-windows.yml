@@ -244,6 +244,7 @@ jobs:
                 'test_client_imported_difficult_provider', 'test_client_imported_difficult_activation_ui',
                 'test_client_imported_fast_structure',
                 'test_client_imported_group_registry', 'test_client_imported_group_runtime',
+                'test_client_imported_admission', 'test_client_imported_package_activation',
                 'test_client_imported_controls',
                 'test_client_imported_activation', 'test_client_imported_activation_ui',
                 'test_client_imported_s1_activation', 'test_client_imported_s1_activation_ui',

@@ -41,6 +41,6 @@ Item {
             }
         }
         Label { visible: panel.state.stage === "handoff"; text: panel.state.localMessage; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#567096" }
-        Label { text: panel.state.saveOnly ? "下载后还会校验并保存版本，保存结果见本地资源。保存不会启用资源。" : "下载完成不等于安装完成。后续覆盖确认与取消使用本地资源流程。"; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#567096"; font.pixelSize: 12 }
+        Label { text: panel.state.saveOnly ? "基础结构包含楼层控件，下载后校验、导入并一并启用；作者图须先有对应基础资源。" : "下载完成不等于安装完成。后续覆盖确认与取消使用本地资源流程。"; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#567096"; font.pixelSize: 12 }
     }
 }

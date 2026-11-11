@@ -1453,6 +1453,12 @@ class ClientCoordinator(QObject):
         from season_context import modes_for_season
         if season not in SEASONS or mode not in modes_for_season(season) or self.settings.busy or self.resources.busy:
             return
+        available = getattr(self.resources, 'contextAvailable', None)
+        if callable(available) and not available(season, mode):
+            self._message = '请先导入此模式的基础结构包。'
+            self.notificationRequested.emit('基础资源未就绪', self._message, 'warning')
+            self.changed.emit()
+            return
         current = self._settings_context(self.settings.persistedValues)
         if (mode, season) == (current[0], current[2]):
             # Saved defaults are intent, not evidence that the runtime applied
@@ -1471,7 +1477,10 @@ class ClientCoordinator(QObject):
             return
         self._clear_reference()
         self._revoke_runtime("game-context-preference-changed")
-        if self.settings.setValue("gameSeason", season) and self.settings.setValue("gameMode", mode):
+        set_context = getattr(self.settings, 'setGameContext', None)
+        accepted = (set_context(season, mode) if callable(set_context) else
+                    self.settings.setValue('gameSeason', season) and self.settings.setValue('gameMode', mode))
+        if accepted:
             self.settings.saveFields(["gameSeason", "gameMode"])
 
     @Slot(str, str, str)

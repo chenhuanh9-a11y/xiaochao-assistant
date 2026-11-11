@@ -174,7 +174,7 @@ class ClientImportedAuthorUiTests(source_fixture._AuthorSelectionFixture):
         self.assertTrue(self.service.activateDisplayComponent(key, first.component_ref.component_id))
         self.wait()
         self.assertEqual(self.errors[-1]['errorCode'], 'resource-display-base-context-not-active')
-        self.assertIn('先启用', self.service.message)
+        self.assertIn('导入并启用对应模式的基础结构包', self.service.message)
         self.assertEqual((self.resources/'catalog.json').read_bytes(), before)
         self.assertFalse(self.changes)
         self.seed(displays=[first.component_ref])

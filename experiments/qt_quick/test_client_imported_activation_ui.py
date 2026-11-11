@@ -70,13 +70,30 @@ class ImportedActivationUiTests(unittest.TestCase):
         self.assertTrue(condition(), self.service.message)
 
     def save(self):
+        # Prepare dormant history through storage. Product import now also
+        # activates; these cases specifically exercise explicit switch/retry.
+        from imported_resource_archive import save_archive
         archive = base_fixture.ImportedNativeBaseTests.archive
-        self.service.importArchive(QUrl.fromLocalFile(str(archive)).toString())
+        save_archive(archive, self.resolver.root)
+        self.service.listPackages()
         self.wait()
         self.assertFalse(self.errors, self.errors)
         self.assertFalse(self.changes)
         self.assertTrue(self.service.packageRows[0]['canActivate'])
         return self.service.packageRows[0]['key']
+
+    def test_product_import_activates_nightmare_base_and_controls_without_second_action(self):
+        archive = base_fixture.ImportedNativeBaseTests.archive
+        self.service.importArchive(QUrl.fromLocalFile(str(archive)).toString())
+        self.wait()
+        self.assertFalse(self.errors, self.errors)
+        self.assertEqual(self.changes, [True])
+        self.assertEqual(self.service.availableContexts, ['s0:nightmare'])
+        resources = self.resolver.snapshot().resolve_context('s0', 'nightmare')
+        self.assertFalse(resources.gaps)
+        engine = self.factories.get_engine('nightmare')
+        self.assertTrue(engine.qt_native_base.ready)
+        self.assertEqual(engine.qt_controls_profile.for_context('s0', 'nightmare').contract.floor_ids, ('B1', '1', '2'))
 
     def test_save_activate_actual_engine_and_repeat_without_catalog_change(self):
         key = self.save()

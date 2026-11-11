@@ -222,7 +222,7 @@ class OnlinePackagesService(QObject):
                 accepted = self.resources.importVerifiedArchive(QUrl.fromLocalFile(result["path"]).toString(),
                     expected, self._resource_generation)
                 self._stage = "handoff" if accepted else "cached"
-                self._message = (("正在校验并保存版本，结果见本地资源。保存不会启用资源。" if self._save_only else
+                self._message = (("正在导入资源；基础结构与楼层控件将一并启用，结果见本地资源。" if self._save_only else
                                   "已交给本地图包检查；覆盖确认和安装结果见本地管理。") if accepted
                                  else "图包已缓存；本地操作或会话忙，未提交导入，可稍后重试。")
         self.changed.emit()

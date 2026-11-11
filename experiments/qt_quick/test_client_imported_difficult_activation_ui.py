@@ -97,15 +97,30 @@ class ImportedS0DifficultActivationUiTests(unittest.TestCase):
         point = item.mapToScene(QPointF(item.width() / 2, item.height() / 2)).toPoint()
         QTest.mouseClick(view, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
 
+    def test_import_finishes_with_base_and_controls_active_without_second_action(self):
+        self.service.importArchive(QUrl.fromLocalFile(str(self.source.output)).toString())
+        self.wait()
+        self.assertFalse(self.errors, self.errors)
+        self.assertEqual(self.changes, [True])
+        self.assertEqual(self.service.availableContexts, ['s0:difficult'])
+        current = self.resolver.snapshot().resolve_context('s0', 'difficult')
+        self.assertFalse(current.gaps)
+        self.assertEqual(current.base.component_ref.package_id, current.controls.component_ref.package_id)
+        self.assertEqual(current.base.component_ref.resource_version, current.controls.component_ref.resource_version)
+        self.assertEqual(self.service.packageRows[0]['status'], 'selected')
+        engine = self.factories.get_engine('difficult', season='s0')
+        self.assertFalse(engine.qt_native_base.rank_ready)
+        self.assertIn('已启用', self.service.message)
+
     def test_resource_page_pointer_saves_activates_and_keeps_data_unranked(self):
         import_started = time.perf_counter()
         self.service.importArchive(QUrl.fromLocalFile(str(self.source.output)).toString())
         self.wait()
         import_ms = (time.perf_counter() - import_started) * 1000
         self.assertFalse(self.errors, self.errors)
-        self.assertFalse(self.changes)
-        self.assertFalse((self.resolver.root / 'catalog.json').exists(),
-                         'saving the package must not select it')
+        self.assertEqual(self.changes, [True])
+        self.assertTrue((self.resolver.root / 'catalog.json').exists(),
+                        'import must activate base and controls without another action')
 
         row = self.service.packageRows[0]
         key = row['key']
@@ -141,7 +156,7 @@ class ImportedS0DifficultActivationUiTests(unittest.TestCase):
         self.assertIsNotNone(button, 'the real QML delegate did not expose S0D activation')
         self.assertTrue(button.isVisible())
         self.assertTrue(button.isEnabled())
-        self.assertEqual(button.property('text'), option['label'])
+        self.assertEqual(button.property('text'), '重新校验此版本')
         notice = self.find(view.rootObject(), notice_name)
         self.assertIsNotNone(notice)
         self.assertTrue(notice.isVisible())
@@ -261,7 +276,7 @@ class ImportedS0DifficultActivationUiTests(unittest.TestCase):
             receipt = dict(
                 sourceZip=str(archive), sourceBytes=archive.stat().st_size,
                 sourceSha256=digest,
-                importToSavedMs=round(import_ms, 3), pointerToActivationCompleteMs=round(activation_ms, 3),
+                importToActivationCompleteMs=round(import_ms, 3), pointerToRevalidationCompleteMs=round(activation_ms, 3),
                 resourcesChangedAfterFirstActivation=1, resourcesChangedAfterRepeat=len(self.changes),
                 errors=len(self.errors), packageKey=key,
                 selectedContexts=self.service.packageRows[0]['selectedContexts'],

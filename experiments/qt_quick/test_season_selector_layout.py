@@ -82,6 +82,48 @@ ApplicationWindow {
             window.deleteLater()
             self.app.processEvents()
 
+    def test_missing_base_disables_mode_and_imported_base_enables_only_its_mode(self):
+        engine = QQmlEngine()
+        component = QQmlComponent(engine)
+        component.setData(b'''import QtQuick
+import QtQuick.Controls.Basic
+ApplicationWindow {
+    visible: true; width: 440; height: 150
+    SeasonSelector {
+        objectName: "availabilitySelector"; width: parent.width
+        seasons: [{id:"s0", label:"S0", capabilities:{
+            nightmare:{available:false}, difficult:{available:false}}}]
+        season: "s0"; mode: "nightmare"
+    }
+}''', QUrl.fromLocalFile(str(Path(__file__).with_name('__season_availability_test__.qml'))))
+        self.assertFalse(component.isError(), str(component.errors()))
+        window = component.create()
+        self.assertIsNotNone(window, str(component.errors()))
+        try:
+            selector = window.findChild(QQuickItem, 'availabilitySelector')
+            nightmare = window.findChild(QQuickItem, 'availabilitySelectorNightmare')
+            difficult = window.findChild(QQuickItem, 'availabilitySelectorDifficult')
+            requested = []
+            selector.contextRequested.connect(lambda season, mode: requested.append((season, mode)))
+            self.assertFalse(nightmare.isEnabled())
+            self.assertFalse(difficult.isEnabled())
+            QTest.qWait(20)
+            point = difficult.mapToScene(difficult.boundingRect().center()).toPoint()
+            QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, point)
+            self.assertEqual(requested, [])
+            selector.setProperty('seasons', [dict(id='s0', label='S0', capabilities=dict(
+                nightmare=dict(available=False), difficult=dict(available=True)))])
+            QTest.qWait(20)
+            self.assertFalse(nightmare.isEnabled())
+            self.assertTrue(difficult.isEnabled())
+            point = difficult.mapToScene(difficult.boundingRect().center()).toPoint()
+            QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, point)
+            self.assertEqual(requested, [('s0', 'difficult')])
+        finally:
+            window.close()
+            window.deleteLater()
+            self.app.processEvents()
+
 
 if __name__ == '__main__':
     unittest.main()

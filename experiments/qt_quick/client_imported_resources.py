@@ -1,4 +1,4 @@
-"""Qt owner for the imported store; saving a version never activates it.
+"""Qt owner for imports and their coordinated resource activation.
 
 Workers return values only. The UI thread owns operation state and the stable
 package model. Shutdown stops admission and drains an accepted store operation.
@@ -93,6 +93,7 @@ class ImportedResourceService(QObject):
     resourcesChanged = Signal()
     errorReported = Signal(object)
     importCompleted = Signal(str, str)
+    availabilityChanged = Signal()
 
     def __init__(self, resolver, parent=None, *, paths=None, engine_factories=None):
         super().__init__(parent)
@@ -111,6 +112,8 @@ class ImportedResourceService(QObject):
         self._lease_provider = None
         self._lease = ''
         self._startup_notice = ''
+        self._available_contexts = ()
+        self._automatic_import = False
         self._activation_plan, self._activation_choices = None, {}
         self._activation_plan_id = ''
 
@@ -120,6 +123,7 @@ class ImportedResourceService(QObject):
         dict(context=f'{season}:{mode}', season=season, mode=mode, **metadata)
         for (season, mode), metadata in _ACTIVATION_CONTEXTS.items()], constant=True)
     busy = Property(bool, lambda s: s._busy, notify=changed)
+    availableContexts = Property('QVariantList', lambda s: list(s._available_contexts), notify=availabilityChanged)
     pendingKind = Property(str, lambda s: '', notify=changed)
     operationStage = Property(str, lambda s: 'cancelling' if s._busy and s._cancel.is_set() else s._kind, notify=changed)
     operationGeneration = Property(int, lambda s: s._token, notify=changed)
@@ -162,7 +166,7 @@ class ImportedResourceService(QObject):
         self._busy, self._kind = True, kind
         self._cancel = threading.Event()
         self._message = {'list': '正在读取已保存版本…', 'refresh': '正在校验已保存文件…',
-                         'save': '正在校验并保存；完成后仍需启用。',
+                         'save': '正在校验并导入资源包…',
                          'activate': '正在校验并启用所选资源…',
                          'plan': '正在核对基础版本与已选作者的配套关系…',
                          'recover': '正在处理未完成的资源切换…'}[kind]
@@ -182,9 +186,31 @@ class ImportedResourceService(QObject):
         self._scan(True)
 
     def _scan(self, verify):
-        from imported_resource_inventory import list_saved_versions
         self._begin('refresh' if verify else 'list', lambda cancelled:
-                    dict(inventory=list_saved_versions(self.resolver, verify=verify, cancelled=cancelled)))
+                    self._read_inventory(verify=verify, cancelled=cancelled))
+
+    def _read_inventory(self, *, verify=False, cancelled=None):
+        from imported_resource_inventory import list_saved_versions
+        from client_imported_admission import available_base_contexts
+        inventory = list_saved_versions(self.resolver, verify=verify, cancelled=cancelled)
+        available = ()
+        if not inventory.catalog_issue:
+            from imported_resource_catalog import ResourceCatalogError
+            snapshot = self.resolver.snapshot()
+            if snapshot.generation != inventory.generation:
+                raise ResourceCatalogError('resource-inventory-superseded')
+            available = available_base_contexts(snapshot, cancelled=cancelled)
+        return dict(inventory=inventory, availableContexts=available)
+
+    @Slot(str, str, result=bool)
+    def contextAvailable(self, season, mode):
+        return f'{season}:{mode}' in self._available_contexts
+
+    def _set_available_contexts(self, contexts):
+        contexts = tuple(contexts)
+        if contexts != self._available_contexts:
+            self._available_contexts = contexts
+            self.availabilityChanged.emit()
 
     @Slot(str)
     @Slot(str, str)
@@ -205,7 +231,7 @@ class ImportedResourceService(QObject):
         path = Path(url.toLocalFile())
         def save(cancelled):
             from imported_resource_archive import inspect_archive, save_archive
-            from imported_resource_inventory import list_saved_versions
+            from client_imported_admission import admit_import
             from imported_resource_catalog import ResourceCatalogError
             sha = None
             if expected is not None:
@@ -218,14 +244,18 @@ class ImportedResourceService(QObject):
                 inspected = inspect_archive(path, expected_archive_sha256=sha, cancelled=cancelled)
                 if inspected.package_id != expected['packageId'] or inspected.archive_bytes != expected['bytes']:
                     raise ResourceCatalogError('resource-download-binding-invalid')
-            summary = save_archive(path, self.resolver.root, expected_archive_sha256=sha, cancelled=cancelled)
+            admission = {}
+            def validate_components(views):
+                admission['contexts'] = admit_import(views, self.resolver, cancelled=cancelled)
+            summary = save_archive(path, self.resolver.root, expected_archive_sha256=sha, cancelled=cancelled,
+                                   validate_components=validate_components)
             # A completed save is reported even if a cancellation arrives during
             # the following read. The immutable version may already be present.
             try:
-                inventory = list_saved_versions(self.resolver)
+                inventory = self._read_inventory()
             except (OSError, ValueError, RuntimeError):
-                inventory = None
-            return dict(summary=summary, inventory=inventory)
+                inventory = dict(inventory=None, availableContexts=())
+            return dict(summary=summary, baseContexts=admission['contexts'], **inventory)
         return self._begin('save', save)
 
     @Slot(str, str, str, result=bool)
@@ -246,8 +276,33 @@ class ImportedResourceService(QObject):
                                            cancelled=cancelled)
         return self._begin('plan', prepare)
 
+    def _activate_imported_base(self, contexts):
+        if self.paths is None or self._lease_provider is None:
+            self._message = '资源版本已保存，但当前资源服务未配置启用入口。'
+            self._problem('resource-activation-unavailable')
+            self._message = '资源版本已保存，但未启用。' + self._message
+            self.importCompleted.emit('基础资源未启用', self._message)
+            self.changed.emit()
+            return
+        self._automatic_import = True
+        def prepare(cancelled):
+            from client_imported_activation_plan import plan_context_activations
+            return plan_context_activations(self.resolver, contexts, cancelled=cancelled)
+        if not self._begin('plan', prepare):
+            self._finish_automatic_import(False)
+
+    def _finish_automatic_import(self, success):
+        if self._automatic_import:
+            self._automatic_import = False
+            if not success:
+                self._message = '新导入版本已保存，但未启用。' + self._message
+            self.importCompleted.emit('基础资源已启用' if success else '基础资源未启用', self._message)
+            self.changed.emit()
+
     def _plan_title(self):
         plan = self._activation_plan
+        if plan is not None and hasattr(plan, 'contexts'):
+            return '基础资源配套更新'
         return (f'{plan.season.upper()} ' + ('困难' if plan.mode == 'difficult' else '噩梦')
                 + '资源配套更新') if plan is not None else ''
 
@@ -259,7 +314,10 @@ class ImportedResourceService(QObject):
         plan = self._activation_plan
         if plan is None:
             return ''
-        lines = [f'基础结构 {plan.base_ref.resource_version} · 楼层控件 {plan.controls_ref.resource_version}']
+        contexts = getattr(plan, 'contexts', (plan,))
+        lines = [f'{item.season.upper()} ' + ('困难' if item.mode == 'difficult' else '噩梦')
+                 + f'：基础结构 {item.base_ref.resource_version} · 楼层控件 {item.controls_ref.resource_version}'
+                 for item in contexts]
         for row in plan.rows:
             selected = self._activation_choices.get(row.key)
             choice = next((item for item in row.choices if item.key == selected), None)
@@ -311,6 +369,12 @@ class ImportedResourceService(QObject):
                 row.old_ref if choice.display_ref is None else choice.display_ref)
         updates, removed = tuple(updates), tuple(removed)
         def activate(cancelled):
+            if hasattr(plan, 'contexts'):
+                from client_imported_activation import activate_contexts
+                contexts = tuple((item.season, item.mode, item.base_ref, item.controls_ref) for item in plan.contexts)
+                return activate_contexts(self.resolver, self.paths, contexts,
+                    display_refs=updates, remove_display_refs=removed,
+                    expected_catalog_stamp=plan.catalog_stamp, cancelled=cancelled)
             from client_imported_activation import activate_context
             outcome = activate_context(self.resolver, self.paths, plan.base_ref, plan.controls_ref,
                 season=plan.season, mode=plan.mode, display_refs=updates, remove_display_refs=removed,
@@ -320,6 +384,8 @@ class ImportedResourceService(QObject):
         if accepted:
             self._clear_activation_plan()
             self.changed.emit()
+        elif not self._activation_plan:
+            self._finish_automatic_import(False)
         return accepted
 
     @Slot(str, result=bool)
@@ -328,6 +394,7 @@ class ImportedResourceService(QObject):
             return False
         self._clear_activation_plan()
         self._message = '已取消配套更新，当前资源选择未改变。'
+        self._finish_automatic_import(False)
         self.changed.emit()
         return True
 
@@ -366,24 +433,24 @@ class ImportedResourceService(QObject):
             return False
 
         def activate(cancelled):
-            from imported_resource_inventory import list_saved_versions
             outcome, failure, retry = None, None, False
             try:
                 outcome = operation(cancelled)
                 if outcome['status'] == 'already-active' and self._engine_factories is not None:
-                    season, mode = outcome['context'].split(':')
-                    retry = self._engine_factories.needs_display_revalidation(mode, season=season)
+                    keys = outcome.get('contexts') or [outcome['context']]
+                    retry = any(self._engine_factories.needs_display_revalidation(key.split(':')[1],
+                        season=key.split(':')[0]) for key in keys)
             except Exception as error:
                 failure = _failure(error)
             # Observe the actual final state after success, cancellation or a
             # failed rollback. A committed change remains success if this read
             # fails; a retained pending operation must expose recovery.
             try:
-                inventory = list_saved_versions(self.resolver)
+                inventory = self._read_inventory()
             except (OSError, ValueError, RuntimeError):
-                inventory = None
+                inventory = dict(inventory=None, availableContexts=())
             return dict(activated=outcome, activationRole=role, retryPreparation=retry,
-                        operationError=failure, inventory=inventory)
+                        operationError=failure, **inventory)
 
         if self._begin('activate', activate):
             return True
@@ -403,10 +470,9 @@ class ImportedResourceService(QObject):
         def recover(cancelled):
             from resource_transaction import resource_write_lock
             from imported_resource_activation import recover_catalog_locked
-            from imported_resource_inventory import list_saved_versions
             with resource_write_lock(self.resolver.root):
                 outcome = recover_catalog_locked(self.resolver.root)
-            return dict(recovered=outcome, inventory=list_saved_versions(self.resolver))
+            return dict(recovered=outcome, **self._read_inventory())
         if not self._begin('recover', recover):
             self._release_lease()
 
@@ -424,12 +490,19 @@ class ImportedResourceService(QObject):
         self._release_lease()
         if self._closed:
             return
+        if (kind in {'list', 'refresh'} and error is not None
+                and error['code'] in {'resource-inventory-cancelled', 'import-cancelled'}):
+            self._message = '检查已取消，保留上次已核对的资源状态。'
+            self.changed.emit()
+            return
         if kind == 'plan':
             if self._cancel.is_set():
                 self._message = '已取消配套核对，当前资源选择未改变。'
+                self._finish_automatic_import(False)
                 self.changed.emit()
             elif error:
                 self._problem(error['code'])
+                self._finish_automatic_import(False)
             elif value.rows:
                 self._show_activation_plan(value)
             else:
@@ -438,11 +511,13 @@ class ImportedResourceService(QObject):
         if value is not None:
             inventory = value['inventory']
             self._catalog_issue = inventory.catalog_issue or '' if inventory is not None else 'resource-inventory-unavailable'
+            self._set_available_contexts(value.get('availableContexts', ()))
             self._set_rows(inventory.rows if inventory is not None else [])
             error = error or value.get('operationError')
         if error:
             if kind in {'list', 'refresh'}:
                 self._set_rows([])
+                self._set_available_contexts(())
             self._problem(error['code'])
         else:
             self._message = ('资源切换尚未完成，请处理后再使用。' if self.recoveryRequired else
@@ -450,6 +525,15 @@ class ImportedResourceService(QObject):
                              '已读取保存版本。' if kind == 'list' else '文件完整性校验已完成。')
             summary = value.get('summary')
             if summary is not None:
+                contexts = value.get('baseContexts', ())
+                if contexts:
+                    if self._cancel.is_set():
+                        self._message = '资源版本已保存；已取消启用，当前资源选择未改变。'
+                        self.importCompleted.emit('启用已取消', self._message)
+                        self.changed.emit()
+                    else:
+                        self._activate_imported_base(contexts)
+                    return
                 duplicate = summary.status == 'already-saved'
                 self._message = ('该版本已经保存，启用状态未改变。' if duplicate else
                                  '资源版本已保存，尚未启用。')
@@ -462,19 +546,23 @@ class ImportedResourceService(QObject):
             if kind == 'activate':
                 outcome = value['activated']
                 duplicate = outcome['status'] == 'already-active'
-                context = tuple(outcome['context'].split(':'))
+                contexts = tuple(tuple(key.split(':')) for key in (outcome.get('contexts') or [outcome['context']]))
+                context = contexts[0]
                 display = value['activationRole'] == 'display'
                 name = f'{context[0].upper()} ' + ('困难' if context[1] == 'difficult' else '噩梦')
-                self._message = ('此版本已经启用，资源选择未改变。' if duplicate
+                self._message = (f'{name}：此版本已经启用，资源选择未改变。' if duplicate
                                  else f'{name}作者显示组件已启用。' if display
                                  else _ACTIVATION_CONTEXTS[context]['activatedMessage'])
+                if len(contexts) > 1 and not display:
+                    self._message = '基础结构与楼层控件已一并启用：' + '、'.join(
+                        item[0].upper() + (' 困难' if item[1] == 'difficult' else ' 噩梦') for item in contexts)
                 if value['retryPreparation']:
                     self._message = '此版本已重新校验，正在重新准备显示资源。'
                 if display:
                     self._message += ' 配准由作者提供，尚未复核。'
-                elif context[0] == 's1':
+                elif any(item[0] == 's1' for item in contexts):
                     self._message += ' 自动楼层识别尚未验证，暂不可用。'
-                elif context == ('s0', 'difficult'):
+                if not display and ('s0', 'difficult') in contexts:
                     self._message += ' 识别功能尚未开放，暂不能开始识别。'
                 if inventory is None:
                     self._message += ' 列表暂时无法读取，请重新核对。'
@@ -482,6 +570,9 @@ class ImportedResourceService(QObject):
                     self._message = '资源选择随后发生了变化，请重新核对当前版本。'
                 if not duplicate or value['retryPreparation']:
                     self.resourcesChanged.emit()
+                self._finish_automatic_import(True)
+        if error and kind == 'activate':
+            self._finish_automatic_import(False)
         self.changed.emit()
 
     def _set_rows(self, rows):
@@ -505,7 +596,9 @@ class ImportedResourceService(QObject):
 
     def _problem(self, code):
         self._message = ('此为旧版图包，请获取新版资源包；原文件已保留。' if code == 'legacy-format-unsupported' else
-                         '请先启用此作者显示对应的基础结构与楼层控件；作者版本仍已保存。' if code == 'resource-display-base-context-not-active' else
+                         '请先导入并启用对应模式的基础结构包，再导入作者图。' if code == 'resource-display-base-context-not-active' else
+                         '此作者图依赖的基础结构版本尚未启用，请先导入对应基础包。' if code == 'resource-display-base-version-mismatch' else
+                         '基础结构包须包含同一模式的楼层控件，请获取完整基础包。' if code == 'resource-import-base-controls-pair-required' else
                          '作者显示依赖其他基础版本，请先核对配套资源；当前选择已保留。' if code == 'resource-dependency-not-selected' else
                          '审阅期间资源选择已改变，请重新核对配套版本；当前选择已保留。' if code == 'resource-catalog-superseded' else
                          '原作者版本的声明无法读取，暂不能确认替换范围；当前选择已保留。' if code == 'resource-previous-display-metadata-unavailable' else
