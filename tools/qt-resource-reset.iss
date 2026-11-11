@@ -28,6 +28,7 @@ var
   ResourceResetCallNumber: Integer;
   ResourceResetFailureCode: Integer;
   ResourceResetNativeMetadataNeedsRepair: Boolean;
+  LegacySourceRoot: String;
 
 function ResetGetCurrentProcessId: LongWord;
   external 'GetCurrentProcessId@kernel32.dll stdcall';
@@ -164,10 +165,12 @@ begin
     if ResourceResetPlanHash <> '' then Params := Params + ' --plan-sha256 ' + ResourceResetPlanHash;
     if ResourceResetTransaction <> '' then Params := Params + ' --transaction-id ' + AddQuotes(ResourceResetTransaction);
     if Confirmed then Params := Params + ' --confirmed';
+    if Pos('legacy-', Action) = 1 then
+      Params := Params + ' --legacy-source ' + AddQuotes(LegacySourceRoot);
     Code := -1;
     Log('RESOURCE_RESET_STEP ' + Action + ' plan=' + ResourceResetPlanHash + ' transaction=' + ResourceResetTransaction);
-    if not Exec(ResourceResetExtractRoot + '\star-map-reset-helper.exe', Params,
-      ResourceResetExtractRoot, SW_HIDE, ewWaitUntilTerminated, Code) then begin
+    if not RunBoundedUninstallProcess(ResourceResetExtractRoot + '\star-map-reset-helper.exe', Params,
+      ResourceResetExtractRoot, 125000, Code) then begin
       Reason := '资源升级步骤 ' + Action + ' 的检查程序未能启动（Windows 错误 ' + IntToStr(Code) + '）。' + #13#10 +
         SysErrorMessage(Code);
       Log('RESOURCE_RESET_LAUNCH_FAILED ' + Action + ' result-directory=' + ResultDir);
@@ -188,6 +191,20 @@ begin
     end;
     if GetIniString('result', 'action', '', ResultDir + '\result.ini') <> Action then
       RaiseException('资源升级回执不完整，不能据此认定成功。');
+    if Pos('legacy-', Action) = 1 then begin
+      if (GetIniString('result', 'sourceCommit', '', ResultDir + '\result.ini') <> '{#ResetSourceCommit}') or
+        (GetIniString('result', 'targetReportSha256', '', ResultDir + '\result.ini') <> '{#ResetTargetReportSHA256}') or
+        (GetIniString('result', 'programInventorySha256', '', ResultDir + '\result.ini') <> '{#ResetProgramInventorySha256}') or
+        (GetIniString('result', 'parentPid', '', ResultDir + '\result.ini') <> IntToStr(ResetGetCurrentProcessId)) or
+        (GetIniString('result', 'ownerSid', '', ResultDir + '\result.ini') = '') then
+        RaiseException('迁移回执与当前安装包或安装进程不一致。');
+      if (ResourceResetSessionId <> '') and
+        (GetIniString('result', 'sessionId', '', ResultDir + '\result.ini') <> ResourceResetSessionId) then
+        RaiseException('迁移回执不属于本次资料迁移。');
+      if (ResourceResetPlanHash <> '') and
+        (GetIniString('result', 'planSha256', '', ResultDir + '\result.ini') <> ResourceResetPlanHash) then
+        RaiseException('迁移清单已变化。');
+    end;
     ResourceResetLastStatus := GetIniString('result', 'status', '', ResultDir + '\result.ini');
     ResourceResetInstallerStatus := GetIniString('result', 'installerStatus', '', ResultDir + '\result.ini');
     if (ResourceResetInstallerStatus = 'native-in-progress') or

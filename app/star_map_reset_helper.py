@@ -204,6 +204,9 @@ def run(args):
                 result.update(Coordinator(args, api, target, lease, owner_sid).execute())
         if target is not None:
             result.update(sourceCommit=target['sourceCommit'], targetReportSha256=args.target_report_sha256)
+        if args.action.startswith('legacy-'):
+            result.update(ownerSid=owner_sid, parentPid=args.parent_pid,
+                          programInventorySha256=args.program_inventory_sha256)
         code = 0
     except Exception as error:
         result['errorCode'] = getattr(error, 'code', type(error).__name__)

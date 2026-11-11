@@ -129,7 +129,8 @@ begin
     UninstallCloseHandle(Process.Thread);
     Started := UninstallTicks;
     { DeinitializeUninstall runs after Inno frees its progress form. }
-    Form := UninstallProgressForm;
+    { Setup also uses this bounded worker. Its uninstall form does not exist. }
+    if IsUninstaller then Form := UninstallProgressForm;
     if Form <> nil then begin
       Caption := Form.StatusLabel.Caption;
       Form.CancelButton.Enabled := False;

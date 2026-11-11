@@ -147,16 +147,32 @@ def probe_source(source, *, registry_reader=None):
 
 
 @contextmanager
-def _closed_source(source, tool, program):
+def _closed_source(source, tool, program, asset_roots=None):
     # An open write-capable handle conflicts with an executing image. While
     # held it also prevents a new image section or replacement of that file.
     # The handle is used only for exclusion; no WriteFile/Delete API is called.
     from installer_uninstall import _kernel, _open_handle, _pin_directory
     api, held = _kernel(), []
     try:
-        _pin_directory(api, source, held)
+        from installer_uninstall import _owner_sid, _current_user_sid
+        sid = _current_user_sid()
+        if _owner_sid(_pin_directory(api, source, held)) != sid:
+            raise LegacyBridgeError('source-owner-mismatch')
         if program != source:
-            _pin_directory(api, program, held)
+            if _owner_sid(_pin_directory(api, program, held)) != sid:
+                raise LegacyBridgeError('source-owner-mismatch')
+        external = (asset_roots or {}).get('external')
+        if external is not None:
+            local = external.parents[1]
+            _safe(local)
+            local_handle = _pin_directory(api, local, held)
+            external_handle = _pin_directory(api, external, held)
+            from installer_uninstall import _owner_sid
+            if _owner_sid(local_handle) != sid or _owner_sid(external_handle) != sid:
+                raise LegacyBridgeError('external-resource-owner-mismatch')
+        for label, root in (asset_roots or {}).items():
+            if label != 'external':
+                _pin_directory(api, root, held)
         for path in (tool, program / '星图.exe', program / '第五人格小抄助手.exe',
                      program / 'XingtuGameWatcher.exe'):
             if _safe(path).exists():
@@ -168,15 +184,26 @@ def _closed_source(source, tool, program):
             api.CloseHandle(handle)
 
 
-def _require_connected_resources(program, external_root):
-    # Repeated while source images are excluded: a just-finished old editor
-    # save must not escape the initial preflight or the post-copy verification.
-    if _safe(external_root).exists():
-        raise LegacyBridgeError('external-resource-migration-not-yet-connected')
-    for relative in ('assets/custom-maps', '_internal/assets/custom-maps',
-                     '_internal/qt-editor-base', 'work/imported-resources'):
-        if _safe(program / relative).exists():
-            raise LegacyBridgeError('gallery-resource-migration-not-yet-connected')
+def _asset_roots(program, external_root, *, require_locks=True):
+    """Return only product-bound legacy resource roots; never scan a user tree."""
+    candidates = {
+        'external': external_root,
+        'outer-custom-maps': program / 'assets/custom-maps',
+        'internal-custom-maps': program / '_internal/assets/custom-maps',
+        'editor-base': program / '_internal/qt-editor-base',
+        'imported-resources': program / 'work/imported-resources',
+    }
+    roots = {}
+    for label, value in candidates.items():
+        path = _safe(Path(value))
+        if path.exists():
+            if not path.is_dir():
+                raise LegacyBridgeError('asset-root-not-directory')
+            if (require_locks and label == 'external'
+                    and not (path / 'work/map-packages/import.lock').is_file()):
+                raise LegacyBridgeError('external-resource-lock-missing')
+            roots[label] = path
+    return roots
 
 
 def prepare(source, target, *, registry_reader=None, source_guard=None, external_root=None):
@@ -198,23 +225,33 @@ def prepare(source, target, *, registry_reader=None, source_guard=None, external
         from installer_native_observation import WindowsReadOnlyBackend, _LOCAL_APP_DATA
         external_root = Path(WindowsReadOnlyBackend()._known_folder_path(_LOCAL_APP_DATA)) / 'Xingtu/resources'
     external_root = _safe(Path(external_root))
-    # An index-only migration must never be presented as complete. These roots
-    # need a joint resource-root migration contract before native installation.
-    _require_connected_resources(program, external_root)
+    roots = _asset_roots(program, external_root)
     prepared = _safe(target / '.legacy-upgrade-prepared')
     if target.exists() and (not target.is_dir() or any(p != prepared for p in target.iterdir())):
         raise LegacyBridgeError('fresh-target-required')
-    with (source_guard or _closed_source)(source, tool, program):
-        _require_connected_resources(program, external_root)
+    guard = source_guard or _closed_source
+    import inspect
+    try:
+        inspect.signature(guard).bind(source, tool, program, roots)
+    except (TypeError, ValueError):
+        # Narrow compatibility for injected three-argument fixture guards.
+        guard_context = guard(source, tool, program)
+    else:
+        guard_context = guard(source, tool, program, roots)
+    with guard_context:
         locked_identity, _ = probe_source(source, registry_reader=registry_reader)
         if locked_identity != identity:
             raise LegacyBridgeError('source-identity-changed')
-        result = legacy_migration.migrate(program, prepared, identity=identity)
-        _require_connected_resources(program, external_root)
+        if _asset_roots(program, external_root, require_locks=False) != roots:
+            raise LegacyBridgeError('asset-root-set-changed')
+        result = legacy_migration.migrate(program, prepared, identity=identity, extra_roots=roots)
+        if _asset_roots(program, external_root, require_locks=False) != roots:
+            raise LegacyBridgeError('asset-root-set-changed')
         if probe_source(source, registry_reader=registry_reader)[0] != identity:
             raise LegacyBridgeError('source-identity-changed')
     return dict(status='prepared-native-unverified', copiedFiles=result['files'],
                 nativeInstalled=False, oldEntryRetired=False, sourceDeleted=False,
+                assetRoots=sorted(roots), inventorySha256=result['inventorySha256'],
                 evidence='native' if registry_reader is None and source_guard is None else 'fixture',
                 remaining='historical-retirement-and-native-handoff-unverified')
 

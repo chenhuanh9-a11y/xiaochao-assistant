@@ -268,10 +268,14 @@ def _mkdir(path, *, exclusive=False):
 
 def _write_new(path, data):
     _safe(path)
-    with path.open('xb') as stream:
+    # A killed writer must never expose half a plan/generation as its final
+    # name. Private abandoned objects remain evidence, never retry authority.
+    temporary = _safe(path.with_name('.writing-' + uuid.uuid4().hex))
+    with temporary.open('xb') as stream:
         stream.write(data)
         stream.flush()
         os.fsync(stream.fileno())
+    rename_no_replace(temporary, path)
     _directory_sync(path.parent)
 
 
@@ -400,7 +404,7 @@ def _entries(directory):
     return sorted(entries, key=lambda p: p.name)
 
 
-def _load(root, *, owner_sid, session_id=None):
+def _load(root, *, owner_sid, session_id=None, unpublished=False):
     marker = _safe(root / PENDING)
     present = marker.exists()
     if not present and session_id is None:
@@ -495,7 +499,8 @@ def _load(root, *, owner_sid, session_id=None):
             _fail('publication-proof-changed')
         seen_proofs.add(proof['generation'])
     record, stamp = previous
-    if not present and record['status'] not in {'completed', 'aborted'}:
+    if not present and record['status'] not in {'completed', 'aborted'} and not (
+            unpublished and record['status'] == 'prepared' and record['generation'] == 0):
         _fail('pending-missing')
     result = dict(anchor, **{k: v for k, v in record.items() if k not in {'schema', 'upgradeId'}},
                   pending=present, retainedDirectory=str(directory))
@@ -590,6 +595,27 @@ class InstallerUpgradeJournal:
         _mkdir(self.root / 'work')
         _mkdir(self.root / HISTORY)
         directory = self.root / HISTORY / self.bindings['sessionId']
+        if directory.exists():
+            # Only the complete first generation may have lost publication of
+            # its pending pointer. Later generations can never restart native.
+            result = _load(self.root, owner_sid=self.bindings['ownerSid'],
+                           session_id=self.bindings['sessionId'], unpublished=True)
+            if (result[0]['status'] != 'prepared' or result[0]['generation'] != 0
+                    or any(result[0].get(k) != v for k, v in self.bindings.items())):
+                _fail('binding-mismatch')
+            pin = directory / 'pending-pointer.json'
+            if result[0].get('publication') == 'move-v1':
+                staged = directory / 'pending-pointer.stage.json'
+                if _read(staged)[1] != _parse(_read(pin)[0])['stamp']:
+                    _fail('pending-identity-changed')
+                rename_no_replace(staged, self.root / PENDING)
+            else:
+                os.link(pin, self.root / PENDING)
+            return self.status()
+        final_directory = directory
+        # Construct genesis away from its public name. A torn first write is
+        # retained here and ignored on retry, with no program mutation allowed.
+        directory = self.root / HISTORY / ('.initializing-' + uuid.uuid4().hex)
         _mkdir(directory, exclusive=True)
         for name in ('objects', 'pins', 'generations', 'published'):
             _mkdir(directory / name, exclusive=True)
@@ -615,11 +641,15 @@ class InstallerUpgradeJournal:
             _write_new(staged, _bounded(pointer))
             stamp = _read(staged)[1]
             _write_new(pin, _bounded(dict(publication='move-v1', pointer=pointer, stamp=stamp)))
+            rename_no_replace(directory, final_directory)
+            staged = final_directory / staged.name
             rename_no_replace(staged, self.root / PENDING)
             if _read(self.root / PENDING)[1] != stamp:
                 _fail('pending-identity-changed')
         else:
             _write_new(pin, _bounded(pointer))
+            rename_no_replace(directory, final_directory)
+            pin = final_directory / pin.name
             os.link(pin, self.root / PENDING)
         _directory_sync(self.root / 'work')
         return self.status()

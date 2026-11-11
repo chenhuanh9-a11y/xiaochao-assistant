@@ -177,11 +177,9 @@ class HandoffTests(unittest.TestCase):
         record = self.target / 'work/installer-upgrades' / self.args.session_id / 'legacy-commit.json'
         self.assertEqual(json.loads(record.read_bytes())['phase'], 'old-entry-pending')
 
-    def test_default_asset_gap_stops_production_before_preparation(self):
-        with self.assertRaisesRegex(ValueError, 'complete-asset-transfer-not-integrated'):
-            self.execute('prepare', assets=None)
-        self.assertEqual(list(self.target.iterdir()), [])
-        self.assertEqual(self.snapshot(), self.original)
+    def test_default_factory_is_the_complete_production_adapter(self):
+        from installer_legacy_assets import CompleteAssetTransfer
+        self.assertIsInstance(handoff.complete_asset_transfer(), CompleteAssetTransfer)
 
     def test_unknown_nonempty_target_is_not_adopted(self):
         (self.target / 'personal.txt').write_text('keep me')

@@ -478,6 +478,31 @@ def _registry_text(values, name):
     return value[:-1]
 
 
+def registered_uninstaller(install_root, *, _backend=None):
+    """Recover an omitted ssPostInstall argument from typed native registration.
+
+    Discovery alone grants nothing: capture_native_completion still checks all
+    current program, registration, uninstaller and selected shortcut bytes.
+    """
+    backend = _backend or WindowsReadOnlyBackend()
+    with backend.read_session():
+        users = backend.users()
+        if users['tokenSid'] != users['shellSid']:
+            _fail('different-or-unknown-interactive-user')
+        values = backend.registry(users['tokenSid'])['values']
+        if not _same_path(_registry_text(values, 'InstallLocation'), str(install_root)):
+            _fail('uninstall-registration-target-mismatch')
+        command = _registry_text(values, 'UninstallString')
+        match = re.fullmatch(r'"([^"\r\n]+)"', command)
+        if match is None:
+            _fail('uninstall-path-not-owned')
+        executable = _path(match[1])
+        if (not _same_path(ntpath.dirname(executable), str(install_root))
+                or not re.fullmatch(r'unins[0-9]{3}\.exe', ntpath.basename(executable), re.I)):
+            _fail('uninstall-path-not-owned')
+        return executable
+
+
 def _capture_once(backend, contract):
     with backend.read_session():
         users = backend.users()

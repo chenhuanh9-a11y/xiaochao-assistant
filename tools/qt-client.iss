@@ -196,6 +196,7 @@ var
   ResourcePlanRoot: String;
   ResourceLock: THandle;
   ResourceLockRoot: String;
+  InstallerInspectLegacyTarget: Boolean;
 function CreateFileW(lpFileName: String; dwDesiredAccess, dwShareMode,
   lpSecurityAttributes, dwCreationDisposition, dwFlagsAndAttributes,
   hTemplateFile: LongWord): THandle;
@@ -503,6 +504,10 @@ var
   WatcherReason: String;
 begin
   if CurStep = ssInstall then begin
+    if LegacyMigrationPrepared then begin
+      if not StartLegacyNative(WatcherReason) then RaiseException(WatcherReason);
+      Exit;
+    end;
     if not AcquireResourceLock then
       RaiseException('地图资源正被助手、导入或恢复任务使用，请关闭任务后重试。');
     { Recheck at the final mutation boundary; never replace a live watcher. }
@@ -527,6 +532,10 @@ begin
     RetireOldProgramFiles;
   end;
   if CurStep = ssPostInstall then begin
+    if LegacyMigrationPrepared then begin
+      CompleteLegacyNative(WatcherReason);
+      Exit;
+    end;
     { Native file installation finished. Commit resources before claiming the
       combined upgrade; exact installed EXE/report hashes are also checked. }
     ResourceResetNativeCompleted := ResourceResetStarted;
@@ -560,6 +569,11 @@ var
   WatcherReason: String;
   SafeToRestore: Boolean;
 begin
+  if LegacyMigrationPrepared then begin
+    CancelLegacyBeforeNative;
+    ReleaseResourceLock;
+    Exit;
+  end;
   SafeToRestore := not ResourceResetStarted;
   if ResourceResetStarted then begin
     { Never restore program files after native installation may have begun.
@@ -593,6 +607,10 @@ begin
 end;
 procedure CurPageChanged(CurPageID: Integer);
 begin
+  if (CurPageID = wpFinished) and LegacyMigrationPrepared then begin
+    WizardForm.FinishedLabel.Caption := LegacyCompletionText;
+    Exit;
+  end;
   if (CurPageID = wpFinished) and UpgradeCleanupFailed then
     WizardForm.FinishedLabel.Caption := '升级已提交，但本次临时备份未能全部清理。请按前面的路径提示处理剩余项。';
   if (CurPageID = wpFinished) and ResourceResetStarted and not ResourceResetFinalized then begin
@@ -631,9 +649,9 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   WatcherReason, RestoreReason: String;
 begin
-  Result := PrepareLegacyMigration;
-  if Result <> '' then Exit;
+  InstallerInspectLegacyTarget := LegacyMigrationSelected;
   Result := InstallerTargetError;
+  InstallerInspectLegacyTarget := False;
   if Result <> '' then Exit;
   if DirExists(UninstallHoldingDirectory) or FileExists(UninstallHoldingDirectory) then begin
     Result := '上次卸载的资料尚未恢复，请先核对保留目录：' + UninstallHoldingDirectory;
@@ -650,6 +668,10 @@ begin
   end;
   if not AcquireResourceLock then begin
     Result := '地图资源正被助手、导入或恢复任务使用，请关闭任务后重试。';
+    Exit;
+  end;
+  if LegacyMigrationSelected then begin
+    Result := PrepareLegacyMigration;
     Exit;
   end;
   { The final app directory is now validated. A failed stop may already have
