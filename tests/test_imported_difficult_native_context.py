@@ -45,8 +45,9 @@ class ImportedDifficultNativeContextTests(unittest.TestCase):
         self.assertEqual(len(context.resources.entries), 58)
         self.assertEqual(len(context.legacy_bindings), 2)
         self.assertEqual(len(context.pending_native_bindings), 2)
-        self.assertFalse(context.structure_candidate_capability['candidateReady'])
-        self.assertFalse(context.structure_candidate_capability['operatorDeclaredScanReady'])
+        self.assertTrue(context.structure_candidate_capability['candidateReady'])
+        self.assertTrue(context.structure_candidate_capability['operatorDeclaredScanReady'])
+        self.assertFalse(context.structure_candidate_capability['liveValidated'])
         self.assertTrue(context.live_gaps)
         provider = SharedReferenceProvider(context.root, context.resources, context.versions,
             native=context, check_current=context.assert_current)

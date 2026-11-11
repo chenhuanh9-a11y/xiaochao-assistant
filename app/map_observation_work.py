@@ -13,6 +13,7 @@ from entry_evidence_work import EntryEvidenceWork
 class MapObservationWork(EntryEvidenceWork):
     def __init__(self, engine, frame, floor, *, deadline, prior=None):
         self.engine, self.floor = engine, str(floor)
+        self.identity_authorized = bool(getattr(engine, 'qt_rank_ready', True))
         self.started, self.deadline = time.perf_counter(), deadline
         self.allowed = None
         self.prior, self.established, self.scope_invalid = prior, prior is not None, False
@@ -69,6 +70,12 @@ class MapObservationWork(EntryEvidenceWork):
         self.entry_rows, self.entry_diagnostics = result
         self.engine._apply_shared_entry_inventory(self.entry_rows, self.entry_diagnostics,
             self.engine._shared_entry_inventory(self.floor))
+        if not self.identity_authorized:
+            for row in self.entry_rows:
+                row['identityVerified'] = row['poseVerified'] = False
+            self.entry_diagnostics['identityAuthorizationAllowed'] = False
+            if self.entry_diagnostics.get('complete'):
+                self.entry_diagnostics['reason'] = 'entry-proposals-only'
 
     def _cross_check(self, row):
         candidate = dict(row, floor=self.floor, profileId=self.engine.identity_profile_for_map(row['mapId']),
@@ -90,6 +97,8 @@ class MapObservationWork(EntryEvidenceWork):
 
     def _recovery(self, result):
         self.side_rows, self.side_diagnostics, self.side_winner, self.original_group_recovery = result
+        if not self.identity_authorized:
+            self.side_winner = None
         if 'recovery' in self.errors:
             self.side_diagnostics = dict(reason='side-resource-unavailable', error=self.errors['recovery'], complete=False)
 
@@ -140,7 +149,7 @@ class MapObservationWork(EntryEvidenceWork):
             self.side_producer = 'passport'
             self.side_rows, self.side_diagnostics = self.passport_rows, self.passport_diagnostics
             self.side_winner = verified_entry_candidate(self.side_rows, self.side_diagnostics,
-                self.floor, profile_id=self.engine.identity_profile_for_map)
+                self.floor, profile_id=self.engine.identity_profile_for_map) if self.identity_authorized else None
         if (not self.passport_selected and self.fallback_allowed
                 and not any(row['identityVerified'] for row in self.entry_rows) and side is not None):
             self.side_producer = 'local-structure'
@@ -161,7 +170,7 @@ class MapObservationWork(EntryEvidenceWork):
                 yield self._job(None, 'entry-icon-advisory', self._advisory)
         self.rows = self.engine.collect_observation_rows(self)
         index = self.engine.native_similarity_index
-        if self.rows and index is not None:
+        if self.rows and index is not None and self.identity_authorized:
             context = getattr(self.engine, 'native_similarity_context_provider', None)
             proposal = index.prepare_proposal(self.rows, self.entry_rows, self.entry_diagnostics,
                 self.floor, self.engine.entry_shared_reference_provider, lambda: self.engine.entry_identity.geometry(self.frame),

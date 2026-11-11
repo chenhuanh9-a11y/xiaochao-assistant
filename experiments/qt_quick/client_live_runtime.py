@@ -290,6 +290,18 @@ class LiveRuntime:
     def _candidate_preview_requested(self):
         return self._recorded_s1_provisional_display or self._native_s1_candidate_preview
 
+    def _structure_candidate_available(self, report=None, engine=None):
+        """Current-frame candidate purpose, separate from formal identity rank."""
+        if self._season == 's1':
+            return self._s1_candidate_available(report, engine)
+        if self._season != 's0' or self._mode != 'difficult':
+            return False
+        if report is not None and report.get('dataReady') is not True:
+            return False
+        capability = ((report or {}).get('candidateObservation') or
+            getattr(getattr(engine, 'qt_native_context', None), 'structure_candidate_capability', {}))
+        return isinstance(capability, dict) and capability.get('candidateReady') is True
+
     def _candidate_streaming_requested(self):
         return self._recorded_s1_streaming or self._native_s1_candidate_preview
 
@@ -620,7 +632,7 @@ class LiveRuntime:
         return bool(callable(scan) and (
             self._season == 's1' and not self._manual_alignment
             or self._season == 's0' and getattr(engine, 'qt_native_base', None) is not None
-            and getattr(engine, 'qt_rank_ready', False)))
+            and (getattr(engine, 'qt_rank_ready', False) or self._structure_candidate_available(engine=engine))))
 
     def _stream_observation(self, action, payload, cancelled, engine, epoch,
                                captured, frame, floor, digest, capture_generation,
@@ -2663,8 +2675,9 @@ class LiveRuntime:
             live_ready = report.get("liveReady", self._season == "s0") is True
             if not live_ready and not live_gaps:
                 live_gaps = (f"season-live-contract-unavailable:{self._season}",)
-            candidate_ready = self._s1_candidate_available(report)
-            ready = saved_ready and (not live_gaps or candidate_ready)
+            candidate_ready = self._structure_candidate_available(report)
+            ready = bool((saved_ready or candidate_ready and report.get('dataReady'))
+                and (not live_gaps or candidate_ready))
             guarded = (self._evidence_kind != "live-client-capture"
                        or callable(getattr(self._capture, "is_current", None)))
             # The picker is a separate intent from the advertised confirm_route
@@ -2752,7 +2765,7 @@ class LiveRuntime:
                 recordedStreamingEnabled=bool(self._recorded_s1_streaming and self._s1_provisional_enabled()),
                 nativeCandidatePreviewAvailable=candidate_ready and self._native_s1_candidate_preview,
                 candidateStructureAvailable=candidate_ready,
-                candidateSupportedFloors=["-1", "-2", "-3", "-4"] if candidate_ready else [],
+                candidateSupportedFloors=list(self._floor_contract().floor_ids) if candidate_ready else [],
                 candidateUnvalidatedFloors=["-3", "-4"] if self._season == "s1" else [],
                 candidateProvisionalDisplayEnabled=self._s1_provisional_enabled(),
                 candidateStreamingEnabled=bool(self._candidate_streaming_requested() and self._s1_provisional_enabled()),
@@ -3897,7 +3910,7 @@ class LiveRuntime:
                 expected_epoch=capture_request_epoch, request_id=request_id)
         if action in ("start_round", "toggle_round", "capture_now", "map", "refresh_map", "recover_map_open", "probe_map_after_drag"):
             report = self._offline.snapshot()["savedFrameCapabilities"][self._mode]
-            if not report.get("liveReady", self._season == "s0") and not self._s1_candidate_available(report):
+            if not report.get("liveReady", self._season == "s0") and not self._structure_candidate_available(report):
                 return self._receipt(action, payload, success=False,
                     reason=";".join(report.get("liveGaps", ())) or f"{self._season}-live-contract-unavailable",
                     unavailable=True)
@@ -4156,11 +4169,13 @@ class LiveRuntime:
             from client_providers import ProviderUnavailable
             raise ProviderUnavailable(f"season-resources-unavailable:{season}")
         engine = getter(mode, season) if callable(getter) else self._factories[mode]()
-        if require_live and not getattr(engine, 'qt_rank_ready', True):
+        candidate_ready = bool(require_live and season == self._season and mode == self._mode
+            and self._structure_candidate_available(engine=engine))
+        if require_live and not getattr(engine, 'qt_rank_ready', True) and not candidate_ready:
             from client_providers import ProviderUnavailable
             raise ProviderUnavailable(';'.join(getattr(engine, 'qt_rank_gaps', ())) or 'recognition-rank-unavailable')
         if (require_live and not getattr(engine, "qt_live_ready", season == "s0")
-                and not (season == "s1" and self._s1_candidate_available(engine=engine))):
+                and not candidate_ready):
             from client_providers import ProviderUnavailable
             raise ProviderUnavailable(";".join(getattr(engine, "qt_live_gaps", ())) or f"season-live-contract-unavailable:{season}")
         return engine
@@ -5184,13 +5199,13 @@ class LiveRuntime:
                 return self._receipt(action, payload, success=True,
                     reason="manual-map-selection-pending", posePending=True,
                     manualSelectionPending=True, observation=observation)
-            if engine.pack.mode == "difficult" and str(floor) == "2":
-                return self._receipt(action, payload, success=False,
-                    reason="difficult-f2-entry-recognition-disabled", posePending=True)
             if self._observation_stream_enabled(engine):
                 return self._stream_observation(action, payload, cancelled, engine, epoch,
                     captured, frame, floor, digest, capture_generation, frame_generation,
                     frame_id, cycle, stream_snapshot)
+            if engine.pack.mode == "difficult" and str(floor) == "2":
+                return self._receipt(action, payload, success=False,
+                    reason="difficult-f2-entry-recognition-disabled", posePending=True)
             # Opening the map again refreshes the selected member's geometry.
             # Only an identity reset/new round starts discovery; later side
             # views must not silently replace a front-group member selection.

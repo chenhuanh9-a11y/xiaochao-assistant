@@ -280,19 +280,23 @@ class MapEntryGeometryIdentity:
             return dict(mapId=item['mapId'],profileId=self.profile_for_map(item['mapId']),entryKind='main',material=item['material'],
                 score=float(best['chainCount']),hypothesis={k:v for k,v in best.items() if k!='anchor'},
                 poseAmbiguous=len(hypotheses)>1 and hypotheses[1]['chainCount']>=best['chainCount']-1,
-                sourceProduct=item['sourceProduct'])
+                sourceProduct=item['sourceProduct'],
+                **{key:item[key] for key in ('proposalOnly','authorizesPose','authorizesIdentity') if key in item})
 
     @staticmethod
     def _finalize_rank(rows,competitive,complete,map_id):
         accepted=[r for r in competitive if r.get('verification',{}).get('success')]
         winner=accepted[0] if complete and len(accepted)==1 else None
         for row in rows:
+            # Proposal geometry still competes and can seed a later independent
+            # fit. Passing this entry check cannot upgrade its resource purpose.
             row['poseVerified']=bool(row is winner and not row['poseAmbiguous']
+                and row.get('proposalOnly',False) is False and row.get('authorizesPose',True) is True
                 and row['hypothesis']['neighborChains']>=6 and row['score']>=10
                 and (row['hypothesis']['mainChains']>=3 or (
                     row['hypothesis']['neighborChains']>=8
                     and min(row['hypothesis']['neighborExtentGrid'])>=4)))
-            row['identityVerified']=row['poseVerified'] and map_id is None
+            row['identityVerified']=row['poseVerified'] and map_id is None and row.get('authorizesIdentity',True) is True
         if winner is not None:rows.sort(key=lambda r:(not r['identityVerified'],-r['score']))
 
     def verify(self,frame,row,*,context=None,route=None):

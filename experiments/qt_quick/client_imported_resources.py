@@ -15,8 +15,8 @@ from backend import ResourceRows
 _ACTIVATION_CONTEXTS = {
     ('s0', 'nightmare'): dict(label='启用 S0 噩梦', objectSuffix='', notice='',
         activatedMessage='S0 噩梦基础结构与楼层控件已启用。'),
-    ('s0', 'difficult'): dict(label='启用 S0 困难数据', objectSuffix='-s0-difficult',
-        notice='识别功能尚未开放，启用后仍不能开始识别。', activatedMessage='S0 困难基础数据已启用。'),
+    ('s0', 'difficult'): dict(label='启用 S0 困难', objectSuffix='-s0-difficult',
+        notice='可扫描结构候选，地图需手动确认。', activatedMessage='S0 困难基础结构与楼层控件已启用。'),
     ('s1', 'difficult'): dict(label='启用 S1 困难数据', objectSuffix='-s1-difficult',
         notice='自动楼层识别尚未验证，启用后仍不可用。', activatedMessage='S1 困难基础数据已启用。'),
     ('s1', 'nightmare'): dict(label='启用 S1 噩梦数据', objectSuffix='-s1-nightmare',
@@ -569,7 +569,7 @@ class ImportedResourceService(QObject):
                 elif any(item[0] == 's1' for item in contexts):
                     self._message += ' 自动楼层识别尚未验证，暂不可用。'
                 if not display and ('s0', 'difficult') in contexts:
-                    self._message += ' 识别功能尚未开放，暂不能开始识别。'
+                    self._message += ' ' + _ACTIVATION_CONTEXTS[('s0', 'difficult')]['notice']
                 if inventory is None:
                     self._message += ' 列表暂时无法读取，请重新核对。'
                 elif inventory.generation != outcome['generation']:

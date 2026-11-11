@@ -129,7 +129,7 @@ class NativeDifficultCandidateEngine(MapIdentityEngine):
         return super().rank(frame, floor=floor, limit=limit, budget_seconds=budget_seconds)
 
     def prepare_entry_observation(self, frame, floor, *, deadline, prior=None):
-        if not getattr(self, 'qt_rank_ready', True):
+        if not getattr(self, 'qt_rank_ready', True) and not getattr(self, 'qt_structure_scan_ready', False):
             raise ValueError(';'.join(getattr(self, 'qt_rank_gaps', ())) or 'recognition-rank-unavailable')
         if getattr(self, 'qt_season', None) == 's1':
             raise ValueError('proposal-only-entry-evidence')

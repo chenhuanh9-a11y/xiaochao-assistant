@@ -137,6 +137,8 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
     engine.qt_logical_group_registry = bundle.reviewed_front_groups
     engine.qt_live_gaps = tuple(native.live_gaps) if native is not None else ()
     engine.qt_rank_ready = rank_ready
+    engine.qt_structure_scan_ready = bool(native is not None
+        and native.structure_candidate_capability.get('operatorDeclaredScanReady') is True)
     engine.qt_rank_gaps = () if rank_ready else ('native-base-rank-unavailable',)
     engine.qt_live_ready = rank_ready and not engine.qt_live_gaps
     engine.qt_season = season
@@ -155,7 +157,7 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
         engine.qt_s1_index_resource_root = root
         engine.qt_s1_private_coordinate_prepare = engine.qt_s1_pose_prior = None
         attach_structure_scanner(engine, StructureCatalog.from_engine(engine))
-    elif rank_ready:
+    elif rank_ready or engine.qt_structure_scan_ready:
         from s1_structure_selection import StructureCatalog
         attach_structure_scanner(engine, StructureCatalog.from_engine(engine))
     check_current()

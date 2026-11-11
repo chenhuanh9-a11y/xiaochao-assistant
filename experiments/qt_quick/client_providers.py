@@ -151,7 +151,7 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
                        first_material_committed=None, pose_priors=None, collect_fit_diagnostics=False,
                        on_entry_evidence=None, deadline=None, frame_snapshot=None):
         check_current()
-        if not getattr(engine, 'qt_rank_ready', True):
+        if not getattr(engine, 'qt_rank_ready', True) and not getattr(engine, 'qt_structure_scan_ready', False):
             raise ProviderUnavailable(';'.join(getattr(engine, 'qt_rank_gaps', ())) or 'recognition-rank-unavailable')
         from structure_pose_solver import StructurePoseSolver
         host = StructurePoseSolver(engine, pose_priors=pose_priors,

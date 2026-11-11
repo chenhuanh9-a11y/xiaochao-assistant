@@ -234,6 +234,25 @@ class EntryObservationTests(unittest.TestCase):
         self.assertEqual(report['unscannedMapIds'], ['map-a', 'map-b'])
         self.assertFalse(report['identityHardGatePassed'])
 
+    def test_candidate_purpose_keeps_legacy_entry_geometry_without_granting_identity(self):
+        engine = self.engine(unique=True)
+        engine.qt_rank_ready = False
+        updates = []
+        def accept(evidence):
+            updates.append(evidence)
+            return any(row['identityHardGatePassed'] for row in evidence['rows'])
+        report = self.scan(engine, on_entry_evidence=accept)
+        self.assertEqual(report['status'], 'complete')
+        self.assertEqual(report['checkedMapIds'], ['map-a', 'map-b'])
+        self.assertEqual(len(updates), 1)
+        row = next(row for row in updates[0]['rows'] if row['mapId'] == 'map-a')
+        self.assertTrue(row['difficultEntry']['verification']['success'])
+        self.assertFalse(row['difficultEntry']['poseVerified'])
+        self.assertFalse(row['difficultEntry']['identityVerified'])
+        self.assertFalse(row['identityHardGatePassed'])
+        self.assertFalse(row['strongSuggestion'])
+        self.assertFalse(engine.last_difficult_evidence['tilemapEntry']['identityAuthorizationAllowed'])
+
     def test_closing_before_competing_probe_keeps_both_maps_unknown(self):
         engine = self.engine(unique=True)
         work = engine.prepare_entry_observation(self.fixture.frame, '2', deadline=float('inf'))

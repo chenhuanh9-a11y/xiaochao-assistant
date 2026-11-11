@@ -572,10 +572,13 @@ class ClientCoordinator(QObject):
         if self.resources.busy or self.resources.pendingKind or state.get("resourceLocked"):
             return ((mode, "resource-operation"), "正在更新地图资源，请等待资源操作完成后再打开地图")
         report = (state.get("savedFrameCapabilities") or {}).get(mode) or {}
+        candidate_ready = (report.get('dataReady') is True
+            and season == 's0' and state.get('candidateStructureAvailable') is True
+            and not state.get('manualAlignmentSession')) or self._native_candidate_preview_ready(state)
         reason = str(report.get("reason") or state.get("liveUnavailableReason") or "")
         if reason == "resource-validation-pending" or state.get("pendingAction") == "inspect_engine_resources":
             return ((mode, "resource-validation-pending"), "正在校验地图识别资源，请稍后再打开地图")
-        if report.get("available") is False:
+        if report.get("available") is False and not candidate_ready:
             if report.get('dataReady') is True and report.get('rankReady') is False:
                 return ((season, mode, 'recognition-data-only'),
                     f"{season_label(season)} 地图数据已就绪，识别功能尚未开放，暂不能开始识别")
@@ -587,7 +590,7 @@ class ClientCoordinator(QObject):
             return ((mode, reason), summary)
         if (not report.get("liveReady", season == "s0")
                 and not (allow_manual_floor and self._manual_floor_observation_ready(state))
-                and not self._native_candidate_preview_ready(state)):
+                and not candidate_ready):
             gaps = ";".join(report.get("liveGaps", ())) or "season-live-contract-unavailable"
             summary = (f"{season_label(season)} 地图数据可读取，实时识别尚未完成验证，暂不能开始识别"
                        if season == "s0" else
