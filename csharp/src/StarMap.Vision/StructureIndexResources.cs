@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using OpenCvSharp;
 using StarMap.Core.Resources;
 using StarMap.Core.Selection;
+using StarMap.Core.Identity;
 
 namespace StarMap.Vision;
 
@@ -12,7 +13,10 @@ public sealed partial class StructureIndexFilter : IDisposable
     private readonly StructureCatalog _catalog;
     private readonly JsonElement _index;
     private readonly JsonElement _entries;
-    private readonly StructureGateAnchorLocator _locator;
+    private readonly StructureGateAnchorLocator? _locator;
+    private readonly S0StructureGateObserver? _s0Locator;
+    private readonly StaticExitMarkerCatalog? _s0Markers;
+    private readonly Func<ResourceCatalogEntry,ResourceLoadResult<SharedStructureData>> _loadReference;
     private readonly object _sync = new();
     private readonly Dictionary<string, PoolData> _cache = new(StringComparer.Ordinal);
     private readonly Dictionary<string, PoolJob> _pending = new(StringComparer.Ordinal);
@@ -20,10 +24,22 @@ public sealed partial class StructureIndexFilter : IDisposable
     private readonly LinkedList<string> _pendingOrder = new();
     private bool _disposed;
 
-    public StructureIndexFilter(ResourceCatalog resources, StructureCatalog catalog, string assetDirectory)
+    /// <summary>One immutable resource generation. An injected loader must read the exact owner-bound entry;
+    /// it may reuse typed resources but must not substitute another generation or profile.</summary>
+    public StructureIndexFilter(ResourceCatalog resources, StructureCatalog catalog, string assetDirectory,
+        EntryPassportCatalog? passports=null,StaticExitMarkerCatalog? staticMarkers=null,
+        Func<ResourceCatalogEntry,ResourceLoadResult<SharedStructureData>>? loadReference=null)
     {
         if (!catalog.IsBoundTo(resources)) throw new ArgumentException("structure-index-catalog-owner-mismatch", nameof(catalog));
-        _resources = resources; _catalog = catalog;
+        _resources = resources; _catalog = catalog;_loadReference=loadReference??resources.LoadSharedStructure;
+        if(catalog.Season=="s0")
+        {
+            if(passports is null||passports.Season!=catalog.Season||passports.Mode!=catalog.Mode
+                ||!string.Equals(Path.TrimEndingDirectorySeparator(resources.RootPath),Path.TrimEndingDirectorySeparator(passports.ResourceRoot),StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("coordinate-passport-context-mismatch",nameof(passports));
+            _s0Locator=new(passports.ExitIconPath??throw new InvalidDataException("coordinate-glyph-unavailable"));
+            _s0Markers=staticMarkers;return;
+        }
         using var document = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(assetDirectory, "s1_entrance_coordinate_index.json")));
         _index = document.RootElement.Clone();
         if (_index.ValueKind != JsonValueKind.Object || !_index.TryGetProperty("schema", out var schema)
@@ -42,13 +58,18 @@ public sealed partial class StructureIndexFilter : IDisposable
         }
     }
 
-    public StructureGateAnchor DetectAnchor(Mat frame, Func<bool>? cancelled = null)
+    public StructureGateAnchor DetectAnchor(Mat frame, Func<bool>? cancelled = null,CancellationToken cancellation=default)
     {
-        lock (_sync) { ObjectDisposedException.ThrowIf(_disposed, this); return _locator.Detect(frame, cancelled); }
+        lock (_sync)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return _s0Locator is not null?_s0Locator.Detect(frame,cancellation,cancelled)
+                :_locator!.Detect(frame,()=>cancellation.IsCancellationRequested||cancelled?.Invoke()==true);
+        }
     }
 
-    public StructureGateAnchor DetectAnchor(StructureFramePreparation preparation,Func<bool>? cancelled=null) =>
-        DetectAnchor(preparation.Frame,cancelled);
+    public StructureGateAnchor DetectAnchor(StructureFramePreparation preparation,Func<bool>? cancelled=null,CancellationToken cancellation=default) =>
+        DetectAnchor(preparation.Frame,cancelled,cancellation);
 
     /// <summary>Native clean-mask pixels to client pixels for exactly the report's common feasible pose.
     /// The caller must still validate this matrix against that same frame before committing a pose.</summary>
@@ -57,6 +78,7 @@ public sealed partial class StructureIndexFilter : IDisposable
         lock (_sync)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
+            if(_catalog.Season=="s0")return null; // Multiple/unknown door origins never supply a unique native pose.
             if (report["coordinateVerified"]?.GetValue<bool>() != true || report["floor"]?.GetValue<string>() != floor
                 || report["mode"]?.GetValue<string>() != _catalog.Mode || report["resourceKey"]?.GetValue<string>() != _catalog.ResourceKey
                 || report["evaluatedMapIds"] is not JsonArray ids || !ids.Any(v => v?.GetValue<string>() == mapId)
@@ -73,6 +95,7 @@ public sealed partial class StructureIndexFilter : IDisposable
 
     private PoolData? Pool(string[] ids, string floor, Func<bool> cancelled)
     {
+        if(_catalog.Season=="s0")return LocalPool(ids,floor,cancelled);
         string key = _catalog.ResourceKey + "\n" + floor + "\n" + string.Join('\n', ids);
         if (_cache.TryGetValue(key, out var cached))
         {
@@ -234,7 +257,7 @@ public sealed partial class StructureIndexFilter : IDisposable
     }
     private static void Touch(LinkedList<string> order, string key) { order.Remove(key); order.AddLast(key); }
     private sealed record PoolItem(string Id, int Width, int Height, byte[] Mask, Point2d Origin);
-    private sealed record PoolData(string[] Ids,string Floor,Point2d Origin,int Width,int Height,FastPrepared Prepared,float[][] Fields,double[][][] UnionChains,double[][][] UnionRays,byte[] Difference);
+    private sealed record PoolData(string[] Ids,string Floor,Point2d Origin,int Width,int Height,FastPrepared? Prepared,float[][] Fields,double[][][] UnionChains,double[][][] UnionRays,byte[] Difference,LocalSource[]? LocalSources=null);
     private sealed class PoolJob
     {
         public readonly List<PoolItem> Items = [];
@@ -256,7 +279,8 @@ public sealed partial class StructureIndexFilter : IDisposable
         lock (_sync)
         {
             if (_disposed) return; _disposed = true;
-            _locator.Dispose(); _cache.Clear(); _pending.Clear(); _cacheOrder.Clear(); _pendingOrder.Clear();
+            _locator?.Dispose();_s0Locator?.Dispose();_localFields.Clear();_localFieldOrder.Clear();
+            _cache.Clear(); _pending.Clear(); _cacheOrder.Clear(); _pendingOrder.Clear();
         }
     }
 }

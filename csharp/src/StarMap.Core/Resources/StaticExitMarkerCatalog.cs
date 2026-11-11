@@ -42,7 +42,7 @@ public sealed class StaticExitMarkerCatalog
             var record=records[0];
             if(!record.GetProperty("staticExitInputsComplete").GetBoolean()||record.GetProperty("issues").GetArrayLength()!=0)
                 return Unknown("static-exit-coverage-incomplete");
-            var inverse=common.ReferenceToCommon.Inverse();
+            var markerToReference=CommonFloorSpace.S0MarkerToReference(reference);
             var points=new List<StaticExitMarkerPoint>();
             foreach(var mark in record.GetProperty("marks").EnumerateArray())
             {
@@ -53,7 +53,7 @@ public sealed class StaticExitMarkerCatalog
                 if(plane.GetArrayLength()!=2)return Unknown("static-exit-point-invalid");
                 // source_renderer.js maps this 60px/voxel plane into world
                 // X/right,Y/down. CommonFloorSpace retains product/crop bridges.
-                var point=inverse.Apply(plane[0].GetDouble()*128d/60,-plane[1].GetDouble()*128d/60);
+                var point=markerToReference.Apply(plane[0].GetDouble(),plane[1].GetDouble());
                 if(!double.IsFinite(point.X)||!double.IsFinite(point.Y))return Unknown("static-exit-point-invalid");
                 points.Add(new(kind,point.X,point.Y));
             }

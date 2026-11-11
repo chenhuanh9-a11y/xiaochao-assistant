@@ -9,13 +9,14 @@ namespace StarMap.Vision;
 /// Owns no round, candidate-pool mutation, identity, trusted pose or display state.</summary>
 public sealed partial class StructureIndexFilter
 {
+    internal const double CoordinateMissThresholdPx=8;
     public JsonObject Evaluate(Mat frame, IReadOnlyList<string> candidateIds, string floor, Func<bool>? cancelled = null)
     {
         lock (_sync)
         {
             ObjectDisposedException.ThrowIf(_disposed,this);
             var timer = Stopwatch.StartNew();
-            var anchor = _locator.Detect(frame,cancelled);
+            var anchor = DetectAnchor(frame,cancelled);
             double gateMs = timer.Elapsed.TotalMilliseconds;
             return EvaluatePrepared(frame,candidateIds,floor,anchor,cancelled ?? (() => false),timer,gateMs);
         }
@@ -63,11 +64,14 @@ public sealed partial class StructureIndexFilter
             if (extra is not null) foreach (var pair in extra) result[pair.Key] = pair.Value?.DeepClone();
             return result;
         }
-        if (!ReferenceEquals(anchor.Frame,frame) || anchor.TemplateSha256 != _locator.TemplateSha256 || anchor.ProfileSha256 != _locator.ProfileSha256)
+        if (!ReferenceEquals(anchor.Frame,frame) || anchor.TemplateSha256 != (_s0Locator?.TemplateSha256??_locator!.TemplateSha256)
+            || anchor.ProfileSha256 != (_s0Locator?.ProfileSha256??_locator!.ProfileSha256))
             return Result("coordinate-anchor-frame-mismatch");
-        if (ids.Length == 0 || ids.Any(id => !_catalog.MapIds.Contains(id,StringComparer.Ordinal) || !_entries.TryGetProperty(id,out _))
+        if (ids.Length == 0 || ids.Any(id => !_catalog.MapIds.Contains(id,StringComparer.Ordinal)
+                ||_catalog.Season=="s1"&&!_entries.TryGetProperty(id,out _))
             || !_catalog.Floors.Contains(floor,StringComparer.Ordinal)) return Result("coordinate-scope-invalid");
         if (cancelled()) return Result("coordinate-work-obsolete");
+        if(_catalog.Season=="s0"&&anchor.Status!="located")return Result("current-common-coordinate-unresolved");
         var contexts = new List<Observation>();
         try
         {
@@ -83,7 +87,15 @@ public sealed partial class StructureIndexFilter
                     bool retained = false;
                     try
                     {
-                        if (Geometry.ObservedChains(frame,context).Count >= 6) { contexts.Add(context); retained = true; }
+                        // A glyph-anchored conservative scale union needs a
+                        // measured chain, not the six unique correspondences
+                        // required by the existing common-pair/pose domain.
+                        // Bind that sparse evidence to the glyph's own island.
+                        bool localAnchor=_s0Locator is not null&&anchor.CenterPx is { } glyphCenterForIsland
+                            &&context.Bounds.Contains(new Point(Numerics.Rint(glyphCenterForIsland.X),Numerics.Rint(glyphCenterForIsland.Y)));
+                        int requiredChains=_s0Locator is not null?1:6;
+                        if((_s0Locator is null||localAnchor)&&Geometry.ObservedChains(frame,context).Count>=requiredChains)
+                        { contexts.Add(context); retained = true; }
                     }
                     finally { if (!retained && preparation is null) context.Dispose(); }
                 }
@@ -109,8 +121,10 @@ public sealed partial class StructureIndexFilter
                 {
                     if (cancelled()) return Result("coordinate-work-obsolete");
                     var context = contexts[index];
-                    Domain? domain = gate is not null && floor == "-1" ? EntranceUnionDomain(frame,context,data,gate,cancelled) : null;
-                    List<Domain> domains = domain is null ? DomainsFromCommon(frame,context,data.Prepared,cancelled) : [domain];
+                    Domain? domain = gate is not null && (floor == "-1"||data.LocalSources is not null)
+                        ? EntranceUnionDomain(frame,context,data,gate,cancelled,compactOffsets:data.LocalSources is not null) : null;
+                    List<Domain> domains = domain is not null?[domain]:data.Prepared is { } common
+                        ?DomainsFromCommon(frame,context,common,cancelled):[];
                     foreach (var candidate in domains)
                     {
                         var constrained = gate is null ? candidate : IntersectAnchor(candidate,gate,data.Origin);
@@ -144,33 +158,47 @@ public sealed partial class StructureIndexFilter
             var points = FastAlignment.SampleEdges(edge,500);
             if (points.Length < 40) return Result("current-structure-insufficient");
             var distances=Stopwatch.StartNew();
-            var minima=CandidateMinima(points,hypotheses,data.Width,data.Height,data.Fields,cancelled);
+            var local=data.LocalSources is { } sources?CandidateLocalMinima(points,hypotheses,
+                new((int)data.Origin.X,(int)data.Origin.Y),sources,AcquireLocalField,cancelled,solutions.Max(s=>s.Domain.OffsetRadiusPx)):null;
+            var minima=data.LocalSources is null?CandidateMinima(points,hypotheses,data.Width,data.Height,data.Fields,cancelled):local?.Minima;
             distanceComparisonMs=distances.Elapsed.TotalMilliseconds;
             if(minima is null)return Result("coordinate-work-obsolete");
             var checks = new JsonArray(); var contradicted = new List<string>();
             for (int map = 0; map < data.Ids.Length; map++)
             {
                 var minimum=minima[map];
-                var bad = points.Where((_,p) => minimum[p] > 8).ToArray();
+                var bad = local?.UnknownReasons[map] is null?points.Where((_,p) => minimum[p] > CoordinateMissThresholdPx).ToArray():Array.Empty<float[]>();
                 double width = bad.Length == 0 ? 0 : bad.Max(p => p[0])-bad.Min(p => p[0]);
                 double height = bad.Length == 0 ? 0 : bad.Max(p => p[1])-bad.Min(p => p[1]);
                 bool explicitContradiction = bad.Length >= 12 && Math.Min(width,height) >= 12 && Math.Max(width,height) >= 24;
                 if (explicitContradiction) contradicted.Add(data.Ids[map]);
                 checks.Add(new JsonObject { ["mapId"] = data.Ids[map], ["unavoidableMissCount"] = bad.Length, ["sampleCount"] = points.Length,
                     ["unavoidableSpanPx"] = new JsonArray(width,height), ["explicitContradiction"] = explicitContradiction });
+                if(local is not null)checks[^1]!["coordinateReason"]=local.UnknownReasons[map]??"complete-source-bound-local-field";
             }
             if (cancelled()) return Result("coordinate-work-obsolete");
             if (contradicted.Count == ids.Length) return Result("coordinate-or-catalogue-conflict",new() { ["candidateChecks"] = checks });
-            bool poseAvailable = hypotheses.All(h => ProjectionDistance(h,representative,data.Width,data.Height) <= 6);
+            if(local is not null&&local.UnknownReasons.All(reason=>reason is not null))
+                return Result("coordinate-resources-unavailable",new(){["candidateChecks"]=checks});
+            bool poseAvailable = data.LocalSources is null&&hypotheses.All(h => ProjectionDistance(h,representative,data.Width,data.Height) <= 6);
             double tx = representative.X-representative.Scale*data.Origin.X,ty = representative.Y-representative.Scale*data.Origin.Y;
             evidence["sharedHypothesisCount"] = hypotheses.Length; evidence["perCandidateFreeFit"] = false;
+            if(local is not null)
+            {
+                evidence["distanceStorage"]="native-local-fields-all-door-offsets";
+                evidence["residentFieldCount"]=_localFields.Count;
+                evidence["residentFieldBytes"]=_localFields.Values.Sum(field=>(long)field.Values.Length*sizeof(float));
+                evidence["fieldOutside"]="conservative-mask3-distance-lower-bound";
+                evidence["distanceFieldReads"]=local.FieldReads;
+                evidence["explainedPointsShortCircuited"]=local.ExplainedPoints;
+            }
             return new JsonObject
             {
                 ["schemaVersion"] = 1, ["mode"] = _catalog.Mode, ["resourceKey"] = _catalog.ResourceKey, ["floor"] = floor,
                 ["evaluatedMapIds"] = JsonSerializer.SerializeToNode(ids), ["contradictedMapIds"] = JsonSerializer.SerializeToNode(contradicted),
                 ["unknownMapIds"] = JsonSerializer.SerializeToNode(ids.Where(id => !contradicted.Contains(id,StringComparer.Ordinal)).ToArray()),
                 ["coordinateVerified"] = true, ["poseAvailable"] = poseAvailable,
-                ["matrixEntranceRendererToClient"] = new JsonArray(new JsonArray(representative.Scale,0,tx),new JsonArray(0,representative.Scale,ty),new JsonArray(0,0,1)),
+                ["matrixEntranceRendererToClient"] = data.LocalSources is null?new JsonArray(new JsonArray(representative.Scale,0,tx),new JsonArray(0,representative.Scale,ty),new JsonArray(0,0,1)):null,
                 ["selectedContextIndex"] = first.ContextIndex, ["coordinateEvidence"] = evidence, ["candidateChecks"] = checks,
                 ["identityAuthorized"] = false, ["reason"] = "same-coordinate-positive-contradictions-only", ["elapsedMs"] = compare.Elapsed.TotalMilliseconds,
                 ["gateStatus"] = anchor.Status, ["gateReason"] = anchor.Reason, ["gateMs"] = gateMs,

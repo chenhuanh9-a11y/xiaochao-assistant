@@ -17,6 +17,7 @@ internal static class Program
         if (difficultOnly) args = args[1..];
         if(args.Length==5 && args[0]=="--shared-preparation-regressions")return SharedPreparationRegression.Run(args[1],args[2],args[3],args[4]);
         if(args.Length==2 && args[0]=="--index-distance-regressions")return IndexDistanceRegression.Run(args[1]);
+        if(args.Length==2 && args[0]=="--local-index-regressions")return LocalIndexDistanceRegression.Run(args[1]);
         if (args.Length == 2 && args[0] == "--structure-index-budget-regressions") return StructureIndexBudgetRegression.Run(args[1]);
         if (args.Length == 4 && args[0] == "--structure-index-oracle") return StructureIndexOracle.Run(args[1], args[2], args[3],sharedPreparation);
         if (args.Length == 4 && args[0] == "--fit-probe") return StructureFitProbe.Run(args[1],args[2],args[3]);

@@ -6,6 +6,26 @@ namespace StarMap.Core.Resources;
 /// <summary>Static renderer coordinates, never a measured scale, pose or floor permission.</summary>
 public sealed record CommonFloorSpace(string SpaceId, DisplayAffine ReferenceToCommon)
 {
+    // Algebraically inverse to the S0 renderer/world bridge below, composed
+    // in the producer's pixel units. Avoid world-unit roundtrip residue at
+    // exact integer marker positions; do not round genuinely fractional data.
+    internal static DisplayAffine S0MarkerToReference(SharedStructureData reference)
+    {
+        var meta=reference.Metadata;var geometry=meta.GetProperty("sourceGeometry");
+        if(!DisplayAffine.TryRead(geometry.GetProperty("matrixRendererPixelToProduct"),out var product))
+            throw new InvalidDataException("static-marker-product-bridge-unavailable");
+        var bounds=geometry.GetProperty("bounds");
+        var matrix=product*new DisplayAffine(1,0,-bounds.GetProperty("minX").GetDouble()*60/128,
+            0,-1,-bounds.GetProperty("minY").GetDouble()*60/128);
+        if(meta.TryGetProperty("calibration",out var calibration))
+        {
+            if(!DisplayAffine.TryRead(calibration.GetProperty("matrixCurrentReferenceToNative"),out var native))
+                throw new InvalidDataException("static-marker-calibration-unavailable");
+            matrix=native.Inverse()*matrix;
+        }
+        return matrix;
+    }
+
     public static CommonFloorSpace? Read(ResourceCatalogEntry entry, SharedStructureData reference, out string reason)
     {
         reason = "common-space-source-unavailable";

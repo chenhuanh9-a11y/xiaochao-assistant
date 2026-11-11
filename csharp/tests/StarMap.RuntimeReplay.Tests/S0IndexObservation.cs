@@ -22,6 +22,7 @@ internal static class S0IndexObservation
         var rows=new List<object>();
         var resourceCatalog=ResourceCatalog.Load(resources);
         var registered=new Dictionary<string,(EntryPassportCatalog Passports,StructureCatalog Structure)>();
+        StructureCandidatePool? sideLedger=null;
         using var locator=new StructureGateAnchorLocator(assets);
         foreach(var id in new[]{"batch01-event-000006","batch02-event-000053","batch02-event-000147","batch02-event-000097","batch02-event-000099"})
         {
@@ -63,6 +64,59 @@ internal static class S0IndexObservation
                 await Ask("set_context",new{season="s0",mode,profileId="shared-structure"});
                 await Ask("start_round");var result=await Ask("capture_now");var state=runtime.ReadState();
                 runtime.TryReadRender(out var packet);
+                JsonObject? structureIndex=null;
+                object? sharedLedger=null;
+                if(markerCatalog is not null&&state.Context.FloorId is { } observedFloor)
+                {
+                    using var structural=new StructureIndexFilter(resourceCatalog,registration.Structure,assets,passports,markerCatalog);
+                    using var preparedFrame=new StructureFramePreparation(bgr);
+                    var gate=structural.DetectAnchor(preparedFrame);
+                    var planned=id=="batch02-event-000099"&&sideLedger is not null?sideLedger.Remaining:registration.Structure.MapIds;
+                    structureIndex=structural.Evaluate(preparedFrame,planned,observedFloor,gate);
+                    File.WriteAllText(Path.Combine(output,id+"-index.json"),structureIndex.ToJsonString(new JsonSerializerOptions{WriteIndented=true}));
+                    check(structureIndex["identityAuthorized"]!.GetValue<bool>()==false&&structureIndex["poseAvailable"]?.GetValue<bool>()!=true,
+                        id+" multi-door coordinate evidence cannot grant identity or a unique pose");
+                    if(id=="batch02-event-000147")
+                    {
+                        check(structureIndex["coordinateVerified"]?.GetValue<bool>()==true
+                            &&structureIndex["candidateChecks"]?.AsArray().Count==registration.Structure.MapIds.Count,
+                            id+" real S0 Filter reaches complete candidate checks with per-map unknowns");
+                        check(structureIndex["candidateChecks"]!.AsArray().Count(node=>node!["coordinateReason"]!.GetValue<string>()=="complete-source-bound-local-field")
+                            ==passports.MapProfiles.Count(pair=>pair.Value=="shared-structure"),
+                            id+" every declared native difficult reference participates without integer-roundtrip rejection");
+                        check(packet is not null&&!structureIndex["contradictedMapIds"]!.AsArray().Any(node=>node!.GetValue<string>()==packet.MapId),
+                            id+" independently supported conditional reference is not falsely excluded");
+                        check(structural.ReferenceToClient(structureIndex,packet!.MapId,observedFloor) is null,
+                            id+" multi-door comparison cannot export a representative as a native pose");
+                        var foreignAnchor=structural.DetectAnchor(bgr);
+                        var foreign=structural.Evaluate(preparedFrame,registration.Structure.MapIds,observedFloor,foreignAnchor);
+                        check(foreign["coordinateVerified"]!.GetValue<bool>()==false&&foreign["reason"]!.GetValue<string>()=="coordinate-anchor-frame-mismatch",
+                            id+" pixel-identical different-frame anchor cannot be reused by the Filter");
+                    }
+                    if(id=="batch02-event-000097")
+                    {
+                        check(structureIndex["coordinateVerified"]?.GetValue<bool>()==true
+                            &&structureIndex["candidateChecks"]?.AsArray().Count==registration.Structure.MapIds.Count
+                            &&structureIndex["contradictedMapIds"]!.AsArray().Count>0,
+                            id+" sparse door-bound structure supplies real positive contradictions across the full S0 pool");
+                        check(packet is not null&&!structureIndex["contradictedMapIds"]!.AsArray().Any(node=>node!.GetValue<string>()==packet.MapId),
+                            id+" source Runtime conditional reference survives the sparse side observation");
+                        sideLedger=new("recorded-side-ledger",registration.Structure.ResourceKey,registration.Structure.MapIds);
+                        string update=Feed(sideLedger,structureIndex);
+                        check(update=="structure-pool-narrowed"&&sideLedger.Remaining.Count<registration.Structure.MapIds.Count,
+                            id+" actual Filter report narrows the shared Core candidate ledger");
+                        sharedLedger=new{update,remaining=sideLedger.Remaining.ToArray(),scope="Actual Core ledger replay; Runtime index route is not enabled by this probe."};
+                    }
+                    if(id=="batch02-event-000099")
+                    {
+                        check(sideLedger is not null,id+" sparse target-floor ledger regression cannot skip its preceding narrowing");
+                        var before=sideLedger!.Remaining.ToArray();string update=Feed(sideLedger,structureIndex);
+                        check(structureIndex["coordinateVerified"]!.GetValue<bool>()==false&&before.SequenceEqual(sideLedger.Remaining)
+                            &&sideLedger.Remaining.Count<registration.Structure.MapIds.Count,
+                            id+" unknown sparse target-floor evidence keeps the narrowed pool without restoring all maps");
+                        sharedLedger=new{update,before,remaining=sideLedger.Remaining.ToArray(),scope="Cross-floor Core ledger regression from actual reports; not live Runtime route acceptance."};
+                    }
+                }
                 if(id=="batch02-event-000147"&&markerCatalog is not null)
                     check(packet is not null&&state.Context.FloorId is { } currentFloor
                         &&registration.Structure.ReferenceFor(resourceCatalog,packet.MapId,currentFloor) is not null
@@ -110,6 +164,21 @@ internal static class S0IndexObservation
                                 &&entry.Profile==sourceEntry.Profile&&entry.Floor==sourceEntry.Floor);
                             check(!markerCatalog.Resolve(other,reference).CoverageComplete,
                                 id+" a different map entry cannot borrow the reference coordinates");
+                            if(id=="batch02-event-000147")
+                            {
+                                // Isolated metadata bridge test, not a simulated
+                                // game pose: currentRef -> native and renderer ->
+                                // product must be composed in their declared order.
+                                var meta=JsonNode.Parse(reference.Metadata.GetRawText())!.AsObject();
+                                meta["sourceGeometry"]!["matrixRendererPixelToProduct"]=JsonSerializer.SerializeToNode(new double[][]{[.5,0,-7],[0,.5,-11],[0,0,1]});
+                                meta["calibration"]=new JsonObject{["matrixCurrentReferenceToNative"]=JsonSerializer.SerializeToNode(new double[][]{[2,0,10],[0,2,20],[0,0,1]})};
+                                var constructor=typeof(SharedStructureData).GetConstructors(System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic).Single();
+                                var transformed=(SharedStructureData)constructor.Invoke([JsonSerializer.SerializeToElement(meta),reference.CleanMask,
+                                    reference.ValidationMask,reference.KnownBoundary,reference.UnknownMask,reference.NativeWalls]);
+                                var transformedMarkers=markerCatalog.Resolve(sourceEntry,transformed);
+                                check(transformedMarkers.CoverageComplete&&transformedMarkers.Points.Any(point=>point.Kind=="front-door"&&point.X==146.5&&point.Y==488.5),
+                                    id+" isolated product/crop/calibration composition retains genuinely fractional marker coordinates");
+                            }
                         }
                     }
                     if(independentFit["matrixSourceToClient"] is { } matrix && s0Anchor.CenterPx is { } observed)
@@ -158,7 +227,7 @@ internal static class S0IndexObservation
                     anchor=anchor.ToJson(),anchorMs,s0Anchor=s0Anchor.ToJson(),s0AnchorMs,originalS0Exit=new{passports.ExitIconPath,exits.Reason,exits.Anchors,exits.Observations,exits.Boundary,
                         bounds=exits.Bounds is { } b?new{b.X,b.Y,b.Width,b.Height}:null,elapsedMs=exitMs},
                     registration=new{registration.Structure.Season,registration.Structure.Mode,registration.Structure.MapIds,registration.Structure.Floors,
-                        profiles=passports.MapProfiles},markerProbe,result.Receipt,state,hasRender=packet is not null,materialMap=packet?.MapId,captureCalls=capture.Calls});
+                        profiles=passports.MapProfiles},structureIndex,sharedLedger,markerProbe,result.Receipt,state,hasRender=packet is not null,materialMap=packet?.MapId,captureCalls=capture.Calls});
                 File.WriteAllText(Path.Combine(output,"s0-index-observation.json"),JsonSerializer.Serialize(new{rows,
                     assets=Path.GetFullPath(assets),markerSource,locator.TemplateSha256,locator.ProfileSha256,
                     scope="Actual S0 Runtime/source solvers/post-Nov5 recorded capture, plus standalone existing glyph locator probe using S1-declared assets and the original S0 no-context exit observer using its declared icon. This observes compatibility only: it neither supplies a synthetic coordinate index nor authorizes S0 gate/entrance coordinates. Runtime state/receipt and unlocated/ambiguous probes are retained. No native capture/input/game or unique identity truth."},
@@ -177,4 +246,9 @@ internal static class S0IndexObservation
 
     private static (double X,double Y) Project(double[][] matrix,double x,double y) =>
         (matrix[0][0]*x+matrix[0][1]*y+matrix[0][2],matrix[1][0]*x+matrix[1][1]*y+matrix[1][2]);
+
+    private static string Feed(StructureCandidatePool pool,JsonObject report) => pool.Observe(
+        report["coordinateVerified"]!.GetValue<bool>(),report["evaluatedMapIds"]!.AsArray().Select(node=>node!.GetValue<string>()).ToArray(),
+        report["contradictedMapIds"]!.AsArray().Select(node=>node!.GetValue<string>()).ToArray(),
+        report["candidateChecks"]?.AsArray().Select(node=>new StructureIndexCheck(node!["mapId"]!.GetValue<string>(),node["explicitContradiction"]!.GetValue<bool>())).ToArray()??[]);
 }

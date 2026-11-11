@@ -6,8 +6,8 @@ namespace StarMap.Vision;
 
 public sealed partial class StructureIndexFilter
 {
-    private readonly record struct Hypothesis(double Scale, double X, double Y);
-    private sealed record Domain(Hypothesis[] Hypotheses, Hypothesis Representative, JsonObject Evidence);
+    internal readonly record struct Hypothesis(double Scale, double X, double Y);
+    private sealed record Domain(Hypothesis[] Hypotheses, Hypothesis Representative, JsonObject Evidence, double OffsetRadiusPx=0);
     // An unfinished feasible search is not an empty feasible set. Do not let
     // callers rank/prune with only the domains that happened to finish first.
     private sealed class CoordinateBudgetExceededException(string stage) : Exception(stage)
@@ -135,7 +135,7 @@ public sealed partial class StructureIndexFilter
         });
     }
 
-    private static Domain? EntranceUnionDomain(Mat frame, Observation context, PoolData data, StructureGateAnchor anchor, Func<bool> cancelled)
+    private static Domain? EntranceUnionDomain(Mat frame, Observation context, PoolData data, StructureGateAnchor anchor, Func<bool> cancelled,bool compactOffsets=false)
     {
         if (data.UnionChains.Length == 0 || !TryAnchor(anchor,out var center,out double error)) return null;
         var query = Geometry.ObservedChains(frame,context); var intervals = new List<(double Low,double High)>(); var supportingQueries = new HashSet<int>();
@@ -175,7 +175,7 @@ public sealed partial class StructureIndexFilter
         }
         var scales = new List<double>();
         foreach (var (low,high) in merged) scales.AddRange(Linspace(low,high,Math.Max(2,(int)Math.Ceiling((high-low)/.00025)+1)));
-        var offsets = Linspace(-error,error,Math.Max(2,(int)Math.Ceiling(2*error))+1);
+        var offsets = compactOffsets?[0d]:Linspace(-error,error,Math.Max(2,(int)Math.Ceiling(2*error))+1);
         if ((long)scales.Count*offsets.Length*offsets.Length > 120000)
             throw new CoordinateBudgetExceededException("entrance-union-domain");
         var hypotheses = new List<Hypothesis>();
@@ -189,7 +189,13 @@ public sealed partial class StructureIndexFilter
             ["scaleIntervals"] = new JsonArray(merged.Take(32).Select(i => (JsonNode)new JsonArray(i.Low,i.High)).ToArray()),
             ["pointCoordinateErrorBoundPx"] = 3.0, ["anchorErrorPx"] = error, ["scaleFromGlyph"] = false, ["perCandidateFreeFit"] = false
         };
-        return new(hypotheses.ToArray(),hypotheses[hypotheses.Count/2],evidence);
+        if(compactOffsets)
+        {
+            evidence["offsetDomain"]="continuous-box-conservative-lower-bound";
+            evidence["scaleDomain"]="original-bounded-discrete-scale-grid";
+            evidence["enumeratedTranslationOffsets"]=false;
+        }
+        return new(hypotheses.ToArray(),hypotheses[hypotheses.Count/2],evidence,compactOffsets?error:0);
     }
 
     private static Domain? IntersectAnchor(Domain domain, StructureGateAnchor anchor, Point2d origin)
@@ -206,7 +212,7 @@ public sealed partial class StructureIndexFilter
         }
         var evidence = (JsonObject)domain.Evidence.DeepClone();
         evidence["entranceAnchorApplied"] = true; evidence["entranceCenterClient"] = new JsonArray(center.X,center.Y); evidence["anchorErrorPx"] = error;
-        return new(hypotheses,best,evidence);
+        return new(hypotheses,best,evidence,domain.OffsetRadiusPx);
     }
 
     private static bool TryAnchor(StructureGateAnchor anchor, out Point2d center, out double error)

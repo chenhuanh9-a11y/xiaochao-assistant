@@ -6,6 +6,7 @@
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="StarMap.Steady.Tests" />
+    <InternalsVisibleTo Include="StarMap.S1Structure.Tests" />
     <Content Include="ThirdParty\*" CopyToOutputDirectory="PreserveNewest" />
     <ProjectReference Include="../StarMap.Core/StarMap.Core.csproj" />
     <PackageReference Include="OpenCvSharp4" Version="4.13.0.20261107" />
