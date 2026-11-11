@@ -1,6 +1,7 @@
 """New independent author-display ZIP producer over synthetic S1D resources."""
 from copy import deepcopy
-from io import BytesIO
+from contextlib import redirect_stdout
+from io import BytesIO, StringIO
 import inspect
 import json
 import os
@@ -109,6 +110,24 @@ class ExportAuthorDisplayComponentTests(unittest.TestCase):
         return exporter.export_component(self.resource_root, self.base_ref,
             self.registration_path, self.image_root, self.output,
             package_id='author-synthetic-components', resource_version='v1', **kwargs)
+
+    def test_public_cli_creates_route_suffix_with_real_display_contents(self):
+        from resource_package_types import ROUTE_SUFFIX, validate_package_filename
+        self.registration()
+        output = self.root / ('cli-output' + ROUTE_SUFFIX)
+        result = StringIO()
+        with redirect_stdout(result):
+            exporter.main(['--base-resource-root', str(self.resource_root),
+                '--base-package-id', self.base_ref.package_id,
+                '--base-resource-version', self.base_ref.resource_version,
+                '--base-component-id', self.base_ref.component_id,
+                '--base-manifest-sha256', self.base_ref.manifest_sha256,
+                '--registration', str(self.registration_path), '--image-root', str(self.image_root),
+                '--output', str(output), '--package-id', 'author-cli', '--resource-version', 'cli-v1'])
+        self.assertEqual(json.loads(result.getvalue())['layerCount'], 2)
+        with zipfile.ZipFile(output) as archive:
+            components = json.loads(archive.read('manifest.json'))['components']
+        self.assertEqual(validate_package_filename(output, components), ROUTE_SUFFIX)
 
     def test_actual_zip_public_roundtrip_preserves_png_jpeg_affines_and_runtime_bindings(self):
         result = self.export()

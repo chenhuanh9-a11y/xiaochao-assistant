@@ -34,7 +34,7 @@ Item {
         running: panel.active && panel.refreshPending && !panel.operationPending
         onTriggered: {
             panel.refreshPending = false
-            resourceService.listPackages()
+            if (!resourceService.inventoryLoaded) resourceService.listPackages()
         }
     }
     function statusText(row) {
@@ -48,7 +48,7 @@ Item {
         Label { text: "本地资源"; color: "#142b4b"; font.pixelSize: 18; font.bold: true }
         Label {
             Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#354f75"; font.pixelSize: 14
-            text: "基础结构包包含楼层控件，导入后自动启用对应模式。请先导入基础包，再导入该模式的作者图。"
+            text: "结构包（.xingtu-base）包含楼层控件，导入后自动启用对应模式。请先导入结构包，再导入该模式的作者路线包（.xingtu-route）。"
         }
         RowLayout {
             spacing: 8; Layout.fillWidth: true
@@ -146,7 +146,9 @@ Item {
     }
     FileDialog {
         id: archiveDialog; objectName: "resourceArchiveDialog"
-        title: "选择新版星图资源包"; nameFilters: ["资源包 (*.zip)"]
+        title: "选择星图结构包或作者路线包"
+        nameFilters: ["星图资源包 (*.xingtu-base *.xingtu-route)",
+                      "星图结构包 (*.xingtu-base)", "作者路线包 (*.xingtu-route)"]
         onAccepted: resourceService.importArchive(selectedFile.toString())
         onRejected: panel.importSelectionCancelled()
     }

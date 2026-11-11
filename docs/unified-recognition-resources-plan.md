@@ -151,6 +151,8 @@ S0 当前模板由 OpenCV Hershey 字形合成，并无现成模板图片包。�
 
 ### 4.3 版本、依赖与持久目录
 
+用户可见资源文件按内容分为 `.xingtu-base`（基础结构及同包楼层控件，可附识别提示）和 `.xingtu-route`（作者路线显示组件）。制包 CLI 必须输出对应后缀；导入窗口只展示这两类，发布前按实际 manifest 组件类型检查文件名，改名不能获得另一类身份。内部 ZIP 容器、清单、版本和依赖规则保持；底层 API 和旧下载地址的 `.zip` 只作兼容传输名，不代表旧版图包格式已经兼容。原文件不改名、不删除，不建立系统文件关联。
+
 | manifest 字段 | 目标语义 |
 | --- | --- |
 | formatVersion | 容器/manifest 协议，与程序版本、资源内容版本分离。 |
@@ -244,7 +246,7 @@ Setup 只管理 ProgramRoot。ResourceRoot 的所有权来自导入记录，不�
 
 事务复用既有有界身份读取、独占写入、不覆盖移动、文件匹配、hardlink/move 发布、pending 与 commit 见证；旧 `_activate_locked` 的作者收据/目标协议不直接套新类型。新激活事务只有固定业务写入目标 catalog.json，不接收包指定的任意目标。未提交新版本可保留未启用，提交前取消保留旧 catalog，提交后仅收尾；不靠自动清历史实现回滚。
 
-第一条完整切片先用 S0 噩梦：空资源根真实 GUI → 文件选择新版基础结构 ZIP（含 controls 组件）及独立 display ZIP → prospective 校验 → 一次激活 → 实际组件根的 typed-native pack/store、原 engine/solver → 作者显示或同层结构回退 → 同一程序导入第二版并撤销旧任务。其余三组合随后接同一实现。controls 仅登记不够：运行时必须读取导入模板/层合同，S0 负号和干扰类竞争不因困难只有两层而缩减。P2 的成功还须四组合真实包回放，首条切片不能代替全阶段验收。
+第一条完整切片先用 S0 噩梦：空资源根真实 GUI → 文件选择新版 `.xingtu-base`（含 controls 组件）及独立 `.xingtu-route` → prospective 校验 → 一次激活 → 实际组件根的 typed-native pack/store、原 engine/solver → 作者显示或同层结构回退 → 同一程序导入第二版并撤销旧任务。其余三组合随后接同一实现。controls 仅登记不够：运行时必须读取导入模板/层合同，S0 负号和干扰类竞争不因困难只有两层而缩减。P2 的成功还须四组合真实包回放，首条切片不能代替全阶段验收。
 
 ## 5. 分阶段实施与完成条件
 
@@ -590,3 +592,13 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 - `e1163a8` 的联合回归 run 42966691551：data/runtime 两个旧前提断言失败，分别仍禁止任何带 groups 的读取、要求 imported registry 为 None。现在严格核只读实际基础表路径、registry 与 bundle 的同一实例/同组件 FileRef；另构造真实无接口/无表的旧归档，经保存、激活和默认 factory 仍为 None，保留不回退程序常量的反例。没有放宽登记名单、资源绑定或求解断言；两个完整模块共 29 项通过（102.912 秒）。
 - 同 commit 的 display-integration 首三模块（joint activation/author UI/browse）分别 761.205/284.512/345.013 秒，后在 browse-modes fixture setup 中取消，没有 assertion failure；取消来源未确证。六资源分片的日志总跨度依次为 2:24.673、12:36.941、16:25.516、6:54.440、14:45.775、25:02.514，最后一项含取消后的清理，不能称为完整成功耗时。
 - 把整个 `test_client_imported_author_joint_activation` 从 integration 移到 packaging（实测旧组 2 分 25 秒）；把整个 `test_client_imported_fast_structure` 从 runtime 移到 display-data（实测旧组 6 分 54 秒、该模块 274.466 秒），为自动导入新增回归留空间。现 77 模块精确多重集保持，六组 11/33/20/4/4/5；18 matrix、25 分钟、各模块独立进程和失败汇总不变。加减 e116 秒数只说明平衡依据，不能当作新 commit 全程耗时或远端通过；仍需绑定新 head 核验。
+
+### 专属资源后缀与真实文件选择入口
+
+- 按用户要求，公共结构制包 CLI 输出 `.xingtu-base`，作者路线制包 CLI 输出 `.xingtu-route`，错误后缀在处理输入前拒绝。底层制包与归档 API 仍使用原 ZIP 容器语义。实际 CLI 正例两项通过（24.505 秒），名称协议及下载缓存合计 16 项通过（0.219 秒）。下载地址含专属后缀时保留至本地缓存文件名，旧/无类型地址仍用内部 `.zip` 传输名。
+- Service 复用原归档 staging 校验回调，在不可变目录发布前按实际 manifest 组件类型核文件名；结构与控件须配套，作者仍须对应已启用的精确基础。错后缀、未知后缀均未发布，原输入字节保留；真实作者新后缀接纳与既有接纳完整模块 9 项通过（1.954 秒）。该模块的作者数据是元数据夹具，不能代替显示 decoder 验收。
+- 新回归从实际资源页按钮打开 Qt Quick 非原生 FileDialog，鼠标选择实际文件行并点击 Open，经过 Service、Session 空闲租约和自动激活，再从默认 factory 核实际 base/controls 和数据能力。生成 S0 噩梦资源 1 项通过（38.180 秒）；只读真实 S0 噩梦 26 图/78 层的新后缀副本 1 项通过（34.812 秒），4,348,669 bytes，SHA256 `0a7810ba9ceb8aaf6902b57cbc856389ae5a23557546b6650e194efa3227cc32`。旧 ZIP 原件保留；不是系统原生文件框、物理显示或游戏验收。图库卡片不再提示 ZIP；布局/交互 15 项通过（13.390 秒）。
+- 8165 远端 CI 的 lifecycle 夹具只有 S0、却要求切入 S1；现先用真实 exporter/archive 准备三个实际基础上下文，再仅隔离与该测试无关的显示元数据。受测 Session/Coordinator、实际基础可用性和故意构造的准备失败仍保留；lifecycle 与 context_failure 19 项通过（318.789 秒）。公告/懒页等待改为处理 Qt 事件后让 Python worker 执行，原 5 秒期限不变，移除未作用于当前 imported factory 的旧补丁。
+- 启动已有库存时不因首次打开资源页再全量扫描。实际入口回归在恢复旧无条件扫描时失败（26.748 秒），加按需读取后通过（27.765 秒）；明确刷新仍执行文件检查，真实读取失败使缓存重新未就绪，取消保留最后已核状态。
+- 旧作者跨模式替换回归曾因缺少目标基础而提前拒绝，未到身份比较。现为该分支先实际生成、解码并通过公开激活 API 启用 S1 噩梦基础，再生成其真实作者候选，保留原困难作者选择，仍精确拒绝 `display-identity-mismatch`。修前失败、修后目标方法通过（93.880 秒）；独立缺基础反例仍精确拒绝，1 项通过（34.649 秒）。未改生产或放宽断言。最终 Service/默认启动 11 项通过（133.045 秒）；公告、关闭、懒页、下载各独立进程 3/5/2/12 项通过。
+- 8165 runtime 组在 25 分钟中断了 Service 模块，不能记通过；把完整 Service/startup 模块移至 display-data，并在那里接入实际文件框模块，名称协议加入 data。现 79 模块，六组 11/34/18/7/4/5，18 matrix、25 分钟与逐模块失败汇总保留；这是调度调整，新远端完整耗时待测。

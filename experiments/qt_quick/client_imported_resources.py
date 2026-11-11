@@ -113,6 +113,7 @@ class ImportedResourceService(QObject):
         self._lease = ''
         self._startup_notice = ''
         self._available_contexts = ()
+        self._inventory_loaded = False
         self._automatic_import = False
         self._activation_plan, self._activation_choices = None, {}
         self._activation_plan_id = ''
@@ -124,6 +125,7 @@ class ImportedResourceService(QObject):
         for (season, mode), metadata in _ACTIVATION_CONTEXTS.items()], constant=True)
     busy = Property(bool, lambda s: s._busy, notify=changed)
     availableContexts = Property('QVariantList', lambda s: list(s._available_contexts), notify=availabilityChanged)
+    inventoryLoaded = Property(bool, lambda s: s._inventory_loaded, notify=changed)
     pendingKind = Property(str, lambda s: '', notify=changed)
     operationStage = Property(str, lambda s: 'cancelling' if s._busy and s._cancel.is_set() else s._kind, notify=changed)
     operationGeneration = Property(int, lambda s: s._token, notify=changed)
@@ -246,6 +248,8 @@ class ImportedResourceService(QObject):
                     raise ResourceCatalogError('resource-download-binding-invalid')
             admission = {}
             def validate_components(views):
+                from resource_package_types import validate_package_filename
+                validate_package_filename(path, [view.component for view in views])
                 admission['contexts'] = admit_import(views, self.resolver, cancelled=cancelled)
             summary = save_archive(path, self.resolver.root, expected_archive_sha256=sha, cancelled=cancelled,
                                    validate_components=validate_components)
@@ -510,12 +514,14 @@ class ImportedResourceService(QObject):
             return
         if value is not None:
             inventory = value['inventory']
+            self._inventory_loaded = inventory is not None
             self._catalog_issue = inventory.catalog_issue or '' if inventory is not None else 'resource-inventory-unavailable'
             self._set_available_contexts(value.get('availableContexts', ()))
             self._set_rows(inventory.rows if inventory is not None else [])
             error = error or value.get('operationError')
         if error:
             if kind in {'list', 'refresh'}:
+                self._inventory_loaded = False
                 self._set_rows([])
                 self._set_available_contexts(())
             self._problem(error['code'])
@@ -596,6 +602,9 @@ class ImportedResourceService(QObject):
 
     def _problem(self, code):
         self._message = ('此为旧版图包，请获取新版资源包；原文件已保留。' if code == 'legacy-format-unsupported' else
+                         '请选择星图结构包（.xingtu-base）或作者路线包（.xingtu-route）。' if code == 'resource-package-extension-unsupported' else
+                         '文件后缀与包内类型不一致，请核对结构包和作者路线包。' if code == 'resource-package-extension-mismatch' else
+                         '此文件的资源类型不能作为结构包或作者路线包导入。' if code == 'resource-package-kind-unsupported' else
                          '请先导入并启用对应模式的基础结构包，再导入作者图。' if code == 'resource-display-base-context-not-active' else
                          '此作者图依赖的基础结构版本尚未启用，请先导入对应基础包。' if code == 'resource-display-base-version-mismatch' else
                          '基础结构包须包含同一模式的楼层控件，请获取完整基础包。' if code == 'resource-import-base-controls-pair-required' else

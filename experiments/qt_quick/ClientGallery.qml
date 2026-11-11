@@ -179,7 +179,7 @@ Item {
                             anchors.fill: parent; anchors.rightMargin: authors.columns === 2 ? 8 : 0; anchors.bottomMargin: 10
                             enabled: page.canImportPackage
                             hoverEnabled: true; focusPolicy: Qt.StrongFocus
-                            Accessible.name: "导入 " + galleryContextSelector.seasonLabel(backend.season) + " ZIP 图包"
+                            Accessible.name: "导入 " + galleryContextSelector.seasonLabel(backend.season) + " 作者路线包"
                             onClicked: page.importPackage()
                             HoverHandler { cursorShape: importCard.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor }
                             background: Rectangle {
@@ -192,13 +192,13 @@ Item {
                                 Column {
                                     anchors.centerIn: parent; width: parent.width; spacing: 8
                                     Label { width: parent.width; text: "+"; font.pixelSize: 46; color: importCard.enabled ? "#2f66eb" : "#8797b1"; horizontalAlignment: Text.AlignHCenter }
-                                    Label { width: parent.width; text: "导入 ZIP 图包"; font.bold: true; color: "#354f75"; horizontalAlignment: Text.AlignHCenter }
+                                    Label { width: parent.width; text: "导入作者路线包"; font.bold: true; color: "#354f75"; horizontalAlignment: Text.AlignHCenter }
                                     Label {
                                         width: parent.width; leftPadding: 12; rightPadding: 12
                                         text: !page.supportsPackageImport ? galleryContextSelector.seasonLabel(backend.season) + " 暂不支持作者图包导入"
                                             : backend.busy && backend.profiles.length === 0 ? "正在读取地图资源…"
                                             : page.packageActions && page.packageActions.recoveryPending ? "请先在图库管理中完成上次操作"
-                                            : "点击选择本地 ZIP 文件"
+                                            : "点击选择星图资源包"
                                         color: "#526785"; font.pixelSize: 11; wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter
                                     }
                                 }

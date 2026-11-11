@@ -1,6 +1,8 @@
 """Actual author-version selection; catalog and image consumers are not mocked."""
 from io import BytesIO
 import json
+from pathlib import Path
+import tempfile
 from unittest.mock import patch
 from uuid import uuid4
 import zipfile
@@ -9,6 +11,7 @@ import numpy as np
 from PIL import Image
 
 import client_imported_activation as activation
+from client_providers import SharedReferenceProvider
 from client_imported_providers import SUPPORTED_CAPABILITIES, build_imported_engine_factories
 from client_paths import RuntimePaths
 from client_route_preferences import prepare_display_layer
@@ -23,6 +26,7 @@ from resource_transaction import resource_runtime_lease, resource_write_lock
 import star_map_import as files
 from test_imported_author_display import _AuthorDisplayFixture
 from test_client_imported_s1_activation import _inert_component
+import test_export_s1_native_base_package as s1_base_fixture
 
 
 def changed_png():
@@ -142,13 +146,48 @@ class ClientImportedAuthorSelectionTests(_AuthorSelectionFixture):
         self.activate(first)
         before = (self.resources/'catalog.json').read_bytes()
         renamed, _, _ = self.package(package_id='author-versioned', resource_version='renamed', profile_id='author-renamed')
-        wrong_context, _, _ = self.package(lambda d:d.update(mode='nightmare'), package_id='author-versioned',
-            resource_version='other-mode', context=dict(season='s1',mode='nightmare'))
-        for view in (renamed, wrong_context):
-            with self.subTest(version=view.component_ref.resource_version):
-                with self.assertRaisesRegex(ResourceCatalogError, 'display-identity-mismatch'):
-                    self.activate(view)
-                self.assertEqual((self.resources/'catalog.json').read_bytes(), before)
+        with self.assertRaisesRegex(ResourceCatalogError, 'display-identity-mismatch'):
+            self.activate(renamed)
+        self.assertEqual((self.resources/'catalog.json').read_bytes(), before)
+
+        # A cross-mode identity change must reach the existing-author check.
+        # Activate a real S1 nightmare base first, then build the candidate
+        # through the actual decoder against that base. The difficult author
+        # remains selected and is still the previous version of this package.
+        with tempfile.TemporaryDirectory(prefix='author-selection-nightmare-', dir=self.root) as source_root:
+            nightmare_source = s1_base_fixture.S1NativeBaseSourceFixture(
+                Path(source_root), mode='nightmare')
+            nightmare_source.export()
+            saved = save_archive(nightmare_source.output, self.resources)
+            nightmare_refs = {ref.component_id: ref for ref in saved.component_refs}
+            nightmare_view = PackageView(self.resources, nightmare_refs['base'])
+            nightmare_base = decode_native_base(nightmare_view, season='s1', mode='nightmare')
+            nightmare_provider = SharedReferenceProvider(nightmare_view.root,
+                nightmare_base.resources, nightmare_base.versions,
+                check_current=nightmare_base.assert_current)
+            with resource_runtime_lease(self.resources):
+                activation.activate_context(self.resolver(), self.paths,
+                    nightmare_refs['base'], nightmare_refs['controls'],
+                    season='s1', mode='nightmare')
+            snapshot = self.resolver().snapshot()
+            self.assertEqual(snapshot.contexts['s1:nightmare']['recognitionBase'], nightmare_refs['base'])
+            self.assertEqual(snapshot.contexts['s1:nightmare']['controls'], nightmare_refs['controls'])
+            self.assertEqual(snapshot.displays, (first.component_ref,))
+
+            old_fixture = self.source, self.base_view, self.base, self.provider
+            try:
+                self.source, self.base_view, self.base, self.provider = (
+                    nightmare_source, nightmare_view, nightmare_base, nightmare_provider)
+                wrong_context, _, _ = self.package(package_id='author-versioned',
+                    resource_version='other-mode', context=dict(season='s1', mode='nightmare'))
+            finally:
+                self.source, self.base_view, self.base, self.provider = old_fixture
+
+        before = (self.resources/'catalog.json').read_bytes()
+        with self.assertRaisesRegex(ResourceCatalogError, 'display-identity-mismatch'):
+            self.activate(wrong_context)
+        self.assertEqual((self.resources/'catalog.json').read_bytes(), before)
+
         different_package, _, _ = self.package(package_id='another-owner')
         with self.assertRaisesRegex(ResourceCatalogError, 'display-profile-conflict'):
             self.activate(different_package)
@@ -164,8 +203,9 @@ class ClientImportedAuthorSelectionTests(_AuthorSelectionFixture):
         self.seed(active_base=False)
         view, _, _ = self.package()
         before = (self.resources/'catalog.json').read_bytes()
-        with self.assertRaisesRegex(ResourceCatalogError, 'base-context-not-active'):
+        with self.assertRaises(ResourceCatalogError) as missing_base:
             self.activate(view)
+        self.assertEqual(missing_base.exception.code, 'resource-display-base-context-not-active')
         self.assertEqual((self.resources/'catalog.json').read_bytes(), before)
         self.seed()
         bad, _, _ = self.package(payloads={'images/route.png':b'not an image'})

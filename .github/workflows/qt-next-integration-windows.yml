@@ -214,7 +214,7 @@ jobs:
             'packaging-imported-data' {
               $modules = @(
                 'test_s0_predecessor_closure', 'test_s0_staged_closure',
-                'test_resource_zip_io', 'test_imported_resource_archive',
+                'test_resource_zip_io', 'test_resource_package_types', 'test_imported_resource_archive',
                 'test_resource_snapshot_io_allocation',
                 'test_imported_resource_packages', 'test_imported_resource_catalog',
                 'test_imported_resource_selection', 'test_imported_resource_activation',
@@ -248,8 +248,7 @@ jobs:
                 'test_client_imported_admission', 'test_client_imported_package_activation',
                 'test_client_imported_controls',
                 'test_client_imported_activation', 'test_client_imported_activation_ui',
-                'test_client_imported_s1_activation', 'test_client_imported_s1_activation_ui',
-                'test_client_imported_resources', 'test_client_imported_resource_startup'
+                'test_client_imported_s1_activation', 'test_client_imported_s1_activation_ui'
               )
             }
             # Author codecs/exporters and lifecycle consumers each use complete
@@ -259,7 +258,10 @@ jobs:
                 'test_imported_author_display', 'test_export_author_display_component',
                 'test_export_author_display_component_modes',
                 # e116: this shard took 6m54s; Fast used 4m34s in runtime.
-                'test_client_imported_fast_structure'
+                'test_client_imported_fast_structure',
+                # 8165 runtime reached the 25m cap during service tests.
+                'test_client_imported_resources', 'test_client_imported_resource_startup',
+                'test_client_imported_file_dialog'
               )
             }
             'packaging-imported-display' {

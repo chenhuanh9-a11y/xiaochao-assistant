@@ -33,7 +33,7 @@ class ImportedAdmissionTests(unittest.TestCase):
         self.root = self.folder / 'resources'
         self.resolver = ResourceResolver(self.root)
 
-    def archive(self, components, *, payloads=None, name='candidate'):
+    def archive(self, components, *, payloads=None, name='candidate', suffix='.zip'):
         payloads = payloads or {row['componentId']: b'{}' for row in components}
         manifest = dict(schema='xingtu-resource-package', formatVersion=1,
             packageId=name, resourceVersion='v1',
@@ -41,7 +41,7 @@ class ImportedAdmissionTests(unittest.TestCase):
             components=components, files=[dict(componentId=row['componentId'], path=row['entrypoint'],
                 bytes=len(payloads[row['componentId']]),
                 sha256=hashlib.sha256(payloads[row['componentId']]).hexdigest()) for row in components])
-        path = self.folder / (name + '.zip')
+        path = self.folder / (name + suffix)
         with zipfile.ZipFile(path, 'x') as output:
             output.writestr('manifest.json', json.dumps(manifest))
             for row in components:
@@ -53,10 +53,10 @@ class ImportedAdmissionTests(unittest.TestCase):
         return dict(componentId=component_id, type=kind, schemaVersion=1,
             contexts=[dict(season=season, mode=mode)], entrypoint='entry.json', dependencies=dependencies or {})
 
-    def author_archive(self, dependency, *, season='s0', mode='nightmare', name='author'):
+    def author_archive(self, dependency, *, season='s0', mode='nightmare', name='author', suffix='.zip'):
         document = dict(schema=DISPLAY_SCHEMA, profileId='author-fixture', season=season, mode=mode)
         component = self.declaration('art', 'display', season=season, mode=mode, dependencies={'base': dependency})
-        return self.archive([component], payloads={'art': json.dumps(document).encode()}, name=name)
+        return self.archive([component], payloads={'art': json.dumps(document).encode()}, name=name, suffix=suffix)
 
     def save(self, archive):
         return save_archive(archive, self.root,
@@ -144,6 +144,57 @@ class ImportedAdmissionTests(unittest.TestCase):
             service.shutdown()
             service.pool.waitForDone()
             self.app.processEvents()
+
+    def import_with_service(self, archive):
+        service = ImportedResourceService(self.resolver)
+        errors = []
+        service.errorReported.connect(errors.append)
+        try:
+            self.assertTrue(service.importArchive(QUrl.fromLocalFile(str(archive)).toString()))
+            deadline = time.monotonic() + 8
+            while service.busy and time.monotonic() < deadline:
+                self.app.processEvents()
+                time.sleep(.005)
+            self.assertFalse(service.busy)
+            return errors, service.message
+        finally:
+            service.shutdown()
+            service.pool.waitForDone()
+            self.app.processEvents()
+
+    def test_real_service_checks_filename_role_before_publishing_either_package_kind(self):
+        base = self.active_base()
+        for suffix, expected_code in (
+                ('.xingtu-base', 'resource-package-extension-mismatch'),
+                ('.other', 'resource-package-extension-unsupported')):
+            with self.subTest(suffix=suffix):
+                name = 'wrong-author-' + suffix[1:]
+                archive = self.author_archive(base, name=name, suffix=suffix)
+                original = archive.read_bytes()
+                errors, message = self.import_with_service(archive)
+                self.assertTrue(errors)
+                self.assertEqual(errors[0]['errorCode'], expected_code)
+                self.assertFalse((self.root / 'packages' / name / 'v1').exists())
+                self.assertEqual(archive.read_bytes(), original)
+        archive = self.archive([self.declaration('base', 'recognition-base'),
+                                self.declaration('controls', 'controls-profile')],
+                               name='wrong-base', suffix='.xingtu-route')
+        errors, message = self.import_with_service(archive)
+        self.assertTrue(errors)
+        self.assertIn('后缀', message)
+        self.assertFalse((self.root / 'packages/wrong-base/v1').exists())
+
+    def test_real_service_imports_route_suffix_with_active_exact_base(self):
+        # Metadata fixture tests save/admission only. Base auto-activation and
+        # actual display decoding are covered by their real-resource suites.
+        base = self.active_base()
+        archive = self.author_archive(base, suffix='.xingtu-route')
+        errors, _ = self.import_with_service(archive)
+        self.assertEqual(errors, [])
+        with zipfile.ZipFile(archive) as source:
+            expected = source.read('data/art/entry.json')
+        self.assertEqual((self.root / 'packages/author/v1/data/art/entry.json').read_bytes(),
+                         expected)
 
 
 if __name__ == '__main__':
