@@ -321,6 +321,10 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 
 ## 8. 实施增量
 
+### P5 旧格式退役验收清单
+
+最终整合后的 P5 验收项、证据来源和未验收边界见[旧格式停用与最终验收清单](p5-retirement-acceptance-checklist.md)。该清单补足最终远端版本/协议绑定、Setup 字节数与 SHA256、干净启动、四组合真实导入与消费、第二版资源、升级/回退/取消/中断保留，以及 Windows/真实 GUI/游戏/发布分别记录的要求。当前代码和离屏/临时归档结果均不代表这些最终项已通过。
+
 - 原生 goal 已创建且 active，无预算；目标为完整 P0–P5 及协调启动优化，不自动正式合并/发版/发布。
 - P0 文档提交 `adab32a`、草稿 PR #131 已推送；生产基线仍是 `cc5100c6`，不把草稿文档算作新架构实现。
 - 启动路径优化已单独完成至 `0ba7ce83`、草稿 PR #132，独立干净 checkout 的 Setup 已隔离安装验证。该包仍是原资源架构，不包含 P1/P2。启动测量和边界在本地交接记录，不能把其构建/GUI结果迁作统一资源验收。

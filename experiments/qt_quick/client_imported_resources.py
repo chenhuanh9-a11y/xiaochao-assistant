@@ -601,7 +601,7 @@ class ImportedResourceService(QObject):
             self.inventoryChanged.emit()
 
     def _problem(self, code):
-        self._message = ('此为旧版图包，请获取新版资源包；原文件已保留。' if code == 'legacy-format-unsupported' else
+        self._message = ('旧图包格式已停用，请获取新版资源包；已有文件已保留。' if code == 'legacy-format-unsupported' else
                          '请选择星图结构包（.xingtu-base）或作者路线包（.xingtu-route）。' if code == 'resource-package-extension-unsupported' else
                          '文件后缀与包内类型不一致，请核对结构包和作者路线包。' if code == 'resource-package-extension-mismatch' else
                          '此文件的资源类型不能作为结构包或作者路线包导入。' if code == 'resource-package-kind-unsupported' else
