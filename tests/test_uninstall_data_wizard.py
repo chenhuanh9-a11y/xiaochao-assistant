@@ -17,9 +17,10 @@ INSTALLER = (ROOT / 'tools/qt-client.iss').read_text('utf-8-sig')
 
 
 def routine(name):
-    match = re.search(r'(?m)^(?:function|procedure) ' + name + r'\b', SOURCE)
-    if not match:
+    matches = list(re.finditer(r'(?m)^(?:function|procedure) ' + name + r'\b', SOURCE))
+    if not matches:
         raise AssertionError(name)
+    match = matches[-1]  # A Pascal forward declaration is not the implementation.
     following = re.search(r'(?m)^(?:function|procedure) ', SOURCE[match.end():])
     return SOURCE[match.start():match.end() + following.start()] if following else SOURCE[match.start():]
 
@@ -31,8 +32,11 @@ class UninstallWiringTests(unittest.TestCase):
         self.assertIn('更新版本请取消', INSTALLER)
         self.assertEqual(INSTALLER.count('ConfirmUninstall='), 1)
         self.assertNotIn('MsgBox(', choose.split('ConfirmUninstall', 1)[-1])
-        for obsolete in ('UninstallDeleteData', 'DeleteBox', 'UninstallMakeBackup', 'CreateCustomForm'):
+        for obsolete in ('UninstallDeleteData', 'DeleteBox', 'UninstallMakeBackup'):
             self.assertNotIn(obsolete, SOURCE)
+        self.assertNotIn('CreateCustomForm', choose)
+        recovery = routine('ContinueUninstallRecovery')
+        self.assertLess(recovery.index('if FromSetup then begin'), recovery.index('CreateCustomForm'))
         self.assertEqual(INSTALLER.count('#include "qt-uninstall-data.iss"'), 2)
         self.assertNotIn('MB_YESNO', choose)
         self.assertIn('Result := True', choose)
@@ -89,8 +93,15 @@ class UninstallWiringTests(unittest.TestCase):
         self.assertNotIn('DeleteFile(Path)', finish)
         self.assertNotIn('FinishUninstallData', post)
         self.assertIn('not RemoveDir', finish)
-        self.assertLess(post.index("Path := ExpandConstant('{app}')"), post.index('UninstallCleanupComplete := True'))
-        self.assertIn('UninstallCleanupComplete := True', post)
+        self.assertLess(post.index("Path := ExpandConstant('{app}')"), post.index('ContinueUninstallRecovery(False)'))
+        self.assertIn('UninstallCleanupComplete := ContinueUninstallRecovery(False)', post)
+        recovery = routine('ContinueUninstallRecovery')
+        self.assertIn("HasUninstallRecovery then RaiseException", recovery)
+        self.assertIn("--recover --install-root", recovery)
+        self.assertIn("--recovery-lease-root", recovery)
+        setup = routine('InitializeSetup')
+        self.assertLess(setup.index('HasUninstallRecovery'), setup.index('ContinueUninstallRecovery(True)'))
+        self.assertIn('Result := False', setup)
         self.assertIn('完整清理仍须核对', INSTALLER)
 
     def test_worker_wait_is_bounded_and_retry_requires_confirmed_process_exit(self):
@@ -109,6 +120,22 @@ class UninstallWiringTests(unittest.TestCase):
         event = routine('CurUninstallStepChanged')
         self.assertLess(event.index('if UninstallProcessUncertain then begin'), event.index('MB_RETRYCANCEL'))
         self.assertIn('UninstallAttempt := UninstallAttempt + 1', routine('PrepareUninstallRunner'))
+
+    def test_parent_does_not_pollute_a_persisted_recovery_snapshot(self):
+        clear = routine('ClearOwnedInstallation')
+        self.assertIn("if not HasUninstallRecovery and UninstallSafeAbsolute", clear)
+        self.assertLess(clear.index('if not HasUninstallRecovery'), clear.index('SaveStringToFile'))
+        acquire = routine('AcquireUninstallLease')
+        self.assertLess(acquire.index('if HasUninstallRecovery then begin'), acquire.index('UninstallCreateFile'))
+        recovery_branch = acquire.split('if HasUninstallRecovery then begin', 1)[1].split('end else', 1)[0]
+        self.assertIn('not UninstallRecoveryIsPrepared or not FileExists(Path)', recovery_branch)
+        self.assertIn('Disposition := 3', recovery_branch)
+        self.assertNotIn('ForceDirectories', recovery_branch)
+        event = routine('CurUninstallStepChanged')
+        self.assertLess(event.index('HasUninstallRecovery and not UninstallRecoveryIsPrepared'),
+                        event.index('AcquireUninstallLease'))
+        initialize = routine('InitializeUninstall')
+        self.assertIn('HasUninstallRecovery and not UninstallRecoveryIsPrepared', initialize)
 
     def test_install_and_uninstall_share_atomic_process_lifetime_maintenance_mutex(self):
         self.assertIn('if not AcquireInstallerMaintenance then Exit', routine('InitializeUninstall'))
@@ -159,6 +186,17 @@ class UninstallWiringTests(unittest.TestCase):
 
 
 class UninstallHelperInventoryTests(unittest.TestCase):
+    def test_final_program_filename_list_is_bound_to_the_native_compilation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            stage = Path(folder)
+            ownership = stage / '_installer-owned-files.txt'
+            ownership.write_text('program.dll\n', encoding='utf-8-sig')
+            self.assertEqual(build.program_ownership_installer_defines(stage),
+                             ['/DUninstallOwnershipSHA256=' + hashlib.sha256(ownership.read_bytes()).hexdigest()])
+            ownership.write_text('', encoding='utf-8-sig')
+            with self.assertRaises(ValueError):
+                build.program_ownership_installer_defines(stage)
+
     def fixture(self, root):
         names = ['star-map-uninstall-helper.exe', '_star_map_uninstall_runtime/installation-profile.json']
         rows = {}

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import configparser
+from contextlib import ExitStack
 import ctypes
 from ctypes import wintypes as wt
 import json
@@ -398,7 +399,11 @@ def _open_handle(api, path, *, directory, delete=False, read=False, write=False,
     if handle in (None, _INVALID_HANDLE_VALUE):
         error = ctypes.get_last_error()
         raise UninstallError("file-open-failed-" + str(error), remaining=(path,))
-    info = _handle_info(api, handle)
+    try:
+        info = _handle_info(api, handle)
+    except Exception:
+        api.CloseHandle(handle)
+        raise
     if bool(info.attributes & _ATTR_DIRECTORY) != bool(directory):
         api.CloseHandle(handle)
         raise UninstallError("path-kind-changed", remaining=(path,))
@@ -706,10 +711,10 @@ class _TreePlan:
             self.api.CloseHandle(parent_handle)
             raise UninstallError("install-parent-physical-path-mismatch")
         self.handles.append(parent_handle)
-        root_action = "delete" if self.mode == "full" else "preserve-dir"
+        root_action = "delete" if self.mode in {"full", "recovery"} else "preserve-dir"
         root_handle, root_info = _open_handle(self.api, self.root, directory=True,
-                                              delete=self.mode in {"external", "full"},
-                                              read_control=self.mode in {"app", "external", "full"})
+                                              delete=self.mode in {"external", "full", "recovery"},
+                                              read_control=self.mode in {"app", "external", "full", "recovery"})
         self.handles.append(root_handle)
         self.root_identity = _file_id(root_info)
         expected = _path_key(self.root)
@@ -776,8 +781,14 @@ class _TreePlan:
             # prevents it from starting between this preflight and deletion.
             main_image = self.mode == 'app' and not is_dir and rel.casefold() in {
                 self.exe_name.casefold(), '第五人格小抄助手.exe'}
+            recovery_file = self.mode == 'recovery' and not is_dir
+            recovery_lock = recovery_file and rel == 'work/map-packages/import.lock'
             handle, info = _open_handle(self.api, path, directory=is_dir,
-                                        delete=delete_access, write=main_image)
+                                        delete=delete_access,
+                                        write=main_image or recovery_lock or recovery_file and path.suffix.casefold() in {'.exe', '.dll', '.pyd'},
+                                        read=recovery_file,
+                                        read_control=self.mode == 'recovery',
+                                        share=0 if recovery_lock else _FILE_SHARE_READ if recovery_file else None)
             self.handles.append(handle)
             if _handle_path(self.api, handle) != _path_key(path):
                 raise UninstallError("entry-physical-path-mismatch", remaining=(rel,))
@@ -794,6 +805,8 @@ class _TreePlan:
             if node["handle"] is None:
                 continue
             info = _handle_info(self.api, node["handle"])
+            if not node['directory'] and int(info.links) != 1:
+                raise UninstallError('hard-link-refused', remaining=(node['relative'],))
             if _file_id(info) != node["identity"]:
                 raise UninstallError("preflight-object-changed", remaining=(node["relative"] or ".",))
             if _handle_path(self.api, node["handle"]) != _path_key(node["path"]):
@@ -885,6 +898,9 @@ class _TreePlan:
 def _mark_delete(api, handle, relative):
     if not handle:
         raise UninstallError("delete-handle-unavailable", remaining=(relative,))
+    current = _handle_info(api, handle)
+    if not current.attributes & _ATTR_DIRECTORY and int(current.links) != 1:
+        raise UninstallError('hard-link-refused', remaining=(relative,))
     info = _DispositionInfo(True)
     if not api.SetFileInformationByHandle(handle, _FILE_DISPOSITION_INFO,
                                           ctypes.byref(info), ctypes.sizeof(info)):
@@ -962,14 +978,14 @@ def _external_lock_path(resource_root):
     return Path(resource_root) / "work" / "map-packages" / "import.lock"
 
 
-def _validate_result_directory(path, root):
+def _validate_result_directory(path, root=None):
     value = Path(_win_path(path))
     _safe_ancestors(value)
     if not value.is_dir():
         raise UninstallError("result-directory-missing")
-    if value == Path(value.anchor) or _path_key(value) == _path_key(root):
+    if value == Path(value.anchor) or root is not None and _path_key(value) == _path_key(root):
         raise UninstallError("result-directory-invalid")
-    if value.is_relative_to(root) or root.is_relative_to(value):
+    if root is not None and (value.is_relative_to(root) or root.is_relative_to(value)):
         raise UninstallError("result-directory-not-outside-install")
     try:
         with os.scandir(value) as entries:
@@ -1002,8 +1018,13 @@ def _require_owner(plan, sid, reason):
         raise UninstallError(reason)
 
 
-def _load_ownership(root, api, observations=None):
-    return _read_ownership(_read_secure(api, root / _OWNERSHIP, _MAX_OWNERSHIP, observations))
+def _load_ownership(root, api, observations=None, expected_digest=None):
+    raw = _read_secure(api, root / _OWNERSHIP, _MAX_OWNERSHIP, observations)
+    if expected_digest is not None:
+        import hashlib
+        if not re.fullmatch(r'[0-9a-f]{64}', expected_digest) or hashlib.sha256(raw).hexdigest() != expected_digest:
+            raise UninstallError('ownership-compiled-inventory-mismatch')
+    return _read_ownership(raw)
 
 
 def _validate_run_values(registry, root):
@@ -1053,6 +1074,12 @@ def _failure_message(error):
         return "清理超过本次等待时间，已停止。请关闭本安装的星图和资源任务后重新卸载。"
     if code.startswith(("file-open", "handle-delete", "directory-enumeration")):
         return "部分文件被占用或当前账号无权清除。请退出本安装的星图，核对剩余项后重试；不会自动修改权限。"
+    if code.startswith('recovery-'):
+        if code == 'recovery-data-already-cleared-use-setup':
+            return '资料已经清除，不会重新认领新出现的资料。请关闭当前卸载窗口，再打开卸载时的同一份安装包，按提示继续清理。'
+        if code == 'recovery-data-not-cleared-use-original-uninstaller':
+            return '资料清理还未完成，原生卸载尚未获准开始。请从原来的卸载入口重试；入口损坏时保留现场并联系星图维护者。'
+        return '本次卸载的恢复登记、文件归属或占用状态未能核实，已停止。请保留剩余项；关闭本安装的资源任务后重开对应安装包继续清理，仍失败时联系星图维护者。'
     if "recovery" in code or "pending" in code:
         return "上次升级尚未完成，请先运行对应安装包完成恢复，再重新卸载。"
     if any(word in code for word in ("profile", "ownership", "identity-file", "uninstall-runtime")):
@@ -1096,10 +1123,24 @@ def _args(argv):
     parser.add_argument("--lock-handle", required=True, type=int)
     parser.add_argument("--timeout-seconds", type=int, default=120, choices=range(1, 601),
                         metavar="1..600")
-    return parser.parse_args(argv)
+    parser.add_argument('--recover', action='store_true')
+    parser.add_argument('--recovery-lease-root')
+    parser.add_argument('--helper-inventory-sha256')
+    parser.add_argument('--program-ownership-sha256')
+    parser.add_argument('--shortcut', action='append', default=[])
+    parser.add_argument('--shortcut-group', action='append', default=[])
+    args = parser.parse_args(argv)
+    if getattr(sys, 'frozen', False) and not args.helper_inventory_sha256:
+        parser.error('the frozen helper requires its compiled helper inventory')
+    if args.helper_inventory_sha256 and not args.recover and not args.program_ownership_sha256:
+        parser.error('native data cleanup requires its compiled program ownership digest')
+    if args.recover and not args.recovery_lease_root:
+        parser.error('--recover requires --recovery-lease-root')
+    return args
 
 
-def run(args, *, registry_provider=None, owner_sid_provider=None, profile_provider=None):
+def run(args, *, registry_provider=None, owner_sid_provider=None, profile_provider=None,
+        recovery_store=None):
     """Run cleanup; only narrow identity providers are replaceable for fixtures."""
     mutation = False
     root = Path(_win_path(args.install_root))
@@ -1142,7 +1183,8 @@ def run(args, *, registry_provider=None, owner_sid_provider=None, profile_provid
         # Pin the exact root before reading mutable profile/ownership metadata.
         api = _kernel()
         _pin_directory(api, root, pinned_handles)
-        ownership = _load_ownership(root, api, metadata_observations)
+        ownership = _load_ownership(root, api, metadata_observations,
+                                    getattr(args, 'program_ownership_sha256', None))
         _install_profile_matches(root, baked_name, expected, metadata_observations)
         run_state = None
         resource_root = None
@@ -1234,6 +1276,13 @@ def run(args, *, registry_provider=None, owner_sid_provider=None, profile_provid
 
         # Keep the app's parent lock until Inno's pre-native data finalization.
         # The external lock is owned by this helper and is removed here.
+        recovery_raw = None
+        if getattr(args, 'helper_inventory_sha256', None):
+            from installer_uninstall_recovery import RecoveryStore, prepare
+            recovery_store = recovery_store or RecoveryStore()
+            recovery_raw = prepare(args, identity=baked_name, sid=sid, registry=registry,
+                                   store=recovery_store, app_plan=app_plan,
+                                   data_roots=(resource_root, startup_root), native_executable=uninstall_path)
         app_plan.delete_files(began_mutation)
         app_plan.delete_directories(began_mutation)
         if external_plan:
@@ -1253,6 +1302,9 @@ def run(args, *, registry_provider=None, owner_sid_provider=None, profile_provid
             startup_plan.delete_directories(began_mutation, include_root=True)
         if run_state:
             _remove_run_values(registry, run_state, began_mutation)
+        if recovery_raw is not None:
+            from installer_uninstall_recovery import ready
+            ready(recovery_store, baked_name, recovery_raw)
         _write_receipt(result_dir, status="cleared", mutation_started=mutation)
         return 0
     except Exception as error:
@@ -1293,7 +1345,7 @@ def run(args, *, registry_provider=None, owner_sid_provider=None, profile_provid
 
 
 def main(argv=None, *, registry_provider=None, owner_sid_provider=None, profile_provider=None,
-         lease_provider=None):
+         lease_provider=None, recovery_store=None, maintenance_provider=None):
     """CLI entry. The optional providers are fixture-only narrow seams."""
     try:
         args = _args(argv)
@@ -1303,13 +1355,25 @@ def main(argv=None, *, registry_provider=None, owner_sid_provider=None, profile_
         from installer_resource_lease import borrowed_installer_lease
         lease_provider = borrowed_installer_lease
     try:
-        with lease_provider(args.install_root, parent_pid=args.parent_pid,
-                            parent_created=args.parent_created,
-                            parent_executable=args.parent_executable,
-                            parent_sha256=args.parent_sha256,
-                            lock_handle=args.lock_handle):
+        lease_root = args.recovery_lease_root if args.recover else args.install_root
+        with ExitStack() as stack:
+            if args.helper_inventory_sha256 or args.recover:
+                from installer_uninstall_recovery import hold_maintenance
+                profile = profile_provider() if profile_provider else _baked_profile()
+                stack.enter_context((maintenance_provider or hold_maintenance)(profile))
+            stack.enter_context(lease_provider(lease_root, parent_pid=args.parent_pid,
+                                parent_created=args.parent_created,
+                                parent_executable=args.parent_executable,
+                                parent_sha256=args.parent_sha256,
+                                lock_handle=args.lock_handle))
+            if args.recover:
+                from installer_uninstall_recovery import recover
+                return recover(args, registry_provider=registry_provider,
+                               owner_sid_provider=owner_sid_provider, profile_provider=profile_provider,
+                               store=recovery_store)
             return run(args, registry_provider=registry_provider,
-                       owner_sid_provider=owner_sid_provider, profile_provider=profile_provider)
+                       owner_sid_provider=owner_sid_provider, profile_provider=profile_provider,
+                       recovery_store=recovery_store)
     except Exception as error:
         result_path = Path(args.result_directory)
         try:

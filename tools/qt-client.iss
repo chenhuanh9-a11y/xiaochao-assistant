@@ -156,6 +156,11 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 #endif
 
 [Files]
+; A matching Setup is the durable recovery entry. Its own compiled payload
+; supplies the runtime even if native uninstall has removed installed helpers.
+Source: "{#StageDir}\star-map-uninstall-helper.exe"; DestDir: "{tmp}\xingtu-native-recovery"; Flags: dontcopy
+Source: "{#StageDir}\_uninstall-helper-files.txt"; DestDir: "{tmp}\xingtu-native-recovery"; Flags: dontcopy
+Source: "{#StageDir}\_star_map_uninstall_runtime\*"; DestDir: "{tmp}\xingtu-native-recovery\_star_map_uninstall_runtime"; Flags: dontcopy recursesubdirs createallsubdirs
 #ifdef ProductionInstaller
 Source: "{#ResetHelperInventory}"; DestName: "reset-helper-inventory.txt"; Flags: dontcopy
 Source: "{#ResetProgramInventory}"; DestName: "reset-program-inventory.json"; Flags: dontcopy

@@ -435,7 +435,7 @@ class HandoffTests(unittest.TestCase):
                 if index:
                     self.args.result_directory = str(self.root / ('helper-result-' + str(index)))
                     Path(self.args.result_directory).mkdir()
-                self.assertEqual(helper.main(self.command()), 0)
+                self.assertEqual(helper.main(self.command(), maintenance_provider=lambda _: nullcontext()), 0)
                 receipt = configparser.ConfigParser()
                 receipt.read(Path(self.args.result_directory) / 'result.ini', encoding='utf-16')
                 self.args.plan_sha256 = receipt['result']['planSha256']

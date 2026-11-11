@@ -252,6 +252,19 @@ def uninstall_helper_installer_defines(stage, record):
     return [f'/DUninstallHelperInventorySHA256={sha256(listing)}']
 
 
+def program_ownership_installer_defines(stage):
+    """Bind the installed filename list to native code, not editable metadata.
+
+    Git and a registered directory cannot stop an edited ownership list from
+    adding a neighbouring file. The native script supplies this digest to the
+    helper, which checks the same securely held bytes it will interpret.
+    """
+    path = _local_file(Path(stage), '_installer-owned-files.txt')
+    if not 3 < path.stat().st_size <= 4 * 1024 * 1024:
+        raise ValueError('Final program ownership inventory is missing or empty')
+    return [f'/DUninstallOwnershipSHA256={sha256(path)}']
+
+
 def assemble_game_watcher(output, stage, environment_vars):
     """Freeze the production-only opt-in watcher; never launch or register it."""
     inputs = _read(Path(environment_vars['XINGTU_QT_BUILD_INPUTS']))
@@ -1386,6 +1399,7 @@ def main(argv=None):
         production_defines += resource_reset_installer_defines(stage, plan, output, source)
     else:
         write_private_program_ownership(stage)
+    uninstall_defines += program_ownership_installer_defines(stage)
     setup_name = setup_basename(instance, display, source["commit"])
     subprocess.run([str(args.iscc.resolve()), f"/DStageDir={stage}", f"/DSetupOutputDir={output / 'setup'}",
                     f"/DSetupName={setup_name}", f"/DDisplayVersion={display}", f"/DNumericVersion={numeric}",

@@ -254,7 +254,7 @@ class AssetIntegrationTests(unittest.TestCase):
                  patch.object(installer_uninstall, '_baked_profile', return_value=self.profile), \
                  patch.object(handoff, 'LegacyHandoff', side_effect=factory), \
                  patch.object(handoff, 'complete_asset_transfer', return_value=self.assets):
-                self.assertEqual(helper.main(self.command()), 0)
+                self.assertEqual(helper.main(self.command(), maintenance_provider=lambda _: nullcontext()), 0)
             receipt = configparser.ConfigParser()
             receipt.read(Path(self.args.result_directory) / 'result.ini', encoding='utf-16')
             self.args.plan_sha256 = receipt['result']['planSha256']

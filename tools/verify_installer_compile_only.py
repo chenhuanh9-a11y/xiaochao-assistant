@@ -25,9 +25,9 @@ HELPER_PACKAGES = ('PyInstaller', 'pyinstaller-hooks-contrib', 'pefile', 'psutil
 HELPER_MODULES = {
     'import': ('star_map_import', 'generic_author_package', 'packaged_product_identity', 'resource_transaction'),
     'recovery': ('star_map_import', 'star_map_import_helper', 'map_package_recovery_plan', 'map_package_upgrade', 'resource_transaction', 'packaged_product_identity'),
-    'reset': ('resource_upgrade_reset', 'installer_resource_lease', 'installer_upgrade_coordinator', 'installer_upgrade_journal', 'installer_native_observation', 'managed_base_resources', 'map_package_upgrade', 'star_map_import', 'resource_transaction', 'installer_legacy_bridge', 'installer_legacy_handoff', 'installer_legacy_assets', 'legacy_migration'),
+    'reset': ('resource_upgrade_reset', 'installer_resource_lease', 'installer_upgrade_coordinator', 'installer_upgrade_journal', 'installer_native_observation', 'managed_base_resources', 'map_package_upgrade', 'star_map_import', 'resource_transaction', 'installer_legacy_bridge', 'installer_legacy_handoff', 'installer_legacy_assets', 'legacy_migration', 'installer_uninstall', 'installer_uninstall_recovery', 'game_startup', 'packaged_product_identity'),
     'watcher': ('game_startup', 'game_startup_win32', 'packaged_product_identity'),
-    'uninstall': ('installer_uninstall', 'installer_resource_lease', 'game_startup', 'packaged_product_identity'),
+    'uninstall': ('installer_uninstall', 'installer_uninstall_recovery', 'installer_resource_lease', 'game_startup', 'packaged_product_identity'),
 }
 ENTRIES = {**{k: 'star_map_' + k + '_helper' for k in ('import', 'recovery', 'reset', 'uninstall')}, 'watcher': 'game_startup_watcher'}
 _ACTIVE_REPORT = None
@@ -102,6 +102,7 @@ def make_synthetic_projection(stage, output, source, profile, helpers):
     include, record['fileProjection'] = build.write_production_files_include(stage, resources, output,
         resource_version='ci-synthetic-not-release', source=source)
     build.write_program_ownership(stage, record)
+    uninstall_defines += build.program_ownership_installer_defines(stage)
     defines = build.resource_reset_installer_defines(stage, record, output, source)
     return include, defines + uninstall_defines, record
 
