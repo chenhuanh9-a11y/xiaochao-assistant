@@ -103,7 +103,7 @@ def _automatic_image(root, relative, limit, expected):
 
 
 def export_failure_evidence(archive, roots, log_windows, redact, *, build_fingerprint,
-                            max_samples=12, max_bytes=24 * 1024 * 1024,
+                            max_samples=12, max_bytes=64 * 1024 * 1024,
                             journal_bytes=8 * 1024 * 1024, automatic_only=False,
                             include_automatic=True, session_windows=None):
     """Copy recent journal records and their exact saved frames, with omissions explicit."""
@@ -226,8 +226,12 @@ def export_failure_evidence(archive, roots, log_windows, redact, *, build_finger
             elif remaining <= 0:
                 pixels, status = None, 'export-image-budget-exhausted'
             else:
-                reader = _automatic_image if row.get('event') == 'automatic-failure-sample' else _image
-                pixels, status = reader(root, relative, min(12 * 1024 * 1024, remaining), expected)
+                automatic = row.get('event') == 'automatic-failure-sample'
+                reader = _automatic_image if automatic else _image
+                from failure_sampling import _IMAGE_BYTES
+                image_limit = (_IMAGE_BYTES if automatic and str(relative).startswith('failures/automatic-v2/')
+                               else 12 * 1024 * 1024)
+                pixels, status = reader(root, relative, min(image_limit, remaining), expected)
             item = dict(role=role, status=status)
             if pixels is not None:
                 extension = '.png' if pixels.startswith(b'\x89PNG') else '.jpg'

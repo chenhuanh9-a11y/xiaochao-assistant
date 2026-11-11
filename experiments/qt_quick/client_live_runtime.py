@@ -3910,31 +3910,19 @@ class LiveRuntime:
                     frameCapturedMonotonicAt=stamp[2] if frame is not None else None,
                     captureGeneration=stamp[3] if frame is not None else None,
                     **self._failure_samples.metadata)
+        if frame is not None:
+            data.update(fullClientSize=list(captured.context.full_client_size),
+                        clientBounds=list(captured.context.client_screen_bounds),
+                        roiClientBounds=list(captured.roi_client_bounds), dpi=captured.context.dpi,
+                        timestampBasis='capture-return')
         root = getattr(getattr(self._engine, 'memory_store', None), 'root', None)
-        controls = getattr(self, '_failure_control_observation', None)
-        control_bounds = controls[1] if controls is not None and controls[0] is captured else None
         metadata_current = lambda: bool(self._active and self._failure_samples.automatic_enabled
             and (current is None or current()))
-        if reason == 'current-floor-unavailable':
-            # Floor failures need the searched control region, not unrelated map pixels.
-            control_frame = frame if control_bounds is not None else None
-            if frame is not None and control_bounds is None:
-                data['frameUnavailableReason'] = 'detector-control-band-unavailable'
-            result = self._failure_samples.record_automatic(root=root, reason=reason, frame=control_frame,
-                diagnostic=dict(data, sampleRole='detector-control-band'),
-                current=valid if control_frame is not None else metadata_current,
-                crop_bounds=control_bounds, crop_provenance='detector-control-band')
-        else:
-            result = self._failure_samples.record_automatic(root=root, reason=reason, frame=frame,
-                diagnostic=data, current=valid if frame is not None else metadata_current)
-            if (reason not in ('identity-not-uniquely-verified', 'similar-group-pending', 'candidate-awaiting-confirmation')
-                    and control_bounds is not None and frame is not None):
-                result['controlBand'] = self._failure_samples.record_automatic(root=root, reason=reason, frame=frame,
-                    diagnostic=dict(data, sampleRole='detector-control-band'), current=valid,
-                    crop_bounds=control_bounds, crop_provenance='detector-control-band')
-        saved_any = result['saved'] or result.get('controlBand', {}).get('saved', False)
-        key = (self._season, self._mode, reason, result.get('missingReason'),
-            result.get('controlBand', {}).get('missingReason'))
+        result = self._failure_samples.record_automatic(root=root, reason=reason, frame=frame,
+            diagnostic=dict(data, sampleRole='full-client-frame'),
+            current=valid if frame is not None else metadata_current)
+        saved_any = result['saved']
+        key = (self._season, self._mode, reason, result.get('missingReason'))
         now = time.monotonic()
         notices = self._failure_notice_limits
         previous = notices.get(key)
@@ -5859,7 +5847,8 @@ class LiveRuntime:
                                     captureGeneration=capture_generation))
             try:
                 stamp = self._failure_capture_stamp
-                if (self._failure_samples.enabled and stamp is not None and stamp[0] is captured
+                if (self._failure_samples.enabled and not self._failure_samples.automatic_enabled
+                        and stamp is not None and stamp[0] is captured
                         and self._failure_samples.can_record(frame, (self._mode, map_id, self._profile, floor, reason))):
                     def sample_current():
                         with self._lock:

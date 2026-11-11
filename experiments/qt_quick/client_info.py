@@ -290,7 +290,8 @@ class ClientInfoService(QObject):
             desired, self._automatic_sampling_pending = self._automatic_sampling_pending, None
             self._action_error = enabled != desired
             self._message = (settings.message if self._action_error else
-                             '已开启有限地图失败采样' if enabled else '已关闭自动地图失败采样')
+                              '已开启完整游戏失败画面采样，请检查 ID 和聊天后再分享' if enabled
+                              else '已关闭自动游戏失败画面采样')
         self.changed.emit()
 
     @Slot(bool, result=bool)

@@ -89,17 +89,17 @@ class AutomaticFailureSampleAdmissionTests(unittest.TestCase):
                 self.assertTrue(saved['saved'], saved)
         self.assertEqual(self.recorder.automatic_saved_count, 2)
 
-    def test_unproven_crop_does_not_consume_next_valid_image(self):
+    def test_missing_crop_arguments_still_save_the_complete_frame(self):
         missing = self.record(crop_bounds=None, crop_provenance=None)
-        self.assertEqual(missing['missingReason'], 'map-crop-unproven')
-        self.now += 0.001
-        saved = self.record()
-        self.assertTrue(saved['saved'], saved)
+        self.assertTrue(missing['saved'], missing)
         row = next(row for row in self.rows() if row.get('samplePath'))
         decoded = cv2.imread(str(self.root / row['samplePath']))
-        np.testing.assert_array_equal(decoded, self.frame[3:14, 2:12])
+        np.testing.assert_array_equal(decoded, self.frame)
+        self.assertEqual(row['cropBounds'], [0, 0, self.frame.shape[1], self.frame.shape[0]])
+        self.assertEqual(row['cropProvenance'], 'full-client-capture')
+        self.assertEqual(row['diagnostic']['sampleRole'], 'full-client-frame')
 
-    def test_s1_no_material_uses_existing_cropped_admission_and_cooldown(self):
+    def test_s1_no_material_uses_full_frame_admission_and_cooldown(self):
         for reason in ('no-current-supported-candidates', 's1-no-current-material'):
             with self.subTest(reason=reason):
                 first = self.record(reason=reason, diagnostic=dict(
@@ -108,23 +108,28 @@ class AutomaticFailureSampleAdmissionTests(unittest.TestCase):
                 self.assertFalse(self.record(reason=reason)['saved'])
         self.assertEqual(len(list(self.directory.glob('*.png'))), 2)
 
-    def test_invalid_or_untrusted_crop_does_not_consume_next_valid_image(self):
+    def test_legacy_crop_arguments_are_ignored_and_full_frame_is_saved(self):
+        self.recorder.policy.interval_seconds = 0
         for bounds, provenance in (((-1, 3, 10, 11), 'color-component-unvalidated'),
                                    ((2, 3, 10, 11), 'untrusted-provenance'),
                                    ((2.0, 3, 10, 11), 'color-component-unvalidated')):
             with self.subTest(bounds=bounds, provenance=provenance):
                 result = self.record(crop_bounds=bounds, crop_provenance=provenance)
-                self.assertEqual(result['missingReason'], 'sample-crop-invalid')
-                self.assertFalse(result['saved'])
-        self.assertFalse(list(self.directory.glob('*.png')))
-        self.assertTrue(self.record()['saved'])
+                self.assertTrue(result['saved'], result)
+                row = self.rows()[-1]
+                decoded = cv2.imread(str(self.root / row['samplePath']))
+                np.testing.assert_array_equal(decoded, self.frame)
+                self.assertEqual(row['cropBounds'], [0, 0, self.frame.shape[1], self.frame.shape[0]])
+                self.assertEqual(row['cropProvenance'], 'full-client-capture')
+        self.assertEqual(len(list(self.directory.glob('*.png'))), 3)
 
-    def test_missing_map_does_not_block_same_frame_control_band(self):
-        self.assertFalse(self.record(crop_bounds=None, crop_provenance=None)['saved'])
+    def test_legacy_control_band_flags_do_not_change_saved_pixels(self):
         controls = self.record(crop_provenance='detector-control-band')
         self.assertTrue(controls['saved'], controls)
         row = next(row for row in self.rows() if row.get('samplePath'))
-        self.assertEqual(row['cropProvenance'], 'detector-control-band')
+        decoded = cv2.imread(str(self.root / row['samplePath']))
+        np.testing.assert_array_equal(decoded, self.frame)
+        self.assertEqual(row['cropProvenance'], 'full-client-capture')
 
     def test_metadata_only_loop_is_throttled_and_keeps_specific_missing_reason(self):
         for _ in range(100):
@@ -139,33 +144,25 @@ class AutomaticFailureSampleAdmissionTests(unittest.TestCase):
         self.record(frame=None)
         self.assertEqual(len(self.journal_writes), 2)
 
-    def assert_metadata_cooldown_skips_storage_scans(self, **missing):
-        self.assertTrue(self.record(crop_provenance='detector-control-band')['saved'])
-        retained = next(self.directory.glob('*.png'))
-        retained_bytes = retained.read_bytes()
+    def assert_metadata_cooldown_skips_storage_scans(self):
+        first = self.record(frame=None)
+        self.assertEqual(first['missingReason'], 'legal-captured-frame-unavailable')
         previous_writes = len(self.journal_writes)
         for operation in (self.cleanup, self.inventory, self.create_image, self.capacity):
             operation.reset_mock()
         for _ in range(100):
-            self.assertFalse(self.record(**missing)['saved'])
-        self.assertEqual(self.cleanup.call_count, 1)
-        self.assertEqual(self.inventory.call_count, 1)
-        self.assertEqual(len(self.journal_writes), previous_writes + 1)
+            result = self.record(frame=None)
+            self.assertEqual(result['missingReason'], 'legal-captured-frame-unavailable')
+            self.assertFalse(result['saved'])
+        self.assertEqual(self.cleanup.call_count, 0)
+        self.assertEqual(self.inventory.call_count, 0)
+        self.assertEqual(len(self.journal_writes), previous_writes)
         self.create_image.assert_not_called()
         self.capacity.assert_not_called()
-        self.assertEqual(retained.read_bytes(), retained_bytes)
-        # Deferring storage scans must not suppress the next usable map crop.
-        self.assertTrue(self.record()['saved'])
-        self.assertEqual(self.cleanup.call_count, 2)
-        self.assertEqual(self.inventory.call_count, 3)
-        self.assertEqual(self.create_image.call_count, 1)
-        self.assertEqual(self.capacity.call_count, 1)
+        self.assertFalse(list(self.directory.glob('*.png')))
 
     def test_missing_frame_metadata_cooldown_skips_retained_image_scans(self):
-        self.assert_metadata_cooldown_skips_storage_scans(frame=None)
-
-    def test_unproven_crop_metadata_cooldown_skips_retained_image_scans(self):
-        self.assert_metadata_cooldown_skips_storage_scans(crop_bounds=None, crop_provenance=None)
+        self.assert_metadata_cooldown_skips_storage_scans()
 
     def test_valid_image_after_metadata_cooldown_revalidates_storage_ownership(self):
         self.assertEqual(self.record(frame=None)['missingReason'], 'legal-captured-frame-unavailable')
@@ -318,7 +315,7 @@ class AutomaticFailureSampleAdmissionTests(unittest.TestCase):
     def test_disabled_after_image_keeps_intent_without_success_cooldown(self):
         self.assert_cancel_after_image(disabled=True)
 
-    def test_terminal_reasons_allow_only_legal_live_crop(self):
+    def test_terminal_reasons_save_full_client_frames(self):
         reasons = ('identity-not-uniquely-verified', 'similar-group-pending',
                    'candidate-awaiting-confirmation', 'current-floor-unavailable',
                    'map-open-recovery-exhausted')
@@ -326,9 +323,8 @@ class AutomaticFailureSampleAdmissionTests(unittest.TestCase):
             for reason in reasons:
                 with self.subTest(mode=mode, reason=reason):
                     diagnostic = dict(mode=mode, evidenceKind='live-client-capture')
-                    no_crop = self.record(reason=reason, diagnostic=diagnostic, crop_bounds=None)
-                    self.assertEqual(no_crop['missingReason'], 'map-crop-unproven')
-                    saved = self.record(reason=reason, diagnostic=diagnostic)
+                    saved = self.record(reason=reason, diagnostic=diagnostic,
+                                        crop_bounds=(-10, -10, 1, 1), crop_provenance='invalid-old-roi')
                     self.assertTrue(saved['saved'], saved)
         self.assertEqual(self.recorder.automatic_saved_count, 10)
 

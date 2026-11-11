@@ -31,7 +31,6 @@ class FailureSamplingContracts(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.f = fixtures.LiveRuntimeContracts()
         self.f.setUp()
-        self.f.runtime.set_automatic_failure_sampling_enabled(True)
         self.addCleanup(self.f.doCleanups)
         self.f.engine.pack.by_id["fixture-map"].name = "Fixture"
         self.store = NightmareMemoryStore(self.f.engine.pack, self.root / "memory",
@@ -71,36 +70,36 @@ class FailureSamplingContracts(unittest.TestCase):
         cleanup.assert_not_called()
 
     @unittest.skipUnless(os.name == 'nt', 'automatic mutation requires Windows exclusive handles')
-    def test_automatic_dispatch_uses_only_existing_guarded_frame_and_map_crop(self):
+    def test_automatic_dispatch_uses_only_existing_guarded_full_frame(self):
         # Synthetic pixels exercise the production dispatch/guard/recorder path;
         # this is not a real-game capture or privacy validation claim.
+        self.f.runtime.set_automatic_failure_sampling_enabled(True)
         self.f.capture.frame[250:400, 350:650] = 150
         self.f.capture.generation = 5
         self.f.capture.is_current = lambda context, generation=None: generation == 5
         self.f.runtime._evidence_kind = 'live-client-capture'
-        self.f.runtime._failure_samples.enabled = False
+        self.f.runtime.set_failure_sampling_enabled(True)
         before = self.f.capture.count
-        result = self.capture_failure()
+        with patch.object(self.store, 'record_alignment_failure',
+                side_effect=AssertionError('automatic and manual must not duplicate the frame')) as manual:
+            result = self.capture_failure()
+        manual.assert_not_called()
         self.assertEqual(result['reason'], self.f.fit['reason'])
         self.assertEqual(self.f.capture.count, before+1)
         journal = self.root/'memory/failures/automatic-v2/automatic-failures.jsonl'
         rows = [json.loads(line) for line in journal.read_text().splitlines()]
-        row = next(row for row in rows if row.get('cropProvenance') == 'color-component-unvalidated')
-        controls = next(row for row in rows if row.get('cropProvenance') == 'detector-control-band')
-        for sample in (row, controls):
+        row = next(row for row in rows if row.get('cropProvenance') == 'full-client-capture')
+        self.assertEqual(len(rows), 1)
+        for sample in (row,):
             info = (self.store.root/sample['samplePath']).stat()
             self.assertEqual(sample['sampleIdentity'], [info.st_dev, info.st_ino])
             self.assertEqual(sample['sampleBytes'], info.st_size)
-        self.assertEqual(controls['diagnostic']['sampleRole'], 'detector-control-band')
-        self.assertEqual(controls['cropBounds'], [960, 108, 231, 324])
-        x,y,w,h = controls['cropBounds']
-        import cv2
-        np.testing.assert_array_equal(cv2.imread(str(self.store.root/controls['samplePath'])), self.f.capture.frame[y:y+h,x:x+w])
-        self.assertEqual(row['cropBounds'], [350, 250, 300, 150])
+        self.assertEqual(row['diagnostic']['sampleRole'], 'full-client-frame')
+        self.assertEqual(row['cropBounds'], [0, 0, self.f.capture.frame.shape[1], self.f.capture.frame.shape[0]])
         self.assertFalse(self.store.alignment_failure_path.exists())
         import cv2
         pixels = cv2.imread(str(self.store.root/row['samplePath']))
-        np.testing.assert_array_equal(pixels, self.f.capture.frame[250:400,350:650])
+        np.testing.assert_array_equal(pixels, self.f.capture.frame)
         deadline = time.monotonic() + 3
         while self.problems._job is not None or self.problems._queue:
             self.app.processEvents()
@@ -112,10 +111,10 @@ class FailureSamplingContracts(unittest.TestCase):
             destination=self.root/'automatic-evidence.zip', app_version='fixture', build_fingerprint='AAAAAAAA',
             failure_roots=(self.store.root,), automatic_failure_only=True,
             include_automatic_failure_evidence=True)
-        self.assertEqual(receipt['includedFailureImageCount'], 2)
+        self.assertEqual(receipt['includedFailureImageCount'], 1)
         self.f.runtime.set_automatic_failure_sampling_enabled(False)
         self.capture_failure()
-        self.assertEqual(len(list(journal.parent.glob('auto-*.png'))), 2)
+        self.assertEqual(len(list(journal.parent.glob('auto-*.png'))), 1)
 
     def test_default_off_then_same_frame_opt_in_export_and_cooldown(self):
         self.assertFalse(self.capture_failure()["success"])
