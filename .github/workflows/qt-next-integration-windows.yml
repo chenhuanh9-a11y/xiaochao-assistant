@@ -205,7 +205,9 @@ jobs:
             'main-baseline' { $modules = $core }
             'diagnostics' { $modules = @('test_map_attempt_correlation', 'test_diagnostic_log_budget', 'test_client_problems', 'test_client_problem_history', 'test_client_info', 'test_client_season_failure_export', 'test_client_diagnostic_integration', 'test_client_joint_diagnostic_schema', 'test_field_failure_samples', 'test_async_event_log', 'test_automatic_failure_samples', 'test_storage_retention', 'test_memory_retention_links', 'test_runtime_environment_diagnostics'); $modules += @(Get-ChildItem tests/test_diagnostic*.py | ForEach-Object { $_.BaseName }) }
             'packaging' {
-              $modules = @('test_runtime_exclusions', 'test_s1_private_packaging', 'test_preview_windows_notice', 'test_qt_installer_directory', 'test_live_author_import', 'test_legacy_import_recovery', 'test_package_dependency_upgrade', 'test_receipt_dependency_contract', 'test_map_package_removal', 'test_client_resources')
+              # e116: this shard took 2m25s; the joint activation module took
+              # 12m41s in the cancelled integration shard. Keep its full process.
+              $modules = @('test_runtime_exclusions', 'test_s1_private_packaging', 'test_preview_windows_notice', 'test_qt_installer_directory', 'test_live_author_import', 'test_legacy_import_recovery', 'test_package_dependency_upgrade', 'test_receipt_dependency_contract', 'test_map_package_removal', 'test_client_resources', 'test_client_imported_author_joint_activation')
             }
             # Separate parser/store and package-admission work from runtime tests
             # to avoid the former combined group's 25-minute cancellations.
@@ -242,7 +244,6 @@ jobs:
                 'test_client_imported_providers', 'test_client_native_base_provider',
                 'test_client_imported_s1_provider', 'test_client_imported_s1_nightmare_provider',
                 'test_client_imported_difficult_provider', 'test_client_imported_difficult_activation_ui',
-                'test_client_imported_fast_structure',
                 'test_client_imported_group_registry', 'test_client_imported_group_runtime',
                 'test_client_imported_admission', 'test_client_imported_package_activation',
                 'test_client_imported_controls',
@@ -256,7 +257,9 @@ jobs:
             'packaging-imported-display-data' {
               $modules = @(
                 'test_imported_author_display', 'test_export_author_display_component',
-                'test_export_author_display_component_modes'
+                'test_export_author_display_component_modes',
+                # e116: this shard took 6m54s; Fast used 4m34s in runtime.
+                'test_client_imported_fast_structure'
               )
             }
             'packaging-imported-display' {
@@ -267,10 +270,10 @@ jobs:
               )
             }
             # Joint B/C/display and actual QML flows have their own process
-            # budget. At 2083042, the first six modules consumed 23m34s of the
-            # 25m job; plan UI now shares the observed 13m38s display shard.
+            # budget. e116's first three modules consumed 23m11s before the
+            # fourth fixture setup; joint activation now uses packaging's room.
             'packaging-imported-display-integration' {
-              $modules = @('test_client_imported_author_joint_activation', 'test_client_imported_author_ui',
+              $modules = @('test_client_imported_author_ui',
                 'test_client_imported_browse', 'test_client_imported_browse_modes', 'test_client_imported_gallery_ui',
                 'test_client_imported_activation_plan')
             }

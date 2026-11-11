@@ -125,9 +125,15 @@ class ImportedNativeBaseTests(unittest.TestCase):
         self.assertTrue(all(isinstance(item['gates'], list)
                             for item, *_ in bundle.side_entry_identity.entries))
         self.assertEqual(bundle.exit_recognizer.references, [])
-        self.assertFalse(any('author.png' in call.args[0] or 'source-candidate' in call.args[0]
-                             or 'portable-layout' in call.args[0] or 'groups' in call.args[0]
-                             for call in reads.call_args_list))
+        from imported_group_registry import RESOURCE_PATH
+        paths = [call.args[0] for call in reads.call_args_list]
+        self.assertFalse(any('author.png' in path or 'source-candidate' in path
+                             or 'portable-layout' in path for path in paths))
+        self.assertEqual({path for path in paths if 'groups' in path}, {RESOURCE_PATH})
+        registry = bundle.reviewed_front_groups
+        self.assertIsNotNone(registry)
+        self.assertEqual(registry.file_ref.component, view.component_ref)
+        self.assertEqual(registry.file_ref.path, RESOURCE_PATH)
         with patch.object(view, 'read', side_effect=AssertionError('cache guard read payloads')):
             bundle.assert_current()
             self.assertEqual(bundle.pack.mode, 'nightmare')

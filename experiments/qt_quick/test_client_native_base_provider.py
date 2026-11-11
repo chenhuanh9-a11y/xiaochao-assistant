@@ -1,6 +1,9 @@
 """Actual imported engine construction; no replacement engine or game IO."""
 from pathlib import Path
+import hashlib
+import json
 import unittest
+import zipfile
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -65,7 +68,9 @@ class NativeBaseProviderTests(unittest.TestCase):
         self.assertEqual(report['inventory']['typedLayers'], 3)
         self.assertEqual(engine.qt_controls_profile.for_context('s0', 'nightmare').contract.floor_id_for(-1), 'B1')
         self.assertIsNone(engine.native_similarity_index)
-        self.assertIsNone(engine.qt_logical_group_registry)
+        self.assertIs(engine.qt_logical_group_registry, engine.qt_native_base.reviewed_front_groups)
+        self.assertIsNotNone(engine.qt_logical_group_registry)
+        self.assertEqual(engine.qt_logical_group_registry.file_ref.component, self.refs['base'])
         self.assertIsNone(engine.qt_optional_displays)
         self.assertIsNone(engine.memory_store.portable_seed_path)
         self.assertEqual(engine.memory_store.root, self.paths.memory_root('nightmare'))
@@ -75,6 +80,34 @@ class NativeBaseProviderTests(unittest.TestCase):
         self.assertEqual(layer['pixels'].shape, (8, 8, 4))
         np.testing.assert_array_equal(layer['matrixDisplayToReference'], np.eye(3))
         self.assertEqual(engine.pack.identity_profiles['fixture-map'], 'zhan10-speed')
+
+    def test_old_package_without_registration_does_not_fall_back_to_program_groups(self):
+        from imported_group_registry import INTERFACE, RESOURCE_PATH
+        members = dict(base_fixture.ImportedNativeBaseTests.members)
+        context_path = 'data/base/resource-context.json'
+        context = json.loads(members[context_path])
+        context['runtimeInterfaces'].pop(INTERFACE)
+        members[context_path] = json.dumps(context).encode('utf-8')
+        members.pop('data/base/' + RESOURCE_PATH)
+        manifest = json.loads(members['manifest.json'])
+        manifest['resourceVersion'] = 'without-reviewed-groups'
+        manifest['files'] = [row for row in manifest['files']
+                             if (row['componentId'], row['path']) != ('base', RESOURCE_PATH)]
+        for row in manifest['files']:
+            raw = members[f"data/{row['componentId']}/{row['path']}"]
+            row.update(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+        members['manifest.json'] = json.dumps(manifest).encode('utf-8')
+        archive_path = self.paths.installation_root / 'without-reviewed-groups.zip'
+        with zipfile.ZipFile(archive_path, 'x') as archive:
+            for name, raw in members.items():
+                archive.writestr(name, raw)
+        saved = save_archive(archive_path, self.resolver.root)
+        self.refs = {ref.component_id: ref for ref in saved.component_refs}
+        self.activate()
+        engine = self.factories.get_engine('nightmare')
+        self.assertTrue(engine.qt_native_base.ready)
+        self.assertIsNone(engine.qt_native_base.reviewed_front_groups)
+        self.assertIsNone(engine.qt_logical_group_registry)
 
     def test_missing_to_activated_and_later_catalog_generation_rebuilds_cache(self):
         self.factories.prepare_context('nightmare')
