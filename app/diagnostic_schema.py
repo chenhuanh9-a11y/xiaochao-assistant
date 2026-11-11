@@ -1575,3 +1575,7 @@ CODES = CODES | frozenset({"locked-map-resource-unavailable"})
 
 # Explicit cleanup receipt keys; never permit arbitrary paths or context keys.
 FIELDS = FIELDS | frozenset({'s1:nightmare', 's1:difficult'})
+
+# Full-client diagnostic evidence: bounded image sizes and explicit omissions.
+FIELDS = FIELDS | frozenset({'singleImageBytes'})
+CODES = CODES | frozenset({'full-client-capture', 'frame-byte-limit'})

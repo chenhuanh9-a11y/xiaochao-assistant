@@ -75,6 +75,23 @@ class DiagnosticRedactionTests(unittest.TestCase):
         self.assertNotIn('Private Person', result)
         self.assertNotIn('Private Other', result)
 
+    def test_full_frame_provenance_and_limits_survive_without_private_text(self):
+        row = dict(event='automatic-failure-sample', failureSample=dict(saved=False,
+            missingReason='frame-byte-limit', sampleRole='full-client-frame',
+            cropProvenance='full-client-capture',
+            limits=dict(imageBytes=64*1024*1024, singleImageBytes=32*1024*1024),
+            localPath=r'C:\Private Player\game.png', token='private-token'))
+        (self.live/'events-full-frame.jsonl').write_text(json.dumps(row)+'\n', 'utf-8')
+        with zipfile.ZipFile(self.export()) as archive:
+            payload = archive.read('logs/events-full-frame.jsonl')
+        sample = json.loads(payload)['failureSample']
+        self.assertEqual(sample['missingReason'], 'frame-byte-limit')
+        self.assertEqual(sample['sampleRole'], 'full-client-frame')
+        self.assertEqual(sample['cropProvenance'], 'full-client-capture')
+        self.assertEqual(sample['limits'], dict(imageBytes=67108864, singleImageBytes=33554432))
+        self.assertNotIn(b'Private Player', payload)
+        self.assertNotIn(b'private-token', payload)
+
     def test_partial_line_does_not_break_other_jsonl_records(self):
         text = '{"path":"C:/Hidden/incomplete\n' + json.dumps(dict(path=r'C:\Hidden\ok', count=2)) + '\n'
         (self.live / 'events-partial.jsonl').write_text(text, 'utf-8')

@@ -276,7 +276,7 @@ recorder.record_automatic(root=sys.argv[3], reason='structure-current-geometry-f
                     lambda value:value, build_fingerprint='test', automatic_only=True)
             self.assertEqual(report['imageCount'], 0)
     @unittest.skipUnless(os.name == 'nt', 'automatic mutation requires Windows exclusive handles')
-    def test_production_runtime_entry_derives_crop_and_exports_exact_pixels(self):
+    def test_production_runtime_entry_saves_full_frame_and_exports_exact_pixels(self):
         source = ast.parse((ROOT/'experiments/qt_quick/client_live_runtime.py').read_text('utf-8'))
         cls = next(n for n in source.body if isinstance(n, ast.ClassDef) and any(
             isinstance(m, ast.FunctionDef) and m.name == '_automatic_failure_sample' for m in n.body))
@@ -289,7 +289,9 @@ recorder.record_automatic(root=sys.argv[3], reason='structure-current-geometry-f
         runtime = namespace['Runtime']()
         frame = np.zeros((300, 400, 3), np.uint8)
         frame[100:170, 100:200] = 150
-        captured = SimpleNamespace(context=object())
+        captured = SimpleNamespace(context=SimpleNamespace(
+            full_client_size=(400, 300), client_screen_bounds=(0, 0, 400, 300), dpi=96),
+            roi_client_bounds=(0, 0, 400, 300))
         now = datetime.now(timezone.utc)
         with tempfile.TemporaryDirectory() as directory:
             runtime._failure_samples = _enabled_recorder()
@@ -315,10 +317,12 @@ recorder.record_automatic(root=sys.argv[3], reason='structure-current-geometry-f
             saved = (Path(directory)/row['samplePath']).stat()
             self.assertEqual(row['sampleIdentity'], [saved.st_dev, saved.st_ino])
             self.assertEqual(row['sampleBytes'], saved.st_size)
-            self.assertEqual(row['cropBounds'], [100, 100, 100, 70])
-            self.assertEqual(row['diagnostic']['cropExtractor'], 'structure_current_map_evidence')
+            self.assertEqual(row['cropBounds'], [0, 0, frame.shape[1], frame.shape[0]])
+            self.assertEqual(row['cropProvenance'], 'full-client-capture')
+            self.assertEqual(row['diagnostic']['sampleRole'], 'full-client-frame')
+            self.assertNotIn('cropExtractor', row['diagnostic'])
             image = cv2.imread(str(Path(directory)/row['samplePath']))
-            np.testing.assert_array_equal(image, frame[100:170, 100:200])
+            np.testing.assert_array_equal(image, frame)
             manual = dict(row, event='alignment-failure-sample-written', samplePath='failures/manual.png')
             (Path(directory)/'alignment-failures.jsonl').write_text(json.dumps(manual)+'\n')
             cv2.imwrite(str(Path(directory)/'failures/manual.png'), frame)
@@ -335,7 +339,7 @@ recorder.record_automatic(root=sys.argv[3], reason='structure-current-geometry-f
                 captured=captured, attempt_id=attempt)['missingReason'], 'capture-not-current')
 
     @unittest.skipUnless(os.name == 'nt', 'automatic mutation requires Windows exclusive handles')
-    def test_control_band_shares_intent_recovery_capacity_and_disabled_export_boundary(self):
+    def test_legacy_control_crop_flags_share_intent_recovery_and_disabled_export_boundary(self):
         class Interrupt(BaseException): pass
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory); frame=np.arange(60*80*3,dtype=np.uint8).reshape(60,80,3)
@@ -355,9 +359,11 @@ recorder.record_automatic(root=sys.argv[3], reason='structure-current-geometry-f
             journal=root/'failures/automatic-v2/automatic-failures.jsonl'
             pending=json.loads(journal.read_text())
             self.assertEqual(pending['event'],'automatic-failure-image-intent')
-            self.assertEqual(pending['cropProvenance'],'detector-control-band')
+            self.assertEqual(pending['cropProvenance'],'full-client-capture')
+            self.assertEqual(pending['cropBounds'],[0,0,frame.shape[1],frame.shape[0]])
+            self.assertEqual(pending['diagnostic']['sampleRole'],'full-client-frame')
             pixels=cv2.imread(str(root/pending['samplePath']))
-            np.testing.assert_array_equal(pixels,frame[:12,40:75])
+            np.testing.assert_array_equal(pixels,frame)
             for _ in range(8):
                 recorder.policy.saved.clear()
                 self.assertFalse(recorder.record_automatic(**args)['saved'])
@@ -371,21 +377,22 @@ recorder.record_automatic(root=sys.argv[3], reason='structure-current-geometry-f
             self.assertEqual(recorder.record_automatic(**args)['missingReason'],'automatic-sampling-disabled')
 
     @unittest.skipUnless(os.name == 'nt', 'automatic mutation requires Windows exclusive handles')
-    def test_unproven_crop_is_metadata_only_and_disable_is_explicit(self):
+    def test_missing_crop_is_saved_as_full_frame_and_disable_is_explicit(self):
         recorder = _enabled_recorder()
         with tempfile.TemporaryDirectory() as directory:
             result = recorder.record_automatic(root=Path(directory), reason='structure-current-geometry-failed',
                 frame=np.zeros((20, 20, 3), dtype=np.uint8), current=lambda: True,
                 diagnostic={'evidenceKind': 'live-client-capture'})
-            self.assertEqual(result['missingReason'], 'map-crop-unproven')
-            self.assertFalse(list(Path(directory).rglob('*.png')))
+            self.assertTrue(result['saved'], result)
+            image = next(Path(directory).rglob('*.png'))
+            np.testing.assert_array_equal(cv2.imread(str(image)), np.zeros((20, 20, 3), dtype=np.uint8))
             recorder.automatic_enabled = False
             result = recorder.record_automatic(root=Path(directory), reason='map-open-preparation-deadline',
                 frame=None, current=lambda: True, diagnostic={})
             self.assertEqual(result['missingReason'], 'automatic-sampling-disabled')
 
     @unittest.skipUnless(os.name == 'nt', 'automatic mutation requires Windows exclusive handles')
-    def test_crop_bytes_count_retention_and_stale_gate(self):
+    def test_full_frame_bytes_count_retention_and_stale_gate(self):
         recorder = _enabled_recorder()
         recorder.policy.interval_seconds = 0
         with tempfile.TemporaryDirectory() as directory:
@@ -401,7 +408,7 @@ recorder.record_automatic(root=sys.argv[3], reason='structure-current-geometry-f
                     first = next(Path(directory).rglob('*.png'))
             self.assertFalse(first.exists())
             self.assertEqual(len(list(Path(directory).rglob('*.png'))), 6)
-            self.assertLessEqual(sum(p.stat().st_size for p in Path(directory).rglob('*.png')), 12*1024*1024)
+            self.assertLessEqual(sum(p.stat().st_size for p in Path(directory).rglob('*.png')), 64*1024*1024)
             args['current'] = lambda: False
             self.assertEqual(recorder.record_automatic(**args)['missingReason'], 'capture-not-current')
 

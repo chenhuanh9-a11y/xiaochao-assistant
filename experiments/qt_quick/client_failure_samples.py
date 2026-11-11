@@ -47,7 +47,7 @@ class FailureSampleRecorder:
 
     A write is part of the existing Session job and therefore its drain. There
     is no daemon to outlive shutdown. Manual full frames keep the 12-per-process
-    limit. Automatic cropped evidence uses bounded disk rotation and cooldown,
+    limit. Automatic full-client evidence uses bounded disk rotation and cooldown,
     so a long-running process can retain new failures after its first six images.
     """
     def __init__(self):
@@ -55,9 +55,8 @@ class FailureSampleRecorder:
         self.automatic_enabled = False
         self.metadata = {}
         self.policy = FailureSampling()
-        # Missing frames/crops need bounded metadata, not an image cooldown.
-        # Keep this separate so the same frame's valid control band (or the
-        # next valid map crop) is not blocked by metadata-only evidence.
+        # Missing frames need bounded metadata, not an image cooldown.
+        # A later valid full frame must not be blocked by metadata-only evidence.
         self._automatic_metadata_policy = FailureSampling()
         self.lock = threading.Lock()
         self.saved_count = 0
@@ -85,7 +84,7 @@ class FailureSampleRecorder:
 
     def _record_automatic_locked(self, *, root, reason, frame, diagnostic, current,
                                  crop_bounds=None, crop_provenance=None):
-        """Reuse a guarded captured frame only; unproven map regions stay metadata-only.
+        """Save the exact guarded full-client frame, independently of map/floor evidence.
 
         The caller owns binding/foreground/generation validation via current().
         This method never obtains frames, inputs, or network access.
@@ -97,8 +96,10 @@ class FailureSampleRecorder:
         import re
         import cv2
         import numpy as np
+        from failure_sampling import _IMAGE_BYTES, _CONTEXT_IMAGE_BYTES
         result = dict(saved=False, missingReason='', sampling='automatic',
-                      limits=dict(images=6, imageBytes=12*1024*1024, retentionDays=7))
+                      limits=dict(images=6, imageBytes=_CONTEXT_IMAGE_BYTES,
+                                  singleImageBytes=_IMAGE_BYTES, retentionDays=7))
         if not self.automatic_enabled:
             return dict(result, missingReason='automatic-sampling-disabled')
         if reason not in ('structure-current-geometry-failed', 'initial-structure-current-geometry-failed',
@@ -114,7 +115,7 @@ class FailureSampleRecorder:
             return dict(result, missingReason='memory-root-unavailable')
         if not self.lock.acquire(blocking=False):
             return dict(result, missingReason='sample-writer-busy')
-        key = ('automatic', diagnostic.get('mode'), reason, crop_provenance == 'detector-control-band')
+        key = ('automatic', diagnostic.get('mode'), reason)
         admitted = False
         committed_image = False
         failed = False
@@ -124,20 +125,10 @@ class FailureSampleRecorder:
                 return dict(result, missingReason=self.policy.last_status)
             admitted = True
             pixels = None
-            missing = 'map-crop-unproven'
-            # The production path derives bounds from the shared current-frame
-            # map extractor, never a fixed ROI, source pose, or remembered map.
-            if (crop_bounds is None and frame is not None
-                    and diagnostic.get('evidenceKind') == 'live-client-capture'):
-                from map_observation import structure_current_map_evidence
-                evidence = structure_current_map_evidence(frame)
-                if evidence is not None and evidence.get('visible') is not None:
-                    component = evidence['visible'][2]
-                    crop_bounds = tuple(int(component[k]) for k in ('x', 'y', 'width', 'height'))
-                    crop_provenance = 'color-component-unvalidated'
-                    diagnostic = dict(diagnostic, cropExtractor='structure_current_map_evidence',
-                                      observationBounds=list(evidence['observationBounds']),
-                                      cropPaddingRemoved=8)
+            missing = 'capture-frame-invalid'
+            # crop_* arguments remain accepted for old callers, but never trim
+            # diagnostics. Only the caller's already validated full frame is used.
+            crop_bounds = crop_provenance = None
             if frame is None:
                 unavailable = diagnostic.get('frameUnavailableReason')
                 missing = unavailable if isinstance(unavailable, str) and unavailable in (
@@ -146,32 +137,32 @@ class FailureSampleRecorder:
                     'legal-captured-frame-unavailable') else 'legal-captured-frame-unavailable'
             elif diagnostic.get('evidenceKind') != 'live-client-capture':
                 missing = 'not-live-bound-game-capture'
-            elif (crop_provenance in ('color-component-unvalidated', 'detector-control-band') and isinstance(frame, np.ndarray)
-                  and frame.ndim == 3 and frame.nbytes <= 64*1024*1024
-                  and isinstance(crop_bounds, (tuple, list)) and len(crop_bounds) == 4
-                  and all(type(v) is int for v in crop_bounds)):
-                x, y, width, height = crop_bounds
-                if x >= 0 and y >= 0 and width > 0 and height > 0 and x+width <= frame.shape[1] and y+height <= frame.shape[0]:
-                    ok, encoded = cv2.imencode('.png', frame[y:y+height, x:x+width])
+            elif (isinstance(frame, np.ndarray) and frame.dtype == np.uint8
+                  and frame.ndim == 3 and frame.shape[2] in (3, 4)
+                  and frame.shape[0] > 0 and frame.shape[1] > 0):
+                if frame.nbytes > 64*1024*1024:
+                    missing = 'frame-byte-limit'
+                else:
+                    ok, encoded = cv2.imencode('.png', frame)
                     if not ok:
                         missing = 'sample-encode-failed'
                         failed = True
-                    elif encoded.nbytes > 12*1024*1024:
+                    elif encoded.nbytes > _IMAGE_BYTES:
                         missing = 'image-byte-limit'
                     else:
                         pixels = encoded.tobytes()
                         missing = ''
-                else:
-                    missing = 'sample-crop-invalid'
-            elif crop_bounds is not None:
-                missing = 'sample-crop-invalid'
+                        crop_bounds = (0, 0, frame.shape[1], frame.shape[0])
+                        crop_provenance = 'full-client-capture'
+                        diagnostic = dict(diagnostic, sampleRole='full-client-frame',
+                                          frameShapeHW=list(frame.shape[:2]), sampleScaleXY=[1, 1])
             if pixels is None:
                 metadata_key = (key, missing)
                 if not self._automatic_metadata_policy.eligible(metadata_key, time.monotonic()):
                     # Preserve the actual missing-image reason even when its
                     # journal row is suppressed. A usable image bypasses this.
                     return dict(result, missingReason=missing)
-            # Inventory validates retained PNG bytes and can hash up to 12 MiB.
+            # Inventory validates retained PNG bytes within the context budget.
             # Do it only for admitted evidence, never for a metadata cooldown.
             # The caller still holds the exclusive storage transaction here.
             base = Path(root).absolute()
@@ -200,10 +191,12 @@ class FailureSampleRecorder:
                 'captureGeneration', 'sourceFrameGeneration', 'cropExtractor',
                 'observationBounds', 'cropPaddingRemoved', 'sampleRole',
                 'season', 'contextKey', 'attemptId', 'openingId', 'inputSequence',
-                'requestGeneration', 'epoch', 'roundId', 'frameCapturedMonotonicAt') if k in diagnostic}
+                'requestGeneration', 'epoch', 'roundId', 'frameCapturedMonotonicAt',
+                'frameShapeHW', 'sampleScaleXY', 'fullClientSize', 'clientBounds',
+                'roiClientBounds', 'dpi', 'timestampBasis') if k in diagnostic}
             if diagnostic.get('fitEvidence') and frame is not None and current():
                 from s1_fit_diagnostics import safe_evidence
-                # These crop dimensions describe the saved local sample, not
+                # These dimensions describe the saved full-client sample, not
                 # necessarily the component used by any solver attempt.
                 safe_diagnostic['fitEvidence'] = safe_evidence(dict(safe_evidence(diagnostic['fitEvidence']),
                     frameShapeHW=list(frame.shape[:2]), cropBounds=list(crop_bounds) if crop_bounds else None,

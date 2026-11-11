@@ -67,15 +67,15 @@ Item {
                 AppButton { objectName: "helpSaveDiagnostics"; text: "另存 ZIP…"; enabled: !infoService.checking; onClicked: saveDiagnostics.open() }
             }
             AppButton { objectName: "helpDiagnosticsOptions"; text: root.diagnosticsOptionsOpen ? "收起反馈设置" : "反馈设置"; onClicked: root.diagnosticsOptionsOpen = !root.diagnosticsOptionsOpen }
-            Label { objectName: "helpDiagnosticsPrivacy"; text: "诊断包默认含文字日志和少量局部失败画面。图片可能含昵称或聊天，请检查后再分享；不会自动上传。"; font.pixelSize: 14; color: "#526785"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+            Label { objectName: "helpDiagnosticsPrivacy"; text: "诊断包默认含文字日志和少量完整游戏失败画面，保留原分辨率和像素，可能含游戏 ID、昵称或聊天。可关闭自动保存或仅导出文字，请检查后再分享；不会自动上传。"; font.pixelSize: 14; color: "#526785"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
             ColumnLayout {
                 visible: root.diagnosticsOptionsOpen; Layout.fillWidth: true; spacing: 10
-                AppCheckBox { objectName: "helpAutomaticFailureSampling"; text: "自动保存局部失败画面（本地）"; Layout.fillWidth: true; checked: infoService.automaticFailureSampling; enabled: !infoService.checking; onToggled: infoService.setAutomaticFailureSampling(checked) }
-                Label { text: "仅保存已采集的游戏地图与楼层控件区域，按容量和 7 天期限轮换。关闭后停止新增。"; font.pixelSize: 14; textFormat: Text.PlainText; wrapMode: Text.WordWrap; Layout.fillWidth: true; color: "#526785" }
-                AppCheckBox { objectName: "helpExportAutomaticFailureEvidence"; text: "导出时附上局部失败画面"; Layout.fillWidth: true; checked: infoService.includeAutomaticFailureEvidence; enabled: !infoService.checking; onToggled: infoService.setIncludeAutomaticFailureEvidence(checked) }
+                AppCheckBox { objectName: "helpAutomaticFailureSampling"; text: "自动保存完整游戏失败画面（本地）"; Layout.fillWidth: true; checked: infoService.automaticFailureSampling; enabled: !infoService.checking; onToggled: infoService.setAutomaticFailureSampling(checked) }
+                Label { text: "仅复用同次已采集且校验有效的游戏窗口完整客户区，不截桌面或其他窗口。每赛季和难度最多 6 张、64 MiB，单张最多 32 MiB，按 7 天期限轮换；超限减少张数，不裁图或缩小。关闭后停止新增。"; font.pixelSize: 14; textFormat: Text.PlainText; wrapMode: Text.WordWrap; Layout.fillWidth: true; color: "#526785" }
+                AppCheckBox { objectName: "helpExportAutomaticFailureEvidence"; text: "导出时附上完整游戏失败画面"; Layout.fillWidth: true; checked: infoService.includeAutomaticFailureEvidence; enabled: !infoService.checking; onToggled: infoService.setIncludeAutomaticFailureEvidence(checked) }
                 AppCheckBox { objectName: "helpTextOnlyDiagnostics"; text: "仅导出文字，不附图片"; Layout.fillWidth: true; checked: infoService.textOnlyDiagnostics; enabled: !infoService.checking; onToggled: infoService.setTextOnlyDiagnostics(checked) }
-                AppCheckBox { objectName: "helpFailureSampling"; text: "额外保存并导出完整失败画面"; Layout.fillWidth: true; checked: infoService.includeFailureEvidence; enabled: !infoService.checking; onToggled: infoService.setIncludeFailureEvidence(checked) }
-                Label { text: "完整画面可能包含整个游戏窗口。需开启后复现，重启后关闭。"; font.pixelSize: 14; color: "#526785"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                AppCheckBox { objectName: "helpFailureSampling"; text: "兼容手动失败采样与历史图片"; Layout.fillWidth: true; checked: infoService.includeFailureEvidence; enabled: !infoService.checking; onToggled: infoService.setIncludeFailureEvidence(checked) }
+                Label { text: "默认完整画面不需要开启此项。此项附上已有手动样本；仅在自动保存关闭时启用手动采样，避免同帧重复保存。重启后关闭。单次导出图片合计最多 64 MiB，文字日志另计。"; font.pixelSize: 14; color: "#526785"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                 AppButton { objectName: "resetDiagnosticInstallId"; text: "重置随机诊断标识"; enabled: !infoService.checking; onClicked: infoService.resetDiagnosticInstallId() }
             }
             ProgressBar { Layout.fillWidth: true; visible: infoService.checking; indeterminate: true; Accessible.name: infoService.operation }

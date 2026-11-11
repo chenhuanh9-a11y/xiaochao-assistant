@@ -57,8 +57,9 @@ class FailureCaptureTerminalTests(unittest.TestCase):
         self.assertIsNotNone(self.calls[0]['frame'])
         self.assertEqual(self.calls[0]['reason'], 'current-floor-unavailable')
         self.assertEqual(len(self.calls), 1)
-        self.assertEqual(self.calls[0]['crop_bounds'], (2, 2, 4, 4))
-        self.assertEqual(self.calls[0]['crop_provenance'], 'detector-control-band')
+        self.assertEqual(self.calls[0]['diagnostic']['sampleRole'], 'full-client-frame')
+        self.assertNotIn('crop_bounds', self.calls[0])
+        self.assertNotIn('crop_provenance', self.calls[0])
 
     def test_post_capture_selection_pending_is_not_the_pre_capture_exit(self):
         self.enable_evidence('nightmare')

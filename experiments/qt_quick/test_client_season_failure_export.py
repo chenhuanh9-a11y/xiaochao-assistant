@@ -195,7 +195,7 @@ class SeasonFailureExportTests(unittest.TestCase):
             self.assertEqual(evidence['matchingCases'], 16)
             self.assertEqual(evidence['imageCount'], 12)
             self.assertEqual(evidence['omittedBySampleLimit'], 4)
-            self.assertEqual(evidence['limits']['imageBytes'], 24 * 1024 * 1024)
+            self.assertEqual(evidence['limits']['imageBytes'], 64 * 1024 * 1024)
         with self.export('byte-budget', max_bytes=1) as archive:
             evidence = json.loads(archive.read('diagnostic-manifest.json'))['failureEvidence']
             self.assertEqual(evidence['imageCount'], 0)
