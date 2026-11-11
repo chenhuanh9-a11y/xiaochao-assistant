@@ -267,6 +267,28 @@ class RecoveryTests(unittest.TestCase):
         self.assertTrue(case.registration.present)
         self.assertTrue((case.target / PENDING).exists())
 
+    def test_existing_old_game_startup_binding_is_not_silently_retired(self):
+        case = self.new_case()
+        original = case.snapshot()
+        case.retirement.startup_reader = lambda name, owner: dict(name=name,
+            run=[1, 'old watcher command'], exits={})
+        with self.assertRaisesRegex(ValueError, '旧版仍有游戏启动绑定'):
+            self.execute(case, 'prepare')
+        self.assertEqual(case.snapshot(), original)
+        self.assertTrue(case.registration.present)
+        self.assertFalse((case.target / PENDING).exists())
+
+    def test_new_old_game_startup_entry_after_plan_blocks_retirement(self):
+        case = self.committed()
+        original = case.snapshot()
+        case.retirement.startup_reader = lambda name, owner: dict(name=name,
+            run=[1, 'later old watcher command'], exits={})
+        with self.assertRaisesRegex(ValueError, '旧版游戏启动绑定发生变化'):
+            self.execute(case, 'retire')
+        self.assertEqual(case.snapshot(), original)
+        self.assertTrue(case.registration.present)
+        self.assertTrue((case.target / PENDING).exists())
+
 
 if __name__ == '__main__':
     unittest.main()

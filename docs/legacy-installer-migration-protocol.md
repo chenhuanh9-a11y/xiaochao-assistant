@@ -131,6 +131,10 @@ Inno 时序依据 [官方事件文档](https://jrsoftware.org/ishelp/topic_scrip
 支持工具的嵌入策略位于 `_installer-support/_internal/qtifw-trial-policy.json`。
 策略、owner、正式程序 profile、release report 与程序逐文件库存须相互一致。
 未提供可证明归属的旧平铺/其它维护数据格式没有破坏权限，明确保留未完成原因。
+支持条件还包括旧版独立的游戏启动登记和本局退出记录均为空；这些通过已有按安装位置
+派生的登记名只读核实并绑定。存在或后来新出现的旧绑定会明确停止，不执行旧助手的
+disable-watcher，也不悄悄丢失原启用选择。该启用选择跨位置接管仍需独立的真实验证；
+本稿不把只清卸载登记称为已清理全部旧入口。
 
 不能从 `_installer-support` 的名字推断其所有文件都归安装器。只读解析实际 `.dat` 的
 Extract/Copy/CreateShortcut 记录，Extract 引用的 `installerResources` 文件是二进制

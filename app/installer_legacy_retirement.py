@@ -194,10 +194,16 @@ class WindowsRegistration:
 
 
 class LegacyRetirement:
-    def __init__(self, *, registration=None, locations=None, inventory=None):
+    def __init__(self, *, registration=None, locations=None, inventory=None, startup_reader=None):
         self.registration = registration or WindowsRegistration()
         self.locations = locations
         self.inventory = inventory
+        self.startup_reader = startup_reader or self._startup
+
+    @staticmethod
+    def _startup(name, owner):
+        registry = uninstall._RegistryProvider(owner)
+        return dict(name=name, run=registry.run_value(name), exits=registry.exit_values(name + '-'))
 
     def capture(self, source, identity, manifest, *, owner_sid, deadline, registry_reader=None,
                 external_root=None):
@@ -215,6 +221,14 @@ class LegacyRetirement:
         allowed = inventory(Path(source), program, identity)
         if not allowed['supported']:
             return allowed
+        from game_startup import run_name
+        startup = self.startup_reader(run_name(program), owner_sid)
+        # The historical helper's disable-watcher UNDO is a separate native
+        # entry, not covered by uninstall registration or shortcut deletion.
+        # Do not silently lose an opt-in or report that entry retired. A live
+        # or retained old binding requires its own tested transfer, not a guess.
+        if startup != dict(name=run_name(program), run=None, exits={}):
+            fail('旧版仍有游戏启动绑定或本局记录，请先在旧版关闭并核对后再迁移')
         if external_root is None:
             from installer_legacy_assets import _external_root
             external_root = _external_root()
@@ -280,7 +294,7 @@ class LegacyRetirement:
                         fail('shortcut-owned-by-another-installation')
             return dict(supported=True, format=allowed['format'], registration=rows[0],
                 sourceRoot=str(source), programRoot=str(program), trees=trees, shortcuts=links,
-                externalRoot=str(roots['external']) if 'external' in roots else None)
+                externalRoot=str(roots['external']) if 'external' in roots else None, startup=startup)
 
     def execute(self, plan, root, history, *, owner_sid, deadline, verify_current, registrations,
                 native_shortcuts, protected=()):
@@ -300,6 +314,8 @@ class LegacyRetirement:
         verify_current()
         source, external = Path(plan['sourceRoot']), plan['externalRoot']
         def shared():
+            if self.startup_reader(plan['startup']['name'], owner_sid) != plan['startup']:
+                fail('旧版游戏启动绑定发生变化，已保留剩余对象并停止收尾')
             if external:
                 actual = {os.path.normcase(str(bridge._path(p))) for p in registrations()}
                 if not actual or not actual <= {os.path.normcase(str(source)), os.path.normcase(str(root))}:
@@ -392,6 +408,8 @@ class LegacyRetirement:
             fail('unsupported-history')
         if self.registration.verify(plan['registration'], missing=True):
             fail('registration-remains')
+        if self.startup_reader(plan['startup']['name'], owner_sid) != plan['startup']:
+            fail('old-game-startup-entry-remains')
         if _safe(Path(plan['sourceRoot'])).exists():
             fail('source-remains-or-replaced')
         for path in plan.get('temporary', {}):
