@@ -25,13 +25,13 @@ HELPER_PACKAGES = ('PyInstaller', 'pyinstaller-hooks-contrib', 'pefile', 'psutil
 HELPER_MODULES = {
     'import': ('star_map_import', 'generic_author_package', 'packaged_product_identity', 'resource_transaction'),
     'recovery': ('star_map_import', 'star_map_import_helper', 'map_package_recovery_plan', 'map_package_upgrade', 'resource_transaction', 'packaged_product_identity'),
-    'reset': ('resource_upgrade_reset', 'installer_resource_lease', 'installer_upgrade_coordinator', 'installer_upgrade_journal', 'installer_native_observation', 'managed_base_resources', 'map_package_upgrade', 'star_map_import', 'resource_transaction'),
+    'reset': ('resource_upgrade_reset', 'installer_resource_lease', 'installer_upgrade_coordinator', 'installer_upgrade_journal', 'installer_native_observation', 'managed_base_resources', 'map_package_upgrade', 'star_map_import', 'resource_transaction', 'installer_legacy_bridge', 'legacy_migration'),
     'watcher': ('game_startup', 'game_startup_win32', 'packaged_product_identity'),
     'uninstall': ('installer_uninstall', 'installer_resource_lease', 'game_startup', 'packaged_product_identity'),
 }
 ENTRIES = {**{k: 'star_map_' + k + '_helper' for k in ('import', 'recovery', 'reset', 'uninstall')}, 'watcher': 'game_startup_watcher'}
 _ACTIVE_REPORT = None
-RECIPES = ('qt-client.iss', 'qt-game-watcher-lifecycle.iss', 'qt-resource-reset.iss', 'qt-uninstall-data.iss', 'qt-installer-target.iss', 'qt-import-helper.spec', 'qt-recovery-helper.spec', 'qt-reset-helper.spec', 'qt-uninstall-helper.spec', 'qt-game-watcher.spec')
+RECIPES = ('qt-client.iss', 'qt-game-watcher-lifecycle.iss', 'qt-resource-reset.iss', 'qt-legacy-migration.iss', 'qt-uninstall-data.iss', 'qt-installer-target.iss', 'qt-import-helper.spec', 'qt-recovery-helper.spec', 'qt-reset-helper.spec', 'qt-uninstall-helper.spec', 'qt-game-watcher.spec')
 
 
 def cli_cases(kind):

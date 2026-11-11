@@ -1403,7 +1403,7 @@ def main(argv=None):
     recipes = [Path(__file__), TOOLS / "qt-client.spec", TOOLS / "qt-recovery-helper.spec",
                TOOLS / "qt-import-helper.spec", TOOLS / "qt-reset-helper.spec", TOOLS / "qt-uninstall-helper.spec",
                TOOLS / "qt-game-watcher.spec", TOOLS / "qt-client.iss", TOOLS / "qt-uninstall-data.iss",
-               TOOLS / "qt-installer-target.iss"]
+               TOOLS / "qt-installer-target.iss", TOOLS / "qt-legacy-migration.iss"]
     if args.instance == 'production':
         recipes.extend((TOOLS / "qt-game-watcher-lifecycle.iss", TOOLS / "qt-resource-reset.iss"))
     plan["recipes"] = {p.name: sha256(p) for p in recipes}

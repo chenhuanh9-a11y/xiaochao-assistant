@@ -19,6 +19,89 @@ class MigrationError(ValueError):
     pass
 
 
+class _SourceImportLock:
+    """Read-only lease of an existing root lock; never create source state."""
+    def __init__(self, source):
+        self.path = source / 'work/map-packages/import.lock'
+        self.stream = None
+        self.info = None
+
+    def __enter__(self):
+        try:
+            _safe(self.path)
+            try:
+                before = self.path.stat()
+            except FileNotFoundError:
+                return self
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                raise MigrationError('resource-import-busy-or-recovery-required')
+            # rb cannot create, truncate, or write the old installation. The
+            # Windows CRT also denies pathname deletion while this is open.
+            self.stream = self.path.open('rb')
+            self.info = os.fstat(self.stream.fileno())
+            if not os.path.samestat(before, self.info):
+                raise MigrationError('resource-import-busy-or-recovery-required')
+            if os.name == 'nt':
+                import msvcrt
+                msvcrt.locking(self.stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.verify()
+            return self
+        except (OSError, ValueError):
+            if self.stream is not None:
+                self.stream.close()
+                self.stream = None
+            raise MigrationError('resource-import-busy-or-recovery-required') from None
+
+    def verify(self):
+        try:
+            _safe(self.path)
+            if self.info is None:
+                if self.path.exists():
+                    raise ValueError()
+                return
+            current = self.path.stat()
+            held = os.fstat(self.stream.fileno())
+            if (not stat.S_ISREG(held.st_mode) or held.st_nlink != 1
+                    or not os.path.samestat(self.info, held)
+                    or not os.path.samestat(held, current)
+                    or (held.st_size, held.st_mtime_ns) != (self.info.st_size, self.info.st_mtime_ns)):
+                raise ValueError()
+        except (OSError, ValueError, AttributeError):
+            raise MigrationError('resource-import-busy-or-recovery-required') from None
+
+    def allows(self, path):
+        if path != self.path or self.stream is None:
+            return False
+        self.verify()
+        return True
+
+    def __exit__(self, *_):
+        if self.stream is not None:
+            self.stream.close()
+            self.stream = None
+
+
+def _owns_import_lock(lease, path):
+    # A truthy flag or a source lease reused for another root grants nothing.
+    return type(lease) is _SourceImportLock and lease.allows(path)
+
+
+def _check_source_transactions(source, import_lock=None):
+    if type(import_lock) is _SourceImportLock:
+        import_lock.verify()
+    for relative in ('work/pending-installer-upgrade.json', 'work/qt-import-pending.json',
+                     'work/qt-recovery-pending.json', 'work/map-packages/pending-upgrade.json',
+                     'work/map-packages/pending-removal.json', 'work/map-packages/pending-additions.json',
+                     'work/map-packages/pending-author-snapshot.json',
+                     'work/map-packages/pending-base-repair.json', 'work/map-packages/import.lock'):
+        path = _safe(source / relative)
+        if path.exists() and not _owns_import_lock(import_lock, path):
+            raise MigrationError('resource-transaction-recovery-required')
+
+
 def _file(path):
     path = _safe(path)
     info = path.stat()
@@ -43,9 +126,13 @@ def _save(path, value):
 
 def _roots(source, program):
     try:
-        source, program = Path(source).resolve(), Path(program).resolve()
+        original_source, original_program = Path(os.path.abspath(source)), Path(os.path.abspath(program))
+        source, program = original_source.resolve(), original_program.resolve()
         if source == program or source.is_relative_to(program) or program.is_relative_to(source):
             raise MigrationError('overlapping-roots')
+        # Resolution must not erase a junction/symlink before safety checks.
+        _safe(original_source)
+        _safe(original_program)
         return _safe(source), _safe(program)
     except (OSError, RuntimeError):
         raise MigrationError('invalid-roots') from None
@@ -92,7 +179,7 @@ def _scan_error(error):
     raise MigrationError('source-scan-error')
 
 
-def _inventory(source):
+def _inventory(source, *, import_lock=None):
     # Exclude diagnostics by directory, not by image extension: confirmation
     # images and samples remain paired with their original JSON records.
     result = {}
@@ -113,7 +200,9 @@ def _inventory(source):
                         'pending-base-repair.json', 'qt-import-pending.json', 'qt-recovery-pending.json'}:
                     raise MigrationError('resource-transaction-recovery-required')
                 if name == 'map-packages' and filename == 'import.lock':
-                    raise MigrationError('resource-import-busy-or-recovery-required')
+                    if not _owns_import_lock(import_lock, path):
+                        raise MigrationError('resource-import-busy-or-recovery-required')
+                    continue
                 if filename.endswith(('.lock', '.tmp', '.new', '.log', '.zip')) or filename.startswith('events-'):
                     continue
                 relative = path.relative_to(source / 'work').as_posix()
@@ -172,7 +261,7 @@ def _source_file(source, relative):
     return _safe(source / 'work' / relative)
 
 
-def _migrate(source, program, identity):
+def _migrate(source, program, identity, *, import_lock=None):
     """Copy owned user and resource data to a fresh program/work, resumably.
     Errors expose stable codes only; absolute paths and OS exception text stay
     out of installer output and the persistent journal.
@@ -196,13 +285,7 @@ def _migrate(source, program, identity):
         if 'source' in state and state.get('identity') != identity_binding:
             raise MigrationError('migration-identity-changed-or-unverifiable')
         # Never migrate across an unresolved installer/import/resource transaction.
-        for relative in ('work/pending-installer-upgrade.json', 'work/qt-import-pending.json',
-                         'work/qt-recovery-pending.json', 'work/map-packages/pending-upgrade.json',
-                         'work/map-packages/pending-removal.json', 'work/map-packages/pending-additions.json',
-                         'work/map-packages/pending-author-snapshot.json',
-                         'work/map-packages/pending-base-repair.json', 'work/map-packages/import.lock'):
-            if _safe(source / relative).exists():
-                raise MigrationError('resource-transaction-recovery-required')
+        _check_source_transactions(source, import_lock)
         # Existing receipt parsers validate package/dependency closure without
         # granting new import, replacement, display, or identity authority.
         if _safe(source / 'work/map-packages').exists():
@@ -211,7 +294,7 @@ def _migrate(source, program, identity):
                 _package_constraints(source)
             except (ValueError, OSError, KeyError, TypeError):
                 raise MigrationError('resource-receipts-unverified') from None
-        files = _inventory(source)
+        files = _inventory(source, import_lock=import_lock)
         binding = hashlib.sha256(str(source).encode('utf-8')).hexdigest()
         if state.get('source') not in (None, binding) or (state['files'] != _private_files(files) and 'source' in state):
             raise MigrationError('source-changed')
@@ -249,7 +332,8 @@ def _migrate(source, program, identity):
                 if _file(temporary) != expected:
                     raise MigrationError('copy-mismatch')
                 rename_no_replace(temporary, output)
-            if _inventory(source) != files:
+            _check_source_transactions(source, import_lock)
+            if _inventory(source, import_lock=import_lock) != files:
                 raise MigrationError('source-changed')
             # Check every staged object, including unexpected files from a prior run.
             actual = {}
@@ -261,6 +345,7 @@ def _migrate(source, program, identity):
                 raise MigrationError('staging-conflict')
             state['status'] = 'publishing'
             _save(journal, state)
+            _check_source_transactions(source, import_lock)
             rename_no_replace(stage, destination)
         # Remove only torn temporary copies that this transaction recorded and
         # re-hashed. No source file or unknown sibling is eligible for cleanup.
@@ -271,9 +356,11 @@ def _migrate(source, program, identity):
             path.unlink()
             state['partials'].remove(partial)
             _save(journal, state)
+        _check_source_transactions(source, import_lock)
         state['status'] = 'complete'
         state.pop('error', None)
         _save(journal, state)
+        _check_source_transactions(source, import_lock)
         return dict(migrated=True, files=len(files), scope='settings-routes-and-map-resources-unverified',
                     sourceKind=identity['sourceKind'], sourceUnchanged=True)
     except (OSError, ValueError, KeyError, TypeError) as error:
@@ -323,6 +410,7 @@ def migrate(source, program, *, identity):
         raise MigrationError('migration-busy-or-recovery-required') from None
     try:
         with handle:
-            return _migrate(source, program, identity)
+            with _SourceImportLock(source) as import_lock:
+                return _migrate(source, program, identity, import_lock=import_lock)
     finally:
         lock.unlink()

@@ -214,6 +214,10 @@ def run(args):
 
 
 def main(argv=None):
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] == 'legacy-prepare':
+        from installer_legacy_bridge import main as prepare_legacy
+        return prepare_legacy(arguments[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--action', choices=('inspect', 'prepare', 'status', 'commit', 'rollback',
                                            'pending', 'resume-committed', 'installer-pending',

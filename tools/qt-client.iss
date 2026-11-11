@@ -494,6 +494,7 @@ begin
   Reason := '';
 end;
 #include "qt-resource-reset.iss"
+#include "qt-legacy-migration.iss"
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   WatcherReason: String;
@@ -627,6 +628,8 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   WatcherReason, RestoreReason: String;
 begin
+  Result := PrepareLegacyMigration;
+  if Result <> '' then Exit;
   Result := InstallerTargetError;
   if Result <> '' then Exit;
   if DirExists(UninstallHoldingDirectory) or FileExists(UninstallHoldingDirectory) then begin

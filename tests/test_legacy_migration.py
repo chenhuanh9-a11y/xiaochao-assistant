@@ -2,6 +2,8 @@
 import json
 import os
 from pathlib import Path
+import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -43,6 +45,21 @@ class MigrationTests(unittest.TestCase):
 
     def snapshot(self):
         return {p.relative_to(self.old).as_posix(): p.read_bytes() for p in self.old.rglob('*') if p.is_file()}
+
+    def other_process(self, script, *args):
+        return subprocess.run([sys.executable, '-B', '-c',
+            "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); " + script,
+            str(Path(migration.__file__).parent), str(self.old), *map(str, args)],
+            capture_output=True, text=True, timeout=20)
+
+    def assert_other_resource_process_busy(self):
+        other = self.other_process(
+            "from resource_transaction import resource_runtime_lease, ResourceTransactionError\n"
+            "try:\n lease = resource_runtime_lease(sys.argv[2])\n"
+            "except ResourceTransactionError as error:\n print(error.code)\n"
+            "else:\n lease.close(); print('unexpected-lock-acquired')\n")
+        self.assertEqual(other.returncode, 0, other.stderr)
+        self.assertEqual(other.stdout.strip(), 'resource-busy')
 
     def test_complete_unchanged_idempotent_preferences(self):
         before = self.snapshot()
@@ -100,6 +117,187 @@ class MigrationTests(unittest.TestCase):
                 (self.old / name).unlink()
                 if 'map-packages' in name:
                     (self.old / 'work/map-packages').rmdir()
+
+    def test_idle_persistent_import_lock_migrates_without_source_writes(self):
+        # The production resource lease intentionally leaves this file behind.
+        from resource_transaction import resource_runtime_lease
+        with resource_runtime_lease(self.old):
+            pass
+        lock = self.old / 'work/map-packages/import.lock'
+        self.assertTrue(lock.exists())
+        before = self.snapshot()
+        result = self.migrate()
+        self.assertTrue(result['migrated'])
+        self.assertEqual(result, self.migrate())
+        self.assertEqual(before, self.snapshot())
+        self.assertFalse((self.new / 'work/map-packages/import.lock').exists())
+
+    def test_read_only_nonempty_import_lock_bytes_are_preserved(self):
+        self.write('work/map-packages/import.lock', 'old-lock-bytes')
+        lock = self.old / 'work/map-packages/import.lock'
+        before = self.snapshot()
+        lock.chmod(stat.S_IREAD)
+        try:
+            self.assertTrue(self.migrate()['migrated'])
+            self.assertEqual(before, self.snapshot())
+        finally:
+            lock.chmod(stat.S_IREAD | stat.S_IWRITE)
+
+    def test_busy_source_os_lock_in_another_process_blocks_migration(self):
+        from resource_transaction import resource_runtime_lease
+        self.write('work/map-packages/import.lock', 'preserve-old-lock')
+        before = self.snapshot()
+        with resource_runtime_lease(self.old):
+            other = self.other_process(
+                "import json; import legacy_migration as migration\n"
+                "try:\n migration.migrate(sys.argv[2], sys.argv[3], identity=json.loads(sys.argv[4]))\n"
+                "except migration.MigrationError as error:\n print(str(error))\n"
+                "else:\n print('unexpected-migration-success')\n",
+                self.new, json.dumps(self.identity))
+        self.assertEqual(other.returncode, 0, other.stderr)
+        self.assertEqual(other.stdout.strip(), 'resource-import-busy-or-recovery-required')
+        self.assertFalse((self.new / 'work').exists())
+        self.assertEqual(before, self.snapshot())
+
+    def test_source_os_lock_remains_held_through_copy_recheck_publish_and_complete(self):
+        self.write('work/map-packages/import.lock', '')
+        before = self.snapshot()
+        seen = set()
+        real_source_file, real_inventory = migration._source_file, migration._inventory
+        real_rename, real_save = migration.rename_no_replace, migration._save
+        source_inventories = 0
+        def check(phase):
+            if phase not in seen:
+                self.assert_other_resource_process_busy()
+                seen.add(phase)
+        def source_file(source, relative):
+            check('copy')
+            return real_source_file(source, relative)
+        def inventory(source, **kwargs):
+            nonlocal source_inventories
+            if source == self.old:
+                source_inventories += 1
+                if source_inventories == 2:
+                    check('source-recheck')
+            return real_inventory(source, **kwargs)
+        def rename(source, target):
+            if target == self.new / 'work':
+                check('publish')
+            return real_rename(source, target)
+        def save(path, state):
+            if state['status'] == 'complete':
+                check('complete')
+            return real_save(path, state)
+        with patch.object(migration, '_source_file', side_effect=source_file), \
+             patch.object(migration, '_inventory', side_effect=inventory), \
+             patch.object(migration, 'rename_no_replace', side_effect=rename), \
+             patch.object(migration, '_save', side_effect=save):
+            self.migrate()
+        self.assertEqual(seen, {'copy', 'source-recheck', 'publish', 'complete'})
+        self.assertEqual(before, self.snapshot())
+        # The read-only lease is released after the entire migration returns.
+        from resource_transaction import resource_runtime_lease
+        with resource_runtime_lease(self.old):
+            pass
+
+    def test_no_source_import_lock_or_directory_is_created(self):
+        package_root = self.old / 'work/map-packages'
+        self.assertFalse(package_root.exists())
+        before = self.snapshot()
+        self.migrate()
+        self.assertFalse(package_root.exists())
+        self.assertEqual(before, self.snapshot())
+
+    def test_import_lock_appearing_during_copy_is_not_ignored(self):
+        real_source_file = migration._source_file
+        def source_file(source, relative):
+            self.write('work/map-packages/import.lock', 'new-lock')
+            return real_source_file(source, relative)
+        with patch.object(migration, '_source_file', side_effect=source_file):
+            with self.assertRaisesRegex(migration.MigrationError, 'resource-import-busy-or-recovery-required'):
+                self.migrate()
+        self.assertFalse((self.new / 'work').exists())
+        self.assertEqual((self.old / 'work/map-packages/import.lock').read_text(), 'new-lock')
+
+    def test_only_live_exact_root_lock_can_be_ignored(self):
+        self.write('work/map-packages/import.lock', '')
+        for value in (None, False, True, object()):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(migration.MigrationError, 'resource-import-busy-or-recovery-required'):
+                    migration._inventory(self.old, import_lock=value)
+                with self.assertRaises(migration.MigrationError):
+                    migration._check_source_transactions(self.old, value)
+        with migration._SourceImportLock(self.old) as lease:
+            migration._inventory(self.old, import_lock=lease)
+        with self.assertRaisesRegex(migration.MigrationError, 'resource-import-busy-or-recovery-required'):
+            migration._inventory(self.old, import_lock=lease)
+
+    def test_nested_import_lock_and_pending_marker_remain_rejected_with_root_lease(self):
+        self.write('work/map-packages/import.lock', '')
+        for name in ('work/map-packages/authors/import.lock', 'work/map-packages/pending-upgrade.json',
+                     'work/qt-import-pending.json'):
+            with self.subTest(name=name):
+                self.write(name, '{}')
+                before = self.snapshot()
+                with self.assertRaises(migration.MigrationError):
+                    self.migrate()
+                self.assertFalse((self.new / 'work').exists())
+                self.assertEqual(before, self.snapshot())
+                (self.old / name).unlink()
+
+    def test_reparse_import_lock_is_rejected(self):
+        lock = self.old / 'work/map-packages/import.lock'
+        lock.parent.mkdir(parents=True)
+        target = self.old / 'work/user-routes'
+        if os.name == 'nt':
+            # Real junctions exercise reparse rejection without symlink privilege.
+            created = subprocess.run(['cmd', '/c', 'mklink', '/J', str(lock), str(target)],
+                                     capture_output=True, timeout=20)
+            self.assertEqual(created.returncode, 0, created.stderr)
+        else:
+            lock.symlink_to(target, target_is_directory=True)
+        with self.assertRaises(migration.MigrationError):
+            self.migrate()
+        self.assertFalse((self.new / 'work').exists())
+        self.assertEqual((target / 'a.json').read_text(), 'synthetic')
+
+    def test_file_import_lock_link_evidence_is_rejected_before_open(self):
+        # File symlink creation needs a Windows privilege unavailable in CI.
+        # Substitute only the existing path-safety link observation.
+        import resource_transaction
+        self.write('work/map-packages/import.lock', 'preserve-link-target')
+        lock = self.old / 'work/map-packages/import.lock'
+        before = self.snapshot()
+        real_check = resource_transaction.is_link_or_reparse
+        with patch('resource_transaction.is_link_or_reparse',
+                   side_effect=lambda path: Path(path) == lock or real_check(path)):
+            with self.assertRaises(migration.MigrationError):
+                self.migrate()
+        self.assertEqual(before, self.snapshot())
+        self.assertFalse((self.new / 'work').exists())
+
+    def test_hardlinked_import_lock_is_rejected(self):
+        lock = self.old / 'work/map-packages/import.lock'
+        lock.parent.mkdir(parents=True)
+        os.link(self.old / 'work/user-routes/a.json', lock)
+        before = self.snapshot()
+        with self.assertRaises(migration.MigrationError):
+            self.migrate()
+        self.assertEqual(before, self.snapshot())
+        self.assertFalse((self.new / 'work').exists())
+
+    def test_source_lease_does_not_ignore_destination_import_lock_during_idempotent_check(self):
+        from resource_transaction import resource_runtime_lease
+        self.write('work/map-packages/import.lock', '')
+        self.migrate()
+        with resource_runtime_lease(self.new):
+            pass
+        before = {p.relative_to(self.new / 'work'): p.read_bytes()
+                  for p in (self.new / 'work').rglob('*') if p.is_file()}
+        with self.assertRaisesRegex(migration.MigrationError, 'resource-import-busy-or-recovery-required'):
+            self.migrate()
+        self.assertEqual(before, {p.relative_to(self.new / 'work'): p.read_bytes()
+                                 for p in (self.new / 'work').rglob('*') if p.is_file()})
 
     def test_interrupted_publication_resumes(self):
         original = migration.rename_no_replace
