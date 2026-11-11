@@ -184,7 +184,11 @@ class ImportedS0DifficultActivationUiTests(unittest.TestCase):
             try:
                 activation_started = time.perf_counter()
                 self.pointer_click(view, button)
-                self.assertTrue(entered.wait(5), 'pointer click did not reach the activation worker')
+                deadline = time.monotonic() + 5
+                while not entered.is_set() and time.monotonic() < deadline:
+                    self.app.processEvents()  # Deliver the read-only plan before activation.
+                    time.sleep(.005)
+                self.assertTrue(entered.is_set(), 'pointer click did not reach the activation worker')
                 self.assertTrue(self.service.busy)
                 self.assertTrue(self.service.pendingWrites)
                 self.assertTrue(self.service._lease)

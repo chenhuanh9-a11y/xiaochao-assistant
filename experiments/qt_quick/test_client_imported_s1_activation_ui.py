@@ -154,7 +154,8 @@ class ImportedS1ActivationUiTests(unittest.TestCase):
         lease = self.session.acquireResourceLease()
         self.assertTrue(lease)
         try:
-            self.assertFalse(self.service.activatePackage(key, 's1', 'difficult'))
+            self.assertTrue(self.service.activatePackage(key, 's1', 'difficult'))
+            self.wait()  # Planning holds no lease; publication still requires it.
             self.assertIn('结束本局', self.service.message)
             self.assertFalse(self.service.pendingWrites)
             self.assertFalse((self.resolver.root / 'catalog.json').exists())

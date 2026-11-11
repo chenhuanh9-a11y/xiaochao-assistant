@@ -60,11 +60,14 @@ class ImportedActivationUiTests(unittest.TestCase):
         self.app.processEvents()
 
     def wait(self):
+        self.wait_until(lambda:not self.service.busy)
+
+    def wait_until(self, condition):
         deadline = time.monotonic() + 40
-        while self.service.busy and time.monotonic() < deadline:
+        while not condition() and time.monotonic() < deadline:
             self.app.processEvents()
             time.sleep(.005)
-        self.assertFalse(self.service.busy, self.service.message)
+        self.assertTrue(condition(), self.service.message)
 
     def save(self):
         archive = base_fixture.ImportedNativeBaseTests.archive
@@ -79,6 +82,8 @@ class ImportedActivationUiTests(unittest.TestCase):
         key = self.save()
         model = self.service.packageModel
         self.assertTrue(self.service.activatePackage(key, 's0', 'nightmare'))
+        self.assertFalse(self.service.pendingWrites)  # Read-only planning first.
+        self.wait_until(lambda:self.service.pendingWrites)
         self.assertTrue(self.service.pendingWrites)
         self.assertEqual(self.session.acquireResourceLease(), '')
         self.wait()
@@ -113,7 +118,8 @@ class ImportedActivationUiTests(unittest.TestCase):
         # captured: the injected capture only records enable/disable state.
         self.assertTrue(self.runtime.dispatch('start_round', {})['success'])
         self.session.refreshRuntime()
-        self.assertFalse(self.service.activatePackage(key, 's0', 'nightmare'))
+        self.assertTrue(self.service.activatePackage(key, 's0', 'nightmare'))
+        self.wait()  # Read-only planning is allowed; actual admission is not.
         self.assertIn('结束本局', self.service.message)
         self.assertFalse(self.service.pendingWrites)
         self.assertEqual(self.changes, [True])
@@ -130,7 +136,7 @@ class ImportedActivationUiTests(unittest.TestCase):
         with patch('client_imported_activation.activate_context', side_effect=delayed):
             self.assertTrue(self.service.activatePackage(key, 's0', 'nightmare'))
             try:
-                self.assertTrue(entered.wait(3))
+                self.wait_until(entered.is_set)
                 self.service.cancel()
             finally:
                 release.set()
@@ -156,7 +162,7 @@ class ImportedActivationUiTests(unittest.TestCase):
         with patch('client_imported_activation.activate_context', side_effect=delayed):
             self.assertTrue(self.service.activatePackage(key, 's0', 'nightmare'))
             try:
-                self.assertTrue(entered.wait(3))
+                self.wait_until(entered.is_set)
                 self.service.shutdown()
             finally:
                 release.set()

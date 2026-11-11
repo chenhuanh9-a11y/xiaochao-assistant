@@ -102,6 +102,7 @@ class ImportedResourceService(QObject):
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(1)
         self.model = PackageRows()
+        self._activation_model = PackageRows()
         self._rows, self._jobs = [], {}
         self._display_models = {}
         self._token, self._busy, self._closed = 0, False, False
@@ -110,6 +111,8 @@ class ImportedResourceService(QObject):
         self._lease_provider = None
         self._lease = ''
         self._startup_notice = ''
+        self._activation_plan, self._activation_choices = None, {}
+        self._activation_plan_id = ''
 
     packageModel = Property(QObject, lambda s: s.model, constant=True)
     packageRows = Property('QVariantList', lambda s: deepcopy(s._rows), notify=inventoryChanged)
@@ -124,9 +127,15 @@ class ImportedResourceService(QObject):
     canCancel = Property(bool, lambda s: s._busy and s._kind != 'recover' and not s._cancel.is_set(), notify=changed)
     pendingWrites = Property(bool, lambda s: s._busy and s._kind in {'save', 'activate', 'recover'}, notify=changed)
     recoveryRequired = Property(bool, lambda s: s._catalog_issue == 'resource-catalog-recovery-required', notify=changed)
+    activationPlanModel = Property(QObject, lambda s: s._activation_model, constant=True)
+    activationPlanId = Property(str, lambda s: s._activation_plan_id, notify=changed)
+    activationPlanOpen = Property(bool, lambda s: s._activation_plan is not None, notify=changed)
+    activationPlanTitle = Property(str, lambda s: s._plan_title(), notify=changed)
+    activationPlanSummary = Property(str, lambda s: s._plan_summary(), notify=changed)
+    canCommitActivationPlan = Property(bool, lambda s: s._plan_complete() and not s._busy, notify=changed)
 
     def setLeaseProvider(self, provider):
-        if self._busy or self._lease:
+        if self._busy or self._lease or self._activation_plan is not None:
             raise RuntimeError('Cannot replace an active resource lease provider')
         self._lease_provider = provider
 
@@ -147,7 +156,7 @@ class ImportedResourceService(QObject):
         self.changed.emit()
 
     def _begin(self, kind, function):
-        if self._closed or self._busy:
+        if self._closed or self._busy or (self._activation_plan is not None and kind != 'activate'):
             return False
         self._token += 1
         self._busy, self._kind = True, kind
@@ -155,6 +164,7 @@ class ImportedResourceService(QObject):
         self._message = {'list': '正在读取已保存版本…', 'refresh': '正在校验已保存文件…',
                          'save': '正在校验并保存；完成后仍需启用。',
                          'activate': '正在校验并启用所选资源…',
+                         'plan': '正在核对基础版本与已选作者的配套关系…',
                          'recover': '正在处理未完成的资源切换…'}[kind]
         job = _Work(self._token, lambda: function(self._cancel.is_set))
         self._jobs[self._token] = job
@@ -220,24 +230,118 @@ class ImportedResourceService(QObject):
 
     @Slot(str, str, str, result=bool)
     def activatePackage(self, key, season, mode):
-        if self._closed or self._busy:
+        if self._closed or self._busy or self._activation_plan is not None:
             return False
         row = next((row for row in self._rows if row['key'] == key), None)
         refs = _activation_refs(row, season, mode) if row is not None else None
         if refs is None:
             self._problem('resource-activation-unavailable')
             return False
+        if self.paths is None or self._lease_provider is None:
+            self._problem('resource-activation-unavailable')
+            return False
+        def prepare(cancelled):
+            from client_imported_activation_plan import plan_context_activation
+            return plan_context_activation(self.resolver, *refs, season=season, mode=mode,
+                                           cancelled=cancelled)
+        return self._begin('plan', prepare)
+
+    def _plan_title(self):
+        plan = self._activation_plan
+        return (f'{plan.season.upper()} ' + ('困难' if plan.mode == 'difficult' else '噩梦')
+                + '资源配套更新') if plan is not None else ''
+
+    def _plan_complete(self):
+        plan = self._activation_plan
+        return plan is not None and all(row.key in self._activation_choices for row in plan.rows)
+
+    def _plan_summary(self):
+        plan = self._activation_plan
+        if plan is None:
+            return ''
+        lines = [f'基础结构 {plan.base_ref.resource_version} · 楼层控件 {plan.controls_ref.resource_version}']
+        for row in plan.rows:
+            selected = self._activation_choices.get(row.key)
+            choice = next((item for item in row.choices if item.key == selected), None)
+            lines.append(f'{row.label}：{choice.label if choice is not None else "请选择处理方式"}')
+        return '\n'.join(lines)
+
+    def _show_activation_plan(self, plan):
+        self._activation_plan = plan
+        self._activation_plan_id = str(self._token)
+        self._activation_choices = {}
+        self._activation_model.reconcile([dict(key=row.key, label=row.label, scope=row.scope,
+            choices=[dict(key=choice.key, label=choice.label) for choice in row.choices], choice='')
+            for row in plan.rows])
+        self._message = '请为受影响作者选择配套版本，或明确停用该组件；当前资源尚未改变。'
+        self.changed.emit()
+
+    def _clear_activation_plan(self):
+        self._activation_plan, self._activation_plan_id = None, ''
+        self._activation_choices = {}
+        self._activation_model.reconcile([])
+
+    @Slot(str, str, str, result=bool)
+    def chooseActivationAuthor(self, plan_id, row_id, choice_id):
+        if self._closed or self._busy or plan_id != self._activation_plan_id or self._activation_plan is None:
+            return False
+        row = next((row for row in self._activation_plan.rows if row.key == row_id), None)
+        if row is None or not any(choice.key == choice_id for choice in row.choices):
+            return False
+        if self._activation_choices.get(row_id) != choice_id:
+            self._activation_choices[row_id] = choice_id
+            rows = [dict(item['modelData'], choice=self._activation_choices.get(item['key'], ''))
+                    for item in self._activation_model.rows]
+            self._activation_model.reconcile(rows)
+            self.changed.emit()
+        return True
+
+    @Slot(str, result=bool)
+    def commitActivationPlan(self, plan_id):
+        if (self._closed or self._busy or plan_id != self._activation_plan_id
+                or not self._plan_complete()):
+            return False
+        return self._submit_activation_plan(self._activation_plan, dict(self._activation_choices))
+
+    def _submit_activation_plan(self, plan, choices):
+        updates, removed = [], []
+        for row in plan.rows:
+            choice = next(item for item in row.choices if item.key == choices[row.key])
+            (removed if choice.display_ref is None else updates).append(
+                row.old_ref if choice.display_ref is None else choice.display_ref)
+        updates, removed = tuple(updates), tuple(removed)
         def activate(cancelled):
             from client_imported_activation import activate_context
-            outcome = activate_context(self.resolver, self.paths, *refs,
-                                       season=season, mode=mode, cancelled=cancelled)
-            return dict(outcome, context=f'{season}:{mode}')
-        return self._activate(activate, 'base')
+            outcome = activate_context(self.resolver, self.paths, plan.base_ref, plan.controls_ref,
+                season=plan.season, mode=plan.mode, display_refs=updates, remove_display_refs=removed,
+                expected_catalog_stamp=plan.catalog_stamp, cancelled=cancelled)
+            return dict(outcome, context=f'{plan.season}:{plan.mode}')
+        accepted = self._activate(activate, 'base')
+        if accepted:
+            self._clear_activation_plan()
+            self.changed.emit()
+        return accepted
+
+    @Slot(str, result=bool)
+    def cancelActivationPlan(self, plan_id):
+        if self._activation_plan is None or plan_id != self._activation_plan_id:
+            return False
+        self._clear_activation_plan()
+        self._message = '已取消配套更新，当前资源选择未改变。'
+        self.changed.emit()
+        return True
+
+    @Slot()
+    def dismissActivationPlan(self):
+        if self._activation_plan is not None:
+            self.cancelActivationPlan(self._activation_plan_id)
+        elif self._busy and self._kind == 'plan':
+            self.cancel()
 
     @Slot(str, str, result=bool)
     def activateDisplayComponent(self, key, component_id):
         from imported_resource_packages import ComponentRef
-        if self._closed or self._busy:
+        if self._closed or self._busy or self._activation_plan is not None:
             return False
         row = next((row for row in self._rows if row['key'] == key), None)
         option = next((option for option in _display_options(row)
@@ -288,7 +392,8 @@ class ImportedResourceService(QObject):
 
     @Slot()
     def requestRecovery(self):
-        if self._closed or self._busy or not self.recoveryRequired or self._lease_provider is None:
+        if (self._closed or self._busy or self._activation_plan is not None
+                or not self.recoveryRequired or self._lease_provider is None):
             return
         self._lease = self._lease_provider.acquireResourceLease()
         if not self._lease:
@@ -318,6 +423,17 @@ class ImportedResourceService(QObject):
         kind, self._kind, self._busy = self._kind, '', False
         self._release_lease()
         if self._closed:
+            return
+        if kind == 'plan':
+            if self._cancel.is_set():
+                self._message = '已取消配套核对，当前资源选择未改变。'
+                self.changed.emit()
+            elif error:
+                self._problem(error['code'])
+            elif value.rows:
+                self._show_activation_plan(value)
+            else:
+                self._submit_activation_plan(value, {})
             return
         if value is not None:
             inventory = value['inventory']
@@ -391,6 +507,7 @@ class ImportedResourceService(QObject):
         self._message = ('此为旧版图包，请获取新版资源包；原文件已保留。' if code == 'legacy-format-unsupported' else
                          '请先启用此作者显示对应的基础结构与楼层控件；作者版本仍已保存。' if code == 'resource-display-base-context-not-active' else
                          '作者显示依赖其他基础版本，请先核对配套资源；当前选择已保留。' if code == 'resource-dependency-not-selected' else
+                         '审阅期间资源选择已改变，请重新核对配套版本；当前选择已保留。' if code == 'resource-catalog-superseded' else
                          '原作者版本的声明无法读取，暂不能确认替换范围；当前选择已保留。' if code == 'resource-previous-display-metadata-unavailable' else
                          '当前模式已有同名作者显示，暂不能同时启用；当前选择已保留。' if code == 'resource-display-profile-conflict' else
                          '此资源尚不能在当前版本启用，请获取对应的基础结构与楼层控件包。' if code == 'resource-activation-unavailable' else
@@ -410,4 +527,5 @@ class ImportedResourceService(QObject):
     @Slot()
     def shutdown(self):
         self._closed = True
+        self._clear_activation_plan()
         self.cancel()

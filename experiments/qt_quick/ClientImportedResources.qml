@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import QtQuick.Dialogs
+import QtQuick.Window
 
 Item {
     id: panel
@@ -9,10 +10,22 @@ Item {
     property bool refreshAllowed: true
     property bool refreshPending: false
     signal importSelectionCancelled()
-    readonly property bool operationPending: archiveDialog.visible || resourceService.busy
+    readonly property bool operationPending: archiveDialog.visible || resourceService.busy || resourceService.activationPlanOpen
     readonly property bool recoveryPending: resourceService.recoveryRequired
+    readonly property var hostWindow: Window.window
+    readonly property bool planVisible: active && hostWindow !== null && hostWindow.visible
+                                        && hostWindow.visibility !== Window.Minimized
     readonly property var packageManager: null
-    onActiveChanged: if (active) refreshPending = true
+    onActiveChanged: {
+        if (active) refreshPending = true
+        else resourceService.dismissActivationPlan()
+    }
+    onPlanVisibleChanged: syncActivationDialog()
+    function syncActivationDialog() {
+        if (resourceService.activationPlanOpen && planVisible) {
+            if (!activationDialog.visible) activationDialog.open()
+        } else if (activationDialog.visible) activationDialog.close()
+    }
     function openImport(season) {
         if (!operationPending) archiveDialog.open()
     }
@@ -136,6 +149,99 @@ Item {
         title: "选择新版星图资源包"; nameFilters: ["资源包 (*.zip)"]
         onAccepted: resourceService.importArchive(selectedFile.toString())
         onRejected: panel.importSelectionCancelled()
+    }
+    Dialog {
+        id: activationDialog; objectName: "resourceActivationPlanDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(540, parent.width - 32)
+        height: Math.min(implicitHeight, parent.height - 32)
+        modal: true; closePolicy: Popup.CloseOnEscape
+        title: resourceService.activationPlanTitle
+        property string displayedPlanId: ""
+        onOpened: displayedPlanId = resourceService.activationPlanId
+        onRejected: resourceService.cancelActivationPlan(displayedPlanId)
+        contentItem: Flickable {
+            implicitHeight: Math.min(planContent.implicitHeight, 400)
+            contentHeight: planContent.implicitHeight; clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar {}
+            ColumnLayout {
+                id: planContent
+                width: parent.width; spacing: 12
+                Label {
+                    Layout.fillWidth: true; wrapMode: Text.Wrap; textFormat: Text.PlainText
+                    text: "基础版本变化会影响以下作者。请选择配套版本，或明确停用该显示组件。停用只改变资源选择，文件仍保留。"
+                    color: "#354f75"
+                }
+                Repeater {
+                    model: resourceService.activationPlanModel
+                    delegate: ColumnLayout {
+                        required property var modelData
+                        Layout.fillWidth: true; spacing: 5
+                        Label {
+                            Layout.fillWidth: true; wrapMode: Text.Wrap; textFormat: Text.PlainText
+                            text: modelData.label; color: "#142b4b"; font.bold: true
+                        }
+                        Label {
+                            Layout.fillWidth: true; wrapMode: Text.Wrap; textFormat: Text.PlainText
+                            text: modelData.scope; color: "#526785"
+                        }
+                        ComboBox {
+                            objectName: "activationAuthorChoice-" + modelData.key
+                            Layout.fillWidth: true
+                            model: modelData.choices; textRole: "label"; valueRole: "key"
+                            currentIndex: {
+                                for (let i = 0; i < modelData.choices.length; ++i)
+                                    if (modelData.choices[i].key === modelData.choice) return i
+                                return -1
+                            }
+                            displayText: currentIndex < 0 ? "请选择处理方式" : currentText
+                            onActivated: resourceService.chooseActivationAuthor(
+                                activationDialog.displayedPlanId, modelData.key, currentValue)
+                            contentItem: Text {
+                                text: parent.displayText; textFormat: Text.PlainText
+                                verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
+                                leftPadding: 10; rightPadding: 28; color: "#142b4b"
+                            }
+                            delegate: ItemDelegate {
+                                required property var modelData
+                                width: ListView.view.width
+                                contentItem: Text {
+                                    text: modelData.label; textFormat: Text.PlainText
+                                    wrapMode: Text.Wrap; color: "#142b4b"
+                                }
+                            }
+                        }
+                    }
+                }
+                Label {
+                    objectName: "activationPlanSummary"
+                    Layout.fillWidth: true; wrapMode: Text.Wrap; textFormat: Text.PlainText
+                    text: resourceService.activationPlanSummary; color: "#354f75"
+                }
+                Label {
+                    Layout.fillWidth: true; wrapMode: Text.Wrap
+                    text: "配套版本将在启用时完整校验。作者配准由作者提供，尚未复核。"
+                    color: "#526785"
+                }
+            }
+        }
+        footer: DialogButtonBox {
+            AppButton {
+                objectName: "cancelActivationPlanButton"; text: "取消"
+                onClicked: resourceService.cancelActivationPlan(activationDialog.displayedPlanId)
+            }
+            AppButton {
+                objectName: "commitActivationPlanButton"; text: "启用这些资源"; primary: true
+                enabled: resourceService.canCommitActivationPlan && panel.refreshAllowed
+                onClicked: resourceService.commitActivationPlan(activationDialog.displayedPlanId)
+            }
+        }
+    }
+    Connections {
+        target: resourceService
+        function onChanged() { panel.syncActivationDialog() }
     }
     Component.onCompleted: refreshPending = active
 }
