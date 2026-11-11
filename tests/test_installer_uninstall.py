@@ -428,8 +428,8 @@ class InstallerUninstallTests(unittest.TestCase):
         registry = _RegistryFixture(root, sid=self.sid)
         original = uninstall._load_ownership
         blocked = []
-        def probe(folder, api, observations=None):
-            value = original(folder, api, observations)
+        def probe(folder, api, observations=None, expected_digest=None):
+            value = original(folder, api, observations, expected_digest)
             try:
                 (folder / '_installer-owned-files.txt').write_bytes(b'unknown-neighbor.bin\n')
             except OSError:
