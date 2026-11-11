@@ -144,7 +144,8 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
         capture.is_current = lambda *args, **kwargs: True
         guard = Mock()
         guard.start.return_value = True
-        holder = {"phase": "startup", "errors": [], "profileId": PROFILE_ID}
+        holder = {"phase": "startup", "errors": [], "profileId": PROFILE_ID,
+                  "journeyStarted": time.monotonic(), "phaseHistory": []}
 
         constructor = client.QtClient
 
@@ -192,6 +193,8 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
             return sorted(names)
 
         def click(name):
+            if "failurePhase" in holder:
+                return False
             instance = holder["client"]
             target = item(name)
             if (target is None or not isinstance(target, QQuickItem) or not target.isVisible() or not target.isEnabled()
@@ -209,20 +212,26 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
                     windowSize=(instance.main.width(), instance.main.height()), outsideWindow=True)
                 return False
             QTest.mouseClick(instance.main, Qt.LeftButton, Qt.NoModifier, point, 10)
-            return True
+            return "failurePhase" not in holder
 
         def choose_s1(name):
+            if "failurePhase" in holder:
+                return False
             instance = holder["client"]
             combo = item(name)
             if combo is None or not combo.isVisible() or combo.width() <= 0:
                 return False
             point = combo.mapToScene(QPointF(combo.width() / 2, combo.height() / 2)).toPoint()
             QTest.mouseClick(instance.main, Qt.LeftButton, Qt.NoModifier, point, 10)
+            if "failurePhase" in holder:
+                return False
             # The season selector's stable order ends with S1. Keyboard events
             # activate the actual ComboBox; no QML setter or signal is invoked.
             QTest.keyClick(instance.main, Qt.Key_End, Qt.NoModifier, 10)
+            if "failurePhase" in holder:
+                return False
             QTest.keyClick(instance.main, Qt.Key_Return, Qt.NoModifier, 10)
-            return True
+            return "failurePhase" not in holder
 
         def loaded(instance, page, name):
             loader = item(name)
@@ -245,12 +254,13 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
         def save_failure_log(error=None):
             instance = holder.get("client")
             detail = {
-                "phase": holder.get("phase"),
+                "phase": holder.get("failurePhase", holder.get("phase")),
                 "error": str(error or holder.get("collectorError") or "watchdog-timeout"),
                 "settings": dict(holder.get("settings", {})),
                 "session": dict(holder.get("session", {})),
                 "backend": dict(holder.get("backend", {})),
                 "lastClick": holder.get("lastClick"),
+                "phaseHistory": list(holder["phaseHistory"]),
                 "qmlWarnings": list(getattr(instance, "warnings", ())) if instance else [],
                 "window": dict(page=instance.main.property('page'), width=instance.main.width(),
                                height=instance.main.height()) if instance else None,
@@ -273,6 +283,8 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
                             instance.session.currentProfile),
                 "applied": (instance.session.appliedSeason, instance.session.appliedMode,
                             instance.session.appliedProfile),
+                "initialized": instance._initialized,
+                "preparationTimerActive": instance._initialize_timer.isActive(),
             }
             holder["backend"] = {
                 "season": instance.backend.season,
@@ -292,6 +304,22 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
             if phase == "startup":
                 if not instance.main.isVisible() or instance.settings.busy:
                     return
+                state = instance.session.snapshot
+                report = state.get("savedFrameCapabilities", {}).get("difficult", {})
+                # _initialized means inspect_engine_resources was dispatched,
+                # not that the real imported provider finished preparation.
+                if (instance.session.busy or state.get("contextPending")
+                        or report.get("season") != "s1" or report.get("mode") != "difficult"
+                        or report.get("prepared") is not True):
+                    return
+                self.assertTrue(instance.session.engineConnected, state)
+                self.assertTrue(report.get("dataReady"), report)
+                self.assertTrue(report.get("rankReady"), report)
+                if "resourceReadyAtSeconds" not in holder:
+                    holder["resourceReadyAtSeconds"] = time.monotonic() - holder["journeyStarted"]
+                    # Keep the original interaction/exit budget after actual
+                    # Session readiness; cold native preparation has its own cap.
+                    watchdog.start(60000)
                 self.assertIsInstance(instance.backend, Backend)
                 self.assertIsInstance(instance.route_choices, Backend)
                 self.assertIsInstance(instance.settings, SettingsService)
@@ -423,6 +451,8 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
                 if image is None or not image.isVisible() or not qml(instance, image, "status === Image.Ready"):
                     return
                 self._capture_image_evidence(instance, image, evidence_dir / "gallery-650x470.png")
+                if "failurePhase" in holder:
+                    return
                 instance.main.resize(1000, 720)
                 holder["captureDeadline"] = time.monotonic() + 0.18
                 holder["phase"] = "large-layout"
@@ -436,29 +466,49 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
                 if image is None or not image.isVisible() or not qml(instance, image, "status === Image.Ready"):
                     return
                 self._capture_image_evidence(instance, image, evidence_dir / "gallery-1000x720.png")
+                if "failurePhase" in holder:
+                    return
+                holder["galleryFinishedAtSeconds"] = time.monotonic() - holder["journeyStarted"]
                 holder["phase"] = "done"
                 poll.stop()
                 instance.coordinator.requestClose()
 
         def collect_result():
-            if holder.get('collecting'):
+            if holder.get('collecting') or "failurePhase" in holder:
                 return
             holder['collecting'] = True
             try:
+                phase = holder["phase"]
+                if not holder["phaseHistory"] or holder["phaseHistory"][-1]["phase"] != phase:
+                    instance = holder.get("client")
+                    state = instance.session.snapshot if instance is not None and hasattr(instance, "session") else {}
+                    report = state.get("savedFrameCapabilities", {}).get("difficult", {})
+                    holder["phaseHistory"].append(dict(phase=phase,
+                        elapsedSeconds=round(time.monotonic() - holder["journeyStarted"], 3),
+                        pendingAction=state.get("pendingAction"),
+                        capabilities={key: report.get(key) for key in
+                            ("season", "mode", "prepared", "dataReady", "rankReady", "reason")}))
                 collect()
             except Exception as error:
+                holder["failurePhase"] = holder["phase"]
+                poll.stop()
+                watchdog.stop()
                 holder["collectorError"] = str(error)
                 holder["traceback"] = traceback.format_exc()
                 instance = holder.get("client")
                 if instance is not None:
                     set_snapshot_details(instance)
                 save_failure_log(error)
-                poll.stop()
                 self.app.exit(89)
             finally:
                 holder['collecting'] = False
 
         def timed_out():
+            holder["failurePhase"] = holder["phase"]
+            # shutdown_client drains queued Qt events. Stop the driver before
+            # that drain so it cannot click an enabled-again author button after
+            # Session shutdown or mutate the saved failure phase/preferences.
+            poll.stop()
             instance = holder.get("client")
             if instance is not None:
                 set_snapshot_details(instance)
@@ -489,15 +539,23 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
                                                wraps=repair_managed_base_resources))
             try:
                 poll.start()
-                watchdog.start(60000)
+                # Match the real imported-author/resource UI fixture's 90s
+                # preparation cap (test_client_imported_author_ui.wait).
+                # The Gallery interaction budget remains 60s after readiness.
+                watchdog.start(90000)
                 result = client.main()
                 instance = holder.get("client")
-                if result != 0:
+                # main() drains and closes SessionService before returning.
+                # Keep the collector/watchdog snapshot from the actual failure;
+                # a closed snapshot erases pending work and can roll back an
+                # author context that had not reached its worker yet.
+                if result != 0 and "session" not in holder:
                     set_snapshot_details(instance) if instance is not None else None
                 self.assertEqual(result, 0, {
-                    "phase": holder["phase"], "collectorError": holder.get("collectorError"),
+                    "phase": holder.get("failurePhase", holder["phase"]), "collectorError": holder.get("collectorError"),
                     "settings": holder.get("settings"), "session": holder.get("session"),
                     "backend": holder.get("backend"),
+                    "phaseHistory": holder["phaseHistory"], "evidenceDir": str(evidence_dir),
                     "qmlWarnings": getattr(instance, "warnings", None),
                 })
             finally:
@@ -516,6 +574,10 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
         self.assertTrue((evidence_dir / "gallery-650x470.png").is_file())
         self.assertTrue((evidence_dir / "gallery-1000x720.png").is_file())
         self.assertFalse((instance.paths.memory_root('difficult', 's1') / 'samples').exists())
+        (evidence_dir / "journey.json").write_text(json.dumps(dict(
+            resourceReadyAtSeconds=holder["resourceReadyAtSeconds"],
+            galleryDurationSeconds=holder["galleryFinishedAtSeconds"] - holder["resourceReadyAtSeconds"],
+            phaseHistory=holder["phaseHistory"]), ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _capture_image_evidence(self, instance, image, path):
         from PySide6.QtQuick import QQuickWindow
