@@ -137,21 +137,31 @@ class MigrationTests(unittest.TestCase):
             self.migrate()
 
     def test_map_package_resources_receipts_snapshots_and_dependencies_are_copied_as_a_set(self):
+        import hashlib
+        author_bytes, dependency_bytes = b'synthetic-author-map', b'synthetic-shared-dependency'
         values = {
-            'work/map-packages/author-routes.json': '{"packageId":"author-routes","requiresFiles":["shared-base"]}',
+            'work/map-packages/legacy-extra.json': json.dumps(dict(packageId='legacy-extra', revision=1,
+                archiveSha256='a'*64, files=[dict(path='_internal/assets/authors/legacy/map.png',
+                bytes=len(author_bytes), sha256=hashlib.sha256(author_bytes).hexdigest())], requiresFiles=[dict(
+                path='_internal/references/legacy/shared.json', bytes=len(dependency_bytes),
+                sha256=hashlib.sha256(dependency_bytes).hexdigest())])),
             'work/map-packages/authors/author-routes/snapshot.json': '{"schema":"snapshot"}',
-            'work/maps/author-routes/manifest.json': '{"files":["maps/author-routes/floor.png"]}',
-            'work/maps/author-routes/floor.png': 'synthetic-floor-bytes',
-            'work/maps/shared-base/floor.png': 'synthetic-dependency-bytes',
             'work/user-routes/gallery.json': '{"gallery":"editable"}',
         }
         for name, data in values.items():
             self.write(name, data)
+        self.write('_internal/assets/authors/legacy/map.png', author_bytes.decode())
+        self.write('_internal/references/legacy/shared.json', dependency_bytes.decode())
         with patch('managed_base_resources._package_constraints', return_value=({}, [], [])):
             result = self.migrate()
-        self.assertEqual(result['scope'], 'settings-routes-and-map-resources')
-        for name, data in values.items():
-            self.assertEqual((self.new / 'work' / name.removeprefix('work/')).read_text(), data)
+        self.assertEqual(result['scope'], 'settings-routes-and-map-resources-unverified')
+        self.assertEqual((self.new / 'work/map-packages/legacy-unverified/metadata/legacy-extra.json').read_text(), values['work/map-packages/legacy-extra.json'])
+        self.assertEqual((self.new / 'work/map-packages/legacy-unverified/payload/legacy-extra/_internal/assets/authors/legacy/map.png').read_bytes(), author_bytes)
+        self.assertEqual((self.new / 'work/map-packages/legacy-unverified/payload/legacy-extra/_internal/references/legacy/shared.json').read_bytes(), dependency_bytes)
+        self.assertEqual((self.new / 'work/map-packages/legacy-unverified/metadata/authors/author-routes/snapshot.json').read_text(), values['work/map-packages/authors/author-routes/snapshot.json'])
+        self.assertEqual((self.new / 'work/user-routes/gallery.json').read_text(), values['work/user-routes/gallery.json'])
+        with patch('managed_base_resources._package_constraints', return_value=({}, [], [])):
+            self.assertEqual(self.migrate()['files'], result['files'])
         self.assertTrue(result['sourceUnchanged'])
 
     def test_unexpected_staging_file_rejected(self):

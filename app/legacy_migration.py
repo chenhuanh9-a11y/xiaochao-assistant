@@ -96,6 +96,7 @@ def _inventory(source):
     # Exclude diagnostics by directory, not by image extension: confirmation
     # images and samples remain paired with their original JSON records.
     result = {}
+    already_quarantined = _safe(source / 'work/map-packages/legacy-unverified').exists()
     for name in ('nightmare-memory', 'difficult-memory', 'seasons', 'user-routes', 'maps', 'map-packages'):
         root = _safe(source / 'work' / name)
         if not root.exists():
@@ -116,8 +117,59 @@ def _inventory(source):
                 if filename.endswith(('.lock', '.tmp', '.new', '.log', '.zip')) or filename.startswith('events-'):
                     continue
                 relative = path.relative_to(source / 'work').as_posix()
+                if name == 'map-packages' and not already_quarantined:
+                    # Keep legacy receipts and snapshots out of the active
+                    # installed-package namespace until current admission runs.
+                    relative = 'map-packages/legacy-unverified/metadata/' + path.relative_to(root).as_posix()
                 result[relative] = _file(path)
+    package_root = _safe(source / 'work/map-packages')
+    if package_root.exists():
+        try:
+            from managed_base_resources import _package_constraints
+            _package_constraints(source)
+            import star_map_import as importer
+            ignored = {Path(name).name for name in (
+                'managed-base-state.json', 'pending-base-repair.json', 'pending-upgrade.json',
+                'pending-additions.json', 'pending-removal.json', 'pending-author-snapshot.json',
+                'qt-import-pending.json', 'qt-recovery-pending.json', 'last-import-result.json',
+                'last-recovery-result.json', 'qt-import-notice-seen.json', 'main-import-request.json')}
+            for receipt in package_root.glob('*.json'):
+                if receipt.name in ignored or re.fullmatch(r'recovery-request-[A-Za-z0-9-]{1,64}\.json', receipt.name) or re.fullmatch(r'helper-result-[a-z0-9_]{8}\.json', receipt.name):
+                    continue
+                raw = importer._json(receipt.read_bytes())
+                package = receipt.stem
+                if raw.get('packageId') != package:
+                    raise MigrationError('resource-receipts-unverified')
+                owned = importer._rows(raw.get('files'))
+                dependencies = importer._rows(raw.get('requiresFiles'), dependencies=True) if 'requiresFiles' in raw else {}
+                for row in (*owned.values(), *dependencies.values()):
+                    origin = _safe(source / row['path'])
+                    if _file(origin) != {'bytes': row['bytes'], 'sha256': row['sha256']}:
+                        raise MigrationError('resource-dependency-bytes-unverified')
+                    target = 'map-packages/legacy-unverified/payload/' + package + '/' + row['path']
+                    previous = result.get(target)
+                    info = {'bytes': row['bytes'], 'sha256': row['sha256']}
+                    if previous is not None and previous != info:
+                        raise MigrationError('resource-package-path-conflict')
+                    result[target] = info
+        except MigrationError:
+            raise
+        except (ValueError, OSError, KeyError, TypeError):
+            raise MigrationError('resource-receipts-unverified') from None
     return result
+
+
+def _source_file(source, relative):
+    prefix = 'map-packages/legacy-unverified/metadata/'
+    if relative.startswith(prefix):
+        return _safe(source / 'work/map-packages' / relative[len(prefix):])
+    prefix = 'map-packages/legacy-unverified/payload/'
+    if relative.startswith(prefix):
+        tail = relative[len(prefix):].split('/', 1)
+        if len(tail) != 2:
+            raise MigrationError('invalid-resource-payload-path')
+        return _safe(source / tail[1])
+    return _safe(source / 'work' / relative)
 
 
 def _migrate(source, program, identity):
@@ -189,7 +241,7 @@ def _migrate(source, program, identity):
                     rename_no_replace(temporary, partial)
                     state.setdefault('partials', []).append(dict(name=partial.name, **info))
                     _save(journal, state)
-                with _safe(source / 'work' / name).open('rb') as reader, temporary.open('xb') as writer:
+                with _source_file(source, name).open('rb') as reader, temporary.open('xb') as writer:
                     for block in iter(lambda: reader.read(1024 * 1024), b''):
                         writer.write(block)
                     writer.flush()
@@ -222,7 +274,7 @@ def _migrate(source, program, identity):
         state['status'] = 'complete'
         state.pop('error', None)
         _save(journal, state)
-        return dict(migrated=True, files=len(files), scope='settings-routes-and-map-resources',
+        return dict(migrated=True, files=len(files), scope='settings-routes-and-map-resources-unverified',
                     sourceKind=identity['sourceKind'], sourceUnchanged=True)
     except (OSError, ValueError, KeyError, TypeError) as error:
         code = str(error) if isinstance(error, MigrationError) else 'migration-io-or-format-error'
