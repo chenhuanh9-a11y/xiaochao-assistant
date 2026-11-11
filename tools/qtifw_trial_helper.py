@@ -22,6 +22,50 @@ from resource_transaction import _safe, resource_write_lock, assert_resources_re
 
 OWNER = ".qtifw-trial-owner.json"
 
+# Only exact, path-free business codes may cross the helper/page boundary.
+BUSINESS_ERROR_CODES = frozenset({
+    "absolute-install-directory-required",
+    "completed-trial-without-maintenance-requires-inspection",
+    "data-object-not-exclusive-file",
+    "explicit-data-choice-required",
+    "fault-injection-disabled",
+    "full-uninstall-policy-required",
+    "full-uninstall-requires-clear",
+    "inside-existing-installation",
+    "install-directory-not-empty",
+    "installation-object-not-exclusive-file",
+    "invalid-install-directory",
+    "invalid-program-inventory",
+    "legacy-inno-migration-required",
+    "maintenance-not-created",
+    "maps-require-new-installation",
+    "migration-requires-new-installation",
+    "native-uninstall-not-complete",
+    "outside-trial-targets",
+    "program-incomplete",
+    "program-object-not-exclusive-file",
+    "recovery-destination-exists",
+    "resource-linked-target",
+    "system-or-network-directory-not-supported",
+    "trial-data-changed",
+    "trial-data-limit",
+    "trial-owner-mismatch",
+    "trial-owner-target-mismatch",
+    "trial-scope-mismatch",
+    "unowned-program-collision",
+    "use-existing-maintenance-tool",
+    "work-is-not-a-directory",
+})
+
+
+def public_error_reason(error):
+    if isinstance(error, ValueError) and len(error.args) == 1:
+        code = error.args[0]
+        if isinstance(code, str) and code in BUSINESS_ERROR_CODES:
+            return code
+    return "helper-operation-failed"
+
+
 
 def write_owner(target, owner, *, new=False):
     marker = _safe(target / OWNER)
@@ -231,7 +275,7 @@ def receipt(policy, target, name, value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("check-target", "prepare", "verify-program", "verify", "install-maps", "disable-watcher", "inspect-data", "hold-uninstall", "select-data", "undo-data", "noop", "data", "pause", "fail"))
+    parser.add_argument("action", choices=("migrate-legacy", "check-target", "prepare", "verify-program", "verify", "install-maps", "disable-watcher", "inspect-data", "hold-uninstall", "select-data", "undo-data", "noop", "data", "pause", "fail"))
     parser.add_argument("target", type=Path)
     parser.add_argument("choice", nargs="?", default="keep")
     parser.add_argument("operation", nargs="?", default="none", choices=("none", "purge"))
@@ -241,6 +285,15 @@ def main():
         if args.action == "check-target":
             # Browsing/validation must not create the target, marker or receipt.
             print(json.dumps(check_target(policy, args.target), ensure_ascii=True))
+            return 0
+        elif args.action == "migrate-legacy":
+            target, owner = bound_owner(policy, args.target)
+            if owner["phase"] != "installing":
+                raise ValueError("migration-requires-new-installation")
+            verify_program(policy, target)
+            from legacy_migration import migrate
+            result = migrate(Path(args.choice), target / "program")
+            print(json.dumps(result, ensure_ascii=True))
             return 0
         elif args.action == "prepare":
             result = prepare(policy, args.target)
@@ -326,14 +379,15 @@ def main():
         receipt(policy, args.target, args.action, dict(success=True, **result))
         print(json.dumps(result, ensure_ascii=True))
         return 0
-    except (ValueError, OSError, KeyError) as error:
+    except Exception as error:
+        reason = public_error_reason(error)
         if args.action in {"data", "undo-data", "verify", "verify-program"}:
             try:
                 name = "data" if args.action in {"data", "undo-data"} else args.action
-                receipt(policy, args.target, name, dict(success=False, status="incomplete", reason=str(error)))
+                receipt(policy, args.target, name, dict(success=False, status="incomplete", reason=reason))
             except (ValueError, OSError):
                 pass  # Native log still records the original failure.
-        print(json.dumps(dict(success=False, reason=str(error)), ensure_ascii=True))
+        print(json.dumps(dict(success=False, reason=reason), ensure_ascii=True))
         return 2
 
 

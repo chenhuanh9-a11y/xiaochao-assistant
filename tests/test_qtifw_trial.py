@@ -32,6 +32,51 @@ class TrialTests(unittest.TestCase):
             files={name: dict(bytes=len(value), sha256=hashlib.sha256(value).hexdigest())
                    for name, value in {"app.exe": b"whole", "_internal/runtime.dll": b"runtime"}.items()})
 
+    def helper_failure(self, error):
+        (self.scope / "qtifw-trial-policy.json").write_text(json.dumps(self.policy))
+        output = StringIO()
+        with patch.object(helper, "__file__", str(self.scope / "helper.py")), \
+                patch.object(sys, "argv", ["helper", "check-target", str(self.target)]), \
+                patch.object(helper, "check_target", side_effect=error), redirect_stdout(output):
+            self.assertEqual(helper.main(), 2)
+        return output.getvalue().strip()
+
+    def test_helper_page_business_error_contract(self):
+        # Substitute only the admission failure; exercise main's actual JSON and
+        # the production JavaScript consumer, without a QtIFW GUI.
+        from resource_transaction import ResourceTransactionError
+        cases = {
+            "use-existing-maintenance-tool": "维护工具",
+            "trial-owner-mismatch": "已有安装或其他文件",
+            "trial-owner-target-mismatch": "已有安装或其他文件",
+            "unowned-program-collision": "已有安装或其他文件",
+            "install-directory-not-empty": "已有安装或其他文件",
+            "inside-existing-installation": "已有安装或其他文件",
+            "legacy-inno-migration-required": "已有安装或其他文件",
+            "resource-linked-target": "包含文件夹链接",
+        }
+        script = (ROOT / "tools/qtifw_trial/component.js").read_text()
+        for code, message in cases.items():
+            with self.subTest(code=code):
+                error = ResourceTransactionError(code) if code == "resource-linked-target" else ValueError(code)
+                output = self.helper_failure(error)
+                self.assertEqual(json.loads(output), dict(success=False, reason=code))
+                result = subprocess.run(["node", "-e", script +
+                    "\nprocess.stdout.write(locationProblem([" + json.dumps(output) + ", 2]));"],
+                    check=True, capture_output=True, text=True)
+                self.assertIn(message, result.stdout)
+
+    def test_helper_unknown_and_native_errors_are_redacted(self):
+        private = str(self.scope / "private/settings.json")
+        for error in (OSError(private), PermissionError(private), KeyError(private),
+                      RuntimeError(private), ValueError(private),
+                      ValueError("resource-linked-target:" + private),
+                      OSError("use-existing-maintenance-tool")):
+            with self.subTest(kind=type(error).__name__, args=error.args):
+                output = self.helper_failure(error)
+                self.assertEqual(json.loads(output), dict(success=False, reason="helper-operation-failed"))
+                self.assertNotIn(private, output)
+
     def seed(self):
         prepare(self.policy, self.target)
         work = self.target / "program/work"
