@@ -182,6 +182,26 @@ class CompleteAssetTransfer:
         source = Path(manifest['sourceIdentity']['installRoot'])
         return self._validate(manifest, source, root / '.legacy-upgrade-prepared', bindings, committed=True)
 
+    def verify_published(self, manifest, root, **bindings):
+        """Verify the bound destination without consulting a retired source.
+
+        Only the handoff's journal-bound original manifest grants this route.
+        It cannot prepare/copy/adopt any files or activate legacy resources.
+        """
+        if (manifest.get('schema') != 'xingtu-legacy-assets-v1'
+                or manifest.get('sessionId') != bindings['session_id']
+                or manifest.get('ownerSid') != bindings['owner_sid']
+                or manifest.get('targetIdentity') != bindings['target_identity']
+                or set(manifest['files']) != set(manifest['preparedObjects'])):
+            raise bridge.LegacyBridgeError('legacy-asset-binding-mismatch')
+        for name, row in manifest['files'].items():
+            migration._checkpoint()
+            path = _safe(root / 'work' / name)
+            if (not path.is_file() or _stamp(path) != manifest['preparedObjects'][name]
+                    or {k: manifest['preparedObjects'][name][k] for k in row} != row):
+                raise bridge.LegacyBridgeError('legacy-published-object-changed')
+        return True
+
     def commit(self, manifest, prepared, root, **bindings):
         source = Path(manifest['sourceIdentity']['installRoot'])
         self._validate(manifest, source, prepared, bindings)

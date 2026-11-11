@@ -760,6 +760,21 @@ class InstallerUpgradeJournal:
             current = self._load()
         return self._clear(current)
 
+    def finish_legacy(self, *, verify_native, verify_resource, verify_retirement):
+        """Only the legacy owner may clear its pending after actual retirement."""
+        if self.resource_action != 'legacy':
+            _fail('legacy-resource-action-required')
+        current = self._load()
+        if current[0]['status'] not in {'native-complete', 'completed'}:
+            _fail('native-completion-evidence-required')
+        self._verify(current, verify_native, native=True)
+        self._verify(current, verify_resource)
+        self._verify(current, verify_retirement)
+        if current[0]['status'] != 'completed':
+            self._append(current, status='completed')
+            current = self._load()
+        return self._clear(current)
+
     def abort_pre_native(self, *, verify_resource):
         current = self._load()
         if current[0]['status'] not in {'prepared', 'aborted'}:
