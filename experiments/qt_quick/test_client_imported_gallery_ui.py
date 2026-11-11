@@ -133,7 +133,9 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
         deadline = time.monotonic() + 5
         while setup_settings.busy and time.monotonic() < deadline:
             self.app.processEvents()
-            QTest.qWait(10)
+            # This loop waits for a Python QRunnable doing the real durable
+            # write. Yield the GIL as well as pumping queued UI completion.
+            time.sleep(.002)
         self.assertFalse(setup_settings.busy, setup_settings.message)
         self.assertEqual(setup_settings.persistedValues["contextRouteProfiles"].get("s1:difficult"), None)
         setup_settings.shutdown()

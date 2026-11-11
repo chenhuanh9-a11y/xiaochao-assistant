@@ -1,10 +1,13 @@
 """Native similarity proposals use the shared sequential work contract."""
+import ctypes
+import os
 import sys
 import tempfile
 import time
 from pathlib import Path
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -13,6 +16,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from entry_evidence_work import EntryEvidenceWork, ObservationWorkScheduler
 from native_similarity_groups import NativeSimilarityState
 from test_native_similarity_runtime import ConditionFixture, Fixture, IDS
+
+
+def _short_path_alias(path):
+    if os.name != 'nt' or not hasattr(ctypes, 'windll'):
+        return None
+    get_short_path = ctypes.windll.kernel32.GetShortPathNameW
+    get_short_path.argtypes = (ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32)
+    get_short_path.restype = ctypes.c_uint32
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = get_short_path(str(path), buffer, len(buffer))
+    if not length:
+        return None
+    alias = Path(buffer.value)
+    if os.path.normcase(str(alias)) == os.path.normcase(str(path)):
+        return None
+    return alias if alias.samefile(path) else None
 
 
 class NativeConditionJobTests(unittest.TestCase):
@@ -240,8 +259,60 @@ class NativeLegacyGroupJobTests(unittest.TestCase):
             winner = fixture.index.propose([dict(mapId=IDS[0], identityHardGatePassed=True)], (),
                 dict(complete=True), '1', fixture.provider, lambda: None,
                 deadline=time.perf_counter()+2)
-            self.assertEqual(winner['status'], 'identity-pending')
+            self.assertEqual(winner['status'], 'identity-pending', repr(winner))
             self.assertNotIn('reason', winner)
+
+    def test_schema1_winner_reference_is_identical_for_short_and_long_root_aliases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            long_root = Path(directory).resolve()
+            short_root = _short_path_alias(long_root)
+            if short_root is None:
+                self.skipTest('GetShortPathNameW alias is unavailable for this temp directory')
+            self.assertNotEqual(os.path.normcase(str(short_root)),
+                os.path.normcase(str(long_root)))
+            self.assertTrue(short_root.samefile(long_root))
+            fixture = Fixture(short_root)
+            self.assertIsNone(fixture.index.error)
+            self.assertEqual(fixture.index.root, long_root)
+            rows = [dict(mapId=IDS[0], identityHardGatePassed=True)]
+
+            short_result = fixture.index.propose(rows, (), dict(complete=True), '1',
+                fixture.provider, lambda: None, deadline=time.perf_counter()+5)
+            self.assertEqual(short_result['status'], 'identity-pending', repr(short_result))
+            short_reference = short_result['winnerReference']
+
+            # Keep the same files and provider records, changing only their
+            # spelling from the real 8.3 alias to the canonical long path.
+            for reference in fixture.refs.values():
+                reference.path = Path(reference.path).resolve()
+            long_result = fixture.index.propose(rows, (), dict(complete=True), '1',
+                fixture.provider, lambda: None, deadline=time.perf_counter()+5)
+            self.assertEqual(long_result['status'], 'identity-pending', repr(long_result))
+            self.assertEqual(short_reference, long_result['winnerReference'])
+            self.assertEqual(short_reference['resourcePath'],
+                f'references/{IDS[0]}-F1.npz')
+
+    def test_schema1_winner_member_binding_rejects_outside_root_reference(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                tempfile.TemporaryDirectory() as outside_directory:
+            fixture = Fixture(Path(directory))
+            original = fixture.refs[(IDS[0], '1')]
+            outside_path = Path(outside_directory) / 'outside-reference.npz'
+            outside_path.write_bytes(original.path.read_bytes())
+
+            def outside_provider(profile, map_id, floor):
+                reference = fixture.provider(profile, map_id, floor)
+                if map_id == IDS[0] and str(floor) == '1':
+                    return SimpleNamespace(path=outside_path, shape=reference.shape,
+                        metadata=reference.metadata)
+                return reference
+
+            result = fixture.index.propose(
+                [dict(mapId=IDS[0], identityHardGatePassed=True)], (),
+                dict(complete=True), '1', outside_provider, lambda: None,
+                deadline=time.perf_counter()+5)
+            self.assertEqual(result['status'], 'unavailable', repr(result))
+            self.assertEqual(result['reason'], 'similarity-member-binding-changed')
 
 
 if __name__ == '__main__':

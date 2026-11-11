@@ -384,11 +384,13 @@ class LegacyGroupProposalWork(NativeProposalWork):
                     raise ValueError('similarity-winning-floor-unavailable')
                 binding = {key:ref.metadata.get(key) for key in (
                     'binding', 'structureVersionKey', 'sourceVersion', 'baseSnapshot')}
+                physical_path = Path(ref.path).resolve()
+                if not physical_path.is_relative_to(owner.root):
+                    raise ValueError('similarity-path-outside-root')
                 binding.update(mapId=self.winner, floor=self.floor,
                     profile=owner._member_profile(self.group, self.winner),
-                    resourcePath=Path(ref.path).relative_to(
-                        owner.root).as_posix(),
-                    resourceSha256=owner._sha(ref.path), shapeHW=list(ref.shape))
+                    resourcePath=physical_path.relative_to(owner.root).as_posix(),
+                    resourceSha256=owner._sha(physical_path), shapeHW=list(ref.shape))
                 self.result.update(common, status='identity-pending',
                     candidateMemberId=self.winner, originalIdentityHardGatePassed=True,
                     winnerReference=binding)
