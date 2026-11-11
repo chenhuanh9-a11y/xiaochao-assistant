@@ -10,6 +10,8 @@ import os
 import re
 import stat
 import uuid
+import time
+from contextvars import ContextVar
 
 from packaged_product_identity import PRODUCTION_APP_ID, PRODUCTION_PRODUCT
 from resource_transaction import _safe, rename_no_replace
@@ -17,6 +19,15 @@ from resource_transaction import _safe, rename_no_replace
 
 class MigrationError(ValueError):
     pass
+
+
+operation_deadline = ContextVar('legacy_operation_deadline', default=None)
+
+
+def _checkpoint():
+    limit = operation_deadline.get()
+    if limit is not None and time.monotonic() >= limit:
+        raise MigrationError('legacy-operation-deadline-exceeded')
 
 
 class _SourceImportLock:
@@ -119,20 +130,32 @@ def _check_source_transactions(source, import_lock=None):
 
 
 def _file(path):
+    _checkpoint()
     path = _safe(path)
     info = path.stat()
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
         raise MigrationError('unsafe-file')
     digest = hashlib.sha256()
     with path.open('rb') as stream:
+        held = os.fstat(stream.fileno())
+        if not os.path.samestat(info, held):
+            raise MigrationError('file-changed-during-read')
         for block in iter(lambda: stream.read(1024 * 1024), b''):
+            _checkpoint()
             digest.update(block)
+        after = os.fstat(stream.fileno())
+        current = _safe(path).stat()
+        if (not os.path.samestat(held, current) or after.st_nlink != 1
+                or (held.st_size, held.st_mtime_ns) != (after.st_size, after.st_mtime_ns)
+                or (after.st_size, after.st_mtime_ns) != (current.st_size, current.st_mtime_ns)):
+            raise MigrationError('file-changed-during-read')
     return dict(bytes=info.st_size, sha256=digest.hexdigest())
 
 
 def _save(path, value):
-    temporary = _safe(path.with_suffix('.new'))
-    # A torn journal write is preserved for inspection, never overwritten.
+    _checkpoint()
+    temporary = _safe(path.with_name('.legacy-writing-' + uuid.uuid4().hex))
+    # Private torn writes are retained, but never published or read as state.
     with temporary.open('x', encoding='utf-8') as stream:
         json.dump(value, stream, ensure_ascii=True, sort_keys=True)
         stream.flush()
@@ -195,16 +218,17 @@ def _scan_error(error):
     raise MigrationError('source-scan-error')
 
 
-def _inventory(source, *, import_lock=None, extra_roots=None):
+def _inventory(source, *, import_lock=None, extra_roots=None, prepared=False):
     # Exclude diagnostics by directory, not by image extension: confirmation
     # images and samples remain paired with their original JSON records.
     result = {}
-    already_quarantined = _safe(source / 'work/map-packages/legacy-unverified').exists()
     for name in ('nightmare-memory', 'difficult-memory', 'seasons', 'user-routes', 'maps', 'map-packages'):
+        _checkpoint()
         root = _safe(source / 'work' / name)
         if not root.exists():
             continue
         for directory, dirs, files in os.walk(root, followlinks=False, onerror=_scan_error):
+            _checkpoint()
             for child in dirs:
                 _safe(Path(directory) / child)
             dirs[:] = [d for d in dirs if d not in {'failures', 'runtime-successes', 'downloads', '__pycache__'}]
@@ -219,10 +243,12 @@ def _inventory(source, *, import_lock=None, extra_roots=None):
                     if not _owns_import_lock(import_lock, path):
                         raise MigrationError('resource-import-busy-or-recovery-required')
                     continue
-                if filename.endswith(('.lock', '.tmp', '.new', '.log', '.zip')) or filename.startswith('events-'):
+                if (filename.endswith(('.lock', '.tmp', '.new', '.log'))
+                        or (filename.endswith('.zip') and name != 'map-packages')
+                        or filename.startswith('events-')):
                     continue
                 relative = path.relative_to(source / 'work').as_posix()
-                if name == 'map-packages' and not already_quarantined:
+                if name == 'map-packages' and not prepared:
                     # Keep legacy receipts and snapshots out of the active
                     # installed-package namespace until current admission runs.
                     relative = 'map-packages/legacy-unverified/metadata/' + path.relative_to(root).as_posix()
@@ -273,6 +299,7 @@ def _inventory(source, *, import_lock=None, extra_roots=None):
         if not root.is_dir():
             raise MigrationError('extra-root-not-directory')
         for directory, dirs, files in os.walk(root, followlinks=False, onerror=_scan_error):
+            _checkpoint()
             for child in dirs:
                 _safe(Path(directory) / child)
             for filename in files:
@@ -369,7 +396,7 @@ def _migrate(source, program, identity, *, import_lock=None, extra_roots=None):
         if destination.exists():
             if state['status'] not in {'publishing', 'complete'} or stage.exists():
                 raise MigrationError('destination-conflict')
-            if _inventory(program) != files:
+            if _inventory(program, prepared=True) != files:
                 raise MigrationError('destination-changed')
         else:
             if state['status'] == 'complete':
@@ -400,6 +427,7 @@ def _migrate(source, program, identity, *, import_lock=None, extra_roots=None):
                     origin = _source_file(source, name)
                 with origin.open('rb') as reader, temporary.open('xb') as writer:
                     for block in iter(lambda: reader.read(1024 * 1024), b''):
+                        _checkpoint()
                         writer.write(block)
                     writer.flush()
                     os.fsync(writer.fileno())

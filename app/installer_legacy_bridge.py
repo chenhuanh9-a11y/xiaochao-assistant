@@ -154,9 +154,13 @@ def _closed_source(source, tool, program, asset_roots=None):
     from installer_uninstall import _kernel, _open_handle, _pin_directory
     api, held = _kernel(), []
     try:
-        _pin_directory(api, source, held)
+        from installer_uninstall import _owner_sid, _current_user_sid
+        sid = _current_user_sid()
+        if _owner_sid(_pin_directory(api, source, held)) != sid:
+            raise LegacyBridgeError('source-owner-mismatch')
         if program != source:
-            _pin_directory(api, program, held)
+            if _owner_sid(_pin_directory(api, program, held)) != sid:
+                raise LegacyBridgeError('source-owner-mismatch')
         external = (asset_roots or {}).get('external')
         if external is not None:
             local = external.parents[1]
@@ -164,7 +168,7 @@ def _closed_source(source, tool, program, asset_roots=None):
             local_handle = _pin_directory(api, local, held)
             external_handle = _pin_directory(api, external, held)
             from installer_uninstall import _owner_sid
-            if _owner_sid(local_handle) != _owner_sid(external_handle):
+            if _owner_sid(local_handle) != sid or _owner_sid(external_handle) != sid:
                 raise LegacyBridgeError('external-resource-owner-mismatch')
         for label, root in (asset_roots or {}).items():
             if label != 'external':

@@ -72,7 +72,7 @@ begin
           Previous := InstallerNormalizedDirectory(Previous);
           if CompareText(Ids[I], CurrentId) = 0 then begin
             if CompareText(Previous, Target) = 0 then RegisteredHere := True
-            else begin Result := '本安装渠道已有登记目录，请从原目录升级；迁移入口尚未接通。'; Exit; end;
+            else begin Result := '本安装渠道已有登记目录，请从原目录升级；旧 Inno 安装不能从另一目录接管。'; Exit; end;
           end else if InstallerDirectoriesOverlap(Previous, Target) then begin
             Result := '安装位置与另一正式版或测试实例重叠，请选择独立目录。'; Exit;
           end;
@@ -83,7 +83,7 @@ begin
   end;
   if FileExists(Target + '\MaintenanceTool.exe') or FileExists(Target + '\components.xml') or
     FileExists(Target + '\installer.dat') or FileExists(Target + '\maintenancetool.dat') then begin
-    Result := '检测到旧版维护工具。资料迁移入口尚未接通，本次不会覆盖原目录，也不会先调用卸载。'; Exit;
+    Result := '检测到旧版维护工具。请在旧版资料迁移页指定原目录，并选择另一个新目录安装；不会先调用旧卸载器。'; Exit;
   end;
   if DirExists(Target) and not RegisteredHere then begin
     Entries := 0;
@@ -105,6 +105,10 @@ begin
       Result := '无法读取安装目录，尚未修改程序或资料。'; Exit;
     end;
     if Entries > 0 then
+#ifdef ProductionInstaller
+      { Inspection only; the parent-leased helper must validate all content. }
+      if not InstallerInspectLegacyTarget then
+#endif
       Result := '非空目录没有本安装渠道的登记，不能覆盖或认领其中资料。请选择空目录或先完成旧版迁移。';
   end;
 end;
