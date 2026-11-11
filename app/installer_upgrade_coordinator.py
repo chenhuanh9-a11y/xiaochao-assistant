@@ -157,6 +157,10 @@ class Coordinator:
     def execute(self):
         a = self.args
         pending = read_status(self.root, owner_sid=self.owner)
+        if pending.get('resourceAction') == 'legacy' and a.action != 'installer-pending':
+            # A native-complete migration still needs its own asset commit and
+            # historical retirement. Generic preserve/reset must never clear it.
+            raise ValueError('legacy-handoff-recovery-required')
         if a.action == 'installer-pending':
             resource = None
             if pending.get('resourceTransactionId'):
