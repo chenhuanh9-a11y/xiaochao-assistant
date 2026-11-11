@@ -503,3 +503,10 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 - 其余三模式补充 S0N、S0D native、S1N 的实际 producer → inspect/save → catalog → browse/assets 往返，3 项通过（62.320 秒），复用各自完整合成源并核透明像素、完整仿射、实际引用/楼层、base identity/rank/bridge 与 catalog stamp 不变。未选择的 decoy 不进入结果，旧作者发现接口与实际入口 rank/geometry 包装计数均为零；核心 reader/provider/decoder 未替换。S0D legacy29 保持真实缺口，不能制出假作者层。早期测试 adapter 取值位置错误日志保留，最终更强断言使用独立完整重跑结果；这不是四模式真实 GUI 或游戏验收。
 - 不同 fresh 最终 Reviewer 接受完整 source，并独立跑布局 7 项（1.748 秒）、默认 UI 2 项（38.949 秒）通过；另在实际 514×386 QQuickWindow 发送 Tab/Backtab 各 18 次，详情内焦点控件均在 clip 视口内，无 QML warning。独立两尺寸图片已看，合成图可见；该次 offscreen 字体为方框，不能证明中文字体呈现。主任务加载现有系统中文字体的两尺寸图片另行检查，不据此推及物理/其他机器字体。
 - 新核心、模式矩阵与默认 UI 模块登记在现有 integration 组，原 66 模块全保留，共 69，六组 10/32/16/3/3/5，18 个 matrix 项与历史 baseline/时限不变。文件选择器实选、真实作者素材、四模式作者完整 GUI、实帧、物理像素与游戏均未验收。`158e52a` 与 `627bcad` 各自五条远端 workflow 已成功；本图库切片须核对自己的最终远端 commit，不借用旧成功作为当前验收。单上下文 B/C/display 联动更新的用户界面、P2 来源/登记角色与 S0N 完整池、P3–P5 仍未完成。
+
+### 联合切换的显式停用与审阅版本绑定
+
+- `activate_context` 接受 `remove_display_refs`：仅能明确停用精确已选的全局 display 组件，不删除文件、不读取被停用项的旧声明，也不推测其模式。遗漏作者保持原选择，仍须满足最终依赖；重复、不在原选择中的 ref，以及与更新项同 logical component 的停用请求均拒绝，不能用“停用＋新增”绕过原旧新 profile/context 核对。基础、控件、其他上下文及 reviewedGroups 仍沿同一 proposal 和事务处理。
+- 可选 `expected_catalog_stamp` 复用现有 snapshot stamp，在写锁内、准备新集合与创建 engine 前核对用户审阅的选择；显式 `None` 表示审阅时尚无 catalog，省略参数保留原调用方式。过期草案明确拒绝，不自动改配套版本；没有新增 catalog/schema/hash 或事务。
+- 主任务执行 `python -u -m unittest -v test_client_imported_author_joint_activation`，7 项/184.043 秒，6 项通过；唯一 error 为测试故意破坏旧 manifest 后再次取受保护的 `view.root`，未放宽生产校验。将文件路径提前保存后，独立 Reviewer 补跑该正例 1 项通过（46.238 秒），核实际 B2/C2/新版作者像素、显式退出坏旧清单组件、原文件保留及其他选择不变；这两次不能称为一次 7 项全绿。新增能力修前实际入口另有 1 error（27.087 秒，不接受停用参数），失败日志均保留。
+- 其余通过项包含已有配套升级与遗漏依赖拒绝、精确 ref/重复/更新冲突拒绝、审阅后 catalog 变化在实际 engine 调用前拒绝，以及第二次真实 base 构建后取消恢复 B/C/被停用作者与原 catalog bytes、不修复或删除其坏旧文件。仅包装真实 decoder/build 调用以控制取消时机，不替换资源、engine 或发布事务。现有 integration 模块包含这些回归，无新增 CI 模块或调整时限；本切片尚未接资源页配套选择面板，不代表 GUI/游戏验收。

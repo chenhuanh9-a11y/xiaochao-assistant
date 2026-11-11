@@ -134,3 +134,105 @@ class ClientImportedAuthorJointActivationTests(_AuthorSelectionFixture):
         self.assertEqual(state['calls'], 2)
         self.assertEqual((self.resources/'catalog.json').read_bytes(), before)
         self.assert_selected(self.refs, first)
+
+    def test_joint_update_explicitly_stops_exact_author_even_when_old_metadata_is_unreadable(self):
+        dormant = _inert_component(self.resources, 'display', 'display')
+        self.seed(displays=[dormant])
+        first, _, _ = self.package(package_id='author-versioned')
+        stopped, _, _ = self.package(package_id='author-stopped', profile_id='author-stopped')
+        self.activate(first)
+        self.activate(stopped)
+        original = self.resolver().snapshot()
+        next_refs = self.revision('base-v2')
+        second, _, _ = self.package(package_id='author-versioned', resource_version='v2',
+            dependency=self.wire(next_refs['base']), payloads={'images/route.png':changed_png()})
+        stopped_manifest = stopped.root.parent.parent/'manifest.json'
+        stopped_image = stopped.root/'images/route.png'
+        stopped_manifest.write_bytes(b'{}')
+        # Stopping this exact global selection needs no guessed context or
+        # readable old header. Its immutable package files remain untouched.
+        result = self.joint(next_refs, [second], remove_display_refs=(stopped.component_ref,))
+        self.assertEqual(result['status'], 'catalog-activated')
+        selected = self.assert_selected(next_refs, second)
+        self.assertEqual(selected.displays, (dormant, second.component_ref))
+        self.assertEqual(selected.contexts['s0:nightmare'], original.contexts['s0:nightmare'])
+        self.assertEqual(selected.contexts['s1:difficult']['reviewedGroups'],
+                         original.contexts['s1:difficult']['reviewedGroups'])
+        self.assertEqual(stopped_manifest.read_bytes(), b'{}')
+        self.assertTrue(stopped_image.is_file())
+        engine = build_imported_engine_factories(self.resolver(), self.paths).get_engine('difficult', season='s1')
+        layer = prepare_display_layer(engine, self.source.ids[0], '-4', 'author-fixture')
+        np.testing.assert_array_equal(layer['pixels'], np.full((3,5,4), (93,92,91,94), np.uint8))
+        self.assertNotIn('author-stopped', engine.qt_catalog.profiles)
+        self.assertFalse(engine.memory_store.root.exists())
+
+    def test_removal_requires_unique_exact_selected_refs_and_cannot_bypass_update_identity(self):
+        self.seed()
+        first, _, _ = self.package(package_id='author-versioned')
+        self.activate(first)
+        second, _, _ = self.package(package_id='author-versioned', resource_version='v2')
+        before = (self.resources/'catalog.json').read_bytes()
+        cases = (
+            ((), (object(),), 'resource-catalog-reference-invalid'),
+            ((), (second.component_ref,), 'resource-display-removal-not-selected'),
+            ((), (first.component_ref, first.component_ref), 'resource-display-removal-duplicate'),
+            ((second,), (first.component_ref,), 'resource-display-update-removal-conflict'),
+        )
+        for updates, removals, code in cases:
+            with self.subTest(code=code):
+                with self.assertRaisesRegex(ResourceCatalogError, code):
+                    self.joint(self.refs, updates, remove_display_refs=removals)
+                self.assertEqual((self.resources/'catalog.json').read_bytes(), before)
+                self.assertFalse((self.resources/'transactions/pending-catalog.json').exists())
+        # A damaged old header still cannot be bypassed by remove+add of its
+        # logical component, including a newly supplied profile or context.
+        first.path('display.json').write_bytes(b'{}')
+        with self.assertRaisesRegex(ResourceCatalogError, 'resource-display-update-removal-conflict'):
+            self.joint(self.refs, [second], remove_display_refs=(first.component_ref,))
+        self.assertEqual((self.resources/'catalog.json').read_bytes(), before)
+
+    def test_reviewed_catalog_stamp_rejects_changed_selection_before_semantic_work(self):
+        empty_stamp = self.resolver().snapshot().catalog_stamp
+        self.assertIsNone(empty_stamp)
+        self.seed()
+        reviewed = self.resolver().snapshot().catalog_stamp
+        self.seed()  # Another operation published a new generation.
+        before = (self.resources/'catalog.json').read_bytes()
+        with patch.object(activation, 'build_native_engine', wraps=activation.build_native_engine) as built:
+            for stamp in (empty_stamp, reviewed):
+                with self.subTest(stamp=stamp):
+                    with self.assertRaisesRegex(ResourceCatalogError, 'resource-catalog-superseded'):
+                        self.joint(self.refs, [], expected_catalog_stamp=stamp)
+                    self.assertEqual((self.resources/'catalog.json').read_bytes(), before)
+            self.assertEqual(built.call_count, 0)
+        current = self.resolver().snapshot().catalog_stamp
+        result = self.joint(self.refs, [], expected_catalog_stamp=current)
+        self.assertEqual(result['status'], 'already-active')
+        self.assertEqual((self.resources/'catalog.json').read_bytes(), before)
+
+    def test_second_check_cancel_restores_explicitly_stopped_author_without_repairing_its_files(self):
+        self.seed()
+        first, _, _ = self.package(package_id='author-stopped')
+        self.activate(first)
+        next_refs = self.revision('base-v2')
+        registration = first.path('display.json')
+        registration.write_bytes(b'{}')
+        before = (self.resources/'catalog.json').read_bytes()
+        state = dict(calls=0, cancelled=False)
+        build = activation.build_native_engine
+
+        def build_then_cancel(*args, **kwargs):
+            engine = build(*args, **kwargs)
+            state['calls'] += 1
+            if state['calls'] == 2:
+                state['cancelled'] = True
+            return engine
+
+        with patch.object(activation, 'build_native_engine', side_effect=build_then_cancel):
+            with self.assertRaisesRegex(files.ImportRejected, 'import-cancelled'):
+                self.joint(next_refs, [], remove_display_refs=(first.component_ref,),
+                    cancelled=lambda:state['cancelled'])
+        self.assertEqual(state['calls'], 2)
+        self.assertEqual((self.resources/'catalog.json').read_bytes(), before)
+        self.assert_selected(self.refs, first)
+        self.assertEqual(registration.read_bytes(), b'{}')

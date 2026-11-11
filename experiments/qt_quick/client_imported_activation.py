@@ -19,6 +19,7 @@ import star_map_import as files
 
 _ROLES = ('recognitionBase', 'controls', 'reviewedGroups')
 _CONTEXTS = frozenset({('s0', 'nightmare'), ('s0', 'difficult'), ('s1', 'difficult'), ('s1', 'nightmare')})
+_UNSPECIFIED_CATALOG = object()
 
 
 def _wire(ref):
@@ -87,15 +88,32 @@ def _validate_proposal(root, paths, resolver, base_ref, controls_ref, *, season,
     return validate
 
 
-def _prepare_display_updates(root, snapshot, display_refs, season, mode, operation_current):
-    """Replace only requested logical components; never drop omitted authors."""
+def _prepare_display_updates(root, snapshot, display_refs, remove_display_refs,
+                             season, mode, operation_current):
+    """Apply explicit updates/stops; never drop an omitted author implicitly."""
     from imported_author_display import read_display_identity
-    displays, updates, requested = list(snapshot.displays), [], set()
+    removed, removed_logical = set(), set()
+    for ref in remove_display_refs:
+        operation_current()
+        if not isinstance(ref, ComponentRef):
+            raise catalog.ResourceCatalogError('resource-catalog-reference-invalid')
+        if ref in removed:
+            raise catalog.ResourceCatalogError('resource-display-removal-duplicate')
+        if ref not in snapshot.displays:
+            raise catalog.ResourceCatalogError('resource-display-removal-not-selected')
+        removed.add(ref)
+        removed_logical.add((ref.package_id, ref.component_id))
+    displays = [ref for ref in snapshot.displays if ref not in removed]
+    updates, requested = [], set()
     for display_ref in display_refs:
         operation_current()
         if not isinstance(display_ref, ComponentRef):
             raise catalog.ResourceCatalogError('resource-catalog-reference-invalid')
         logical = (display_ref.package_id, display_ref.component_id)
+        # Explicit stop is not a migration bypass when the old identity cannot
+        # be read. Such a replacement still needs the normal header comparison.
+        if logical in removed_logical:
+            raise catalog.ResourceCatalogError('resource-display-update-removal-conflict')
         if logical in requested:
             raise catalog.ResourceCatalogError('resource-display-selection-ambiguous')
         requested.add(logical)
@@ -144,12 +162,12 @@ def _snapshot_for_root(resolver, root):
 
 
 def _activate_locked(root, snapshot, paths, resolver, *, season, mode, display_refs,
-                     cancelled, base_ref=None, controls_ref=None):
+                     cancelled, base_ref=None, controls_ref=None, remove_display_refs=()):
     def operation_current():
         files._check_cancelled(cancelled)
 
     expected_stamp = snapshot.catalog_stamp
-    displays, check_updates = _prepare_display_updates(root, snapshot, display_refs,
+    displays, check_updates = _prepare_display_updates(root, snapshot, display_refs, remove_display_refs,
         season, mode, operation_current)
     context_key = f'{season}:{mode}'
     current = snapshot.contexts.get(context_key)
@@ -186,11 +204,16 @@ def _activate_locked(root, snapshot, paths, resolver, *, season, mode, display_r
 
 
 def activate_context(resolver, paths, base_ref, controls_ref, *, season='s0', mode='nightmare',
-                     display_refs=(), cancelled=None):
+                     display_refs=(), remove_display_refs=(),
+                     expected_catalog_stamp=_UNSPECIFIED_CATALOG, cancelled=None):
     """Select B/C and explicitly requested display updates in one transaction.
 
     display_refs is an update subset, not a replacement list. Omitted authors
     remain selected and their exact base dependencies must still be satisfied.
+    remove_display_refs explicitly stops exact globally selected components,
+    preserving their files. It cannot overlap an updated logical component.
+    A supplied expected_catalog_stamp binds a reviewed proposal to its catalog;
+    None explicitly means the reviewed store had no catalog yet.
     The caller owns the Session idle lease. Data admission grants no live/rank.
     """
     if (season, mode) not in _CONTEXTS:
@@ -200,8 +223,12 @@ def activate_context(resolver, paths, base_ref, controls_ref, *, season='s0', mo
     root = _resolved_root(resolver, paths)
     with resource_write_lock(root, wait=True, cancelled=cancelled):
         snapshot = _snapshot_for_root(resolver, root)
+        if (expected_catalog_stamp is not _UNSPECIFIED_CATALOG
+                and expected_catalog_stamp != snapshot.catalog_stamp):
+            raise catalog.ResourceCatalogError('resource-catalog-superseded')
         return _activate_locked(root, snapshot, paths, resolver, season=season, mode=mode,
-            base_ref=base_ref, controls_ref=controls_ref, display_refs=display_refs, cancelled=cancelled)
+            base_ref=base_ref, controls_ref=controls_ref, display_refs=display_refs,
+            remove_display_refs=remove_display_refs, cancelled=cancelled)
 
 
 def activate_display(resolver, paths, display_ref, *, cancelled=None):
