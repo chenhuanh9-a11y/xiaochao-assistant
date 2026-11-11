@@ -44,6 +44,9 @@ class CustomGalleryDisplay:
     def eligibility(self, gallery_id, mode, season="s0"):
         """Prepare a preference request; this does not apply it or mark it active."""
         normalize_season(season)
+        if not any((s.season, s.runtime_mode) == (season, mode) for s in SCOPES.values()):
+            return dict(allowed=False, reason=f"season-resources-unavailable:{season}",
+                        message=f"{season_label(season)} 自定义路线资源尚不可用")
         scope_id = str(gallery_id).partition("~")[0] if "~" in str(gallery_id) else "legacy-nightmare"
         scope = SCOPES.get(scope_id)
         if scope is None or (scope.season, scope.runtime_mode) != (season, mode):
@@ -67,6 +70,10 @@ class CustomGalleryDisplay:
             return dict(allowed=False, message=f"图集不可用：{error}")
 
     def use_request(self, gallery_id, mode, season="s0", *, fallback_profile=None):
+        normalize_season(season)
+        if not any((s.season, s.runtime_mode) == (season, mode) for s in SCOPES.values()):
+            return dict(success=False, applied=False, reason=f"season-resources-unavailable:{season}",
+                        message=f"{season_label(season)} 自定义路线资源尚不可用")
         if fallback_profile is None:
             fallback_profile = "shared-structure" if season == "s1" else "wang-qingxin"
         if not gallery_id:
