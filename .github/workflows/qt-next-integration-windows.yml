@@ -207,7 +207,8 @@ jobs:
             'packaging' {
               # e116: this shard took 2m25s; the joint activation module took
               # 12m41s in the cancelled integration shard. Keep its full process.
-              $modules = @('test_runtime_exclusions', 'test_s1_private_packaging', 'test_preview_windows_notice', 'test_qt_installer_directory', 'test_live_author_import', 'test_legacy_import_recovery', 'test_package_dependency_upgrade', 'test_receipt_dependency_contract', 'test_map_package_removal', 'test_client_resources', 'test_client_imported_author_joint_activation')
+              $modules = @('test_runtime_exclusions', 'test_s1_private_packaging', 'test_preview_windows_notice', 'test_qt_installer_directory', 'test_live_author_import', 'test_legacy_import_recovery', 'test_package_dependency_upgrade', 'test_receipt_dependency_contract', 'test_map_package_removal', 'test_client_resources', 'test_client_imported_author_joint_activation',
+                'test_client_imported_activation_plan_ui')
             }
             # Separate parser/store and package-admission work from runtime tests
             # to avoid the former combined group's 25-minute cancellations.
@@ -232,7 +233,9 @@ jobs:
                 'test_imported_group_registry',
                 'test_imported_s1_native_base', 'test_imported_s1_controls_profile',
                 'test_entry_semantic_capability', 'test_imported_s1_native_context',
-                'test_imported_difficult_native_context'
+                'test_imported_difficult_native_context',
+                # 6da runtime reached 25m; these complete modules used 6m31s.
+                'test_client_imported_s1_nightmare_provider', 'test_client_imported_package_activation'
               )
             }
             # Provider/startup/activation tests retain the independent-process
@@ -242,10 +245,10 @@ jobs:
                 'test_s1_floor_observation', 'test_s1_map_ui_geometry',
                 'test_client_shared_reference_context',
                 'test_client_imported_providers', 'test_client_native_base_provider',
-                'test_client_imported_s1_provider', 'test_client_imported_s1_nightmare_provider',
+                'test_client_imported_s1_provider',
                 'test_client_imported_difficult_provider', 'test_client_imported_difficult_activation_ui',
                 'test_client_imported_group_registry', 'test_client_imported_group_runtime',
-                'test_client_imported_admission', 'test_client_imported_package_activation',
+                'test_client_imported_admission',
                 'test_client_imported_controls',
                 'test_client_imported_activation', 'test_client_imported_activation_ui',
                 'test_client_imported_s1_activation', 'test_client_imported_s1_activation_ui'
@@ -267,8 +270,7 @@ jobs:
             'packaging-imported-display' {
               $modules = @(
                 'test_imported_author_displays',
-                'test_client_imported_author_activation', 'test_client_imported_author_selection',
-                'test_client_imported_activation_plan_ui'
+                'test_client_imported_author_activation', 'test_client_imported_author_selection'
               )
             }
             # Joint B/C/display and actual QML flows have their own process
