@@ -3680,7 +3680,11 @@ class LiveRuntime:
             if not self._capture_is_current(self._render_capture_context, row.get("captureGeneration")):
                 self.invalidate("capture-context-changed")
                 return None
-            return {key: value if key == "pixels" else copy.deepcopy(value) for key, value in row.items()}
+            payload = {key: value if key == "pixels" else copy.deepcopy(value) for key, value in row.items()}
+            dpi = getattr(self._render_capture_context, "dpi", None)
+            if type(dpi) is int and dpi > 0:
+                payload["captureDpi"] = dpi
+            return payload
 
     @staticmethod
     def _reference_owner_context(row):

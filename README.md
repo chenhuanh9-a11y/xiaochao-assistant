@@ -8,6 +8,8 @@
 
 ## 当前代码
 
+WPF + Python + C# 全量混合迁移在独立开发分支推进，入口及范围见 [hybrid/README.md](hybrid/README.md) 和 [迁移清单](hybrid/MIGRATION.md)。当前仍是分阶段实现，不改变下述正式 Qt 入口。
+
 当前客户端使用 PySide6 / Qt Quick，源码入口为 `tools/qt_client_entry.py`，界面及客户端服务位于 `experiments/qt_quick/`（目录名保留历史沿革）。旧 Tk 页面、主入口、独立预览与 Tk 构建配方已退役。共享识别、贴合、资源与数据协议仍位于 `app/`，本次清理不改算法或资源字节。
 
 版本以 `version.json` 为准。历史候选的功能及哈希记录仍保存在 `docs/source-snapshot*.json`，不代表当前源码的指纹或完整验收。清理范围、保留的共享测试及 Qt 契约对应见 [Tk 清理记录](docs/tk-cleanup.md)。

@@ -11,7 +11,6 @@ APP = APP_ROOT
 if str(APP) not in sys.path:
     sys.path.insert(0, str(APP))
 from session_state_machine import global_key_is_allowed
-from client_input import NativeWindowAPI
 
 
 class CaptureUnavailable(RuntimeError):
@@ -36,7 +35,12 @@ class ClientCaptureProvider:
         # or exception. No callback means no screen fallback at all.
         if full_capture is not None and not callable(full_capture):
             raise TypeError("A display-excluding full capture callback is required")
-        self._native = native if native is not None else NativeWindowAPI()
+        if native is None:
+            # Import only for the interactive Qt application. Headless runtime
+            # sessions inject their native adapter and remain Qt-free.
+            from client_input import NativeWindowAPI
+            native = NativeWindowAPI()
+        self._native = native
         self._backend = backend
         self._full_capture = full_capture
         self._lock = threading.RLock()
