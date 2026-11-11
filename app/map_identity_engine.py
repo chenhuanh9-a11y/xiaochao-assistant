@@ -949,7 +949,8 @@ class MapIdentityEngine(NightmareCandidateEngine):
                 identityEvidence='tilemap-entry-neighborhood-current-frame' if verified else 'tilemap-entry-candidates',
                 reason=('entry-current-exit-contradicted' if (candidate.get('entryCrossCheck') or {}).get('contradicted') is True
                         else entry_diagnostics['reason']),difficultEntry=candidate,
-                identityElapsedMs=entry_diagnostics['elapsedMs'],identityBudgetExceeded=not entry_diagnostics.get('complete',True))
+                identityElapsedMs=entry_diagnostics['elapsedMs'],identityBudgetExceeded=(
+                    not entry_diagnostics.get('complete',True) and entry_diagnostics.get('verificationComplete',True)))
             if verified:row['score']+=1000
         for candidate in side_rows:
             row=by_id.get(candidate['mapId'])
@@ -1011,34 +1012,38 @@ class MapIdentityEngine(NightmareCandidateEngine):
         started = time.perf_counter()
         budget = max(0., float(budget_seconds))
         if budget <= 0:return []
+        members = self.established_candidate_scope(prior=prior)
+        if members is None:return []
+        # Dynamic dispatch preserves the difficult provider's inventory checks.
+        remaining = budget - (time.perf_counter() - started)
+        if remaining <= 0:return []
+        return self.rank(frame, str(floor), limit=len(members), budget_seconds=remaining,
+                         _established_members=members)
+
+    def established_candidate_scope(self, *, prior):
+        """Return the complete validated prior cohort without starting a rank."""
         index = getattr(self, 'native_similarity_index', None)
         conditions = getattr(index, 'condition_index', None)
         if (conditions is None or getattr(index, 'mode', None) != self.pack.mode
                 or not prior or len(prior) != 4
                 or tuple(prior[:3]) != (self.pack.mode, '1', index.index_digest)):
-            return []
+            return None
         cohorts = []
         for domain_id, condition_ids in prior[3]:
             if domain_id not in conditions.domains or not condition_ids:
-                return []
+                return None
             for condition_id in condition_ids:
                 condition = conditions.conditions.get(condition_id)
                 if (condition is None or condition_id not in conditions.domain_conditions[domain_id]
                         or not condition.get('completeForeignMapCompetition')):
-                    return []
+                    return None
                 cohorts.append({conditions.references[conditions.poses[str(pid)]['target']]['mapId']
                                 for pid in condition['poseIds']})
         members = set.intersection(*cohorts) if cohorts else set()
         if len(members) < 2 or not members <= set(self.pack.by_id):
-            return []
+            return None
         conditions.validate_domains([domain for domain, _ in prior[3]], self.entry_shared_reference_provider)
-        # Dynamic dispatch preserves NativeDifficultCandidateEngine's missing
-        # inventory suppression. Every member and every alternative pose still
-        # competes through exactly the original validators.
-        remaining = budget - (time.perf_counter() - started)
-        if remaining <= 0:return []
-        return self.rank(frame, str(floor), limit=len(members), budget_seconds=remaining,
-                         _established_members=tuple(sorted(members)))
+        return tuple(sorted(members))
 
     def identity_profile_for_map(self, map_id):
         return getattr(self.pack, 'identity_profiles', {}).get(map_id, self.identity_profile_id)

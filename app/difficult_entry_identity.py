@@ -1,6 +1,8 @@
 """Read-only entry hypotheses. The existing identity/pose consumers own state."""
 import json,time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 import numpy as np
 import cv2
 
@@ -48,6 +50,127 @@ def entry_corners(frame,context):
             if not len(samples) or not supported[samples[:,1],samples[:,0]].all():ok=False
         if ok:rows.append(node)
     return rows
+
+
+@dataclass
+class MainEntryJob:
+    map_id: str | None
+    phase: str
+    run: Callable[[], None]
+
+
+class MainEntryEvidence:
+    """One observation's source work; its caller owns deadline and cancellation.
+
+    The scanning worker runs jobs sequentially. Probe every eligible source
+    before deriving the original competitive band.
+    Stopping before every required job finishes leaves identity unresolved.
+    No job writes runtime state or grants display/live authority.
+    """
+    def __init__(self, engine, frame, floor, *, map_id=None, route=None,
+                 candidate_map_ids=None):
+        self.engine, self.floor, self.map_id, self.route = engine, str(floor), map_id, route
+        self.floor_indexed = any(item['floor'] == self.floor for item, *_ in engine.entries)
+        self.entries = [entry for entry in engine.entries
+                        if entry[0]['floor'] == self.floor
+                        and (map_id is None or entry[0]['mapId'] == map_id)
+                        and (candidate_map_ids is None or entry[0]['mapId'] in candidate_map_ids)]
+        self.frame = (np.frombuffer(frame.tobytes(order='C'), dtype=frame.dtype).reshape(frame.shape)
+                      if self.floor_indexed else None)
+        self.context, self.query = None, []
+        self.rows, self.competitive, self.evaluated_map_ids = [], [], []
+        self._complete = self._closed = False
+        self._verification_unavailable = False
+        self._failed = False
+        self._pending = self._result = None
+        self._steps = self._jobs()
+
+    def _job(self, map_id, phase, function):
+        def run():
+            if self._closed or self._pending is not job:
+                raise ValueError('entry-job-not-current')
+            try:
+                function()
+            except BaseException:
+                self._closed, self._failed, self._complete = True, True, False
+                self._pending = None
+                self._steps.close()
+                raise
+            self._pending = None
+        job = MainEntryJob(map_id, phase, run)
+        return job
+
+    def _observe(self):
+        self.context = self.engine.geometry(self.frame)
+        self.query = entry_corners(self.frame, self.context) if self.context else []
+        self.qpoints = np.array([row['point'] for row in self.query])
+        self.qrays = np.array([row['rays'] for row in self.query])
+
+    def _probe(self, entry):
+        self.evaluated_map_ids.append(entry[0]['mapId'])
+        row = self.engine._probe_entry(self.frame, entry, self.qpoints, self.qrays)
+        if row is not None:
+            self.rows.append(row)
+
+    def _verify(self, row):
+        try:
+            row['verification'] = self.engine.verify(self.frame, row, context=self.context, route=self.route)
+        except (ValueError, TypeError, KeyError, OSError, cv2.error, StopIteration) as error:
+            row['verification'] = dict(success=False, reason='entry-resource-unavailable', error=str(error))
+        if row['verification'].get('reason') in (
+                'entry-resource-unavailable', 'entry-shared-structure-unavailable', 'entry-observation-unavailable'):
+            self._verification_unavailable = True
+
+    def _jobs(self):
+        if not self.floor_indexed:
+            return
+        yield self._job(None, 'observe', self._observe)
+        if len(self.query) < 3:
+            return
+        for entry in self.entries:
+            yield self._job(entry[0]['mapId'], 'probe', lambda entry=entry: self._probe(entry))
+        self.rows.sort(key=lambda row: -row['score'])
+        self.competitive = [row for row in self.rows
+                            if row['score'] >= max(10, self.rows[0]['score'] * .65)] if self.rows else []
+        if 0 < len(self.competitive) <= 3:
+            for row in self.competitive:
+                yield self._job(row['mapId'], 'verify', lambda row=row: self._verify(row))
+
+    def next_job(self):
+        if self._closed:
+            return None
+        if self._pending is None:
+            try:
+                self._pending = next(self._steps)
+            except StopIteration:
+                self._complete = True
+        return self._pending
+
+    def finish(self, *, elapsed_ms=0.):
+        if self._result is not None:
+            return self._result
+        self._closed, self._pending = True, None
+        self._steps.close()
+        if not self.floor_indexed:
+            self._result = ([], dict(reason='entry-floor-not-indexed', complete=True, elapsedMs=0.))
+        elif self._complete and len(self.query) < 3:
+            self._result = ([], dict(reason='entry-visible-structure-insufficient', queryChains=len(self.query),
+                                     minimumQueryChains=3, elapsedMs=elapsed_ms))
+        else:
+            self.rows.sort(key=lambda row: -row['score'])
+            complete = self._complete and not self._verification_unavailable and not self._failed
+            self.engine._finalize_rank(self.rows, self.competitive, complete, self.map_id)
+            self._result = (self.rows, dict(
+                reason=('entry-work-failed' if self._failed
+                        else 'entry-verification-unavailable' if self._verification_unavailable
+                        else 'entry-known-identity-pose-verified' if self.map_id is not None and any(row['poseVerified'] for row in self.rows)
+                        else 'entry-identity-verified' if any(row['identityVerified'] for row in self.rows)
+                        else 'entry-neighborhood-candidates' if complete else 'entry-budget-incomplete'),
+                complete=complete, queryChains=len(self.query), evaluatedMapIds=self.evaluated_map_ids,
+                elapsedMs=elapsed_ms))
+            if self._verification_unavailable or self._failed:
+                self._result[1]['verificationComplete'] = False
+        return self._result
 
 
 class MapEntryGeometryIdentity:
@@ -147,67 +270,58 @@ class MapEntryGeometryIdentity:
             return [],dict(reason='entry-floor-not-indexed',complete=True,elapsedMs=0.)
         if budget_seconds is not None and budget_seconds<=0:
             return [],dict(reason='entry-budget-incomplete',complete=False,elapsedMs=0.)
-        context=self.geometry(frame)
-        query=entry_corners(frame,context) if context else []
-        rows=[];budget=1.0 if budget_seconds is None else max(0.,float(budget_seconds))
-        complete=True
-        if len(query)<3:return [],dict(reason='entry-visible-structure-insufficient',queryChains=len(query),
-                                     minimumQueryChains=3,elapsedMs=(time.perf_counter()-started)*1000)
-        qpoints=np.array([q['point'] for q in query]);qrays=np.array([q['rays'] for q in query])
-        evaluated_map_ids=[]
-        for item,source,rays,main in self.entries:
-            if item['floor']!=str(floor):continue
-            if map_id is not None and item['mapId']!=map_id:continue
-            if candidate_map_ids is not None and item['mapId'] not in candidate_map_ids:continue
-            if time.perf_counter()-started>budget:complete=False;break
-            evaluated_map_ids.append(item['mapId'])
-            source=source[:,1];hypotheses=[]
-            oriented=np.min(np.sum(qrays[:,None]*rays[None],axis=3),axis=2)>=.95
-            oriented_pairs=np.nonzero(oriented)
-            main_ids=np.flatnonzero(main)
-            # Two entry corners seed scale; different measured corners and
-            # neighboring rooms must support it. No complete wall endpoint
-            # is inferred from a fog-clipped contour.
-            for ai,si in enumerate(main_ids):
-                for sj in main_ids[ai+1:]:
-                    delta=source[sj]-source[si];denom=float(delta@delta)
-                    if denom<(.7*item['unit'])**2:continue
-                    qa,qb=np.meshgrid(np.flatnonzero(oriented[:,si]),np.flatnonzero(oriented[:,sj]))
-                    qa=qa.ravel();qb=qb.ravel()
-                    qdelta=qpoints[qb]-qpoints[qa]
-                    scales=qdelta@delta/denom
-                    errors=np.linalg.norm(qdelta-scales[:,None]*delta,axis=1)
-                    compatible=(errors<=2)&(scales*item['unit']>=8)&(scales*item['unit']<=min(frame.shape[:2])/4)
-                    for pair_index in np.flatnonzero(compatible):
-                        qi=qa[pair_index];s=float(scales[pair_index]);t=qpoints[qi]-s*source[si]
-                        self._score_hypothesis(item,source,main,qpoints,oriented,s,t,hypotheses,oriented_pairs)
-            if hypotheses:
-                hypotheses.sort(key=lambda h:-h['chainCount'])
-                # Updating an existing hypothesis can move it beside another
-                # previously distinct pose. Apply the same metric once more
-                # to the final parameters before deriving pose ambiguity.
-                distinct=[]
-                for hypothesis in hypotheses:
-                    if not any(np.linalg.norm(hypothesis['anchor']-old['anchor'])
-                        + abs(hypothesis['scale']-old['scale'])*item['unit']*12<=3 for old in distinct):
-                        distinct.append(hypothesis)
-                hypotheses[:]=distinct
-                best=hypotheses[0]
-                rows.append(dict(mapId=item['mapId'],profileId=self.profile_for_map(item['mapId']),entryKind='main',material=item['material'],
-                    score=float(best['chainCount']),hypothesis={k:v for k,v in best.items() if k!='anchor'},
-                    poseAmbiguous=len(hypotheses)>1 and hypotheses[1]['chainCount']>=best['chainCount']-1,
-                    sourceProduct=item['sourceProduct']))
-        rows.sort(key=lambda r:-r['score'])
-        # Verify only the small, competitive set. Budget/incomplete competition
-        # never grants identity. Entry-family repetition remains ambiguous.
-        competitive=[r for r in rows if r['score']>=max(10,rows[0]['score']*.65)] if rows else []
-        if complete and 0<len(competitive)<=3:
-            for row in competitive:
-                if time.perf_counter()-started>budget:complete=False;break
-                try:
-                    row['verification']=self.verify(frame,row,context=context,route=route)
-                except (ValueError,TypeError,KeyError,OSError,cv2.error,StopIteration) as error:
-                    row['verification']=dict(success=False,reason='entry-resource-unavailable',error=str(error))
+        budget=1.0 if budget_seconds is None else max(0.,float(budget_seconds))
+        evidence=self.prepare_rank(frame,floor,map_id=map_id,route=route,candidate_map_ids=candidate_map_ids)
+        while (job := evidence.next_job()) is not None:
+            if time.perf_counter()-started>budget:
+                break
+            job.run()
+        return evidence.finish(elapsed_ms=(time.perf_counter()-started)*1000)
+
+    def prepare_rank(self,frame,floor,*,map_id=None,route=None,candidate_map_ids=None):
+        return MainEntryEvidence(self,frame,floor,map_id=map_id,route=route,candidate_map_ids=candidate_map_ids)
+
+    def _probe_entry(self,frame,entry,qpoints,qrays):
+        item,source,rays,main=entry
+        source=source[:,1];hypotheses=[]
+        oriented=np.min(np.sum(qrays[:,None]*rays[None],axis=3),axis=2)>=.95
+        oriented_pairs=np.nonzero(oriented)
+        main_ids=np.flatnonzero(main)
+        # Two entry corners seed scale; different measured corners and
+        # neighboring rooms must support it. No complete wall endpoint
+        # is inferred from a fog-clipped contour.
+        for ai,si in enumerate(main_ids):
+            for sj in main_ids[ai+1:]:
+                delta=source[sj]-source[si];denom=float(delta@delta)
+                if denom<(.7*item['unit'])**2:continue
+                qa,qb=np.meshgrid(np.flatnonzero(oriented[:,si]),np.flatnonzero(oriented[:,sj]))
+                qa=qa.ravel();qb=qb.ravel()
+                qdelta=qpoints[qb]-qpoints[qa]
+                scales=qdelta@delta/denom
+                errors=np.linalg.norm(qdelta-scales[:,None]*delta,axis=1)
+                compatible=(errors<=2)&(scales*item['unit']>=8)&(scales*item['unit']<=min(frame.shape[:2])/4)
+                for pair_index in np.flatnonzero(compatible):
+                    qi=qa[pair_index];s=float(scales[pair_index]);t=qpoints[qi]-s*source[si]
+                    self._score_hypothesis(item,source,main,qpoints,oriented,s,t,hypotheses,oriented_pairs)
+        if hypotheses:
+            hypotheses.sort(key=lambda h:-h['chainCount'])
+            # Updating an existing hypothesis can move it beside another
+            # previously distinct pose. Apply the same metric once more
+            # to the final parameters before deriving pose ambiguity.
+            distinct=[]
+            for hypothesis in hypotheses:
+                if not any(np.linalg.norm(hypothesis['anchor']-old['anchor'])
+                    + abs(hypothesis['scale']-old['scale'])*item['unit']*12<=3 for old in distinct):
+                    distinct.append(hypothesis)
+            hypotheses[:]=distinct
+            best=hypotheses[0]
+            return dict(mapId=item['mapId'],profileId=self.profile_for_map(item['mapId']),entryKind='main',material=item['material'],
+                score=float(best['chainCount']),hypothesis={k:v for k,v in best.items() if k!='anchor'},
+                poseAmbiguous=len(hypotheses)>1 and hypotheses[1]['chainCount']>=best['chainCount']-1,
+                sourceProduct=item['sourceProduct'])
+
+    @staticmethod
+    def _finalize_rank(rows,competitive,complete,map_id):
         accepted=[r for r in competitive if r.get('verification',{}).get('success')]
         winner=accepted[0] if complete and len(accepted)==1 else None
         for row in rows:
@@ -218,11 +332,6 @@ class MapEntryGeometryIdentity:
                     and min(row['hypothesis']['neighborExtentGrid'])>=4)))
             row['identityVerified']=row['poseVerified'] and map_id is None
         if winner is not None:rows.sort(key=lambda r:(not r['identityVerified'],-r['score']))
-        return rows,dict(reason=('entry-known-identity-pose-verified' if map_id is not None and any(r['poseVerified'] for r in rows)
-                         else 'entry-identity-verified' if any(r['identityVerified'] for r in rows)
-                         else 'entry-neighborhood-candidates' if complete else 'entry-budget-incomplete'),
-                         complete=complete,queryChains=len(query),evaluatedMapIds=evaluated_map_ids,
-                         elapsedMs=(time.perf_counter()-started)*1000)
 
     def verify(self,frame,row,*,context=None,route=None):
         from single_map_structure import regional_validation,_static_validation_context,partial_wall_geometry

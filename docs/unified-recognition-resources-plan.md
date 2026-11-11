@@ -641,3 +641,14 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 - 把新回归 `test_client_structure_unification` 加入既有 runtime 分片；保留原 79 模块，仅新增这一模块，总计 80。原分片、逐模块进程/失败汇总、18 matrix 和 25 分钟不改变。同步后结果和远端状态另据实际提交记录。
 - 架构复核确认下一步须以一个 observation ticket/deadline 调度所有候选，再把 S0 门/入口及登记家族证据接为独立适配输出，移除默认路径先跑完整旧 `engine.rank` 的控制器。当前切片把 S0 未决入口建议替换成结构候选，且用显式全帧几何观察域，不能拿它证明原 S0 门建议或默认 ROI 语义已完整迁移；楼层来源还须沿实际观测及人工覆盖逐项核对。S0 困难仍受既有资格限制，不输出共享扫描，不以改 `rank/live` 凑齐四模式。以上是待实现接缝，本分支仅作为独立、未合并的迁移候选。
 - 独立终审复现 S0 结构候选无法选择：实际 `ClientControls.chooseCandidate` 对结构行发送当前帧凭据，但 `_manual_action` 仍仅接受 S1。新增默认 imported S0 `capture_now`→实际候选行字段→`select_candidate` 的回归修前失败（1 项，5.370 秒）。现在选择核对共用 session 的 season/mode、实际资源 catalog、ticket 和原帧/代际/轮次后只进入待人工确认；不授予身份或显示。新 S0 用例与 S1 candidate runtime 共 19 项通过（32.347 秒），覆盖旧帧/错误字段/新 catalog 拒绝，且有效选择仍无自动身份、组或 render。
+
+### P3 正门证据的逐项生产准备
+
+- `MapEntryGeometryIdentity.prepare_rank` 现在产生单帧 `MainEntryEvidence`：一次 observation、每份合法入口源的 probe、完成全量 probe 后的原 competitive band、每候选 verify。`next_job` 只给出一个当前任务，调用方可在任务间交还预算或结束；`finish` 在工作未完成时不授权身份，已结束或已执行的任务不能再次写入。源图像为该次观察自有只读像素，不新增帧 hash。原 `rank` 实际使用这套步骤做兼容收集，几何求解算法、分数带、最多三项验证及原邻域阈值保留。
+- `MapIdentityEngine.established_candidate_scope` 单独读取并校验原 prior/domain/condition，返回完整合法成员交集；检查范围本身不启动 rank。旧 `rank_established_group` 调用该方法后仍动态分派原 rank，保留困难资源缺项抑制。测试直接检查范围与坏绑定，同时继续覆盖旧兼容入口。
+- 定向回归发现原正门策略把不可验证的竞争者当作失败项：另一候选可被误称唯一身份。一个真实文件读取失败和一个共享参考缺失的源策略案例，修前各得到 complete/identity 为 true（同一测试两子例失败，0.046 秒）。现在验证资源或观察不可用时完整性为 false、verificationComplete 为 false，保留未知，不授权剩下的候选；消费者也不把这个状态写作预算耗尽。该测试隔离最终墙体验证，入口 JSON/组件读取、真实 probe 数学、竞争带及身份归约都实际执行，不是实帧准确率证明。
+- 父提交与当前 `rank` 对同样的明确合成输入分别运行，歧义、唯一、已知地图、四个竞争者和零预算五种正常策略案例的源行与资格/完整性诊断一致（仅比较后移除耗时字段，不把旧结果注入新求解）。资源不可验证时的旧错误行为由上述反例单独修正。
+- 组合实际执行 `python -m unittest -v test_main_entry_jobs test_group_review_lifecycle test_entry_resource_io test_client_structure_unification test_client_imported_group_runtime test_native_similarity_runtime`，首版 55 项通过（78.272 秒）。初次组合中新加的消费者测试夹具漏设 `entry_advisory` 而中断该项，补齐原本无用的空配置后重跑通过，原失败日志保留；没有删测试或放宽断言。另用父提交 `a5aa748` 的真实旧 `rank` 代码重放上述文件读取失败案例，确认旧实现同样错误返回 complete/identity 为 true；该证据不是新求解输入或固定答案。
+- 独立终审发现异常任务仍可重放并重复写入局部证据。新增 probe 异常及 observation 中断两例修前都失败（0.065 秒）；现在执行体抛出任何异常会先终止该次证据、关闭生成器并保留未完成，再原样重抛。旧任务不能重跑，失败不会被叫作预算耗尽或产生身份；单用 finally 清 pending 会跳过失败竞争者，因此不采用。修正后上述同一组合包含新增两例，共 57 项通过（74.954 秒）。
+- 新 `test_main_entry_jobs` 与已存在但未注册的 `test_group_review_lifecycle` 整模块接入 CI，原 80 模块不减少，现 82 个资源模块；18 matrix、25 分钟、两个比较 baseline、独立进程与失败汇总保持。
+- 这一步抽出实际生产者工作与合法范围，尚未移走默认 S0 的外层 `engine.rank` 控制器；passport、side recovery 和最终相似组生产仍待同样拆分，再接入共用 scanner/ticket/deadline。完整 P3 仍未完成，不把兼容收集入口当作最终统一调度。
