@@ -723,3 +723,11 @@ python -m unittest test_client_progressive_display test_client_progressive_pixel
 - 新 program-only 测试使用真实临时程序/资源字节、journal、readiness 与原生模板，但完整原生观察器及借句柄获取受控；不是 Windows 对象身份或实际安装验收。QtIFW 正常打包入口测试控制 Git 差异后端、外部冻结/编译器和 PE 校验，执行真实投影、库存、复制、XML/脚本及回执生成；不把非可执行测试产物当作 Setup。
 - CI 保留原 293 个测试字面项，新增 recovery、两个 progressive display 及 program-only 模块；资源六组为 12/40/18/7/5/5，18 matrix、25 分钟、两个比较 baseline 与逐模块独立进程不变。最终同提交远端结果及真实冻结/编译结果以整合 PR 回执为准，旧绿不能替代新提交。
 - 当前仍未证明：P3 默认共同 scanner/ticket/deadline 与旧控制器退出，P4 全部 ROI/恢复/context/成员 ACK 外围统一，四模式真实游戏准确率、500/300ms 目标、实际 Setup 安装/卸载。用户反馈旧 Inno 曾卸载不净，具体残留及根因尚未核实；框架或体积本身不构成清理可靠性证据。`client`/私有开发构建的旧显式资源输入不属于本次正式 production 投影验收，不能混称默认交付。
+
+### P3 公共逐项调度：实际 S1 扫描循环迁入
+
+- 基线为整合验证提交 `d67217719557c25b603ddb984a34d9a84072a13d`，后续分支 `codex/pr133-shared-observation-stream-20261111`。S1 生产 `StructureCandidateScanner.scan` 的逐地图 fit 循环已由 `ObservationWorkScheduler` 驱动；fit 与既有 main/passport/side 工作使用相同任务生命周期。每次观察只持有一份不可写的 `FrameSnapshot`，prepare/fit 接收同一对象，不另造身份资格或登记成员。
+- 调度器在实际 kernel 之间检查同一绝对截止时间与取消；kernel 执行中仍是合作式取消，最后一项已完成时可报告完整计划，不能据此承诺硬超时。取消后的 kernel 结果不发布，异常和正常首显停止均关闭剩余工作。S1 原首显/首选 ACK、预算部分结果、未知与未扫、五项身份权限为 false 的归约保持。
+- 修改前 S1 scanner/async/preferred 共 **61 项通过（4.186 秒）**；新增接口修前 ImportError 保留。最终同组加公共调度回归 **70 项通过（4.323 秒）**，真实入口工作/I/O **54 项通过（2.309 秒）**。用独立生成的 500 组预算、取消、首选、首显与输入变动情形执行基线和当前实际 `scan`，事后比较结果/回调/调用顺序，剔除两项实测时长后 **500 组一致**，没有把旧答案输入新求解。上述使用 fixture，不代表真实游戏。
+- 独立进程的实际运行接缝回归：`test_client_structure_unification` **8 项 / 35.582 秒**、`test_s1_candidate_runtime` **11 项 / 0.205 秒**、`test_client_progressive_display` **14 项 / 0.738 秒**、软件后端 `test_client_progressive_pixels` **3 项 / 4.992 秒**，均通过。像素测试不证明物理 GPU 或实机效果。
+- 默认 S0 的旧 `rank` 控制器、共同 observation ticket 的身份/source/condition 通道及登记组 prior 仍待后续迁入；S0 困难资格不变，S1 pose 不能提升为 identity。此切片不代表完整 P3，已交付 d672 Setup 不包含此后续源码。

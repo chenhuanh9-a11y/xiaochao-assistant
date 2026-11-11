@@ -18,6 +18,8 @@ import uuid
 
 import numpy as np
 
+from entry_evidence_work import EntryEvidenceWork, FrameSnapshot, ObservationWorkScheduler
+
 
 @dataclass(frozen=True)
 class StructureCatalog:
@@ -82,6 +84,32 @@ def verified_pose(fit):
         return False
 
 
+class _StructureFitWork(EntryEvidenceWork):
+    """Canonical fit kernels using the same job lifecycle as entry evidence."""
+    def __init__(self, snapshot, order, floor, fit, cancelled, bounds, preferred):
+        self.order, self.floor, self.fit = order, floor, fit
+        self.cancelled, self.bounds, self.preferred = cancelled, bounds, preferred
+        self.last_fit = None
+        super().__init__(snapshot)
+
+    def _fit(self, map_id):
+        try:
+            fit = self.fit(self.frame, map_id, self.floor, self.cancelled, observation_bounds=self.bounds)
+        except MemoryError:
+            raise
+        except Exception:
+            if map_id != self.preferred:
+                raise
+            fit = dict(success=False, reason="preferred-fit-unresolved")
+        if not isinstance(fit, dict) and map_id == self.preferred:
+            fit = dict(success=False, reason="preferred-fit-unresolved")
+        self.last_fit = fit
+
+    def _jobs(self):
+        for map_id in self.order:
+            yield self._job(map_id, 'canonical-fit', lambda map_id=map_id: self._fit(map_id))
+
+
 def _same_evidence(left, right):
     """Exact nested evidence equality, including NumPy pose arrays."""
     if isinstance(left, np.ndarray) or isinstance(right, np.ndarray):
@@ -118,7 +146,8 @@ class StructureCandidateScanner:
         started = self.clock()
         # Own immutable bytes. Neither callers nor fit helpers can turn this
         # view writable and change the frame after a partial has been issued.
-        frame = np.frombuffer(frame.tobytes(order="C"), dtype=np.uint8).reshape(frame.shape)
+        snapshot = FrameSnapshot(frame)
+        frame = snapshot.pixels
         frame_key = hashlib.sha256(frame.tobytes()).hexdigest()
         bounds = (0, 0, frame.shape[1], frame.shape[0])
         fit_one = self.prepare_fit(frame, bounds) if self.prepare_fit else self.fit
@@ -165,27 +194,13 @@ class StructureCandidateScanner:
                 scanSkipped=status in ("preferred-material-committed", "first-material-committed"),
                 reason="supported-geometry-is-not-complete-identity-competition")
 
-        status = "complete" if set(order) == set(self.catalog.map_ids) else "subset-unresolved"
-        for map_id in order:
-            if cancelled():
-                status = "cancelled"
-                break
-            if budget_seconds is not None and self.clock() - started >= budget_seconds:
-                status = "budget-unresolved"
-                break
-            try:
-                fit = fit_one(frame, map_id, floor, cancelled, observation_bounds=bounds)
-            except MemoryError:
-                raise
-            except Exception:
-                if map_id != preferred:
-                    raise
-                fit = dict(success=False, reason="preferred-fit-unresolved")
-            if not isinstance(fit, dict) and map_id == preferred:
-                fit = dict(success=False, reason="preferred-fit-unresolved")
-            if cancelled() or "obsolete" in str(fit.get("reason", "")):
-                status = "cancelled"
-                break
+        work = _StructureFitWork(snapshot, order, floor, fit_one, cancelled, bounds, preferred)
+
+        def accept_fit(job):
+            nonlocal first_verified_pose_elapsed
+            map_id, fit = job.map_id, work.last_fit
+            if "obsolete" in str(fit.get("reason", "")):
+                return "cancelled"
             checked.append(map_id)
             ok = verified_pose(fit)
             outcomes.append(dict(mapId=map_id, outcome="supported" if ok else "unknown",
@@ -206,8 +221,7 @@ class StructureCandidateScanner:
                     except Exception:
                         material_committed = False
                     if material_committed:
-                        status = "first-material-committed"
-                        break
+                        return "first-material-committed"
                 if map_id == preferred and callable(preferred_material_committed):
                     # Not cancellation: preserve this ticket's accepted pose and
                     # pixels. Unknown/unscanned alternatives stay in the report.
@@ -218,10 +232,14 @@ class StructureCandidateScanner:
                     except Exception:
                         material_committed = False
                     if material_committed:
-                        status = "preferred-material-committed"
-                        break
-        if cancelled():
-            status = "cancelled"
+                        return "preferred-material-committed"
+            return None
+
+        status = ObservationWorkScheduler(clock=self.clock).drive(work,
+            deadline=started+budget_seconds if budget_seconds is not None else None,
+            cancelled=cancelled, on_job_finished=accept_fit)
+        if status == "complete" and set(order) != set(self.catalog.map_ids):
+            status = "subset-unresolved"
         return report(status)
 
     @staticmethod

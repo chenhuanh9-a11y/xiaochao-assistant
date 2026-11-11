@@ -2,7 +2,7 @@ name: Qt next candidate joint Windows regression
 
 on:
   push:
-    branches: [integration/qt-next-20261102, integration/qt-pr84-88-20261103, codex/pr133-p3-p4-p5-integration-20261111]
+    branches: [integration/qt-next-20261102, integration/qt-pr84-88-20261103, codex/pr133-p3-p4-p5-integration-20261111, codex/pr133-shared-observation-stream-20261111]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -228,6 +228,7 @@ jobs:
                 'test_shared_structure_package_io', 'test_shared_version_package_io',
                 'test_entry_resource_io', 'test_main_entry_jobs', 'test_passport_entry_jobs', 'test_side_entry_jobs',
                 'test_side_pose_recovery_jobs',
+                'test_observation_work_scheduler',
                 'test_export_native_base_package',
                 'test_export_s0_difficult_native_base_package',
                 'test_export_s1_native_base_package', 'test_export_s1_nightmare_base_package',
