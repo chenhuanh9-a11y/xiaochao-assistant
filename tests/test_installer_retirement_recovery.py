@@ -257,6 +257,16 @@ class RecoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'shortcut-retirement-binding-mismatch'):
             coordinator._native(state, state['nativeEvidence'])
 
+    def test_deferred_old_desktop_still_rejects_unowned_alternative_entry(self):
+        case = self.committed()
+        original = case.snapshot()
+        (Path(case.locations['desktop']) / '星图.url').write_bytes(b'unknown alternative entry')
+        with self.assertRaisesRegex(ValueError, 'shortcut-collision'):
+            self.execute(case, 'retire')
+        self.assertEqual(case.snapshot(), original)
+        self.assertTrue(case.registration.present)
+        self.assertTrue((case.target / PENDING).exists())
+
 
 if __name__ == '__main__':
     unittest.main()

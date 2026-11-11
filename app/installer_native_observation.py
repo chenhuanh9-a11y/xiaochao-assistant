@@ -601,21 +601,20 @@ def _capture_once(backend, contract):
             path = selected['path']
             if not _same_path(selected['target'], expected_shortcuts[path.casefold()]):
                 _fail('shortcut-target-not-owned')
-            deferred = next((row for row in contract.get('legacyShortcutRetirement', [])
-                             if _same_path(row['path'], path)), None)
-            if deferred is not None:
-                # Only a disabled slot explicitly bound to the original legacy
-                # object/plan may change during retirement. Ordinary disabled
-                # links retain the existing complete observation and checks.
-                shortcuts.append(dict(selection=selected, file=dict(state='legacy-retirement',
-                    original=deferred), collisions={}))
-                continue
             collisions = {}
             for suffix in ('', '.pif', '.url'):
                 candidate = path[:-4] + suffix
                 collisions[suffix] = backend.absent(candidate)
                 if collisions[suffix]['state'] != 'absent':
                     _fail('shortcut-collision')
+            deferred = next((row for row in contract.get('legacyShortcutRetirement', [])
+                             if _same_path(row['path'], path)), None)
+            if deferred is not None:
+                # Only this explicitly bound old .lnk may change. Alternate
+                # entry collisions still undergo the ordinary native checks.
+                shortcuts.append(dict(selection=selected, file=dict(state='legacy-retirement',
+                    original=deferred), collisions=collisions))
+                continue
             row = backend.file(path, required=selected['enabled'], raw=True, limit=MAX_LINK)
             if (selected['enabled'] and row['state'] == 'file'
                     and not _same_path(backend.shortcut_target(_raw(row, MAX_LINK)), selected['target'])):
