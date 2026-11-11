@@ -157,7 +157,7 @@ class _PreparationHost:
 class _AlignmentHost:
     """Only explicit resource/pose inputs needed by the unchanged shared solvers."""
     def __init__(self, engine, group=None, settings=None, *, steady=None, pose_priors=None,
-                 collect_fit_diagnostics=False):
+                 collect_fit_diagnostics=False, usable_fit_callback=None):
         self.engine, self.pack = engine, engine.pack
         self.author_coordinate_adapters = engine.qt_adapters
         self.group = group
@@ -168,6 +168,23 @@ class _AlignmentHost:
         self.pose_priors = dict(pose_priors or {})
         self.collect_fit_diagnostics = collect_fit_diagnostics
         self.diagnostic_event_counts = {}
+        self.usable_fit_callback = usable_fit_callback
+
+    def _offer_usable_fit(self, fit):
+        """Offer current canonical evidence; remaining peer checks still own the verdict."""
+        from alignment_observation import rendered_profile_residual_is_verified
+        if (self.usable_fit_callback is not None and fit.get("success")
+                and rendered_profile_residual_is_verified(fit.get("selectedRouteCurrentFrameResidual"))):
+            self.usable_fit_callback(fit)
+
+    def _offer_structure_pose(self, matrix, residual, context, strategy):
+        """Carry a solver's current typed evidence through the same display handoff."""
+        visible = context.get("visible")
+        self._offer_usable_fit(dict(success=True, matrixSourceToClient=matrix,
+            selectedRouteCurrentFrameResidual=residual, strategy=strategy,
+            coordinateSpace="shared-structure-to-client", routeProfileId="shared-structure",
+            observationBounds=context.get("observationBounds"),
+            observationComponent=dict(visible[2], bounds=visible[1]) if visible is not None else None))
 
     def _log(self, event, **values):
         if self.collect_fit_diagnostics:
@@ -357,6 +374,7 @@ class _AlignmentHost:
         _test_evidence("solver-input", frame)
         if observation_bounds is None:
             fit = self._fit_observation(frame, map_id, floor, cancelled, entry_candidate)
+            self._offer_usable_fit(fit)
             if fit.get("success") and (fit.get("markerOccludedWallProposal") or fit.get("markerOccludedWallObservation")):
                 rejected = self._marker_recovery_peer_rejection(frame, map_id, floor, fit,
                     cancelled, None, None)
@@ -377,6 +395,7 @@ class _AlignmentHost:
         initial_reason = str(initial.get("reason", ""))
         if initial.get("success") and cancelled and cancelled():
             return dict(success=False, reason="structure-work-obsolete")
+        self._offer_usable_fit(initial)
         if initial.get("success") and (initial.get("markerOccludedWallProposal") or initial.get("markerOccludedWallObservation")):
             rejected = self._marker_recovery_peer_rejection(frame, map_id, floor, initial,
                 cancelled, observation_bounds, _scan_observation)
@@ -427,6 +446,7 @@ class _AlignmentHost:
             if "ambiguous" in reason or "budget-unresolved" in reason:
                 unresolved = True
             if fit.get("success"):
+                self._offer_usable_fit(fit)
                 matrix = np.asarray(fit["matrixSourceToClient"])
                 if not any(np.linalg.norm((extent @ (matrix - np.asarray(old["matrixSourceToClient"])).T)[:, :2], axis=1).max() <= 3
                            for old in accepted):
@@ -5905,33 +5925,223 @@ class LiveRuntime:
             staged_observation=staged_observation)
         with self._lock:
             steady_context = self._steady_context()
+        published_token = None
+        review_core = None
+
+        def revoke_published(reason):
+            with self._lock:
+                if self._render is not None and self._render["token"] == published_token:
+                    self._revoke_render(reason)
+
+        def publish_fit(fit, *, review_pending=False):
+            nonlocal published_token, review_core
+            residual = fit.get("selectedRouteCurrentFrameResidual")
+            if not rendered_profile_residual_is_verified(residual):
+                raise ValueError("current-frame-canonical-verification-required")
+            source_matrix = np.asarray(fit["matrixSourceToClient"], np.float64)
+            basis = engine.qt_adapters.matrix_profile_to_canonical("shared-structure", map_id, floor)
+            if basis is None:
+                raise ValueError("shared-reference-canonical-basis-unavailable")
+            canonical = source_matrix @ np.linalg.inv(np.asarray(basis))
+            render_matrix = source_matrix @ display["matrixDisplayToReference"]
+            try:
+                validate_established_registered_family(engine, registered_state)
+            except (OSError, ValueError) as error:
+                with self._lock:
+                    if not obsolete() and frame_current() and engine is self._engine:
+                        self.invalidate('registered-group-resource-unavailable', source=action)
+                return self._receipt(action, payload, success=False, reason='registered-group-resource-unavailable',
+                                     messageDetail=str(error)[:512])
+            current_display = self._display_layer(engine, map_id, floor, self._profile, variant_id=variant_id)
+            if current_display["resourceIdentity"] != display["resourceIdentity"]:
+                return self._receipt(action, payload, success=False, reason="display-resource-changed", stale=True)
+            with self._lock:
+                if registered_family_identity(registered_state) != registered_family_identity(self._identity_native):
+                    return self._receipt(action, payload, success=False, reason='registered-group-context-changed', stale=True)
+                previous_group = copy.deepcopy(group) if group is not None else None
+            target_group = self._stage_round_group_commit(engine, previous_group, map_id, floor, canonical,
+                render_matrix, display, frame, captured, cycle, frame_generation, residual,
+                component_override=fit.get("observationComponent") if self._season == "s1" else None)
+            if target_group is None:
+                reason = "round-group-pose-commit-rejected"
+                self._set_pose_phase("rejected", reason, map_id, floor, frame_id, frame_generation,
+                    staged_observation=staged_observation)
+                return self._receipt(action, payload, success=False, reason=reason)
+            with self._lock:
+                if display_generation != getattr(self, "_display_generation", 0):
+                    return self._receipt(action, payload, success=False, reason="stale-display-settings", stale=True)
+                if (group_intent_generation != self._group_intent_generation
+                        or manual_choice is None and self._group_choice_inflight is not None):
+                    return self._receipt(action, payload, success=False, reason="manual-group-intent-superseded-work", stale=True)
+                if (obsolete() or not frame_current() or cycle != self._cycle or floor != self._floor
+                        or frame_generation != self._frame_generation or engine is not self._engine):
+                    return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
+                if not self._capture_is_current(captured.context, capture_generation):
+                    self.invalidate("capture-context-changed")
+                    return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
+                source_core = review_core if review_core is not None else self._core
+                core = self._copy_pose_core(source_core) if review_pending or identity_stage is not None else source_core
+                self._seed_group_core(core,group)
+                core.begin_observation(cycle_id=cycle, map_id=map_id, floor=floor,
+                                             frame_generation=frame_generation, frame_signature=(digest,))
+                # This is the full shared-structure sensor result, as in the Tk
+                # consumer. Existing pose presence cannot relabel it as a bounded
+                # translation recovery; the separate refresh path owns that source.
+                candidate = AlignmentCandidate(map_id, floor, canonical,
+                    "initial-structure-v2", frame_generation,
+                    confidence=1.0, anchor_count=1, anchor_kind="global", current_frame_verified=True,
+                    residual_verified=True, global_residual_verified=True,
+                    translation_only=False,
+                    metadata=dict(routeProfileId="shared-structure", independentFloorAnchor=True))
+                decision = core.adjudicate(candidate)
+                if not decision.accepted:
+                    self._set_pose_phase("rejected", decision.reason, map_id, floor, frame_id, frame_generation,
+                        staged_observation=staged_observation)
+                    return self._receipt(action, payload, success=False, reason=decision.reason)
+                token = core.authorize(decision)
+                if token is None or not core.commit(token, persist_pose=not review_pending):
+                    return self._receipt(action, payload, success=False, reason="core-commit-rejected")
+                if not review_pending:
+                    self._seed_group_core(core,target_group)
+                rgba = reference_pixels
+                live = self._evidence_kind == "live-client-capture"
+                target_render = dict(token=uuid4().hex, epoch=epoch, authorizationId=token.authorization_id,
+                    season=self._season, mode=self._mode, profileId=self._profile, mapId=map_id, floor=floor,
+                    roundId=self._round, cycleId=cycle, frameId=frame_id, generation=frame_generation,
+                    matrix=render_matrix.tolist(), canonicalMatrix=canonical.tolist(), pixels=rgba,
+                    routeWidth=rgba.shape[1], routeHeight=rgba.shape[0], clientWidth=width, clientHeight=height,
+                    originX=captured.context.client_screen_bounds[0], originY=captured.context.client_screen_bounds[1],
+                    captureGeneration=capture_generation,
+                    poseReason=fit.get("reason"), poseStrategy=fit.get("strategy", "not-recorded"),
+                    floorSource=self._current_floor_source(), observedFloor=self._observed_floor,
+                    resourceIdentity=display["resourceIdentity"], displayKind=display["displayKind"],
+                    referencePath=display.get("referencePath", ""),
+                    displayLabel=display["displayLabel"], routeProfileId=display["routeProfileId"],
+                    preferredProfileId=self._profile, effectiveProfileId=display.get("effectiveProfileId", display["routeProfileId"]),
+                    authorStatus=display.get("authorStatus", "none"), fallback=display.get("fallback", False),
+                    fallbackReason=display.get("fallbackReason", ""),
+                    variantId=display.get("variantId"), displayGeneration=display_generation,
+                    liveAuthorization=live, evidenceKind=self._evidence_kind,
+                    reviewStatus="pending" if review_pending else "complete",
+                    poseFinalVerified=not review_pending, **self._identity_fields())
+                render_token = target_render["token"]
+                if not review_pending:
+                    self._register_material_proposal(target_render, frame, fit, captured, target_group,
+                        candidate_only=provisional_operation)
+                if review_pending:
+                    # Only presentation authority advances. Identity, group and
+                    # persistent pose remain with their existing owners until review.
+                    review_core = self._core
+                    self._core, self._render = core, target_render
+                    self._render_capture_context = captured.context
+                    published_token = render_token
+                elif identity_stage is not None:
+                    if manual_choice is None and (self._render is None or not self._display_current(self._render)):
+                        return self._receipt(action, payload, success=False, reason="sibling-source-authorization-expired", stale=True)
+                    self._discard_sibling()
+                    source_token = self._render["token"] if self._render is not None else ""
+                    target_render.update(requiresMaterialAck=True, sourceToken=source_token, sourceMapId=self._map_id,
+                        manualGroupChoice=manual_choice is not None,
+                        provisionalMapId=map_id, provisional=True, identityLocked=False, durableMapId="")
+                    if manual_choice is not None:self._group_member_choice_status="awaiting-material"
+                    self._pending_sibling = dict(scope=self._sibling_scope(), sourceCore=self._core,
+                        sourceToken=source_token, sourceMapId=self._map_id, core=core,
+                        group=target_group, identity=identity_stage, render=target_render,
+                        reference=reference_sheet, captureContext=captured.context, manualChoice=manual_choice,
+                        stagedObservation=staged_observation)
+                else:
+                    self._core = core
+                    if provisional_operation:
+                        self._provisional_display_map_id = map_id
+                        self._identity_source = "s1-current-structure-hypothesis"
+                        self._gate.select(map_id)
+                        # Neither _map_id nor confirmed_id acquires candidate state.
+                        target_render.update(self._identity_fields())
+                        target_render.update(identitySource="s1-current-structure-hypothesis",
+                            identityVerified=False, requiresManualConfirmation=False,
+                            displayAuthorizationScope="current-native-frame-candidate" if live else "current-recorded-frame-candidate",
+                            candidatePurpose="native-s1-preview" if self._native_s1_candidate_preview else "recorded-s1-preview")
+                        self._group, self._render = None, target_render
+                    else:
+                        self._map_id = map_id
+                        self._gate.select(map_id)
+                        self._gate.confirm()
+                        self._group, self._render = target_group, target_render
+                    published_token = render_token
+                    if action == "refresh_map":
+                        payload["_refreshRenderOwner"] = self._refresh_render_owner()
+                    self._fit_reporting.success(self._fit_reporting_scope())
+                    if action == "recover_map_open":
+                        payload["_recoveryRenderOwner"] = self._refresh_render_owner()
+                        payload["_recoveryResultScope"] = self._map_recovery_scope()
+                    self._render_capture_context = captured.context
+                    if provisional_operation:
+                        pool = self._s1_private_pool
+                        reference_sheet.update(self._identity_fields(), s1CandidateReference=True,
+                            s1ReferencePoolIdentity=id(pool) if pool is not None else None,
+                            s1ReferenceRecoveryRevision=pool.recovery_revision if pool is not None else None,
+                            referenceAuthorizationScope="current-candidate-static-reference")
+                    self._reference_sheet = reference_sheet
+                    self._reference_capture_context = captured.context
+                    self._remember_provisional_reference()
+            self._set_pose_phase("provisional" if review_pending else "valid",
+                "current-frame-review-pending" if review_pending else "current-frame-pose-authorized",
+                map_id, floor, frame_id, frame_generation,
+                staged_observation=staged_observation)
+            if identity_stage is not None:
+                self._notify("sibling-material-pending", reason="target-current-pose-awaiting-material", token=render_token,
+                    sourceMapId=self._map_id, targetMapId=map_id)
+                return self._receipt(action, payload, success=True, reason="sibling-material-pending",
+                    renderToken=source_token, pendingSiblingToken=render_token, diagnosticOnly=not live)
+            self._notify("render-ready",
+                reason="current-frame-review-pending" if review_pending else "current-frame-pose-authorized",
+                token=render_token, unchanged=False)
+            if obsolete():
+                return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+            return self._receipt(action, payload, success=True,
+                                 reason="current-frame-review-pending" if review_pending else "current-frame-pose-authorized",
+                                 renderToken=render_token, diagnosticOnly=not live,
+                                 poseReason=fit.get("reason"), poseStrategy=fit.get("strategy", "not-recorded"))
+
+        def offer_usable_fit(first):
+            # Sibling material handoff and candidate tickets retain their
+            # existing independent acknowledgment/eligibility protocols.
+            if published_token is None and identity_stage is None and not provisional_operation:
+                publish_fit(first, review_pending=True)
+
         host = _AlignmentHost(engine, group, self._settings, steady=None if staged_observation is not None else (self._steady, steady_context,
             lambda context: not obsolete() and self._steady_is_current(context, captured),
-            self._steady_signature(captured)))
+            self._steady_signature(captured)), usable_fit_callback=offer_usable_fit)
         fit_started = time.monotonic()
-        if provisional_operation:
-            # Reuse only the current ticket's already verified fit. All residual,
-            # material, floor, generation and capture checks below still run.
-            with self._lock:
-                session, ticket = structure_ticket or (self._s1_structure_session, self._s1_structure_ticket)
-                current_ticket = session is self._s1_structure_session and ticket == self._s1_structure_ticket
-                choice = session.choose_candidate(map_id, ticket) if current_ticket and session is not None else {}
-            if not choice.get("success") or choice.get("frameKey") != digest:
-                return self._receipt(action, payload, success=False, reason="stale-structure-fit", stale=True)
-            fit = choice["pose"]
-        elif self._season == "s1":
-            fit = host.fit(frame, map_id, floor, obsolete,
-                observation_bounds=(0, 0, frame.shape[1], frame.shape[0]))
-        else:
-            fit = host.fit(frame, map_id, floor, obsolete, entry_candidate) if entry_candidate is not None else host.fit(frame, map_id, floor, obsolete)
+        try:
+            if provisional_operation:
+                # Reuse only the current ticket's already verified fit. All residual,
+                # material, floor, generation and capture checks below still run.
+                with self._lock:
+                    session, ticket = structure_ticket or (self._s1_structure_session, self._s1_structure_ticket)
+                    current_ticket = session is self._s1_structure_session and ticket == self._s1_structure_ticket
+                    choice = session.choose_candidate(map_id, ticket) if current_ticket and session is not None else {}
+                if not choice.get("success") or choice.get("frameKey") != digest:
+                    return self._receipt(action, payload, success=False, reason="stale-structure-fit", stale=True)
+                fit = choice["pose"]
+            elif self._season == "s1":
+                fit = host.fit(frame, map_id, floor, obsolete,
+                    observation_bounds=(0, 0, frame.shape[1], frame.shape[0]))
+            else:
+                fit = host.fit(frame, map_id, floor, obsolete, entry_candidate) if entry_candidate is not None else host.fit(frame, map_id, floor, obsolete)
+        except BaseException:
+            revoke_published("pose-review-error")
+            raise
         self._recognition_diagnostic('pose-fit', fit.get('reason', 'reason-not-provided'),
             success=fit.get('success'), fit=fit, solverEvents=host.events,
             elapsedMs=(time.monotonic()-fit_started)*1000,
             inputs=dict(mapId=map_id, floor=floor, frameId=frame_id,
                 cycleId=cycle, captureGeneration=capture_generation, sourceFrameGeneration=frame_generation))
         if obsolete():
+            revoke_published("pose-review-obsolete")
             return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
         if not fit.get("success"):
+            revoke_published("pose-review-rejected")
             reason = str(fit.get("reason", "pose-fit-failed"))
             if reason in ('structure-current-geometry-failed', 'initial-structure-current-geometry-failed', 'current-geometry-failed'):
                 self._automatic_failure_sample(reason, captured=captured, attempt_id=payload.get("_diagnosticAttemptId"),
@@ -6000,151 +6210,14 @@ class LiveRuntime:
                     staged_observation=staged_observation)
                 return self._receipt(action, payload, success=False, reason=reason,
                     identityReopened=reopened, fitReportingDeferred=deferred)
-        residual = fit.get("selectedRouteCurrentFrameResidual")
-        if not rendered_profile_residual_is_verified(residual):
-            raise ValueError("current-frame-canonical-verification-required")
-        source_matrix = np.asarray(fit["matrixSourceToClient"], np.float64)
-        basis = engine.qt_adapters.matrix_profile_to_canonical("shared-structure", map_id, floor)
-        if basis is None:
-            raise ValueError("shared-reference-canonical-basis-unavailable")
-        canonical = source_matrix @ np.linalg.inv(np.asarray(basis))
-        render_matrix = source_matrix @ display["matrixDisplayToReference"]
         try:
-            validate_established_registered_family(engine, registered_state)
-        except (OSError, ValueError) as error:
-            with self._lock:
-                if not obsolete() and frame_current() and engine is self._engine:
-                    self.invalidate('registered-group-resource-unavailable', source=action)
-            return self._receipt(action, payload, success=False, reason='registered-group-resource-unavailable',
-                                 messageDetail=str(error)[:512])
-        with self._lock:
-            if registered_family_identity(registered_state) != registered_family_identity(self._identity_native):
-                return self._receipt(action, payload, success=False, reason='registered-group-context-changed', stale=True)
-            previous_group = copy.deepcopy(group) if group is not None else None
-        target_group = self._stage_round_group_commit(engine, previous_group, map_id, floor, canonical,
-            render_matrix, display, frame, captured, cycle, frame_generation, residual,
-            component_override=fit.get("observationComponent") if self._season == "s1" else None)
-        if target_group is None:
-            reason = "round-group-pose-commit-rejected"
-            self._set_pose_phase("rejected", reason, map_id, floor, frame_id, frame_generation,
-                staged_observation=staged_observation)
-            return self._receipt(action, payload, success=False, reason=reason)
-        with self._lock:
-            if display_generation != getattr(self, "_display_generation", 0):
-                return self._receipt(action, payload, success=False, reason="stale-display-settings", stale=True)
-            if (group_intent_generation != self._group_intent_generation
-                    or manual_choice is None and self._group_choice_inflight is not None):
-                return self._receipt(action, payload, success=False, reason="manual-group-intent-superseded-work", stale=True)
-            if obsolete() or not frame_current() or cycle != self._cycle or floor != self._floor:
-                return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
-            if not self._capture_is_current(captured.context, capture_generation):
-                self.invalidate("capture-context-changed")
-                return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
-            core = self._copy_pose_core(self._core) if identity_stage is not None else self._core
-            self._seed_group_core(core,group)
-            core.begin_observation(cycle_id=cycle, map_id=map_id, floor=floor,
-                                         frame_generation=frame_generation, frame_signature=(digest,))
-            # This is the full shared-structure sensor result, as in the Tk
-            # consumer. Existing pose presence cannot relabel it as a bounded
-            # translation recovery; the separate refresh path owns that source.
-            candidate = AlignmentCandidate(map_id, floor, canonical,
-                "initial-structure-v2", frame_generation,
-                confidence=1.0, anchor_count=1, anchor_kind="global", current_frame_verified=True,
-                residual_verified=True, global_residual_verified=True,
-                translation_only=False,
-                metadata=dict(routeProfileId="shared-structure", independentFloorAnchor=True))
-            decision = core.adjudicate(candidate)
-            if not decision.accepted:
-                self._set_pose_phase("rejected", decision.reason, map_id, floor, frame_id, frame_generation,
-                    staged_observation=staged_observation)
-                return self._receipt(action, payload, success=False, reason=decision.reason)
-            token = core.authorize(decision)
-            if token is None or not core.commit(token):
-                return self._receipt(action, payload, success=False, reason="core-commit-rejected")
-            self._seed_group_core(core,target_group)
-            rgba = np.ascontiguousarray(display["pixels"][:, :, [2, 1, 0, 3]])
-            rgba.setflags(write=False)
-            live = self._evidence_kind == "live-client-capture"
-            target_render = dict(token=uuid4().hex, epoch=epoch, authorizationId=token.authorization_id,
-                season=self._season, mode=self._mode, profileId=self._profile, mapId=map_id, floor=floor,
-                roundId=self._round, cycleId=cycle, frameId=frame_id, generation=frame_generation,
-                matrix=render_matrix.tolist(), canonicalMatrix=canonical.tolist(), pixels=rgba,
-                routeWidth=rgba.shape[1], routeHeight=rgba.shape[0], clientWidth=width, clientHeight=height,
-                originX=captured.context.client_screen_bounds[0], originY=captured.context.client_screen_bounds[1],
-                captureGeneration=capture_generation,
-                poseReason=fit.get("reason"), poseStrategy=fit.get("strategy", "not-recorded"),
-                floorSource=self._current_floor_source(), observedFloor=self._observed_floor,
-                resourceIdentity=display["resourceIdentity"], displayKind=display["displayKind"],
-                referencePath=display.get("referencePath", ""),
-                displayLabel=display["displayLabel"], routeProfileId=display["routeProfileId"],
-                preferredProfileId=self._profile, effectiveProfileId=display.get("effectiveProfileId", display["routeProfileId"]),
-                authorStatus=display.get("authorStatus", "none"), fallback=display.get("fallback", False),
-                fallbackReason=display.get("fallbackReason", ""),
-                variantId=display.get("variantId"), displayGeneration=display_generation,
-                liveAuthorization=live, evidenceKind=self._evidence_kind, **self._identity_fields())
-            render_token = target_render["token"]
-            self._register_material_proposal(target_render, frame, fit, captured, target_group,
-                candidate_only=provisional_operation)
-            if identity_stage is not None:
-                if manual_choice is None and (self._render is None or not self._display_current(self._render)):
-                    return self._receipt(action, payload, success=False, reason="sibling-source-authorization-expired", stale=True)
-                self._discard_sibling()
-                source_token = self._render["token"] if self._render is not None else ""
-                target_render.update(requiresMaterialAck=True, sourceToken=source_token, sourceMapId=self._map_id,
-                    manualGroupChoice=manual_choice is not None,
-                    provisionalMapId=map_id, provisional=True, identityLocked=False, durableMapId="")
-                if manual_choice is not None:self._group_member_choice_status="awaiting-material"
-                self._pending_sibling = dict(scope=self._sibling_scope(), sourceCore=self._core,
-                    sourceToken=source_token, sourceMapId=self._map_id, core=core,
-                    group=target_group, identity=identity_stage, render=target_render,
-                    reference=reference_sheet, captureContext=captured.context, manualChoice=manual_choice,
-                    stagedObservation=staged_observation)
-            else:
-                if provisional_operation:
-                    self._provisional_display_map_id = map_id
-                    self._identity_source = "s1-current-structure-hypothesis"
-                    self._gate.select(map_id)
-                    # Neither _map_id nor confirmed_id acquires candidate state.
-                    target_render.update(self._identity_fields())
-                    target_render.update(identitySource="s1-current-structure-hypothesis",
-                        identityVerified=False, requiresManualConfirmation=False,
-                        displayAuthorizationScope="current-native-frame-candidate" if live else "current-recorded-frame-candidate",
-                        candidatePurpose="native-s1-preview" if self._native_s1_candidate_preview else "recorded-s1-preview")
-                    self._group, self._render = None, target_render
-                else:
-                    self._map_id = map_id
-                    self._gate.select(map_id)
-                    self._gate.confirm()
-                    self._group, self._render = target_group, target_render
-                if action == "refresh_map":
-                    payload["_refreshRenderOwner"] = self._refresh_render_owner()
-                self._fit_reporting.success(self._fit_reporting_scope())
-                if action == "recover_map_open":
-                    payload["_recoveryRenderOwner"] = self._refresh_render_owner()
-                    payload["_recoveryResultScope"] = self._map_recovery_scope()
-                self._render_capture_context = captured.context
-                if provisional_operation:
-                    pool = self._s1_private_pool
-                    reference_sheet.update(self._identity_fields(), s1CandidateReference=True,
-                        s1ReferencePoolIdentity=id(pool) if pool is not None else None,
-                        s1ReferenceRecoveryRevision=pool.recovery_revision if pool is not None else None,
-                        referenceAuthorizationScope="current-candidate-static-reference")
-                self._reference_sheet = reference_sheet
-                self._reference_capture_context = captured.context
-                self._remember_provisional_reference()
-        self._set_pose_phase("valid", "current-frame-pose-authorized", map_id, floor, frame_id, frame_generation,
-            staged_observation=staged_observation)
-        if identity_stage is not None:
-            self._notify("sibling-material-pending", reason="target-current-pose-awaiting-material", token=render_token,
-                sourceMapId=self._map_id, targetMapId=map_id)
-            return self._receipt(action, payload, success=True, reason="sibling-material-pending",
-                renderToken=source_token, pendingSiblingToken=render_token, diagnosticOnly=not live)
-        self._notify("render-ready", reason="current-frame-pose-authorized", token=render_token, unchanged=False)
-        if obsolete():
-            return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
-        return self._receipt(action, payload, success=True, reason="current-frame-pose-authorized",
-                             renderToken=render_token, diagnosticOnly=not live,
-                             poseReason=fit.get("reason"), poseStrategy=fit.get("strategy", "not-recorded"))
+            result = publish_fit(fit)
+        except BaseException:
+            revoke_published("pose-review-error")
+            raise
+        if not result.get("success"):
+            revoke_published("pose-review-rejected")
+        return result
 
     @staticmethod
     def _full_frame(captured):
