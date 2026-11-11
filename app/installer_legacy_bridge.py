@@ -76,7 +76,7 @@ def _registry_rows(source):
                             continue
                         if kind != winreg.REG_SZ or not isinstance(location, str) or not _same(location, source):
                             continue
-                        subkeys, values, _ = winreg.QueryInfoKey(key)
+                        subkeys, values, modified = winreg.QueryInfoKey(key)
                         if subkeys or values > 256:
                             raise LegacyBridgeError('registration-shape-unsupported')
                         record = {}
@@ -85,7 +85,7 @@ def _registry_rows(source):
                             if isinstance(value, bytes):
                                 value = {'base64': base64.b64encode(value).decode('ascii')}
                             record[field] = [value_type, value]
-                        rows.append(dict(hive=hive_name, view=view, key=name, values=record))
+                        rows.append(dict(hive=hive_name, view=view, key=name, values=record, modified=modified))
     return rows
 
 

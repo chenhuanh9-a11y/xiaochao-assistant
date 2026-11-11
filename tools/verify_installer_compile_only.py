@@ -25,7 +25,7 @@ HELPER_PACKAGES = ('PyInstaller', 'pyinstaller-hooks-contrib', 'pefile', 'psutil
 HELPER_MODULES = {
     'import': ('star_map_import', 'generic_author_package', 'packaged_product_identity', 'resource_transaction'),
     'recovery': ('star_map_import', 'star_map_import_helper', 'map_package_recovery_plan', 'map_package_upgrade', 'resource_transaction', 'packaged_product_identity'),
-    'reset': ('resource_upgrade_reset', 'installer_resource_lease', 'installer_upgrade_coordinator', 'installer_upgrade_journal', 'installer_native_observation', 'managed_base_resources', 'map_package_upgrade', 'star_map_import', 'resource_transaction', 'installer_legacy_bridge', 'installer_legacy_handoff', 'installer_legacy_assets', 'legacy_migration'),
+    'reset': ('resource_upgrade_reset', 'installer_resource_lease', 'installer_upgrade_coordinator', 'installer_upgrade_journal', 'installer_native_observation', 'managed_base_resources', 'map_package_upgrade', 'star_map_import', 'resource_transaction', 'installer_legacy_bridge', 'installer_legacy_handoff', 'installer_legacy_assets', 'installer_legacy_retirement', 'installer_qtifw_inventory', 'legacy_migration'),
     'watcher': ('game_startup', 'game_startup_win32', 'packaged_product_identity'),
     'uninstall': ('installer_uninstall', 'installer_resource_lease', 'game_startup', 'packaged_product_identity'),
 }

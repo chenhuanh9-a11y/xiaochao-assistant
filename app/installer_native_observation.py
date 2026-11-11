@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 from contextlib import contextmanager
+from contextvars import ContextVar
 import ctypes
 from ctypes import wintypes as W
 import hashlib
@@ -24,6 +25,22 @@ import os
 import re
 import struct
 import uuid
+
+_pinned_read_guard = ContextVar('installer_pinned_read_guard', default=None)
+
+
+@contextmanager
+def pinned_read_sharing(guard):
+    """Read beside this transaction's already-held image exclusion handles.
+
+    The guard must validate a live, same-path handle which denies other writers
+    and replacement. No serialized flag or CLI option grants this exception.
+    """
+    token = _pinned_read_guard.set(guard)
+    try:
+        yield
+    finally:
+        _pinned_read_guard.reset(token)
 
 APP_ID = '{D04394A0-DACE-4FF9-874D-3DCB43EE53D1}'
 UNINSTALL_KEY = 'Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\' + APP_ID + '_is1'
@@ -154,7 +171,7 @@ def program_paths_from_ownership(ownership_bytes):
 
 def _contract(root, target_identity, target_report_sha256, ownership_bytes,
               ownership_sha256, program_inventory, uninstall_exe, shortcut_targets,
-              *, allow_pending_uninstall=False):
+              *, allow_pending_uninstall=False, retiring_shortcuts=None):
     root = _path(os.fspath(root))
     pending_uninstall = allow_pending_uninstall and uninstall_exe is None
     if not pending_uninstall:
@@ -219,6 +236,29 @@ def _contract(root, target_identity, target_report_sha256, ownership_bytes,
     result = dict(installRoot=root, appId=APP_ID, targetIdentity=dict(target_identity),
                   targetReportSha256=target_report_sha256, ownershipSha256=ownership_sha256,
                   programInventory=inventory, uninstallExe=uninstall_exe, shortcutTargets=shortcuts)
+    if retiring_shortcuts:
+        if not isinstance(retiring_shortcuts, list) or len(retiring_shortcuts) > 3:
+            _fail('invalid-legacy-shortcut-retirement')
+        deferred, seen = [], set()
+        disabled = {row['path'].casefold() for row in shortcuts if not row['enabled']}
+        for row in retiring_shortcuts:
+            if (type(row) is not dict or set(row) != {'path', 'planSha256', 'file'}
+                    or not isinstance(row['planSha256'], str) or not _HASH.fullmatch(row['planSha256'])
+                    or type(row['file']) is not dict or set(row['file']) != {
+                        'directory', 'identity', 'created', 'bytes', 'sha256'}):
+                _fail('invalid-legacy-shortcut-retirement')
+            path, stamp = _path(row['path']), row['file']
+            if (path.casefold() not in disabled or path.casefold() in seen
+                    or stamp['directory'] is not False
+                    or any(type(stamp[k]) is not list or len(stamp[k]) != size
+                           or any(type(v) is not int or v < 0 for v in stamp[k])
+                           for k, size in (('identity', 3), ('created', 2)))
+                    or type(stamp['bytes']) is not int or not 0 <= stamp['bytes'] <= MAX_LINK
+                    or not isinstance(stamp['sha256'], str) or not _HASH.fullmatch(stamp['sha256'])):
+                _fail('invalid-legacy-shortcut-retirement')
+            seen.add(path.casefold())
+            deferred.append(dict(path=path, planSha256=row['planSha256'], file=stamp))
+        result['legacyShortcutRetirement'] = sorted(deferred, key=lambda row: row['path'].casefold())
     _encoded(result)
     return result
 
@@ -234,7 +274,7 @@ JOURNAL_RESERVE_NODES = 4096
 
 def preflight_native_evidence(install_root, *, target_identity, target_report_sha256,
                               ownership_bytes, ownership_sha256, program_inventory,
-                              uninstall_exe, shortcut_targets):
+                              uninstall_exe, shortcut_targets, retiring_shortcuts=None):
     """Pure admission of the known Windows evidence shape; no native reads.
 
     Use current digest-pinned Setup inputs, before journal/resource mutation and
@@ -249,7 +289,7 @@ def preflight_native_evidence(install_root, *, target_identity, target_report_sh
     # Null is allowed only for this pure size admission, never capture/replay.
     contract = _contract(install_root, target_identity, target_report_sha256,
         ownership_bytes, ownership_sha256, program_inventory, uninstall_exe, shortcut_targets,
-        allow_pending_uninstall=True)
+        allow_pending_uninstall=True, retiring_shortcuts=retiring_shortcuts)
     byte_limit = min(MAX_METADATA, MAX_EVIDENCE_BYTES) - NATIVE_RESERVE_BYTES - JOURNAL_RESERVE_BYTES
     node_limit = MAX_JSON_NODES - NATIVE_RESERVE_NODES - JOURNAL_RESERVE_NODES
     totals = [0, 0]
@@ -567,6 +607,14 @@ def _capture_once(backend, contract):
                 collisions[suffix] = backend.absent(candidate)
                 if collisions[suffix]['state'] != 'absent':
                     _fail('shortcut-collision')
+            deferred = next((row for row in contract.get('legacyShortcutRetirement', [])
+                             if _same_path(row['path'], path)), None)
+            if deferred is not None:
+                # Only this explicitly bound old .lnk may change. Alternate
+                # entry collisions still undergo the ordinary native checks.
+                shortcuts.append(dict(selection=selected, file=dict(state='legacy-retirement',
+                    original=deferred), collisions=collisions))
+                continue
             row = backend.file(path, required=selected['enabled'], raw=True, limit=MAX_LINK)
             if (selected['enabled'] and row['state'] == 'file'
                     and not _same_path(backend.shortcut_target(_raw(row, MAX_LINK)), selected['target'])):
@@ -582,14 +630,15 @@ def _capture_once(backend, contract):
 
 def capture_native_completion(install_root, *, target_identity, target_report_sha256,
                               ownership_bytes, ownership_sha256, program_inventory,
-                              uninstall_exe, shortcut_targets, _backend=None):
+                              uninstall_exe, shortcut_targets, _backend=None, retiring_shortcuts=None):
     """Return evidence only after two complete matching reads; never writes.
 
     ``_backend`` is an offline-test seam, not a platform override. Its evidence is
     marked fixture-only and cannot be replayed as native Windows evidence.
     """
     contract = _contract(install_root, target_identity, target_report_sha256, ownership_bytes,
-                         ownership_sha256, program_inventory, uninstall_exe, shortcut_targets)
+                         ownership_sha256, program_inventory, uninstall_exe, shortcut_targets,
+                         retiring_shortcuts=retiring_shortcuts)
     backend = _backend if _backend is not None else WindowsReadOnlyBackend()
     first = _capture_once(backend, contract)
     second = _capture_once(backend, contract)
@@ -603,7 +652,7 @@ def capture_native_completion(install_root, *, target_identity, target_report_sh
 
 def verify_native_completion(evidence, install_root, *, target_identity, target_report_sha256,
                              ownership_bytes, ownership_sha256, program_inventory,
-                             uninstall_exe, shortcut_targets, _backend=None):
+                             uninstall_exe, shortcut_targets, _backend=None, retiring_shortcuts=None):
     """Re-read original completion evidence. Changed, missing or unknown blocks.
 
     Returns the matching evidence, never a weak Boolean that could swallow an
@@ -611,7 +660,8 @@ def verify_native_completion(evidence, install_root, *, target_identity, target_
     """
     _validate_evidence(evidence, fixture=_backend is not None)
     contract = _contract(install_root, target_identity, target_report_sha256, ownership_bytes,
-                         ownership_sha256, program_inventory, uninstall_exe, shortcut_targets)
+                         ownership_sha256, program_inventory, uninstall_exe, shortcut_targets,
+                         retiring_shortcuts=retiring_shortcuts)
     if _encoded(contract) != _encoded(evidence['contract']):
         _fail('evidence-contract-mismatch')
     backend = _backend if _backend is not None else WindowsReadOnlyBackend()
@@ -619,7 +669,8 @@ def verify_native_completion(evidence, install_root, *, target_identity, target_
     current = capture_native_completion(install_root, target_identity=target_identity,
         target_report_sha256=target_report_sha256, ownership_bytes=ownership_bytes,
         ownership_sha256=ownership_sha256, program_inventory=program_inventory,
-        uninstall_exe=uninstall_exe, shortcut_targets=shortcut_targets, _backend=_backend)
+        uninstall_exe=uninstall_exe, shortcut_targets=shortcut_targets, _backend=_backend,
+        retiring_shortcuts=retiring_shortcuts)
     if _encoded(current) != _encoded(evidence):
         _fail('evidence-no-longer-matches')
     return current
@@ -666,6 +717,8 @@ def resume_context_from_evidence(evidence, install_root, *, _backend=None):
     fields = {'installRoot', 'appId', 'targetIdentity', 'targetReportSha256', 'ownershipSha256',
               'programInventory', 'uninstallExe', 'shortcutTargets'}
     root = _path(os.fspath(install_root))
+    if ('legacyShortcutRetirement' in contract):
+        fields.add('legacyShortcutRetirement')
     if set(contract) != fields or contract['appId'] != APP_ID or not _same_path(root, contract['installRoot']):
         _fail('evidence-contract-mismatch')
     backend = _backend if _backend is not None else WindowsReadOnlyBackend()
@@ -677,6 +730,8 @@ def resume_context_from_evidence(evidence, install_root, *, _backend=None):
                   ownership_bytes=ownership, ownership_sha256=contract['ownershipSha256'],
                   program_inventory=contract['programInventory'], uninstall_exe=contract['uninstallExe'],
                   shortcut_targets=contract['shortcutTargets'])
+    if 'legacyShortcutRetirement' in contract:
+        result['retiring_shortcuts'] = contract['legacyShortcutRetirement']
     reconstructed = _contract(root, **result)
     if _encoded(reconstructed) != _encoded(contract):
         _fail('evidence-contract-mismatch')
@@ -801,6 +856,9 @@ class WindowsReadOnlyBackend:
         # FILE_READ_ATTRIBUTES / GENERIC_READ; OPEN_EXISTING only, no writes.
         access = 0x80 if directory else 0x80000000
         share = 3 if directory else 1
+        guard = _pinned_read_guard.get()
+        if not directory and guard is not None and guard(path):
+            share = 3
         handle = self.kernel.CreateFileW(path, access, share, None, 3, 0x02200000, None)
         if handle in (None, ctypes.c_void_p(-1).value):
             error = ctypes.get_last_error()
