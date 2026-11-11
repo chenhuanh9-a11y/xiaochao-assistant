@@ -1,4 +1,5 @@
 """Actual QtClient composition and its registered QML names; native/data fixtures only."""
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,7 @@ class RecaptureCompositionTests(unittest.TestCase):
         result = json.loads(run.stdout.strip().splitlines()[-1])
         self.assertEqual(result['registeredName'], 'clientCoordinator')
         self.assertTrue(result['receipt']['success'], result)
+        self.assertEqual(result['receipt']['action'], 'capture_now', result)
         self.assertEqual(result['newCaptures'], 1, result)
         self.assertEqual(result['focusRequests'], 1, result)
         self.assertEqual(result['qmlErrors'], [], result)
@@ -48,21 +50,25 @@ def composition():
                          difficult=lambda: fixtures.fixture_engine('difficult'))
     WORK_ROOT.mkdir(exist_ok=True)
     try:
-        with tempfile.TemporaryDirectory(prefix='qt-recapture-composition-', dir=WORK_ROOT) as directory:
+        with tempfile.TemporaryDirectory(prefix='qt-recapture-composition-', dir=WORK_ROOT) as directory, ExitStack() as cleanup:
             root = Path(directory)
             (root / '.qt-lab-owner').write_text('qt-quick-isolated-v1', encoding='utf-8')
             with patch('client_input.NativeShortcutBackend', side_effect=lambda *a, **k: NativeShortcutBackend(InputNative())), \
                  patch('client_capture.ClientCaptureProvider', return_value=fixture.capture), \
                  patch('client_imported_providers.build_imported_engine_factories', return_value=providers) as factory:
                 client = QtClient(APP, root, probe_output=root / 'probe-unused.json', info_fetch=lambda *a, **k: {})
+                cleanup.callback(client.shutdown)
                 factory.assert_called_once_with(client.resource_resolver, client.paths)
                 assert client.resource_resolver.root == client.paths.imported_resource_root
             for timer in (client.coordinator._foreground_timer, client.coordinator._tracking_timer):
                 timer.stop()
             def wait(predicate):
                 end = time.monotonic() + 8
-                while not predicate() and time.monotonic() < end:
-                    APP.processEvents(); time.sleep(.002)
+                while time.monotonic() < end:
+                    APP.processEvents()
+                    if predicate():
+                        return
+                    time.sleep(.002)
                 assert predicate(), 'actual QtClient service timeout'
             wait(lambda: not client.session.busy and not client.resources.busy
                  and not client.session.snapshot.get('resourceLocked'))

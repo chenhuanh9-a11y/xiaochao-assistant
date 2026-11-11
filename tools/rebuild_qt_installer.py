@@ -24,7 +24,7 @@ INSTALLER_ONLY_FILES = {
 
 
 def validate_managed_runtime_reuse(stage, prior, source):
-    """Bind candidate-only packaging to an already built matching runtime.
+    """Bind packaging to an already built matching runtime and resource policy.
 
     A mutable side profile alone is not evidence. Require the completed build's
     exact manifest and EXE hashes, release report, and compiled-source identity;
@@ -32,8 +32,18 @@ def validate_managed_runtime_reuse(stage, prior, source):
     """
     stage = Path(stage)
     projection = prior.get("fileProjection", {})
+    program_only = (projection.get('managedBaseManifest') is None
+                    and projection.get('policy') == build.RESOURCE_INSTALLATION_POLICY)
+    if program_only:
+        if (any(name not in projection or projection[name] is not None for name in (
+                'managedBaseManifest', 'managedBaseBundleId', 'managedBaseManifestSha256'))
+                or not prior.get('releaseReport', {}).get('executableSha256')):
+            raise ValueError('Program-only freeze receipt incomplete; perform a full freeze')
+        candidate = stage / '_internal/managed-base-resources'
+        if candidate.exists() or candidate.is_symlink() or candidate.is_junction():
+            raise ValueError('Retired base candidate is present in program-only stage; perform a full freeze')
     required = build.RESOURCE_INSTALLATION_POLICY["existingBasePlane"]
-    if (projection.get("policy", {}).get("existingBasePlane") != required
+    if not program_only and (projection.get("policy", {}).get("existingBasePlane") != required
             or projection.get("managedBaseManifest") != "_internal/managed-base-resources/manifest.json"
             or not projection.get("managedBaseManifestSha256")
             or not prior.get("releaseReport", {}).get("executableSha256")):
@@ -43,13 +53,14 @@ def validate_managed_runtime_reuse(stage, prior, source):
     changed = set(build._git("diff", "--name-only", compiled, source["commit"]).splitlines())
     if changed - INSTALLER_ONLY_FILES:
         raise ValueError("Compiled runtime changed; perform a full freeze")
-    manifest = build._local_file(stage, projection["managedBaseManifest"])
-    if build.sha256(manifest) != projection["managedBaseManifestSha256"]:
-        raise ValueError("Managed candidate manifest changed; perform a full freeze")
-    sys.path.insert(0, str(ROOT / "app"))
-    from managed_base_resources import _manifest
-    if _manifest(manifest)["bundleId"] != projection.get("managedBaseBundleId"):
-        raise ValueError("Managed candidate identity changed; perform a full freeze")
+    if not program_only:
+        manifest = build._local_file(stage, projection["managedBaseManifest"])
+        if build.sha256(manifest) != projection["managedBaseManifestSha256"]:
+            raise ValueError("Managed candidate manifest changed; perform a full freeze")
+        sys.path.insert(0, str(ROOT / "app"))
+        from managed_base_resources import _manifest
+        if _manifest(manifest)["bundleId"] != projection.get("managedBaseBundleId"):
+            raise ValueError("Managed candidate identity changed; perform a full freeze")
     executable = build._local_file(stage, prior["product"] + ".exe")
     report_path = build._local_file(stage, prior["releaseReport"]["file"])
     report = build._read(report_path)

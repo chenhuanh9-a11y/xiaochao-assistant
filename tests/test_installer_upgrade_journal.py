@@ -89,6 +89,48 @@ class InstallerUpgradeJournalTests(unittest.TestCase):
         self.assertEqual(journal.read_status(self.root, owner_sid=self.sid), {'status': 'not-needed'})
         self.assert_retained()
 
+    def test_program_only_lifecycle_has_explicit_mode_and_no_resource_transaction(self):
+        instance = journal.InstallerUpgradeJournal(self.root, **self.kwargs, resource_action='preserve')
+        prepared = instance.begin()
+        self.assertEqual(prepared['resourceAction'], 'preserve')
+        self.assertIsNone(prepared['resourceTransactionId'])
+        with self.assertRaisesRegex(journal.InstallerUpgradeError, 'resource-binding-forbidden'):
+            instance.bind_resource(self.tx, verify_resource=lambda _: True)
+        instance.start_native(verify_resource=lambda _: True)
+        with self.assertRaisesRegex(journal.InstallerUpgradeError, 'native-start-not-allowed'):
+            instance.start_native(verify_resource=lambda _: True)
+        instance.record_native_complete(self.evidence, verify_native=lambda *_: True)
+        result = instance.finish_complete(verify_native=lambda *_: True, verify_resource=lambda _: True)
+        self.assertEqual(result['status'], 'completed')
+        self.assertIsNone(result['resourceTransactionId'])
+        self.assertFalse(self.marker.exists())
+        self.assert_retained()
+
+    def test_program_only_cannot_be_reopened_as_legacy_reset(self):
+        instance = journal.InstallerUpgradeJournal(self.root, **self.kwargs, resource_action='preserve')
+        instance.begin()
+        with self.assertRaisesRegex(journal.InstallerUpgradeError, 'binding-mismatch'):
+            self.instance.status()
+        self.assertEqual(instance.status()['status'], 'prepared')
+
+    def test_legacy_unbound_transaction_does_not_become_program_only(self):
+        state = self.instance.begin()
+        self.assertNotIn('resourceAction', state)
+        with self.assertRaisesRegex(journal.InstallerUpgradeError, 'native-start-not-allowed'):
+            self.instance.start_native(verify_resource=lambda _: True)
+        other = journal.InstallerUpgradeJournal(self.root, **self.kwargs, resource_action='preserve')
+        with self.assertRaisesRegex(journal.InstallerUpgradeError, 'binding-mismatch'):
+            other.status()
+
+    def test_program_only_pre_native_abort_preserves_all_bytes(self):
+        instance = journal.InstallerUpgradeJournal(self.root, **self.kwargs, resource_action='preserve')
+        instance.begin()
+        result = instance.abort_pre_native(verify_resource=lambda _: True)
+        self.assertEqual(result['status'], 'aborted')
+        self.assertIsNone(result['resourceTransactionId'])
+        self.assertFalse(self.marker.exists())
+        self.assert_retained()
+
     def test_watcher_intent_default_is_false_not_inferred_from_files(self):
         (self.root / 'game-watcher.exe').write_bytes(b'not proof of user preference')
         self.assertIs(self.instance.begin()['restoreWatcher'], False)

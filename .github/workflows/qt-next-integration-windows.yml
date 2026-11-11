@@ -2,7 +2,7 @@ name: Qt next candidate joint Windows regression
 
 on:
   push:
-    branches: [integration/qt-next-20261102, integration/qt-pr84-88-20261103]
+    branches: [integration/qt-next-20261102, integration/qt-pr84-88-20261103, codex/pr133-p3-p4-p5-integration-20261111]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -226,7 +226,9 @@ jobs:
                 'test_imported_controls_profile',
                 'test_imported_s0_observation', 'test_identity_metadata_package_io',
                 'test_shared_structure_package_io', 'test_shared_version_package_io',
-                'test_entry_resource_io', 'test_export_native_base_package',
+                'test_entry_resource_io', 'test_main_entry_jobs', 'test_passport_entry_jobs', 'test_side_entry_jobs',
+                'test_side_pose_recovery_jobs',
+                'test_export_native_base_package',
                 'test_export_s0_difficult_native_base_package',
                 'test_export_s1_native_base_package', 'test_export_s1_nightmare_base_package',
                 'test_imported_native_base',
@@ -243,7 +245,7 @@ jobs:
             'packaging-imported-runtime' {
               $modules = @(
                 'test_s1_floor_observation', 'test_s1_map_ui_geometry',
-                'test_client_shared_reference_context',
+                'test_client_shared_reference_context', 'test_client_structure_unification', 'test_group_review_lifecycle',
                 'test_client_imported_providers', 'test_client_native_base_provider',
                 'test_client_imported_s1_provider',
                 'test_client_imported_difficult_provider', 'test_client_imported_difficult_activation_ui',
@@ -269,6 +271,7 @@ jobs:
             }
             'packaging-imported-display' {
               $modules = @(
+                'test_client_progressive_display', 'test_client_progressive_pixels',
                 'test_imported_author_displays',
                 'test_client_imported_author_activation', 'test_client_imported_author_selection'
               )
@@ -285,7 +288,7 @@ jobs:
             'author-snapshots' { $modules = @('test_author_deferred_decode', 'test_s1_author_loading_work', 'test_author_snapshot_removal', 'test_client_snapshot_removal', 'test_author_resource_snapshots', 'test_author_snapshot_history', 'test_client_author_history', 'test_client_author_history_page', 'test_generic_author_package', 'test_generic_author_affine', 'test_generic_author_windows_paths', 'test_resource_transaction', 'test_map_package_upgrade', 'test_map_package_summary', 'test_client_author_snapshots', 'test_client_author_snapshot_recovery', 'test_client_author_snapshot_page', 'test_client_package_manager', 'test_star_map_recovery_helper', 'test_client_resource_recovery_lease', 'test_client_resource_startup_recovery', 'test_client_additions_recovery', 'test_client_import_upgrade_parity', 'test_generic_author_consumers', 'test_generic_author_startup') }
             # Real temporary files and native lease probes; no Setup execution,
             # registry mutation, user installation, or game operation in CI.
-            'installer-reset' { $modules = @('test_addition_prepublication_recovery', 'test_linkless_package_publication', 'test_linkless_package_removal', 'test_linkless_download_adoption', 'test_download_cache_recovery', 'test_linkless_upgrade_reset', 'test_linkless_base_resources', 'test_resource_upgrade_reset', 'test_resource_reset_installer', 'test_resource_reset_snapshots', 'test_resource_reset_directory_history', 'test_resource_reset_legacy_protocol', 'test_upgrade_retirement', 'test_installer_committed_projection', 'test_installer_upgrade_journal', 'test_installer_upgrade_coordinator', 'test_installer_coordinator_guards', 'test_installer_native_observation', 'test_installer_native_formats', 'test_installer_program_inventory', 'test_native_evidence_budget', 'test_resource_transaction', 'test_managed_base_absent_rollback', 'test_qt_installer_directory', 'test_qt_installer_reuse_guard', 'test_qt_installer_projection', 'test_qt_game_watcher_packaging', 'test_uninstall_data_wizard', 'test_qt_startup_failures', 'test_qt_startup_user_messages', 'test_client_resource_startup', 'test_client_resource_startup_recovery', 'test_client_author_snapshot_recovery') }
+            'installer-reset' { $modules = @('test_addition_prepublication_recovery', 'test_linkless_package_publication', 'test_linkless_package_removal', 'test_linkless_download_adoption', 'test_download_cache_recovery', 'test_linkless_upgrade_reset', 'test_linkless_base_resources', 'test_resource_upgrade_reset', 'test_resource_reset_installer', 'test_resource_reset_snapshots', 'test_resource_reset_directory_history', 'test_resource_reset_legacy_protocol', 'test_upgrade_retirement', 'test_installer_committed_projection', 'test_installer_upgrade_journal', 'test_installer_upgrade_coordinator', 'test_installer_program_only', 'test_installer_coordinator_guards', 'test_installer_native_observation', 'test_installer_native_formats', 'test_installer_program_inventory', 'test_native_evidence_budget', 'test_resource_transaction', 'test_managed_base_absent_rollback', 'test_qt_installer_directory', 'test_qt_installer_reuse_guard', 'test_qt_installer_projection', 'test_qt_game_watcher_packaging', 'test_uninstall_data_wizard', 'test_qt_startup_failures', 'test_qt_startup_user_messages', 'test_client_resource_startup', 'test_client_resource_startup_recovery', 'test_client_author_snapshot_recovery') }
             # Generated pixels exercise real S0/S1 geometry; not real-game or end-to-end timing.
             'fit-simulation' { $modules = @('test_observation_residual_reuse', 'test_structure_cache_memory', 'test_idvb0059_runtime', 'test_idvb0059_retained_display', 'test_client_idvb0059_adapter', 'test_client_providers', 'test_feature_test_round_lock', 'test_s1_playtest_round_lock', 'test_s1_playtest_round_lock_qml', 'test_s1_formal_round_lock', 'test_s1_resources_changed_chain', 'test_s1_native_candidate_preview', 'test_wall_raster_local_distances', 'test_marker_implicit_domain', 'test_marker_occluded_structure', 'test_explicit_component_alignment', 'test_s1_scan_observation_reuse', 'test_s1_fit_diagnostics', 'test_s1_manual_alignment', 'test_s1_structure_selection', 'test_pose_prior_contract', 'test_s1_runtime_pose_prior', 'test_shared_recovery_residual_contract', 'test_diagnostic_redaction', 'test_diagnostic_evidence', 'test_g_cycle_replay', 'test_client_live_runtime') }
             'next-version-contracts' { $modules = @('test_g_cycle_evidence', 'test_g_cycle_replay', 'test_client_g_cycle_evidence', 'test_client_g_cycle_solver_input', 'test_client_g_cycle_reporter', 'test_client_g_cycle_recovery', 'test_client_g_cycle_admission', 'test_client_g_cycle_composition', 'test_managed_base_absent_rollback', 'test_legacy_receipt_startup_retention', 'test_managed_base_resources', 'test_s1_normal_resource_retirement.NormalRetirementTests', 'test_resource_compatibility', 'test_game_startup', 'test_game_startup_service', 'test_game_startup_control', 'test_qt_startup_state', 'test_qt_startup_splash', 'test_client_startup_splash', 'test_client_lazy_pages', 'test_client_performance', 'test_client_package_progress', 'test_qt_game_watcher_packaging', 'test_qt_installer_reuse_guard', 'test_qt_installer_projection', 'test_uninstall_data_wizard', 'test_mixed_retired_author_package') }

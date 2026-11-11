@@ -15,7 +15,6 @@ import subprocess
 import sys
 import uuid
 import xml.etree.ElementTree as ET
-import zipfile
 
 import build_qt_client as build
 from rebuild_qt_installer import validate_managed_runtime_reuse
@@ -65,30 +64,6 @@ def deduplicate_payload(output, inventory, support_root):
         path.unlink()
     return copies, dict(copiedProgramFiles=len(copies), omittedProgramBytes=omitted,
                         originalProgramFiles=len(inventory["files"]))
-
-
-def map_inputs(root, report_path):
-    """Use the accepted delivery's existing byte inventory, without repacking it."""
-    report = json.loads(Path(report_path).read_bytes())
-    packages, sources, seen = [], [], set()
-    for row in report["packages"]:
-        relative = Path(row["path"].replace("\\", "/"))
-        archive = build._local_file(root, relative.as_posix())
-        if archive.stat().st_size != row["outputBytes"] or build.sha256(archive) != row["sha256"]:
-            raise ValueError("Accepted map archive changed: " + str(relative))
-        with zipfile.ZipFile(archive) as zipped:
-            manifest = json.loads(zipped.read("map-package.json"))
-        package_id, season = manifest["packageId"], manifest.get("season", "s0")
-        if package_id in seen or season not in {"s0", "s1"}:
-            raise ValueError("Duplicate map identity or invalid season")
-        seen.add(package_id)
-        destination = "_installer-support/maps/" + relative.as_posix()
-        packages.append(dict(path=destination, bytes=row["outputBytes"], sha256=row["sha256"],
-                             packageId=package_id, season=season, versionedAuthor=True))
-        sources.append((archive, destination))
-    if not packages:
-        raise ValueError("Accepted map delivery is empty")
-    return packages, sources
 
 
 def stage_payload(stage, record, output, *, payload_stage=None, archive_from=None, ifw_bin=None):
@@ -143,15 +118,11 @@ def main():
     parser.add_argument("--ifw-bin", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--release", action="store_true", help="Portable distribution; no build-machine scope dependency")
-    parser.add_argument("--map-pack-root", type=Path)
-    parser.add_argument("--map-pack-report", type=Path, help="Accepted batch-report.json; verify ZIPs without modifying them")
     parser.add_argument("--payload-stage", type=Path, help="Reuse verified read-only staged build inputs on the same volume")
     parser.add_argument("--reuse-archive-from", type=Path, help="Reuse program archive from a hash-verified prior trial Setup; rebuild scripts/helper")
     args = parser.parse_args()
     if args.release and args.reuse_archive_from:
         parser.error("Release payload deduplication requires the original freeze or --payload-stage; compressed archive reuse is trial-only")
-    if bool(args.map_pack_root) != bool(args.map_pack_report) or (args.map_pack_root and not args.release):
-        parser.error("Map root and delivery report must be supplied together with --release")
     if build._git("status", "--porcelain").strip():
         raise ValueError("Build from a clean committed checkout")
     installer_source = build.source_identity(build._git("rev-parse", "HEAD"))
@@ -161,7 +132,7 @@ def main():
     from resource_transaction import _safe
     _safe(output)
     record = json.loads(args.build_record.read_bytes())
-    packages, map_sources = map_inputs(args.map_pack_root, args.map_pack_report) if args.map_pack_root else ([], [])
+    packages = []
     output.mkdir(parents=True)
     compiled, inventory = stage_payload(args.stage, record, output, payload_stage=args.payload_stage,
         archive_from=args.reuse_archive_from, ifw_bin=args.ifw_bin)
@@ -177,8 +148,8 @@ def main():
     policy_path = output / "qtifw-trial-policy.json"
     policy_path.write_text(json.dumps(policy, ensure_ascii=False), encoding="utf-8")
     # Small asInvoker helper, independent of the application's administrator EXE.
-    exclusions = [] if packages else ["--exclude-module", "numpy", "--exclude-module", "cv2"]
-    if args.release and not packages:
+    exclusions = ["--exclude-module", "numpy", "--exclude-module", "cv2"]
+    if args.release:
         exclusions += ["--exclude-module", "PIL"]
     subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir", "--console",
         "--name", "qtifw-trial-helper", "--paths", str(ROOT / "app"),
@@ -192,10 +163,6 @@ def main():
     program_copies, deduplication = [], None
     if args.release:
         program_copies, deduplication = deduplicate_payload(output, inventory, helper_root)
-        for archive, destination in map_sources:
-            copied = output / "packages" / DATA_PACKAGE / "data" / destination
-            copied.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(archive, copied)
     qrc = output / "trial.qrc"
     support_files = sorted(path.relative_to(helper_root).as_posix() for path in helper_root.rglob("*") if path.is_file())
     resource = ET.Element("RCC")

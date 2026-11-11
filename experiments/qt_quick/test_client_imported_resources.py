@@ -11,7 +11,7 @@ from unittest.mock import patch
 import zipfile
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QObject, QThread, Qt, QUrl, Signal
 from PySide6.QtGui import QGuiApplication
 from imported_resource_catalog import ResourceResolver
 from client_imported_resources import ImportedResourceService
@@ -122,6 +122,7 @@ class ImportedResourceServiceTests(unittest.TestCase):
         original = self.archive.read_bytes()
         self.import_zip()
         self.assertEqual(self.errors[-1]['errorCode'], 'legacy-format-unsupported')
+        self.assertEqual(self.service.message, '旧图包格式已停用，请获取新版资源包；已有文件已保留。')
         self.assertEqual(self.archive.read_bytes(), original)
         self.assertFalse((self.resolver.root / 'packages').exists())
         self.assertEqual(self.changes, [])
@@ -218,26 +219,45 @@ class ImportedResourceServiceTests(unittest.TestCase):
 
     def test_shutdown_drains_accepted_save_without_late_ui_completion(self):
         from imported_resource_inventory import list_saved_versions
-        published, release = threading.Event(), threading.Event()
+        class Publication(QObject):
+            reached = Signal()
+        publication, release = Publication(), threading.Event()
+        observed, scan_releases = [], []
+        saved_manifest = self.resolver.root / 'packages/fixture/v1/manifest.json'
+        def shutdown_after_publication():
+            try:
+                before = (self.service.pendingWrites, QThread.currentThread() == self.app.thread(),
+                          saved_manifest.is_file())
+                self.service.shutdown()
+                observed.append(before)
+            finally:
+                release.set()
+        publication.reached.connect(shutdown_after_publication, Qt.QueuedConnection)
         def read_after_publication(*args, **kwargs):
-            published.set()
-            if not release.wait(5):
+            publication.reached.emit()
+            released = release.wait(5)
+            scan_releases.append(released)
+            if not released:
                 raise AssertionError('fixture did not release saved-version scan')
             return list_saved_versions(*args, **kwargs)
         with patch('imported_resource_inventory.list_saved_versions', side_effect=read_after_publication):
             self.service.importArchive(QUrl.fromLocalFile(str(self.archive)).toString())
             try:
-                self.assertTrue(published.wait(3))
-                self.assertTrue(self.service.pendingWrites)
-                self.service.shutdown()
+                # Drive the same event loop as the UI while the real archive
+                # is validated. Publication, rather than import duration,
+                # determines when the shutdown under test takes place.
+                self.wait()
             finally:
                 release.set()
                 self.service.pool.waitForDone()
                 self.app.processEvents()
+        self.assertEqual(observed, [(True, True, True)])
+        self.assertEqual(scan_releases, [True])
         self.assertFalse(self.service.pendingWrites)
+        self.assertEqual(self.errors, [])
         self.assertEqual(self.completions, [])
         self.assertEqual(self.changes, [])
-        self.assertTrue((self.resolver.root / 'packages/fixture/v1/manifest.json').is_file())
+        self.assertTrue(saved_manifest.is_file())
 
 
 if __name__ == '__main__':

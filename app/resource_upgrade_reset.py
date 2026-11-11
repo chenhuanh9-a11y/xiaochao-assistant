@@ -463,7 +463,9 @@ def _classify(root, rows):
     return result, sorted(package_ids)
 
 
-def _plan_locked(root, candidate_directory=None, target_identity=None):
+def assert_resource_upgrade_ready(root):
+    """Read-only admission shared by legacy reset and program-only Setup."""
+    root = _root(root)
     assert_resources_ready(root)
     if files._target(root, PENDING).exists():
         raise ResourceResetError('resource-reset-recovery-required')
@@ -472,6 +474,10 @@ def _plan_locked(root, candidate_directory=None, target_identity=None):
     blocked = [name for name in handoffs if files._target(root, 'work/map-packages/' + name).exists()]
     if blocked:
         raise ResourceResetError('resource-reset-handoff-pending', paths=blocked)
+
+
+def _plan_locked(root, candidate_directory=None, target_identity=None):
+    assert_resource_upgrade_ready(root)
     _directory, manifest = _candidate(root, candidate_directory)
     directories = []
     rows, packages = _classify(root, _scan_tree(root, directories))

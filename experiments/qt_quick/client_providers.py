@@ -132,7 +132,7 @@ class SharedReferenceProvider:
 
 
 def attach_structure_scanner(engine, catalog, *, private_fit=None):
-    """Attach the existing S1 scanner without choosing any resource fallback.
+    """Attach the shared scanner without choosing any resource fallback.
 
     Legacy private coordinates are supplied by their owning provider. Imported
     bases can use the same scanner with only their checked shared references.
@@ -149,6 +149,8 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
                        preferred_material_committed=None, private_coordinate_report=None, planned_map_ids=None,
                        first_material_committed=None, pose_priors=None, collect_fit_diagnostics=False):
         check_current()
+        if not getattr(engine, 'qt_rank_ready', True):
+            raise ProviderUnavailable(';'.join(getattr(engine, 'qt_rank_gaps', ())) or 'recognition-rank-unavailable')
         from client_live_runtime import _AlignmentHost
         host = _AlignmentHost(engine, pose_priors=pose_priors,
             collect_fit_diagnostics=collect_fit_diagnostics)
@@ -187,8 +189,10 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
         engine.last_difficult_evidence = {key: value for key, value in report.items() if key != "poses"}
         return StructureCandidateScanner.rank_rows(report, engine.pack)
 
-    engine.qt_s1_structure_scan = structure_scan
-    engine.qt_s1_structure_rank = structure_rank
+    engine.qt_structure_scan = structure_scan
+    if catalog.season == 's1':
+        engine.qt_s1_structure_scan = structure_scan
+        engine.qt_s1_structure_rank = structure_rank
     return engine
 
 

@@ -225,7 +225,7 @@ class ProductionS1BuilderTests(unittest.TestCase):
         self.assertEqual(build.INSTANCES['production']['appId'], 'D04394A0-DACE-4FF9-874D-3DCB43EE53D1')
         self.assertEqual(build.INSTANCES['production']['versionSuffix'], '')
 
-    def test_enabled_projection_stages_only_candidate_and_real_repair_preserves_user_bytes(self):
+    def test_enabled_projection_omits_candidate_and_historical_repair_preserves_user_bytes(self):
         self.enable_fixture()
         stage, output = self.root / 'stage', self.root / 'output'
         shutil.copytree(self.resources, stage / '_internal'); output.mkdir()
@@ -236,16 +236,26 @@ class ProductionS1BuilderTests(unittest.TestCase):
         active_s1 = {'_internal/' + name for name in self.s1}
         self.assertTrue(active_s1 <= set(report['families']['base']))
         self.assertFalse(active_s1 & set(report['installedFiles']))
-        self.assertTrue({managed.CANDIDATE + '/payload/' + name for name in active_s1} <= set(report['installedFiles']))
+        self.assertFalse(any(name.startswith(managed.CANDIDATE + '/') for name in report['installedFiles']))
         self.assertFalse(any(name.startswith('work/') for name in report['installedFiles']))
-        manifest = json.loads((stage / report['managedBaseManifest']).read_text())
-        self.assertTrue(active_s1 <= {row['path'] for row in manifest['files']})
+        self.assertIsNone(report['managedBaseManifest'])
         fixture = projection_fixture.InstallerProjectionTests(); fixture.stage, fixture.include = stage, include
         installed = self.root / 'installed'
         user = installed / 'work/nightmare-memory/ui-settings.json'
         user.parent.mkdir(parents=True); user.write_bytes(b'preserve-settings')
         fixture.apply_generated_projection(installed)
         self.assertFalse(any((installed / name).exists() for name in active_s1))
+        # Historical recovery still consumes its original candidate contract;
+        # the current Setup projection above no longer produces that contract.
+        legacy_rows = [dict(path='_internal/' + name, **row) for name, row in self.rows.items()
+                       if build.resource_file_family('_internal/' + name) == 'base']
+        manifest = managed.manifest_for_rows(legacy_rows, TARGET_VERSION)
+        candidate = installed / managed.CANDIDATE
+        for row in legacy_rows:
+            target = candidate / 'payload' / row['path']
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(self.resources / row['path'][len('_internal/'):], target)
+        (candidate / 'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
         result = managed.repair_managed_base_resources(installed)
         self.assertEqual(result['status'], 'repaired')
         self.assertEqual(user.read_bytes(), b'preserve-settings')
