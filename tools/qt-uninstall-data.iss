@@ -4,6 +4,9 @@
 #ifndef UninstallHelperInventorySHA256
   #error UninstallHelperInventorySHA256 is required; perform a full helper freeze
 #endif
+#ifndef UninstallOwnershipSHA256
+  #error UninstallOwnershipSHA256 is required; build the final program ownership list
+#endif
 type
   { Inno 6.7.3 uses a 32-bit loader, including x64-compatible installations. }
   TUninstallStartup = record
@@ -30,6 +33,38 @@ var
   UninstallMayHaveChanged, UninstallCleanupComplete: Boolean;
   UninstallProcessUncertain: Boolean;
   UninstallAttempt: Integer;
+  RecoveryForm: TSetupForm;
+  RecoveryStatus: TNewStaticText;
+  RecoveryLeaseRoot: String;
+
+function ContinueUninstallRecovery(FromSetup: Boolean): Boolean; forward;
+
+function HasUninstallRecovery: Boolean;
+var Key: String;
+begin
+  Key := 'Software\Xingtu\UninstallRecovery\' + ExpandConstant('{#InstallerAppId}');
+#ifdef ProductionInstaller
+  Result := RegKeyExists(HKCU64, Key);
+#else
+  Result := RegKeyExists(HKLM64, Key);
+#endif
+end;
+
+function UninstallRecoveryIsPrepared: Boolean;
+var Key, State: String; Root: Integer;
+begin
+  { This only restricts entry; it never grants deletion. The helper validates
+    the complete registration again under its verified live lease. Unknown or
+    unreadable state conservatively goes to the matching Setup. }
+  Key := 'Software\Xingtu\UninstallRecovery\' + ExpandConstant('{#InstallerAppId}');
+#ifdef ProductionInstaller
+  Root := HKCU64;
+#else
+  Root := HKLM64;
+#endif
+  Result := RegQueryStringValue(Root, Key, 'State', State) and
+    (Pos('"phase":"prepared"', State) > 0);
+end;
 
 function UninstallCreateFile(Path: String; Access, Sharing, Security,
   Disposition, Flags, Template: LongWord): THandle;
@@ -95,6 +130,12 @@ end;
 function InitializeSetup: Boolean;
 begin
   Result := AcquireInstallerMaintenance;
+  if Result and HasUninstallRecovery then begin
+    { Recovery owns this invocation. Never fall through into upgrade/preserve,
+      even on cancel, corrupt credentials, wrong build, or failed cleanup. }
+    ContinueUninstallRecovery(True);
+    Result := False;
+  end;
 end;
 
 procedure UninstallPumpMessages;
@@ -147,6 +188,9 @@ begin
       if (State <> 258) or (UninstallTicks - Started >= Timeout) then Break;
       if Form <> nil then
         Form.StatusLabel.Caption := Caption + '（已等待 ' +
+          IntToStr((UninstallTicks - Started) div 1000) + ' 秒）';
+      if RecoveryStatus <> nil then
+        RecoveryStatus.Caption := '正在核对本次卸载的剩余项并清理…（已等待 ' +
           IntToStr((UninstallTicks - Started) div 1000) + ' 秒）';
       UninstallPumpMessages;
     until False;
@@ -284,12 +328,20 @@ begin
 end;
 
 procedure AcquireUninstallLease;
-var Path: String;
+var Path: String; Disposition: LongWord;
 begin
   Path := ExpandConstant('{app}\work\map-packages\import.lock');
-  if not UninstallSafeAbsolute(Path) or not ForceDirectories(ExtractFileDir(Path)) then
+  if not UninstallSafeAbsolute(Path) then
     RaiseException('安装路径含链接或无法访问，尚未开始卸载。');
-  UninstallLease := UninstallCreateFile(Path, $C0010000, 0, 0, 4, $80, 0);
+  Disposition := 4;
+  if HasUninstallRecovery then begin
+    { Never recreate a deleted lock tail around an existing transaction. }
+    if not UninstallRecoveryIsPrepared or not FileExists(Path) then
+      RaiseException('已有未完成的卸载，请关闭当前窗口，再打开卸载时的同一份安装包继续清理。');
+    Disposition := 3;
+  end else if not ForceDirectories(ExtractFileDir(Path)) then
+    RaiseException('无法取得本安装的资料目录，尚未开始卸载。');
+  UninstallLease := UninstallCreateFile(Path, $C0010000, 0, 0, Disposition, $80, 0);
   if UninstallLease = THandle(-1) then begin
     UninstallLease := 0;
     RaiseException('星图或资源任务正在使用资料，请关闭任务后重试。');
@@ -311,6 +363,9 @@ begin
     not UninstallSafeAbsolute(UninstallResultRoot) or
     not CreateDir(UninstallRunnerRoot) or not CreateDir(UninstallResultRoot) then
     RaiseException('无法创建独立的卸载检查目录，尚未删除资料。');
+  if not FileCopy(Inventory, UninstallRunnerRoot + '\_uninstall-helper-files.txt', True) or
+    (GetSHA256OfFile(UninstallRunnerRoot + '\_uninstall-helper-files.txt') <> '{#UninstallHelperInventorySHA256}') then
+    RaiseException('无法保留已核实的继续清理库存，尚未删除资料。');
   for I := 0 to GetArrayLength(Lines) - 1 do begin
     if (Length(Lines[I]) < 66) or (Copy(Lines[I], 65, 1) <> ' ') then
       RaiseException('卸载检查程序的文件清单无效。');
@@ -346,7 +401,19 @@ begin
     ' --result-directory ' + AddQuotes(UninstallResultRoot) +
     ' --parent-pid ' + IntToStr(UninstallCurrentPid) + ' --parent-created ' + IntToStr(Created) +
     ' --parent-executable ' + AddQuotes(ParentImage) + ' --parent-sha256 ' + GetSHA256OfFile(ParentImage) +
-    ' --lock-handle ' + IntToStr(UninstallLease) + ' --timeout-seconds 120';
+    ' --lock-handle ' + IntToStr(UninstallLease) + ' --timeout-seconds 120' +
+    ' --helper-inventory-sha256 {#UninstallHelperInventorySHA256}' +
+    ' --program-ownership-sha256 {#UninstallOwnershipSHA256}' +
+    ' --shortcut ' + AddQuotes(ExpandConstant('{group}\{#InstallerAppName}.lnk')) +
+    ' --shortcut ' + AddQuotes(ExpandConstant('{autodesktop}\{#InstallerAppName}.lnk')) +
+    ' --shortcut-group ' + AddQuotes(ExpandConstant('{group}'));
+#ifdef ProductionInstaller
+  Params := Params + ' --shortcut ' + AddQuotes(ExpandConstant('{group}\卸载星图.lnk')) +
+    ' --shortcut ' + AddQuotes(ExpandConstant('{group}\卸载星图（保留个人资料）.lnk')) +
+    ' --shortcut ' + AddQuotes(ExpandConstant('{userdesktop}\第五人格小抄助手.lnk')) +
+    ' --shortcut ' + AddQuotes(ExpandConstant('{userprograms}\第五人格小抄助手\第五人格小抄助手.lnk')) +
+    ' --shortcut-group ' + AddQuotes(ExpandConstant('{userprograms}\第五人格小抄助手'));
+#endif
   Code := -1;
   PreviouslyChanged := UninstallMayHaveChanged;
   UninstallMayHaveChanged := True;
@@ -364,12 +431,115 @@ begin
     Detail := UninstallReadText(UninstallResultRoot + '\error.txt') +
       UninstallReadText(UninstallResultRoot + '\remaining.txt');
     Log('UNINSTALL_FULL_CLEAR_FAILED ' + Detail);
-    if UninstallSafeAbsolute(ExpandConstant('{app}\.xingtu-uninstall-failed.txt')) then
+    if not HasUninstallRecovery and UninstallSafeAbsolute(ExpandConstant('{app}\.xingtu-uninstall-failed.txt')) then
       SaveStringToFile(ExpandConstant('{app}\.xingtu-uninstall-failed.txt'), Detail, False);
     RaiseException('资料尚未全部清除，程序卸载尚未开始。已删除的部分不能自动撤回。' + #13#10 +
       GetIniString('result', 'message', '请关闭相关任务并核对剩余项，再重试；安装文件缺失时用对应安装包修复。', Receipt));
   end;
   Log('UNINSTALL_OWNED_DATA_CLEARED_BEFORE_NATIVE');
+end;
+
+function ContinueUninstallRecovery(FromSetup: Boolean): Boolean;
+var Params, ParentImage, Inventory, Relative, Source, Digest, Detail: String;
+  Lines: TArrayOfString; I, Code: Integer; Size: LongWord;
+  Created, Exited, KernelTime, UserTime: Int64;
+begin
+  Result := False;
+  if UninstallProcessUncertain then Exit;
+  if FromSetup then begin
+    if WizardSilent then Exit;
+    if SuppressibleMsgBox('上次卸载尚未完成。本安装包可以核对并继续清理那次卸载留下的程序和入口。' + #13#10 +
+      '只处理卸载前已核实的对象；归属不明或被替换的项目会保留并停止。本次不会安装新版本。继续清理？',
+      mbConfirmation, MB_YESNO, IDNO) <> IDYES then Exit;
+  end;
+  try
+    if FromSetup then begin
+      ExtractTemporaryFiles('{tmp}\xingtu-native-recovery\*');
+      UninstallRunnerRoot := ExpandConstant('{tmp}\xingtu-native-recovery');
+    end;
+    Inventory := UninstallRunnerRoot + '\_uninstall-helper-files.txt';
+    if not FileExists(Inventory) then begin
+      { The original uninstaller's verified runtime did not need the text
+        inventory at execution time; retain its verified copy for continuation. }
+      Inventory := ExpandConstant('{app}\_uninstall-helper-files.txt');
+    end;
+    if not UninstallSafeAbsolute(Inventory) or
+      (GetSHA256OfFile(Inventory) <> '{#UninstallHelperInventorySHA256}') or
+      not LoadStringsFromFile(Inventory, Lines) or (GetArrayLength(Lines) = 0) then
+      RaiseException('对应安装包的清理程序无法验证，请保留剩余项并使用卸载时的同一份安装包。');
+    for I := 0 to GetArrayLength(Lines) - 1 do begin
+      if (Length(Lines[I]) < 66) or (Copy(Lines[I], 65, 1) <> ' ') then
+        RaiseException('清理程序的文件清单无效。');
+      Digest := Copy(Lines[I], 1, 64);
+      Relative := Copy(Lines[I], 66, Length(Lines[I]));
+      if (Pos('..', Relative) > 0) or (Pos(':', Relative) > 0) or
+        (Pos('/', Relative) > 0) or (Relative[1] = '\') or
+        ((CompareText(Relative, 'star-map-uninstall-helper.exe') <> 0) and
+         (Pos('_star_map_uninstall_runtime\', Relative) <> 1)) then
+        RaiseException('清理程序含无效相对路径。');
+      Source := AddBackslash(UninstallRunnerRoot) + Relative;
+      if not UninstallSafeAbsolute(Source) or not FileExists(Source) or
+        (GetSHA256OfFile(Source) <> Digest) then RaiseException('对应安装包的清理程序已变化，已停止。');
+    end;
+    UninstallAttempt := UninstallAttempt + 1;
+    UninstallResultRoot := ExpandConstant('{tmp}\xingtu-recovery-result-') + IntToStr(UninstallAttempt);
+    RecoveryLeaseRoot := ExpandConstant('{tmp}\xingtu-recovery-lease-') + IntToStr(UninstallAttempt);
+    if not UninstallSafeAbsolute(UninstallResultRoot) or not CreateDir(UninstallResultRoot) or
+      not UninstallSafeAbsolute(RecoveryLeaseRoot) or not CreateDir(RecoveryLeaseRoot) or
+      not ForceDirectories(RecoveryLeaseRoot + '\work\map-packages') then
+      RaiseException('无法创建独立的继续清理目录，已停止。');
+    UninstallLease := UninstallCreateFile(RecoveryLeaseRoot + '\work\map-packages\import.lock',
+      $C0010000, 0, 0, 4, $80, 0);
+    if UninstallLease = THandle(-1) then begin
+      UninstallLease := 0;
+      RaiseException('继续清理的资源锁无法取得，已停止。');
+    end;
+    SetLength(ParentImage, 32768);
+    Size := UninstallModuleName(0, ParentImage, 32768);
+    if (Size = 0) or (Size >= 32768) or not UninstallProcessTimes(UninstallCurrentProcess,
+      Created, Exited, KernelTime, UserTime) then RaiseException('当前清理进程无法核实，已停止。');
+    SetLength(ParentImage, Size);
+    Params := '--recover --install-root ' + AddQuotes('@registered') +
+      ' --result-directory ' + AddQuotes(UninstallResultRoot) +
+      ' --recovery-lease-root ' + AddQuotes(RecoveryLeaseRoot) +
+      ' --helper-inventory-sha256 {#UninstallHelperInventorySHA256}' +
+      ' --parent-pid ' + IntToStr(UninstallCurrentPid) + ' --parent-created ' + IntToStr(Created) +
+      ' --parent-executable ' + AddQuotes(ParentImage) + ' --parent-sha256 ' + GetSHA256OfFile(ParentImage) +
+      ' --lock-handle ' + IntToStr(UninstallLease) + ' --timeout-seconds 120';
+    if FromSetup then begin
+      RecoveryForm := CreateCustomForm(480, 100, True, True);
+      RecoveryForm.Caption := '继续卸载星图';
+      RecoveryForm.Position := poScreenCenter;
+      RecoveryStatus := TNewStaticText.Create(RecoveryForm);
+      RecoveryStatus.Parent := RecoveryForm;
+      RecoveryStatus.SetBounds(ScaleX(20), ScaleY(24), ScaleX(440), ScaleY(60));
+      RecoveryStatus.WordWrap := True;
+      RecoveryStatus.Caption := '正在核对本次卸载的剩余项并清理…';
+      RecoveryForm.Show;
+    end;
+    if not RunBoundedUninstallProcess(UninstallRunnerRoot + '\star-map-uninstall-helper.exe',
+      Params, UninstallRunnerRoot, 135000, Code) then begin
+      if UninstallProcessUncertain then
+        RaiseException('尚未确认清理程序停止。现在不要重试或启动星图，请重启电脑后重新打开对应安装包。');
+      RaiseException('清理程序已停止，但没有取得完成结果。请关闭本安装的资源任务后重新打开对应安装包。');
+    end;
+    Detail := UninstallReadText(UninstallResultRoot + '\error.txt') +
+      UninstallReadText(UninstallResultRoot + '\remaining.txt');
+    if (Code <> 0) or (GetIniString('result', 'status', '', UninstallResultRoot + '\result.ini') <> 'cleared') or
+      HasUninstallRecovery then RaiseException('卸载尚未全部完成。' + #13#10 +
+        GetIniString('result', 'message', '请保留剩余项并联系星图维护者核对。', UninstallResultRoot + '\result.ini') + #13#10 + Detail);
+    Result := True;
+    if FromSetup then SuppressibleMsgBox('本次卸载的程序、资料、入口和恢复登记已核对清理完成。', mbInformation, MB_OK, IDOK);
+  except
+    Log('UNINSTALL_RECOVERY_STOPPED ' + GetExceptionMessage);
+    SuppressibleMsgBox(GetExceptionMessage, mbError, MB_OK, IDOK);
+  end;
+  ReleaseUninstallLease;
+  RecoveryStatus := nil;
+  if RecoveryForm <> nil then begin
+    RecoveryForm.Free;
+    RecoveryForm := nil;
+  end;
 end;
 
 function InitializeUninstall: Boolean;
@@ -378,6 +548,10 @@ begin
   if not AcquireInstallerMaintenance then Exit;
   if not UninstallSafeAbsolute(ExpandConstant('{app}')) then begin
     SuppressibleMsgBox('安装路径含链接或无法访问，卸载未开始。', mbError, MB_OK, IDOK);
+    Exit;
+  end;
+  if HasUninstallRecovery and not UninstallRecoveryIsPrepared then begin
+    SuppressibleMsgBox('资料已经清除或恢复状态尚未核实。请关闭当前窗口，再打开卸载时的同一份安装包，按提示继续清理；不会重新创建资料或资源锁。', mbError, MB_OK, IDOK);
     Exit;
   end;
   if FileExists(ExpandConstant('{app}\work\pending-installer-upgrade.json')) or
@@ -407,27 +581,14 @@ begin
   UninstallCloseHandle(Handle);
 end;
 
-function UninstallNativeEntriesGone: Boolean;
-var Key: String;
-begin
-  Key := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' +
-    ExpandConstant('{#InstallerAppId}_is1');
-#ifdef ProductionInstaller
-  Result := not RegKeyExists(HKCU64, Key) and not RegKeyExists(HKCU32, Key) and
-    not FileExists(ExpandConstant('{group}\卸载星图.lnk'));
-#else
-  Result := not RegKeyExists(HKLM64, Key) and not RegKeyExists(HKLM32, Key);
-#endif
-  Result := Result and not FileExists(ExpandConstant('{group}\{#InstallerAppName}.lnk')) and
-    not FileExists(ExpandConstant('{autodesktop}\{#InstallerAppName}.lnk'));
-end;
-
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var Reason, Path: String;
 begin
   if CurUninstallStep = usUninstall then begin
     repeat
     try
+    if HasUninstallRecovery and not UninstallRecoveryIsPrepared then
+      RaiseException('资料已经清除，请关闭当前窗口，再打开卸载时的同一份安装包继续清理。');
     UninstallProgressForm.StatusLabel.Caption := '正在核对本安装和文件占用…';
     CheckUninstallExecutable(ExpandConstant('{app}\{#InstallerExeName}'));
     CheckUninstallExecutable(ExpandConstant('{app}\第五人格小抄助手.exe'));
@@ -457,6 +618,10 @@ begin
         SuppressibleMsgBox(Reason, mbError, MB_OK, IDOK);
         Abort;
       end;
+      if HasUninstallRecovery and not UninstallRecoveryIsPrepared then begin
+        SuppressibleMsgBox(Reason, mbError, MB_OK, IDOK);
+        Abort;
+      end;
       if UninstallSilent or (SuppressibleMsgBox(Reason + #13#10 +
         '必要的卸载入口已保留。处理原因后可重试，或取消后稍后重新卸载。',
         mbError, MB_RETRYCANCEL, IDCANCEL) <> IDRETRY) then Abort;
@@ -467,12 +632,12 @@ begin
   if CurUninstallStep = usPostUninstall then begin
     { Native failures cannot be rolled back here. Never consume unknown neighbours. }
     Path := ExpandConstant('{app}');
-    if not UninstallSafeAbsolute(Path) or FileExists(Path) or
-      (DirExists(Path) and not RemoveDir(Path)) then
-      SuppressibleMsgBox('卸载尚未全部完成：下面的位置仍有剩余项或无法移除，卸载入口可能已移除。请保留并核对剩余项，联系星图维护者处理；当前安装包不会接管未登记的非空目录。' + #13#10 + Path, mbError, MB_OK, IDOK)
-    else if not UninstallNativeEntriesGone then
-      SuppressibleMsgBox('卸载尚未全部完成：安装登记或快捷方式仍有剩余项，不能确认卸载入口仍可用。请保留现状，联系星图维护者核对后处理。', mbError, MB_OK, IDOK)
-    else UninstallCleanupComplete := True;
+    { The separate registration survives deletion of Inno's own entry. Even
+      an apparently empty native tail needs the independent continuation check. }
+    UninstallCleanupComplete := ContinueUninstallRecovery(False);
+    if not UninstallCleanupComplete then
+      SuppressibleMsgBox('卸载尚未全部完成。请关闭相关资源任务后重新打开卸载时的同一份安装包，按提示继续清理；恢复记录会保留。' + #13#10 + Path,
+        mbError, MB_OK, IDOK);
   end;
   if CurUninstallStep = usDone then begin
     if UninstallCleanupComplete then
