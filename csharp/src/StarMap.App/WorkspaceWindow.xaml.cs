@@ -129,6 +129,8 @@ public partial class WorkspaceWindow : Window
     {
         var panel = new StackPanel();
         runtimePage = new RuntimePage(runtimeCapture, message => Status.Text = message,dataRoot);
+        runtimePage.ManualPickerScopeChanged = RefreshInputScope;
+        runtimePage.PlaceManualPicker = PlaceManualPicker;
         connectionPage = new ConnectionPage(message => Status.Text = message, runtimeCapture);
         connectionPage.BindingChanged += runtimePage.BindingChanged;
         connectionPage.BindingChanged += RefreshInputScope;

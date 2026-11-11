@@ -53,6 +53,7 @@ public partial class WorkspaceWindow
             && (focus is TextBoxBase or PasswordBox || focus is ComboBox { IsEditable: true });
         bool editing = scope.ForegroundIsAssistant && (hotkey.IsKeyboardFocusWithin || actionHotkeys.Any(editor => editor.IsKeyboardFocusWithin));
         return new(scope with { GameWindowExists = valid, TextEntryActive = ownText, EditingBindings = editing },
+            PickerKeys: runtimePage?.ManualPickerKeys,
             BindingGeneration: binding?.Generation ?? 0, LocalPanelWindow: new WindowInteropHelper(this).Handle.ToInt64(),
             PointerTarget:valid && !settingsBusy && !resourcesBusy && runtimePage?.GamePointerContextSlot is { } slot
                 ?new(scope.GameWindow,"runtime-slot",0,slot):null,AllowPointerIntentPress:true);
@@ -160,11 +161,12 @@ public partial class WorkspaceWindow
         var pointerIntent=delivery.PointerIntentPress is { } press?runtimePage?.HandleGamePointerIntent(press):null;
         if(delivery.Pointer is { } pointer && (pointer.Phase!="down" || pointerIntent is {Success:false,Reason:"not-floor-control",CloseControlHit:false}))
             runtimePage?.HandleGamePointer(pointer);
+        if (delivery.Dispatch.PickerKey is { } pickerKey) runtimePage?.HandleManualPickerKey(pickerKey);
         foreach (var action in delivery.Dispatch.Actions)
         {
             if (action == "toggle-panel") { TogglePanel(); continue; }
             if (action == "toggle-sheet-visibility") { _ = ToggleAlignedVisibility(); continue; }
-            if (action == "manual-map-picker") { Status.Text = "手动选图快捷面板仍在迁移，请在主页面确认地图。"; continue; }
+            if (action == "manual-map-picker") { runtimePage?.ToggleManualPicker(); continue; }
             bool starts = action == "start-round" || action == "toggle-round" && runtimePage?.State?.RoundActive != true;
             if (starts && (settingsBusy || resourcesBusy)) { Status.Text = "请等待设置完成，再开始本局。"; continue; }
             runtimePage?.HandleShortcut(action, delivery.Notification.Key?.CreatedAtSeconds);

@@ -13,7 +13,7 @@
 | 启动/主窗口与持久页面 | tools/qt_client_entry.py → qt_quick/client.py / Client.qml | 实际 WPF 构造/持久页面回归通过；真实界面验收待完成，未接入页面有明确状态 |
 | 资源图库、图包、按层结构 | client_providers.py / shared_structure_reference.py / client_resources.py | 只读 catalog/NPZ 已实施；15 个跨模式/楼层代表与 NumPy 回读一致，15 个类型/坐标/wall 反例及 20 个非 object JSON 反例通过；轮廓回退、解码预算、坏图/缺结构/文件占用恢复有实际入口回归；图包安装/版本锁与完整 provider 待接入 |
 | 设置与自定义路线 | client_settings.py / client_custom_gallery.py / client_paths.py | 实验副本、批量/单字段保存与原件保护已接；坏尾项显式解绑、未选中坏原值保留、其他草稿隔离、忙写/冲突有真实文件回归；实际 WPF 保存期间编辑及导入编辑禁用/恢复通过；图库编辑与运行消费待完成 |
-| 手动选图浮层 | client_manual_map_service.py / manual_map_picker_core.py / ClientMapPicker.qml | WPF 内联候选与手动确认已接；默认候选显示资源声明名称，确认前后身份与贴合分离。旧版带缩略图的非激活两阶段浮层、分组与四键分页仍缺，手选热键入口仍是提示，不能以 ComboBox 代替功能完成 |
+| 手动选图浮层 | client_manual_map_service.py / manual_map_picker_core.py / ClientMapPicker.qml | 非激活 Tool 浮层、原分组与四项分页、缩略图、按钮及既有手选快捷键已接，确认沿真实 Session；S1 只在手动贴合会话可用。四组目录对照原 Python，实际控件及迟到资源/图片回归已接；原生游戏焦点与按键仍待独立 Setup 实测。内联确认另保留，不以其代替浮层 |
 | 捕获、窗口绑定与输入 | client_capture.py / client_native_keys.py / client_input.py | 11/09 生产 GDI 完整客户区实采 1334×750；WGC 三轮软件呈现自有窗口及取消/关闭 12 项通过，默认硬件呈现同窗口仍白/黑帧失败，未证明游戏 WGC；pass-through 模块 408 项和 WPF 主机 46 项离线检查通过，早期原生启动/停止通过；WPF 已接显式监听、设置切代、本局操作和默认 F11/主页显隐，构造不监听。当前组合尚未完成真实按键/游戏验收 |
 | 楼层/开图准备 | client_live_runtime.py / map_open_preparation.py / floor_contract.py | 37 项真实/合成边界及全部 S0 251 张原始客户区的观察结果与原 Python 严格一致；S1 当前真实输入由全 154 张组件回放及连续 Runtime 样本覆盖。map/foreground-return 准备沿原 1.05s/50ms/最多 21 probe；普通 capture_now 单次观察。超时未知楼层的正地图帧仍供人工修正，晚到可用楼层不绕过期限；有原 Runtime 真实晚采集对照及 C# 修前失败/修后回归。不是实机准备延迟验收 |
 | 身份与入口竞争 | map_identity_engine.py / difficult_entry_identity.py / difficult_side_entry_identity.py / front_door_recognition.py | S0 原 passport/main/side/source-advisory/native/登记组模块的 251 张当前原图组件对照零差异；默认运行入口现按用户要求由可靠门图标进入持续索引，否则保留普通识别。临时候选与身份分开；S1 正支持也不充当唯一身份。组内成员选择已接独立目标贴合、WPF 素材回执与同锁提交，手选跨层保留。强冲突观测及配置 source store 时的 SIFT producer 仍缺 |
@@ -25,6 +25,20 @@
 | 自包含 Setup/数据迁移/升级回退 | 当前 Python 安装更新流程 | 待交付完整实验 Setup；干净 Windows/中断/回退仍缺可恢复环境 |
 
 状态随实现与证据更新，不因页面存在就改为功能完成。每次交付记录源提交、资源来源、真实输入、构建、GUI 与未测项。Python 原件、玩家数据和历史失败证据保持可恢复。
+
+### 手动选图浮层
+
+`ManualMapPickerState` 保留原顺序、名字前缀／direction 分组、四项分页、单组直达、返回原组页以及 F1–F4、PgUp/PgDn、Backspace、Esc。实际窗口置顶、不激活、不穿透，保持四个选项控件实例；导航可用性来自状态而非解析文案。主页面按钮与已有手选动作共用入口，显示期间才注册 picker keys；Esc 仍同时走原关图语义。S1 自动局不能进入手选浮层，需先开始手动贴合会话。选图接受后关闭浮层，身份和后续新采集／贴合继续由 Session/Runtime 写入；本局已排除的地图不会借手选恢复候选池。
+
+既有内联明确确认保留 S1 自动候选后的改选／新帧确认流程；它与浮层共用会话空闲、剩余候选和提交检查，但不套用浮层专属的 S1 手动会话限制。
+
+窗口定位只用已验证客户区的物理矩形选择屏幕；跨屏后等待 WPF Loaded 布局，再读取浮层自己的 HWND 尺寸。游戏 DPI 不参与浮层尺寸换算。小客户区只向主屏回退一次，最终位置限制在所选屏幕工作区；新请求、隐藏和关闭会取消旧定位。实际 Workspace 定位入口与自有透明窗口原生几何、显式模拟客户区边界另测；真实混合 DPI 屏幕和游戏前台体验仍待实测。
+
+目录只投影当前已准备的 `BoundResources`，不重建 engine、不排名、不读结构数组、不捕获。按赛季、模式、profile、round 和资源实例撤销迟到目录；单个执行任务加最新请求有界合并。缩略图沿旧版各模式的展示来源，后台解码，只缓存最多四张成功冻结图片，临时文件占用等失败在重新打开后可重试；同一时刻仅一个最多四图的批次加最新待办，隐藏／切页／关闭均撤销旧代次，退出等待任务排空。相同 path/stamp 只复用不可变图片，不带身份、位姿或原生显示权限。
+
+四组实际资源的名称、顺序、direction 和图片可用性对照原 Python `manual_map_thumbnail_source`／`picker_groups` 及真实 native context。当前验证资源 S0 噩梦仅2/26有声明展示文件，S0 困难全30张 full-reference 文件缺失，S1 噩梦15/15及困难14/14存在；缺图明确显示占位，不拿其他预览代替。专项走实际 WPF 开启／分组／分页／点击、Workspace 输入消费者、S1 手选新帧贴合及取消／失败恢复；捕获、输入前台及特意延迟的后台读取有明确替身，离屏截图和原生窗口样式检查不代表游戏或物理焦点验收。
+
+S0 自动／手动识别方式的设置运行接入仍属于完整设置迁移，不能由浮层存在推定已完成；默认手选快捷键仍未绑定，不擅自改现有配置。原生游戏实测前按用户要求打独立 Setup。
 
 ### WPF 默认候选与用户确认
 

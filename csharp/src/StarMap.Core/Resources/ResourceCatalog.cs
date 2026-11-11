@@ -101,6 +101,10 @@ public sealed class ResourceCatalogEntry
     public string? PreviewRelativePath { get; }
     public string? PreviewRole { get; }
     public bool PreviewIsFloorSpecific { get; }
+    /// <summary>Declared full-map reference for display-only manual selection, independent of a floor preview.</summary>
+    public string? FullReferencePath { get; internal init; }
+    /// <summary>Image-valued identity-pack layer, before optional author/native preview preferences.</summary>
+    public string? IdentityLayerPath { get; internal init; }
     /// <summary>Existing, explicitly declared image layer. NPZ structure paths are never returned here.</summary>
     public string? ImageLayerPath { get; }
     public string? ImageLayerRelativePath { get; }
@@ -594,7 +598,15 @@ public sealed partial class ResourceCatalog
             row?.RawMetadata,
             structureCanvas,
             legacyCanvas,
-            row?.DeclaredShape));
+            row?.DeclaredShape)
+        {
+            IdentityLayerPath = IsImagePath(layerRelativePath)
+                ? ResolveExistingImage(QualifyOptional(layerRelativePath, pathBase), context, stableKey, reportMissing: false) : null,
+            FullReferencePath = ResolveExistingImage(
+                QualifyOptional(StringProperty(fullReference, "resourcePath"), pathBase)
+                    ?? QualifyOptional(StringProperty(mapMetadata, "manualReference"), pathBase),
+                context, stableKey, reportMissing: false)
+        });
     }
 
     private Dictionary<BindingKey, TypedStructureRow> ReadSharedIndex(string relativePath, string context, string pathBase)

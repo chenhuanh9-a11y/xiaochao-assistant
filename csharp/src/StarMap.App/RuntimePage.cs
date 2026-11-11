@@ -31,7 +31,7 @@ internal sealed partial class RuntimePage : UserControl
     readonly Button chooseGroupMember;
     LiveRuntimeState? renderedGroupState;
     readonly ComboBox floor = new() { MinWidth = 130, HorizontalAlignment = HorizontalAlignment.Left, DisplayMemberPath = "Label", SelectedValuePath = "Id" };
-    readonly Button start, manualStart, fitManual, end, acquire, cancel, previous, next, confirm, pick, applyFloor, toggleVisibility;
+    readonly Button start, manualStart, fitManual, end, acquire, cancel, previous, next, confirm, pick, openPicker, applyFloor, toggleVisibility;
     readonly DispatcherTimer renderTimer, observationTimer;
     long lastS1FloorObservation;
     SessionService? session;
@@ -57,9 +57,12 @@ internal sealed partial class RuntimePage : UserControl
     }
 
     readonly ExperimentalDataRoot? dataRoot;
-    internal RuntimePage(ICapturePort capture, Action<string> status,ExperimentalDataRoot? dataRoot=null)
+    internal RuntimePage(ICapturePort capture, Action<string> status,ExperimentalDataRoot? dataRoot=null,
+        Func<ManualMapPickerWindow>? manualPickerWindowFactory=null)
     {
         this.capture = capture; this.status = status;this.dataRoot=dataRoot;
+        manualPicker = new(Dispatcher, ReadManualPickerAvailability, LoadManualPickerCatalog, CommitManualMap,
+            () => ManualPickerScopeChanged?.Invoke(), status, window => PlaceManualPicker?.Invoke(window), manualPickerWindowFactory);
         foreach (var text in new[] { detail, resourceCaption, candidateCaption })
             text.SetResourceReference(TextBlock.ForegroundProperty, "StarMap.Muted");
         var panel = new StackPanel { Name = "RuntimeOverview" };
@@ -103,6 +106,8 @@ internal sealed partial class RuntimePage : UserControl
         });
         chooseGroupMember.Name = "RuntimeChooseGroupMember";
         candidateArea.Children.Add(groupArea);
+        openPicker = Add(candidateArea, "手动选图…", (_, _) => manualPicker.Toggle());
+        openPicker.Name = "RuntimeOpenManualPicker";
         panel.Children.Add(candidateArea);
         var manual = new StackPanel { Margin = new(0, 8, 0, 8) };
         manual.Children.Add(new Label { Content = "地图", Target = manualMap, Padding = new(0), Margin = new(0, 0, 0, 8) });
@@ -111,10 +116,7 @@ internal sealed partial class RuntimePage : UserControl
         pick = Add(manualActions, "确认手动选图", (_, _) =>
         {
             if (manualMap.SelectedItem is string mapId)
-            {
-                if(runtime?.ReadState().ManualAlignmentSession==true)Dispatch("confirm_route",new {mapId,inputObservationSequence=mapInput.Sequence});
-                else Dispatch("confirm_route",new {mapId});
-            }
+                CommitManualMap(mapId);
         });
         fitManual=Add(manualActions,"贴合当前画面",(_,_)=>Dispatch("fit_manual_frame",new {inputObservationSequence=mapInput.Sequence}));
         fitManual.Name="RuntimeFitManualFrame";
@@ -313,7 +315,7 @@ internal sealed partial class RuntimePage : UserControl
         }
         if (result.Disposition is SessionDispatchDisposition.Unavailable or SessionDispatchDisposition.ResourceLocked)
             status("未执行：" + session.Read().Message);
-        Render(); return result;
+        manualPicker.Synchronize(); Render(); return result;
     }
 
     internal void BindingChanged()
@@ -486,7 +488,8 @@ internal sealed partial class RuntimePage : UserControl
         next.IsEnabled = active && !working && Supports("next_candidate");
         confirm.IsEnabled = active && !working && Supports("confirm_route");
         candidates.IsEnabled = active && !working && Supports("select_candidate");
-        pick.IsEnabled = active && !working && view?.Runtime.ManualMapPickAvailable == true;
+        pick.IsEnabled = ReadManualMapAvailability(floatingPicker: false).CanPick;
+        openPicker.IsEnabled = ReadManualPickerAvailability().CanPick;
         applyFloor.IsEnabled = active && !working && Supports("set_floor");
         if (state is null) return;
         summary.Text = $"{state.Context.Season} · {ModeLabel(state.Context.Mode)}";
@@ -549,6 +552,7 @@ internal sealed partial class RuntimePage : UserControl
     {
         if (closed) return;
         closed = true; renderTimer.Stop(); observationTimer.Stop(); CancelDelay();
+        await manualPicker.CloseAsync();
         proposedSession?.Shutdown(); proposedRuntime?.Shutdown();
         await CloseRuntime();
         if (configurationCompleted is { } completed) await completed.Task;

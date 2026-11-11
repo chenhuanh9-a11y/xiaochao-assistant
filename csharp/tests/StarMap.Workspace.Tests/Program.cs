@@ -36,6 +36,20 @@ internal static class Program
         }
         try
         {
+            if(Array.IndexOf(args,"--passive-refresh-only")>=0)
+            {
+                int resourcesIndex=Array.IndexOf(args,"--resources"),replayIndex=Array.IndexOf(args,"--original-replay");
+                if(resourcesIndex<0 || replayIndex<0)throw new ArgumentException("Passive refresh entry needs resources and original replay.");
+                Await(PassiveRefreshWorkspaceRegression.Run(Path.GetFullPath(args[resourcesIndex+1]),Path.GetFullPath(args[replayIndex+1]),output,Check));
+                return 0;
+            }
+            if(Array.IndexOf(args,"--manual-picker-only")>=0)
+            {
+                int resourcesIndex=Array.IndexOf(args,"--resources"),replayIndex=Array.IndexOf(args,"--original-replay");
+                if(resourcesIndex<0 || replayIndex<0)throw new ArgumentException("Manual picker entry needs resources and original replay.");
+                Await(ManualMapPickerWorkspaceRegression.Run(Path.GetFullPath(args[resourcesIndex+1]),Path.GetFullPath(args[replayIndex+1]),output,Check));
+                return 0;
+            }
             if(Array.IndexOf(args,"--s0-index-only")>=0 || Array.IndexOf(args,"--s1-index-only")>=0)
             {
                 int resourcesIndex=Array.IndexOf(args,"--resources"),replayIndex=Array.IndexOf(args,"--original-replay");
@@ -172,6 +186,7 @@ internal static class Program
             int replayOption = Array.IndexOf(args, "--original-replay");
             if (resourcesOption >= 0 && replayOption >= 0)
             {
+                Await(ManualMapPickerWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption+1]),Path.GetFullPath(args[replayOption+1]),output,Check));
                 Await(S0StructureIndexWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption+1]),Path.GetFullPath(args[replayOption+1]),output,Check));
                 Await(GroupChoiceWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption + 1]), Path.GetFullPath(args[replayOption + 1]), output, Check));
                 Await(MapRecoveryWorkspaceRegression.Run(Path.GetFullPath(args[resourcesOption + 1]), Path.GetFullPath(args[replayOption + 1]), output, Check));
@@ -436,7 +451,11 @@ internal static class Program
         finally
         {
             shell?.Close();
-            File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new { exit, checks, scope = Array.IndexOf(args,"--s0-index-only")>=0
+            File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new { exit, checks, scope = Array.IndexOf(args,"--passive-refresh-only")>=0
+                ?"Existing complete passive-refresh WPF/Session regression including inline S1 confirmation. Recorded capture, foreground and bounded timer fixtures only; no game/native input acceptance."
+                :Array.IndexOf(args,"--manual-picker-only")>=0
+                ?"Actual WPF manual-picker controls, prepared runtime catalog, Session confirmation and existing Workspace input consumer. Only OS capture/input/foreground and explicit async scheduling fixtures are substituted; no game or physical display acceptance."
+                :Array.IndexOf(args,"--s0-index-only")>=0
                 ?"Actual S0 WPF buttons, real three-second acquisition countdown, Session/Runtime, conditional candidate material, human confirmation and floor controls. Recorded post-Nov5 pixels; one explicitly masked floor rail case. Owned offscreen window/composite screenshots only, no game/native input or physical display acceptance."
                 :Array.IndexOf(args,"--s1-index-only")>=0
                 ?"Actual S1 WPF page/Session/Runtime index sequence, material consumer and unresolved/locked controls. Recorded original frames only; no native game capture, input or physical display acceptance."
