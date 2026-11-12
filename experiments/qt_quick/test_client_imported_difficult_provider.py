@@ -117,15 +117,20 @@ class ImportedDifficultProviderTests(unittest.TestCase):
         observe = (dict(detected=True, mapOpen=True), '2', dict(selectedFloor=2, mapOpen=True))
         proposal = dict(success=True, coordinateSpace='shared-structure-to-client',
             matrixSourceToClient=np.eye(3), selectedRouteCurrentFrameResidual=dict(
-                verified=True, poseVerifiedAgainstSharedStructure=True, withinThreePixels=.95))
+                verified=True, poseVerifiedAgainstSharedStructure=True,
+                poseVerifiedAgainstCanonicalGeometry=True, profileRenderDerivedFromCanonical=True,
+                coordinatePackId='fixture-pack', validationBasis='shared-canonical-geometry-current-frame',
+                withinThreePixels=.95))
         with patch.object(self.runtime, '_observe', return_value=observe):
-            # Only candidate fits are supplied. Explicit confirmation below
+            # Only current candidate fits are supplied. Explicit confirmation below
             # recaptures the black fixture and runs the real shared solver.
             with patch.object(_AlignmentHost, 'fit', return_value=proposal):
                 self.runtime.dispatch('capture_now')
             state = self.runtime.snapshot()
             self.assertFalse(state['identityLocked'])
-            self.assertFalse(state['displayAuthorized'])
+            self.assertTrue(state['displayAuthorized'])
+            self.assertTrue(state['render']['candidateDisplayOnly'])
+            self.assertFalse(self.runtime._core.pose_by_map)
 
             row = state['candidateRows'][0]
             selected = self.runtime.dispatch('select_candidate', dict(index=0,
