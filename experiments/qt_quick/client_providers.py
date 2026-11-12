@@ -803,6 +803,7 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
                     cancelled=cancelled, deadline=direct_deadline)
                 report = candidate_terminal if candidate_terminal is not None else scanner.unresolved_report(
                     snapshot, floor, floor_source, previous=last_report,
+                    include_pending=outcome['status'] == 'identity-committed',
                     elapsed_seconds=time.perf_counter()-began)
                 if (candidate_terminal is None and outcome['status'] == 'unresolved'
                         and time.perf_counter() >= direct_deadline):
@@ -822,6 +823,12 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
                         **(dict(errorType=type(row['error']).__name__) if row.get('error') is not None else {}))
                         for name, row in outcome['lanes'].items()})
                 report['localStructureRecognition'] = local_report
+                if (outcome['status'] == 'identity-committed' and candidate_terminal is None
+                        and report['supportedMapIds']):
+                    # Transfer an already completed canonical pose before the
+                    # locked map's material asks this ticket for it. Never wait
+                    # for the losing worker or promote this pose to identity.
+                    consume_progress(report)
             else:
                 report = scan_candidate(cancelled, consume_progress, consume_entry)
             report['directStructureRecognition'] = collect_direct()

@@ -20,6 +20,7 @@ from client_live_runtime import LiveRuntime
 from difficult_side_entry_identity import MapLocalEntryIdentity
 from map_observation_work import MapObservationWork
 from side_entry_evidence import SideEntryEvidence
+from s1_structure_selection import StructureCandidateScanner
 from structure_pose_solver import PreparedStructurePoseSolver
 from structure_pose_inputs import _freeze
 from test_client_live_runtime import FixtureCapture
@@ -221,6 +222,49 @@ class LocalIdentityCommitTests(unittest.TestCase):
 
     def test_structure_unique_identity_cancels_candidate_without_waiting_for_its_kernel(self):
         self.run_first_identity_order('structure')
+
+    def test_structure_winner_reuses_completed_candidate_pose_before_progress_is_consumed(self):
+        offered, identity_consumed = threading.Event(), threading.Event()
+        scan = StructureCandidateScanner.scan
+        run = self.engine.qt_recognition_race.run
+
+        def delayed_progress(scanner, *args, **kwargs):
+            progress = kwargs['on_progress']
+            def offer(report):
+                offered.set()  # The real scanner has completed and verified the pose.
+                self.assertTrue(identity_consumed.wait(5), 'structure identity must win first')
+                return progress(report)
+            return scan(scanner, *args, **dict(kwargs, on_progress=offer))
+
+        def wait_for_pose(lane, row):
+            if lane == 'structure':
+                self.assertTrue(offered.wait(5), 'candidate must really complete its pose')
+
+        def observe_identity(*args, **kwargs):
+            consume = kwargs['on_entry']
+            def entry(lane, value, **options):
+                try:
+                    return consume(lane, value, **options)
+                finally:
+                    if lane == 'structure':
+                        identity_consumed.set()
+            return run(*args, **dict(kwargs, on_entry=entry))
+
+        self.before_verify = wait_for_pose
+        try:
+            with patch.object(StructureCandidateScanner, 'scan', delayed_progress), \
+                 patch.object(self.engine.qt_recognition_race, 'run', observe_identity), \
+                 patch('client_live_runtime.INITIAL_IDENTITY_BUDGET_SECONDS', 8.):
+                result = self.opening()
+            self.assertTrue(result['success'], result)
+            self.assert_race_winner('structure')
+            self.assertEqual(self.fit.call_count, 1, 'the completed same-frame fit must reach the ticket')
+            self.assertEqual(self.scan_reports[-1]['supportedMapIds'], [self.target])
+            self.assertEqual(self.runtime.render_payload(result['renderToken'])['mapId'], self.target)
+            self.assertTrue(self.runtime.snapshot()['identityLocked'])
+        finally:
+            identity_consumed.set()
+            self.drain_race()
 
     def test_candidate_terminal_without_identity_keeps_structure_work_eligible(self):
         self.lane_hypotheses['candidate'] = {}

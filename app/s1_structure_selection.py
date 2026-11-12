@@ -208,13 +208,24 @@ class StructureCandidateScanner:
     def __init__(self, catalog, fit, *, clock=time.monotonic, prepare_fit=None):
         self.catalog, self.fit, self.clock = catalog, fit, clock
         self.prepare_fit = prepare_fit
+        self._pending_progress = None
 
-    def unresolved_report(self, snapshot, floor, floor_source, *, previous=None, elapsed_seconds=0.):
+    def unresolved_report(self, snapshot, floor, floor_source, *, previous=None, elapsed_seconds=0.,
+                          include_pending=False):
         """The completed race may stop a candidate before its next callback.
 
-        Preserve only already offered canonical poses; unscanned members remain
-        unknown. Entry identity has its independent owner and ledger.
+        An identity winner may also collect this scan's completed pose whose
+        progress callback is still queued. Other retirement paths use only
+        consumed progress. Entry identity keeps its independent owner/ledger.
         """
+        if include_pending and (previous is None or previous.get('status') == 'partial'):
+            pending = self._pending_progress
+            if (pending is not None and pending[0] is snapshot
+                    and (pending[1]['floor'], pending[1]['floorSource'], pending[1]['resourceKey'])
+                        == (floor, floor_source, self.catalog.resource_key)
+                    and pending[1]['status'] == 'partial'
+                    and pending[1]['updateSeq'] > (previous or {}).get('updateSeq', 0)):
+                previous = pending[1]
         report = copy.deepcopy(previous) if previous is not None else dict(
             schemaVersion=1, season=self.catalog.season, mode=self.catalog.mode,
             resourceKey=self.catalog.resource_key, floor=floor, floorSource=floor_source,
@@ -235,6 +246,7 @@ class StructureCandidateScanner:
              on_progress=None, candidate_order=None, preferred_map_id=None,
              preferred_material_committed=None, planned_map_ids=None, first_material_committed=None,
              prepare_entry=None, on_entry_evidence=None, deadline=None, frame_snapshot=None):
+        self._pending_progress = None
         if floor not in self.catalog.floors or floor_source not in ("operator-declared", "current-frame-verified"):
             raise ValueError("s1-structure-floor-evidence-required")
         if not isinstance(frame, np.ndarray) or frame.ndim != 3 or frame.shape[2] != 3 or frame.dtype != np.uint8:
@@ -335,7 +347,9 @@ class StructureCandidateScanner:
                 if on_progress is not None:
                     # This executes on the scanning worker. Consumers must queue
                     # UI work, and own cancellation/exception render withdrawal.
-                    on_progress(report("partial"))
+                    partial = report("partial")
+                    self._pending_progress = (snapshot, partial)
+                    on_progress(partial)
                 if callable(first_material_committed):
                     try:
                         material_committed = first_material_committed(map_id) is True

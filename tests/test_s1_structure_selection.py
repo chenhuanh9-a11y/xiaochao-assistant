@@ -5,6 +5,7 @@ import unittest
 from types import SimpleNamespace
 
 import numpy as np
+from entry_evidence_work import FrameSnapshot
 from s1_structure_selection import (StructureCatalog, StructureCandidateScanner,
                                     StructureEvidenceSession, verified_pose)
 
@@ -63,6 +64,48 @@ class ScannerContracts(unittest.TestCase):
         self.assertEqual(result["status"], "cancelled")
         self.assertFalse(result["supportedMapIds"])
         self.assertFalse(result["poses"])
+
+    def test_pending_pose_transfer_is_scoped_and_does_not_revive_cancelled_work(self):
+        snapshot = FrameSnapshot(np.zeros((8, 8, 3), np.uint8))
+        cancelled = threading.Event()
+        calls = []
+        def fit(frame, mid, floor, cancel, **kwargs):
+            calls.append(mid)
+            return pose()
+        scanner = StructureCandidateScanner(catalog(), fit)
+
+        def pending(snap=snapshot, floor='-1', source='operator-declared', **kwargs):
+            return scanner.unresolved_report(snap, floor, source, include_pending=True, **kwargs)
+
+        def offer(partial):
+            transferred = pending()
+            self.assertEqual(transferred['supportedMapIds'], ['a'])
+            self.assertEqual(transferred['unscannedMapIds'], ['b', 'c'])
+            self.assertFalse(transferred['identityHardGatePassed'])
+            self.assertFalse(transferred['liveAuthorization'])
+            self.assertGreater(transferred['updateSeq'], partial['updateSeq'])
+            self.assertEqual(scanner.unresolved_report(snapshot, '-1', 'operator-declared')['poses'], {})
+            for options in (dict(snap=FrameSnapshot(snapshot.pixels)), dict(floor='-2'),
+                            dict(source='current-frame-verified')):
+                with self.subTest(options=options):
+                    self.assertEqual(pending(**options)['poses'], {})
+            original = scanner.catalog
+            scanner.catalog = catalog(key='replacement')
+            self.assertEqual(pending()['poses'], {})
+            scanner.catalog = original
+            transferred['poses']['a']['matrixSourceToClient'][0, 0] = 99
+            np.testing.assert_array_equal(pending()['poses']['a']['matrixSourceToClient'], np.eye(3))
+            cancelled.set()
+
+        result = scanner.scan(snapshot.pixels, floor='-1', floor_source='operator-declared',
+            frame_snapshot=snapshot, on_progress=offer, cancelled=cancelled.is_set)
+        self.assertEqual(calls, ['a'])
+        self.assertEqual(result['status'], 'cancelled')
+        self.assertEqual(pending(previous=result)['poses'], {})
+        successor = FrameSnapshot(snapshot.pixels)
+        scanner.scan(successor.pixels, floor='-1', floor_source='operator-declared',
+            frame_snapshot=successor, budget_seconds=0)
+        self.assertEqual(pending()['poses'], {})
 
     def test_invalid_or_wrong_coordinate_pose_is_unknown(self):
         for mutate in (lambda d: d.update(matrixSourceToClient=np.full((3,3), np.nan)),
