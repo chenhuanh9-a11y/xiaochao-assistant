@@ -8,7 +8,8 @@ from entry_evidence_work import EntryEvidenceWork
 
 
 class SideEntryEvidence(EntryEvidenceWork):
-    def __init__(self, engine, frame, floor, *, map_id=None, deadline=None, candidate_map_ids=None):
+    def __init__(self, engine, frame, floor, *, map_id=None, deadline=None, candidate_map_ids=None,
+                 prepared_index=None):
         self.engine, self.floor, self.map_id = engine, None if floor is None else str(floor), map_id
         self.deadline = float('inf') if deadline is None else deadline
         self.entries = [entry for entry in engine.entries
@@ -16,12 +17,23 @@ class SideEntryEvidence(EntryEvidenceWork):
                         and (self.floor is None or entry[0]['floor'] == self.floor)
                         and (candidate_map_ids is None or entry[0]['mapId'] in candidate_map_ids)]
         self.local_search = engine.side_search if self.floor == '2' and map_id is None else None
+        self.prepared_index = prepared_index
+        actual_domain = {(entry[0]['mapId'], entry[0]['floor']) for entry in self.entries}
+        # The prepared domain is a promise about every rival, including one
+        # removed from the live locator after preparation. Reconcile the same
+        # requested scope against actual work sources, not only old build gaps.
+        self.index_directory_gaps = tuple(row for row in getattr(prepared_index, 'domain', ())
+            if (self.floor is None or row[1] == self.floor) and (map_id is None or row[0] == map_id)
+            and (candidate_map_ids is None or row[0] in candidate_map_ids) and row not in actual_domain)
         self.context, self.q, self.qr, self.qpairs = None, [], [], []
         self.rows, self.competitors, self.active = [], [], []
         self.scan_complete = self.probes_complete = self.verification_complete = False
         self.seed_count = 0
         self.search_counts = dict(localSearchMaps=0, localSeedTotal=0, outsideSeedsScreened=0,
                                   outsideSeedsRejected=0, ringEvaluations=[0, 0, 0, 0])
+        if prepared_index is not None:
+            self.search_counts.update(preparedIndexMaps=0, preparedIndexFallbacks=0,
+                                      preparedSeedsScreened=0, preparedSeedsRejected=0)
         self.optional_door, self._early_result = None, None
         self._band_prepared = False
         self.route_cache = {}
@@ -35,7 +47,7 @@ class SideEntryEvidence(EntryEvidenceWork):
             return
         self.q = np.array([n['point'] for n in nodes])
         self.qr = np.array([n['rays'] for n in nodes])
-        self.scan_complete = True
+        self.scan_complete = not self.index_directory_gaps
 
     def _probe(self, entry):
         item, source, rays, spairs = entry
@@ -47,6 +59,12 @@ class SideEntryEvidence(EntryEvidenceWork):
         if not len(spairs):
             return
         prepared = (local_search or {}).get((item['mapId'], item['floor']))
+        # Existing doorway scheduling/cross-checks retain their original path.
+        # The explicit general index replaces only ordinary full-graph probing.
+        indexed = (self.prepared_index.prepared_for(entry)
+                   if self.prepared_index is not None and prepared is None else None)
+        if indexed is not None:
+            source, rays, spairs = indexed.points, indexed.rays, indexed.pairs
         compatible = np.min(np.sum(qr[:, None] * rays[None], axis=3), axis=2) >= .95
         # Incompatible turns can never be hits. Keep row-major pair order
         # while evaluating only the same orientation-compatible entries.
@@ -65,10 +83,14 @@ class SideEntryEvidence(EntryEvidenceWork):
                 search_counts[name] += counts[name]
             search_counts['ringEvaluations'] = [a+b for a, b in zip(search_counts['ringEvaluations'], counts['ringEvaluations'])]
         else:
+            if indexed is not None:
+                self.search_counts['preparedIndexMaps'] += 1
+            elif self.prepared_index is not None:
+                self.search_counts['preparedIndexFallbacks'] += 1
             # Ordinary search remains available when optional local data is
             # absent. No current-frame icon is a prerequisite for either path.
-            deltas = source[spairs[:, 1]] - source[spairs[:, 0]]
-            denoms = np.sum(deltas*deltas, axis=1)
+            deltas = indexed.deltas if indexed is not None else source[spairs[:, 1]] - source[spairs[:, 0]]
+            denoms = indexed.denoms if indexed is not None else np.sum(deltas*deltas, axis=1)
             long_enough = denoms >= (.6 * item['unit']) ** 2
         for a, b in (() if prepared is not None else qpairs):
             if time.perf_counter() >= deadline:
@@ -80,9 +102,15 @@ class SideEntryEvidence(EntryEvidenceWork):
             translations = q[a] - scales[:, None]*source[spairs[selected, 0]]
             eligible = ((scales*item['unit'] >= 8) & (scales*item['unit'] <= min(frame.shape[:2])/4)
                         & (np.linalg.norm(q[b]-q[a]-scales[:, None]*delta, axis=1) <= 3))
+            scales, translations = scales[eligible], translations[eligible]
+            if indexed is not None:
+                from local_structure_index import possible_turns
+                upper = possible_turns(q, scales, translations, compatible, indexed)
+            else:
+                upper = np.full(len(scales), 4, np.int32)
             # Batch cheap residuals, preserve the original seed order and
             # deduplication order. Expensive full correspondences are sparse.
-            for scale, translation in zip(scales[eligible], translations[eligible]):
+            for scale, translation, possible in zip(scales, translations, upper):
                 if time.perf_counter() >= deadline:
                     complete = False
                     break
@@ -90,6 +118,11 @@ class SideEntryEvidence(EntryEvidenceWork):
                 if key in seen:
                     continue
                 seen.add(key)
+                if indexed is not None:
+                    self.search_counts['preparedSeedsScreened'] += 1
+                    if possible < 4:
+                        self.search_counts['preparedSeedsRejected'] += 1
+                        continue
                 seed_count += 1
                 distances = np.linalg.norm(oriented_query - (oriented_source * scale + translation), axis=1)
                 hits = distances <= 3
@@ -259,7 +292,8 @@ class SideEntryEvidence(EntryEvidenceWork):
             row['poseAmbiguous'] = sum(r['mapId'] == row['mapId'] and r['floor'] == row['floor']
                                        for r in self.competitors) > 1
         self._result = self.rows, dict(
-            reason='side-work-failed' if self._failed else 'side-local-candidates' if complete else 'side-budget-incomplete',
+            reason=('side-work-failed' if self._failed else 'side-resource-directory-incomplete'
+                    if self.index_directory_gaps else 'side-local-candidates' if complete else 'side-budget-incomplete'),
             complete=complete, queryTurns=len(self.q), competitiveHypotheses=len(self.competitors),
             seedCorrespondences=self.seed_count,
             verificationComplete=self._complete and not self._failed and self.verification_complete and len(self.active) <= 3,

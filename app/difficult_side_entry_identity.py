@@ -417,10 +417,11 @@ class MapLocalEntryIdentity:
             job.run()
         return work.finish(elapsed_ms=(time.perf_counter() - started) * 1000)
 
-    def prepare_rank(self, frame, floor=None, *, map_id=None, deadline=None, candidate_map_ids=None):
+    def prepare_rank(self, frame, floor=None, *, map_id=None, deadline=None, candidate_map_ids=None,
+                     prepared_index=None):
         from side_entry_evidence import SideEntryEvidence
         return SideEntryEvidence(self, frame, floor, map_id=map_id, deadline=deadline,
-                                  candidate_map_ids=candidate_map_ids)
+                                  candidate_map_ids=candidate_map_ids, prepared_index=prepared_index)
 
     def _load_route(self, profile_id, map_id, floor, resource, cache=None):
         from nightmare_candidate import imread_unicode

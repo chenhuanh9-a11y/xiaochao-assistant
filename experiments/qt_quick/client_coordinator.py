@@ -1934,10 +1934,16 @@ class ClientCoordinator(QObject):
             self._map_resource_notified.clear()
         if self.session.busy:
             pending = self.session.snapshot.get("pendingAction")
+            get_material = getattr(self.runtime, "render_payload", None)
+            retained = (get_material(self._last_render_token)
+                if pending in {"map", "capture_now", "fit_manual_frame"}
+                and self._last_render_token and callable(get_material) else None)
+            retaining_material = bool(retained and retained.get("liveAuthorization")
+                and retained.get("poseFinalVerified") is True and retained.get("reviewStatus") == "complete")
             reprojecting = (pending == "set_context" and self._pending_context
                             and self._pending_context[0] == self._applied_context[0]
                             and self._pending_context[2] == self._applied_context[2])
-            if not reprojecting and pending not in {
+            if not reprojecting and not retaining_material and pending not in {
                     "refresh_map", "observe_manual_floor", "observe_candidate_floor", "recover_map_open", "probe_map_after_drag", "reselect_map", "previous_candidate", "next_candidate",
                     "select_candidate", "confirm_route", "set_floor", "cycle_floor",
                     "select_group_member"}:

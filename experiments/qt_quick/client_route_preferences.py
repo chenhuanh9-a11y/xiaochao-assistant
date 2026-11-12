@@ -1,9 +1,23 @@
 """Display preferences using the existing catalog and coordinate declarations."""
+from functools import wraps
 from pathlib import Path
 
 
 COFFIN_CONTEXT = ("zhan10-coffin", "nightmare-01", "1")
 COFFIN_VARIANTS = (("variant-01", "一号路线"), ("variant-02", "二号路线"))
+
+
+def _display_resource_boundary(consumer):
+    @wraps(consumer)
+    def consume(*args, **kwargs):
+        try:
+            return consumer(*args, **kwargs)
+        except (OSError, ValueError) as error:
+            from client_providers import DisplayResourceChanged, _is_proven_display_resource_change
+            if not isinstance(error, DisplayResourceChanged) and _is_proven_display_resource_change(error):
+                raise DisplayResourceChanged(str(error)) from error
+            raise
+    return consume
 
 
 def _coffin_binding(engine, map_id, floor, profile, variant_id):
@@ -117,6 +131,22 @@ def _display_reference(engine, map_id, floor):
     return reference, check_current
 
 
+def _consume_owned_shared_display(engine, map_id, floor, consume):
+    from client_providers import SharedReferenceProvider
+    provider = getattr(engine, 'qt_shared_provider', None)
+    if type(provider) is not SharedReferenceProvider:
+        return NotImplemented
+    return SharedReferenceProvider._consume_display_reference(provider, engine, map_id, floor, consume)
+
+
+def _display_metadata(layer, preferred, *, author_status='none', fallback_reason=''):
+    actual = 'shared-structure' if preferred.startswith('custom:') else layer['routeProfileId']
+    return dict(layer, preferredProfileId=preferred, effectiveProfileId=actual,
+        authorStatus=author_status, fallback=bool(preferred != actual and not preferred.startswith('custom:')),
+        fallbackReason=fallback_reason)
+
+
+@_display_resource_boundary
 def shared_structure_display_current(engine, map_id, floor, prepared):
     """Recheck the actual source without rebuilding its already owned pixels.
 
@@ -124,12 +154,16 @@ def shared_structure_display_current(engine, map_id, floor, prepared):
     provider read is still required: its cached reference metadata can differ.
     """
     from shared_structure_display import structure_display_identity
+    identity = _consume_owned_shared_display(engine, map_id, floor, structure_display_identity)
+    if identity is not NotImplemented:
+        return identity == prepared['resourceIdentity']
     reference, check_current = _display_reference(engine, map_id, floor)
     identity = structure_display_identity(reference)
     check_current()
     return identity == prepared["resourceIdentity"]
 
 
+@_display_resource_boundary
 def prepare_display_layer(engine, map_id, floor, preferred, *, variant_id="variant-01"):
     """Original author -> custom/base (missing only) -> structural display chain.
 
@@ -142,14 +176,17 @@ def prepare_display_layer(engine, map_id, floor, preferred, *, variant_id="varia
     from nightmare_candidate import imread_unicode
     from shared_structure_display import structure_display_layer
 
+    if preferred == 'shared-structure':
+        provider = getattr(engine, 'qt_shared_provider', None)
+        layer = _consume_owned_shared_display(engine, map_id, floor,
+            lambda reference: provider.native_display_layer(reference, variant_id=variant_id))
+        if layer is not NotImplemented:
+            return _display_metadata(layer, preferred)
     reference, check_current = _display_reference(engine, map_id, floor)
 
     def metadata(layer, *, author_status="none", fallback_reason=""):
         check_current()
-        actual = "shared-structure" if preferred.startswith("custom:") else layer["routeProfileId"]
-        return dict(layer, preferredProfileId=preferred, effectiveProfileId=actual,
-            authorStatus=author_status, fallback=bool(preferred != actual and not preferred.startswith("custom:")),
-            fallbackReason=fallback_reason)
+        return _display_metadata(layer, preferred, author_status=author_status, fallback_reason=fallback_reason)
 
     if preferred == "shared-structure":
         return metadata(structure_display_layer(reference))

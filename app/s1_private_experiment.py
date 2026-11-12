@@ -215,13 +215,14 @@ class PrivateCoordinateObserver:
 
 class LatestEvidenceQueue:
     """One running immutable-frame task plus one replaceable latest task."""
-    def __init__(self):
+    def __init__(self, *, thread_name='s1-private-evidence'):
         import threading
         self._lock = threading.Lock()
         self._pending = None
         self._thread = None
         self._closed = False
         self._latest_sequence = 0
+        self._thread_name = thread_name
 
     @property
     def busy(self):
@@ -240,7 +241,7 @@ class LatestEvidenceQueue:
                 self._latest_sequence = sequence
                 old, self._pending = self._pending, (run, discarded)
                 if self._thread is None:
-                    self._thread = threading.Thread(target=self._drain, name='s1-private-evidence', daemon=True)
+                    self._thread = threading.Thread(target=self._drain, name=self._thread_name, daemon=True)
                     self._thread.start()
         if old is not None:
             old[1]()

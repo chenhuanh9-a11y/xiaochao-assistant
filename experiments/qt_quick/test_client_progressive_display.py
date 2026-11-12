@@ -255,7 +255,8 @@ class ProgressiveDisplayContracts(unittest.TestCase):
                           map_anchor_focus_point=group_commit.map_anchor_focus_point)
 
     def test_existing_recovery_solver_displays_point_pose_before_wall_correction(self):
-        self.fixture.begin_and_capture()
+        initial = self.fixture.begin_and_capture()
+        old_token = initial['renderToken']
         prior = self.runtime._group
         first = self.first["matrixSourceToClient"].copy()
         corrected = first.copy()
@@ -266,7 +267,8 @@ class ProgressiveDisplayContracts(unittest.TestCase):
         pending = []
         def walls(*args, **kwargs):
             row = self.runtime.render_payload(self.runtime._render["token"])
-            self.assertEqual(row["reviewStatus"], "pending")
+            self.assertEqual(row["reviewStatus"], "complete")
+            self.assertEqual(row['token'], old_token)
             self.assertIs(self.runtime._group, prior)
             np.testing.assert_allclose(row["matrix"], first)
             pending.append(row)
@@ -283,7 +285,8 @@ class ProgressiveDisplayContracts(unittest.TestCase):
         self.assertEqual(len(pending), 1)
         final = self.runtime.render_payload(result["renderToken"])
         self.assertEqual(final["reviewStatus"], "complete")
-        self.assertIs(final["pixels"], pending[0]["pixels"])
+        np.testing.assert_array_equal(final["pixels"], pending[0]["pixels"])
+        self.assertNotEqual(final['token'], old_token)
         np.testing.assert_allclose(final["matrix"], corrected)
         np.testing.assert_allclose(self.runtime._group.root_pose, corrected)
 
@@ -309,7 +312,7 @@ class ProgressiveDisplayContracts(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertIsNone(self.runtime.render_payload(pending["token"]))
 
-    def test_cancellation_at_final_publication_withdraws_its_own_grant(self):
+    def test_cancellation_at_final_publication_keeps_completed_grant(self):
         cancel = threading.Event()
         self.fixture.dispatch("start_round")
         def event(row):
@@ -318,8 +321,12 @@ class ProgressiveDisplayContracts(unittest.TestCase):
         self.runtime.set_event_callback(event)
         result = self.runtime.dispatch("capture_now", {}, cancel)
         self.assertFalse(result["success"])
-        self.assertIsNone(self.runtime._render)
-        self.assertFalse(self.runtime.snapshot()["core"]["displayAuthorized"])
+        # Same-scope cancellation follows the completed commit/render-ready;
+        # it cannot revoke that already verified material.
+        self.assertIsNotNone(self.runtime._render)
+        self.assertTrue(self.runtime._render['poseFinalVerified'])
+        self.assertEqual(self.runtime._render['reviewStatus'], 'complete')
+        self.assertTrue(self.runtime.snapshot()["core"]["displayAuthorized"])
 
     def test_close_and_end_reject_late_success(self):
         for action in ("close_map", "end_round"):

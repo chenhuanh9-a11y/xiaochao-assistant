@@ -74,14 +74,14 @@ class RuntimeBoundaries(unittest.TestCase):
             self.assertTrue(self.runtime.snapshot()["displayAuthorized"])
             self.assertEqual(self.coordinator.alignedData.get("token"), token)
         else:
-            self.assertIsNone(self.runtime.render_payload(token))
-            self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
-            self.assertFalse(self.coordinator.alignedData)
+            self.assertIsNotNone(self.runtime.render_payload(token))
+            self.assertTrue(self.runtime.snapshot()["displayAuthorized"])
+            self.assertEqual(self.coordinator.alignedData.get("token"), token)
 
-    def test_cancel_own_published_refresh_success_tail_withdraws_its_new_grant(self):
+    def test_cancel_own_published_refresh_success_tail_retains_completed_grant(self):
         self.refresh_tail(fail=False, drag=False)
 
-    def test_cancel_own_published_refresh_exception_tail_withdraws_its_new_grant(self):
+    def test_cancel_own_published_refresh_exception_tail_retains_completed_grant(self):
         self.refresh_tail(fail=True, drag=False)
 
     def test_cancel_refresh_exception_tail_preserves_new_drag_revision(self):
@@ -98,8 +98,8 @@ class RuntimeBoundaries(unittest.TestCase):
             workers.append(work)
             return original_start(work)
         def fail(*args, **kwargs):
-            # The cheap residual path already withdrew the old pixels. This
-            # is the current worker's fallback, with no newer drag or cancel.
+            # Failed new-frame residual cannot revoke the completed source.
+            # This is the current fallback, with no newer drag or cancel.
             checkpoints.append(dict(owner=self.runtime._refresh_render_owner(),
                 epoch=self.runtime._epoch, cancelled=workers[0].cancelled.is_set()))
             raise ValueError("controlled current fallback " + boundary + " failure")
@@ -112,7 +112,7 @@ class RuntimeBoundaries(unittest.TestCase):
             self.settle()
         self.assertEqual(residual.call_count, 1)
         self.assertEqual(failed.call_count, 1)
-        self.assertEqual(checkpoints, [dict(owner=None, epoch=epoch, cancelled=False)])
+        self.assertEqual(checkpoints, [dict(owner=initial_owner, epoch=epoch, cancelled=False)])
         receipt = self.session.snapshot["lastReceipt"]
         self.assertEqual(receipt["action"], "refresh_map")
         self.assertFalse(receipt["success"])
@@ -123,14 +123,14 @@ class RuntimeBoundaries(unittest.TestCase):
         self.assertIn("controlled current fallback " + boundary + " failure", receipt["traceback"])
         self.assertTrue(any(row.get("action") == "refresh_map" and
             row.get("exceptionType") == "ValueError" for row in failures))
-        self.assertIsNone(self.runtime._refresh_render_owner())
-        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
-        self.assertFalse(self.coordinator.alignedData)
+        self.assertEqual(self.runtime._refresh_render_owner(), initial_owner)
+        self.assertTrue(self.runtime.snapshot()["displayAuthorized"])
+        self.assertEqual(self.coordinator.alignedData.get("token"), initial_owner[4])
 
-    def test_current_fallback_fit_exception_after_own_revoke_keeps_error_diagnostics(self):
+    def test_current_fallback_fit_exception_retains_material_and_error_diagnostics(self):
         self.assert_current_fallback_exception("fit")
 
-    def test_current_fallback_display_exception_after_own_revoke_keeps_error_diagnostics(self):
+    def test_current_fallback_display_exception_retains_material_and_error_diagnostics(self):
         self.assert_current_fallback_exception("display")
 
     def test_old_capture_exception_after_new_drag_is_stale_and_keeps_current_pixels(self):
@@ -434,6 +434,7 @@ class GroupBoundaries(groups.DragGroupChoiceContracts):
         self.assert_mismatched_target_frame_rejected("generation", lambda value: value + 1)
 
     def test_ordinary_publish_rejects_changed_public_generation_with_same_frame_id(self):
+        source = self.runtime._render["token"]
         original = self.runtime._stage_round_group_commit
         public_frames = []
         def advance_generation(*args, **kwargs):
@@ -449,7 +450,8 @@ class GroupBoundaries(groups.DragGroupChoiceContracts):
         self.assertTrue(receipt["stale"])
         self.assertTrue(self.fit_calls)
         self.assertIsNone(self.runtime._pending_sibling)
-        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
+        self.assertTrue(self.runtime.snapshot()["displayAuthorized"])
+        self.assertIsNotNone(self.runtime.render_payload(source))
 
 
 class DifficultGroupBoundaries(GroupBoundaries):

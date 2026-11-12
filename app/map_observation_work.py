@@ -95,6 +95,9 @@ class MapObservationWork(EntryEvidenceWork):
         if 'side' in self.errors:
             self.side_diagnostics = dict(reason='side-resource-unavailable', error=self.errors['side'], complete=False)
 
+    def _prepare_local_rank(self, side, options):
+        return side.prepare_rank(self.frame_snapshot, self.floor, deadline=self.deadline, **options)
+
     def _recovery(self, result):
         self.side_rows, self.side_diagnostics, self.side_winner, self.original_group_recovery = result
         if self.side_winner is not None and not self._local_identity_authorized(self.side_winner):
@@ -147,7 +150,7 @@ class MapObservationWork(EntryEvidenceWork):
         members.update(row['mapId'] for row in self.original_group_recovery)
         return tuple(sorted(members))
 
-    def _jobs(self):
+    def _entry_jobs(self):
         from map_identity_engine import entry_passport_fallback_allowed, verified_entry_candidate
         if self.floor not in self.engine.identity_floors:
             return
@@ -180,21 +183,15 @@ class MapObservationWork(EntryEvidenceWork):
         if (not self.passport_selected and self.fallback_allowed
                 and not any(row['identityVerified'] for row in self.entry_rows) and side is not None):
             self.side_producer = 'local-structure'
-            yield from self._delegate('side', side.prepare_rank(self.frame_snapshot, self.floor,
-                deadline=self.deadline, **options), self._side)
+            yield from self._delegate('side', self._prepare_local_rank(side, options), self._side)
             if 'side' not in self.errors:
                 yield from self._delegate('recovery', self.engine.prepare_side_recovery(
                     self.frame_snapshot, self.floor, self.side_rows, self.side_diagnostics,
                     entry_rows=self.entry_rows, passport_diagnostics=self.passport_diagnostics,
                     deadline=self.deadline), self._recovery, elapsed=False)
         self.entry_complete = True
-        if self.established:
-            self.source_candidates = dict(candidates=[], candidateCount=0, reason='established-group-only')
-        else:
-            yield from self._delegate('source', self.engine.prepare_source_structure_candidates(
-                self.frame_snapshot, floor=self.floor, deadline=self.deadline), self._source, elapsed=False)
-            if not any(row['identityVerified'] for row in self.entry_rows) and self.side_winner is None and self.engine.entry_advisory is not None:
-                yield self._job(None, 'entry-icon-advisory', self._advisory)
+
+    def _condition_jobs(self):
         self.rows = self.engine.collect_observation_rows(self)
         index = self.engine.native_similarity_index
         if self.rows and index is not None and self.identity_authorized:
@@ -205,6 +202,19 @@ class MapObservationWork(EntryEvidenceWork):
                 prior=self.prior if self.established else context() if context is not None else None,
                 required_map_ids=self._required_members())
             yield from self._delegate('condition', proposal, self._proposal, elapsed=False)
+
+    def _jobs(self):
+        yield from self._entry_jobs()
+        if not self.entry_complete:
+            return
+        if self.established:
+            self.source_candidates = dict(candidates=[], candidateCount=0, reason='established-group-only')
+        else:
+            yield from self._delegate('source', self.engine.prepare_source_structure_candidates(
+                self.frame_snapshot, floor=self.floor, deadline=self.deadline), self._source, elapsed=False)
+            if not any(row['identityVerified'] for row in self.entry_rows) and self.side_winner is None and self.engine.entry_advisory is not None:
+                yield self._job(None, 'entry-icon-advisory', self._advisory)
+        yield from self._condition_jobs()
 
     def finish(self):
         if self._result is None:
@@ -225,3 +235,37 @@ class MapObservationWork(EntryEvidenceWork):
             for row in self._result:
                 row['difficultRecognition']['elapsedMs'] = (time.perf_counter() - self.started) * 1000
         return self._result
+
+
+class LocalStructureObservationWork(MapObservationWork):
+    """Complete registered geometry competition without auxiliary source work.
+
+    The resource owner supplies an independent engine/query state. This work
+    does not change source purposes, authorize S1 live use, or publish runtime
+    identity. Main/passport contradictions and registered-family conditions
+    still use the same jobs and reducers as the original observation plan.
+    """
+    def __init__(self, engine, frame, floor, *, deadline, prepared_index=None):
+        self.prepared_index = prepared_index
+        super().__init__(engine, frame, floor, deadline=deadline)
+
+    def _prepare_local_rank(self, side, options):
+        if self.prepared_index is None:
+            return super()._prepare_local_rank(side, options)
+        return side.prepare_rank(self.frame_snapshot, self.floor, deadline=self.deadline,
+                                 prepared_index=self.prepared_index, **options)
+
+    def _prefilter(self):
+        if getattr(self.engine, 'qt_season', None) == 's1':
+            # Match the native entry API's existing source-purpose boundary.
+            # Shared numerical data alone cannot grant S1 live identity.
+            raise ValueError('proposal-only-entry-evidence')
+        # A candidate/door prefilter is not the direct lane's complete domain.
+
+    def _jobs(self):
+        yield from self._entry_jobs()
+        if not self.entry_complete:
+            return
+        self.source_candidates = dict(candidates=[], candidateCount=0,
+            reason='not-requested-by-local-structure', complete=False, evaluatedEntryCount=0)
+        yield from self._condition_jobs()

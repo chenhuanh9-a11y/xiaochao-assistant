@@ -41,6 +41,16 @@ CANDIDATE_CONTROL_ACTIONS = ("next_candidate", "previous_candidate", "select_can
     "reselect_map", "map_reselection", "confirm_route")
 
 
+def _display_rgba(layer):
+    """Use the provider's immutable native material, or convert its BGRA layer."""
+    if 'rgbaPixels' in layer:
+        return layer['rgbaPixels']
+    import numpy as np
+    pixels = np.ascontiguousarray(layer['pixels'][:, :, [2, 1, 0, 3]])
+    pixels.setflags(write=False)
+    return pixels
+
+
 def _prepare_alignment_host(engine, group, settings, map_id, floor, *, frame=None,
                             steady=None, cancelled=None, usable_fit_callback=None):
     """Keep resource and temporal-state preparation outside numerical fitting."""
@@ -653,6 +663,9 @@ class LiveRuntime:
                 self._identity_review_last = None
                 self._pending_sibling = None
                 self._provisional_reference_context = None
+                # The original repeated-evidence policy withdrew this identity;
+                # its material is no longer an ordinary failed-frame fallback.
+                self._revoke_render("identity-current-structure-conflict")
                 self._notify("group-state", reason="repeated-current-structure-contradictions",
                              legacyEvents=[dict(event=event, **values) for event, values in events])
             return reopened
@@ -2021,7 +2034,7 @@ class LiveRuntime:
                 # Consume a current failure under the ownership lock. Handing
                 # it to the generic dispatcher would open a window where a new
                 # drag owns these pixels before the old error revokes them.
-                if not self._candidate_material_current(render_owner):
+                if not self._retained_material_current(render_owner):
                     self.invalidate("runtime-error", source=f'execute:probe_map_after_drag:{type(error).__name__}')
                 return self._receipt("probe_map_after_drag", payload, success=False,
                     reason=f"{type(error).__name__}:{error}", error=True, stale=False,
@@ -2041,7 +2054,7 @@ class LiveRuntime:
                 return self._receipt("probe_map_after_drag", payload, success=False, reason="transient-probe-expired", stale=True)
             if not detected:
                 self._probe_misses += 1
-                self._revoke_render("map-not-observed")
+                self._retire_material_owner(render_owner, "map-not-observed")
                 if self._probe_misses >= 2:
                     self.invalidate("map-closed", source="post-drag-probe")
                     payload["_mapInputVisual"] = dict(open=False, epoch=self._epoch, sequence=input_sequence,
@@ -2054,7 +2067,7 @@ class LiveRuntime:
             if (self._native_s1_candidate_preview and self._season == "s1"
                     and not self._manual_alignment and floor is None):
                 self._observed_floor = ""
-                if not self._candidate_material_current(render_owner):
+                if not self._retained_material_current(render_owner):
                     self._revoke_render("current-floor-unavailable")
                 return self._receipt("probe_map_after_drag", payload, success=False,
                     reason="current-floor-unavailable", fitAttempted=False)
@@ -3428,8 +3441,7 @@ class LiveRuntime:
                         _shared_display_bridge=lambda pref, mid, fl: prepare_route_reprojection(
                             engine, mid, fl, pref, variant_id=variant)["layer"]["matrixDisplayToReference"])
                     rebase_group_display_tracking(owner, staged_group, map_id, layer.get("effectiveProfileId", "shared-structure"))
-                pixels = np.ascontiguousarray(layer["pixels"][:, :, [2, 1, 0, 3]])
-                pixels.setflags(write=False)
+                pixels = _display_rgba(layer)
             except Exception as error:
                 with self._lock:
                     if scope == (self._epoch, self._round, self._cycle, self._frame_id, self._engine,
@@ -3566,8 +3578,7 @@ class LiveRuntime:
         row = self._reference_sheet
         if (row is not None and not self._durable_map_id and self._map_open
                 and row.get("mapId") == self._map_id and row.get("floor") == self._floor
-                and self._core.can_display(cycle_id=self._cycle, map_id=self._map_id,
-                    floor=self._floor, frame_generation=self._frame_generation)):
+                and self._render is not None and self._display_current(self._render)):
             self._provisional_reference_context = self._reference_owner_context(row)
 
     def _clear_candidate_reference(self):
@@ -3592,8 +3603,7 @@ class LiveRuntime:
             variant = self._settings.get("zhan10CoffinVariantId", "variant-01")
         try:
             display = self._display_layer(engine, map_id, floor, profile, variant_id=variant)
-            pixels = np.ascontiguousarray(display["pixels"][:, :, [2, 1, 0, 3]])
-            pixels.setflags(write=False)
+            pixels = _display_rgba(display)
         except (ValueError, KeyError, OSError):
             return  # Missing static resources cannot be replaced by old-floor pixels.
         with self._lock:
@@ -3685,8 +3695,7 @@ class LiveRuntime:
                 # Preserve the original provisional exception: an open-map
                 # reference needs current core authority; a closed-map sheet
                 # may reuse only its previously verified logical context.
-                valid_provisional = (self._core.can_display(cycle_id=self._cycle, map_id=self._map_id,
-                    floor=self._floor, frame_generation=self._frame_generation) if self._map_open
+                valid_provisional = (self._render is not None and self._display_current(self._render) if self._map_open
                     else self._provisional_reference_context == self._reference_owner_context(row))
                 if not valid_provisional:
                     return None
@@ -4064,15 +4073,18 @@ class LiveRuntime:
                 and (not self._private_pool_scope_current(pool) or row.get("mapId") not in pool.remaining)):
             return False
         observation = self._core.active_observation
-        # Candidate material belongs to its successful observation until a new
-        # material replaces it or its opening/floor/context ends. Its old core
-        # grant stays valid; it never authorizes the newer identity observation.
+        # Material keeps its own observation/grant while a newer frame is
+        # measured. It never supplies that newer frame's pose or identity proof.
         candidate = row.get("candidateDisplayOnly")
         return bool(self._active and self._map_open and row["epoch"] == self._epoch and observation
-            and (not candidate or row["cycleId"] == self._cycle and row["floor"] == self._floor)
+            and row["cycleId"] == self._cycle and row["floor"] == self._floor
+            and row["roundId"] == self._round and (candidate or row["mapId"] == self._map_id)
+            and observation.frame_generation == row["generation"]
+            and self._core.display_authorization is not None
+            and self._core.display_authorization.authorization_id == row["authorizationId"]
             and self._core.can_display(cycle_id=self._cycle, map_id=row["mapId"] if candidate else self._map_id,
-                floor=self._floor, frame_generation=row["generation"] if candidate else self._frame_generation)
-            and (candidate or row["frameId"] == self._frame_id) and row["mode"] == self._mode
+                floor=self._floor, frame_generation=row["generation"])
+            and row["mode"] == self._mode
             and row.get("season", "s0") == self._season)
 
     def map_input_observation_is_current(self, observation):
@@ -4471,7 +4483,7 @@ class LiveRuntime:
                 # The work lock does not own a newer input's lifetime. An old
                 # acquisition error may report failure, never revoke its successor.
                 stale_owner = action in ("map", "capture_now", "prepare_manual_alignment", "fit_manual_frame", "observe_manual_floor") and capture_request_epoch != self._epoch
-                if not stale_owner:
+                if not stale_owner and not self._retained_material_current(self._refresh_render_owner()):
                     self.invalidate("runtime-error", source=f'execute:{action}:{type(error).__name__}')
             return self._receipt(action, payload, success=False, reason=f"{type(error).__name__}:{error}", error=True,
                     stale=stale_owner,
@@ -4770,23 +4782,31 @@ class LiveRuntime:
         return tuple(row.get(key) for key in ("epoch", "cycleId", "frameId", "generation",
             "token", "authorizationId", "transformRevision")) if row is not None else None
 
-    def _candidate_material_current(self, owner):
+    def _retained_material_current(self, owner):
         """Retain a successful display, without renewing observation evidence."""
         row = self._render
-        return bool(row is not None and row.get("candidateDisplayOnly")
+        return bool(row is not None and (row.get("candidateDisplayOnly")
+                or row.get("poseFinalVerified") is True and row.get("reviewStatus") == "complete"
+                and not row.get("requiresMaterialAck"))
             and owner == self._refresh_render_owner() and self._display_current(row)
+            and row["profileId"] == self._profile
             and row.get("displayGeneration") == getattr(self, "_display_generation", 0)
             and _engine_resource_current(self._engine)
             and self._capture_is_current(self._render_capture_context, row.get("captureGeneration")))
 
-    def _retire_refresh_owner(self, owner):
+    def _retire_material_owner(self, owner, reason):
         with self._lock:
-            if owner is None or owner != self._refresh_render_owner():
+            if owner != self._refresh_render_owner():
                 return False
-            if self._candidate_material_current(owner):
+            if self._retained_material_current(owner):
                 return False
-            self._revoke_render("refresh-cancelled-or-stale")
+            self._revoke_render(reason)
             return True
+
+    def _retire_refresh_owner(self, owner):
+        if owner is None:
+            return False
+        return self._retire_material_owner(owner, "refresh-cancelled-or-stale")
 
     def _refresh_map(self, payload, cancelled):
         # Passive timer requests never build an unbounded worker backlog.
@@ -4844,7 +4864,8 @@ class LiveRuntime:
                     self._retire_refresh_owner(published_owner)
                     return self._receipt("refresh_map", payload, success=False,
                         reason="cancelled-or-stale", stale=True)
-                self.invalidate("runtime-error", source=f'refresh-map:{type(error).__name__}')
+                if not self._retained_material_current(current_owner):
+                    self.invalidate("runtime-error", source=f'refresh-map:{type(error).__name__}')
             return self._receipt("refresh_map", payload, success=False,
                                  reason=f"{type(error).__name__}:{error}", error=True,
                     **self._error_fields(error, "refresh_map"))
@@ -4889,7 +4910,7 @@ class LiveRuntime:
             with self._lock:
                 if obsolete():
                     return self._receipt("refresh_map", payload, success=False, reason="cancelled-or-stale", stale=True)
-                self._revoke_render(reason)
+                self._retire_material_owner(self._refresh_render_owner(), reason)
             return None
         self._set_pose_phase("pending", "current-frame-refresh", map_id, floor, current_frame, self._frame_generation)
         host, _, _ = _prepare_alignment_host(engine, group, self._settings, map_id, floor,
@@ -4899,7 +4920,7 @@ class LiveRuntime:
             with self._lock:
                 if obsolete():
                     return self._receipt("refresh_map", payload, success=False, reason="cancelled-or-stale", stale=True)
-                self._revoke_render("refresh-reference-basis-unavailable")
+                self._retire_material_owner(self._refresh_render_owner(), "refresh-reference-basis-unavailable")
             return None
         canonical = np.asarray(row["canonicalMatrix"], np.float64)
         source_matrix = canonical @ np.asarray(basis, np.float64)
@@ -4910,7 +4931,7 @@ class LiveRuntime:
             if context is None or context.get("visible") is None:
                 with self._lock:
                     if not obsolete():
-                        self._revoke_render("manual-current-geometry-unavailable")
+                        self._retire_material_owner(self._refresh_render_owner(), "manual-current-geometry-unavailable")
                 return None
             residual_options["visible_override"] = context["visible"]
         residual, _ = host._canonical_geometry_current_frame_residual(
@@ -4927,7 +4948,7 @@ class LiveRuntime:
                     or cycle != self._cycle or self._floor != floor):
                 return self._receipt("refresh_map", payload, success=False, reason="cancelled-or-stale", stale=True)
             if not rendered_profile_residual_is_verified(residual):
-                self._revoke_render("current-frame-residual-failed")
+                self._retire_material_owner(self._refresh_render_owner(), "current-frame-residual-failed")
                 return None
             if not self._capture_is_current(captured.context, capture_generation):
                 self.invalidate("capture-context-changed")
@@ -4942,19 +4963,21 @@ class LiveRuntime:
                 and previous["group"] is self._group)
             generation = self._frame_generation + 1
             frame_id = f"{self._round}:{generation}:{digest[:16]}"
-            self._core.begin_observation(cycle_id=cycle, map_id=map_id, floor=floor,
+            core = self._copy_pose_core(self._core)
+            core.begin_observation(cycle_id=cycle, map_id=map_id, floor=floor,
                 frame_generation=generation, frame_signature=(digest,), reason="current-pose-refresh")
             candidate = AlignmentCandidate(map_id, floor, canonical,
                 "same-floor-reopen-verified-refresh", generation, confidence=1.0, anchor_count=1,
                 anchor_kind="global", current_frame_verified=True, residual_verified=True,
                 global_residual_verified=True, translation_only=True,
                 metadata=dict(routeProfileId="shared-structure"))
-            decision = self._core.adjudicate(candidate)
-            token = self._core.authorize(decision)
-            if token is None or not self._core.commit(token, persist_pose=False):
-                self._revoke_render("refresh-core-commit-rejected")
+            decision = core.adjudicate(candidate)
+            token = core.authorize(decision)
+            if token is None or not core.commit(token, persist_pose=False):
+                self._retire_material_owner(self._refresh_render_owner(), "refresh-core-commit-rejected")
                 return self._receipt("refresh_map", payload, success=False, reason=decision.reason)
             self._discard_sibling()
+            self._core = core
             self._frame_generation, self._frame_id = generation, frame_id
             self._last_observation = dict(captured=captured, frame=frame, floor=floor, digest=digest, created_at=self._monotonic(),
                 capture_generation=capture_generation, frame_id=frame_id, observed_floor=self._observed_floor,
@@ -5034,11 +5057,12 @@ class LiveRuntime:
                         return self._receipt(action, payload, success=False, reason="stale-map-input", stale=True)
                     self._last_map_input_sequence = sequence
                 epoch, engine, map_id = self._epoch, self._engine, self._map_id
+                render_owner = self._refresh_render_owner()
                 manual_target, old_floor = self._manual_floor, self._floor
                 owner = self._manual_capture_owner = object()
                 self._capture_pending = True
                 if action != "observe_manual_floor":
-                    self._revoke_render("manual-current-frame-request")
+                    self._retire_material_owner(self._refresh_render_owner(), "manual-current-frame-request")
 
             def obsolete():
                 return (self._cancelled(cancelled) or epoch != self._epoch or engine is not self._engine
@@ -5086,12 +5110,14 @@ class LiveRuntime:
                     frame = _test_input_copy(self._full_frame(captured))
                     with self._lock:
                         if obsolete() or not self._capture_is_current(captured.context, capture_generation):
+                            self._retire_material_owner(render_owner, "manual-observation-context-expired")
                             return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
                     observation, observed, read = self._observe(engine, frame)
                 frame.setflags(write=False)
                 digest = hashlib.sha256(frame.tobytes()).hexdigest()
                 with self._lock:
                     if obsolete() or not self._capture_is_current(captured.context, capture_generation):
+                        self._retire_material_owner(render_owner, "manual-observation-context-expired")
                         return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
                     opened = read.get("mapOpen")
                     raw = read.get("rawSelectedFloor")
@@ -5124,10 +5150,12 @@ class LiveRuntime:
                     payload["_mapInputVisual"] = dict(open=opened, epoch=self._epoch,
                         sequence=self._last_map_input_sequence, captured=captured, captureGeneration=capture_generation)
                     if not floor:
-                        self._revoke_render("s1-floor-unknown")
-                        self._group = None
-                        self._core.reset_round(reason="s1-floor-unknown")
-                        self._floor = ""
+                        retained = self._retained_material_current(self._refresh_render_owner())
+                        if not retained:
+                            self._revoke_render("s1-floor-unknown")
+                            self._group = None
+                            self._core.reset_round(reason="s1-floor-unknown")
+                            self._floor = ""
                         self._floor_required = True
                         self._frame_generation += 1
                         self._frame_id = f"{self._round}:{self._frame_generation}:{digest[:16]}"
@@ -5152,8 +5180,9 @@ class LiveRuntime:
                         return dict(refreshed, action=action)
                 with self._lock:
                     if obsolete() or not self._capture_is_current(captured.context, capture_generation):
+                        self._retire_material_owner(render_owner, "manual-observation-context-expired")
                         return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
-                    self._revoke_render("s1-current-floor-fit")
+                    self._retire_material_owner(self._refresh_render_owner(), "s1-current-floor-fit")
                     if floor != old_floor:
                         self._group = None
                         self._core.reset_round(reason="s1-observed-floor-changed")
@@ -5174,7 +5203,7 @@ class LiveRuntime:
                     if obsolete():
                         return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True,
                             errorType=type(error).__name__)
-                    self._revoke_render("s1-floor-observation-error")
+                    self._retire_material_owner(self._refresh_render_owner(), "s1-floor-observation-error")
                 raise
             finally:
                 with self._lock:
@@ -5200,7 +5229,7 @@ class LiveRuntime:
                     return self._receipt(action, payload, success=False, reason="manual-map-floor-required")
                 epoch, engine, group = self._epoch, self._engine, self._group
                 map_id, floor = self._map_id, self._manual_floor
-                self._revoke_render("manual-current-frame-request")
+                self._retire_material_owner(self._refresh_render_owner(), "manual-current-frame-request")
                 owner = self._manual_capture_owner = object()
                 self._capture_pending = True
             obsolete = lambda: self._cancelled(cancelled) or epoch != self._epoch
@@ -5256,16 +5285,15 @@ class LiveRuntime:
                 return self._receipt(action, payload, success=False, reason="round-not-active")
             epoch, engine, group = self._epoch, self._engine, self._group
             input_sequence = self._last_map_input_sequence
-        # Recapture has not changed the observed map until acquisition starts.
-        # A provider's narrow pre-pixel foreground refusal must not itself
-        # erase a still-current observation. Other actions keep their existing
-        # revocation semantics; no failure after acquisition is retained.
+        # A new acquisition has its own evidence. The previous completed
+        # material remains owned by its original frame until replacement or a
+        # real opening/floor/resource/capture boundary.
         foreground_return = action == "capture_now" and payload.get("foregroundReturn") is True
         if prepared is None and (action not in ("refresh_map", "capture_now") or foreground_return):
             with self._lock:
                 self._game_floor_intent = None
                 self._floor_click_epoch_span = None
-            self._revoke_render("new-capture")
+            self._retire_material_owner(self._refresh_render_owner(), "new-capture")
         obsolete = lambda: self._cancelled(cancelled) or epoch != self._epoch
         preparing = action == "map" or foreground_return
         if prepared is not None:
@@ -5341,10 +5369,7 @@ class LiveRuntime:
                 with self._lock:
                     self._game_floor_intent = None
                     self._floor_click_epoch_span = None
-                # Revoke BEFORE entering the real pixel acquisition. An old
-                # queued render-ready event cannot republish a prior token
-                # while this worker is blocked in a native/backend capture.
-                self._revoke_render("new-capture")
+                self._retire_material_owner(self._refresh_render_owner(), "new-capture")
             try:
                 captured = self._capture_frame(obsolete, attempt_id=payload.get("_diagnosticAttemptId"))
                 captured_frame = self._full_frame(captured)
@@ -5398,7 +5423,8 @@ class LiveRuntime:
             with self._lock:
                 if obsolete():
                     return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
-                self._revoke_render("current-floor-unavailable")
+                retained = self._retained_material_current(self._refresh_render_owner())
+                self._retire_material_owner(self._refresh_render_owner(), "current-floor-unavailable")
             digest = capture_snapshot.frame_key
             with self._lock:
                 if obsolete():
@@ -5406,7 +5432,8 @@ class LiveRuntime:
                 if not self._map_open:
                     self._cycle += 1
                 self._map_open = True
-                self._floor = effective_floor or ""
+                if not retained:
+                    self._floor = effective_floor or ""
                 if action == "recover_map_open":
                     payload["_recoveryResultScope"] = self._map_recovery_scope()
                 if effective_floor is None:
@@ -5419,13 +5446,13 @@ class LiveRuntime:
                 self._publish_game_pointer_context_locked()
                 for row in self._candidate_rows:
                     row["floor"] = self._floor
-            if effective_floor is not None:
+            if effective_floor is not None and (not retained or self._manual_override):
                 return self._solve_retained(action, payload, cancelled, acquire_current=False, expected_epoch=epoch)
             self._terminal_failure_sample("current-floor-unavailable", payload, captured, lambda: not obsolete())
             return self._receipt(action, payload, success=False, reason="current-floor-unavailable", observation=observation,
                 preparationObservation=preparation.observation_diagnostic() if preparing else {})
         if opened is not True:
-            if action == "refresh_map":
+            if action == "refresh_map" or self._retained_material_current(self._refresh_render_owner()):
                 from session_state_machine import map_probe_transition
                 probe_open = (observation.get("mapOpen") if engine.pack.mode == "difficult"
                               else bool(observation.get("detected")))
@@ -5435,7 +5462,7 @@ class LiveRuntime:
                     self._probe_misses, transition = map_probe_transition(
                         self._map_open, self._probe_misses, probe_open)
                     reason = "current-floor-unavailable" if probe_open is True and floor is None else "map-not-observed"
-                    self._revoke_render(reason)
+                    self._retire_material_owner(self._refresh_render_owner(), reason)
                     # While a failed-fit segment awaits the existing two-miss
                     # close decision, don't report its first probe miss as a
                     # separate operation failure. No segment: legacy reporting.
@@ -5464,7 +5491,7 @@ class LiveRuntime:
                 self._last_observation = None
                 self._pointer_context_snapshot = None
                 if action == "refresh_map":
-                    self._revoke_render("current-floor-unavailable")
+                    self._retire_material_owner(self._refresh_render_owner(), "current-floor-unavailable")
                 else:
                     self.invalidate("floor-unknown")
                 failure_receipt = self._receipt(action, payload, success=False,
@@ -5478,7 +5505,7 @@ class LiveRuntime:
             with self._lock:
                 if obsolete():
                     return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
-                self._revoke_render("floor-policy-deferred")
+                self._retire_material_owner(self._refresh_render_owner(), "floor-policy-deferred")
                 return self._receipt(action, payload, success=False, reason="floor-policy-deferred")
         floor = effective_floor
         digest = capture_snapshot.frame_key
@@ -5614,7 +5641,7 @@ class LiveRuntime:
         if base is None:return None
         prepared=prepare_route_reprojection(engine,map_id,floor,profile,base,variant_id=variant)
         layer=prepared["layer"]
-        rgba=np.ascontiguousarray(layer["pixels"][:,:,[2,1,0,3]]);rgba.setflags(write=False)
+        rgba=_display_rgba(layer)
         display_matrix=translated_source_matrix(prepared["matrixSourceToClient"],*offset)
         projected=translated_source_matrix(base,*offset)
         view=dict(overlay=rgba,matrixSourceToClient=display_matrix.tolist(),
@@ -5713,6 +5740,7 @@ class LiveRuntime:
         import numpy as np
         from alignment_core_v2 import AlignmentCandidate
         from alignment_observation import rendered_profile_residual_is_verified
+        from client_providers import DisplayResourceChanged
         from round_layer_group import RoundLayerGroup
         from round_layer_group_commit import RoundPoseObservationScope
         with self._lock:
@@ -5748,17 +5776,34 @@ class LiveRuntime:
             group_intent_generation = self._group_intent_generation
             profile = self._profile
             variant_id = self._settings.get("zhan10CoffinVariantId", "variant-01")
+            material_owner = self._refresh_render_owner()
+
+        def withdraw_changed_display(owner):
+            # Resource proof belongs to this exact consumption, not a newer
+            # material/drag or another member's separately owned source.
+            with self._lock:
+                row = self._render
+                if (epoch == self._epoch and engine is self._engine
+                        and profile == self._profile and floor == self._floor
+                        and display_generation == getattr(self, "_display_generation", 0)
+                        and owner == self._refresh_render_owner()
+                        and (row is None or row["mapId"] == map_id)):
+                    self.invalidate("display-resource-changed", source=action)
+
         # Static reference follows the independently confirmed map and floor;
         # a failed pose solve must not also remove the player's reference map.
-        prepared_display = self._display_layer(engine, map_id, floor, profile, variant_id=variant_id)
+        try:
+            prepared_display = self._display_layer(engine, map_id, floor, profile, variant_id=variant_id)
+        except DisplayResourceChanged:
+            withdraw_changed_display(material_owner)
+            raise
         # One solve owns its material. Detach only small metadata and the bridge;
         # neither a provider nor a later publication may rewrite this snapshot.
-        display = {key: value if key == "pixels" else copy.deepcopy(value)
+        display = {key: value if key in ("pixels", "rgbaPixels") else copy.deepcopy(value)
             for key, value in prepared_display.items()}
         display["matrixDisplayToReference"] = np.asarray(display["matrixDisplayToReference"], np.float64)
         display["matrixDisplayToReference"].setflags(write=False)
-        reference_pixels = np.ascontiguousarray(display["pixels"][:, :, [2, 1, 0, 3]])
-        reference_pixels.setflags(write=False)
+        reference_pixels = _display_rgba(display)
         with self._lock:
             if display_generation != getattr(self, "_display_generation", 0) or profile != self._profile:
                 return self._receipt(action, payload, success=False, reason="stale-display-settings", stale=True)
@@ -5769,6 +5814,11 @@ class LiveRuntime:
                 return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
             if capture_generation != self._capture_generation():
                 return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
+            if (self._render is not None and self._render.get("mapId") == map_id
+                    and self._render.get("floor") == floor and self._render.get("profileId") == profile
+                    and self._render.get("resourceIdentity") != display["resourceIdentity"]):
+                withdraw_changed_display(material_owner)
+                return self._receipt(action, payload, success=False, reason="display-resource-changed", stale=True)
             reference_sheet = dict(token=uuid4().hex, pixels=reference_pixels,
                 season=self._season, mode=self._mode, profileId=profile, mapId=map_id, floor=floor, roundId=self._round,
                 variantId=display.get("variantId"), displayGeneration=display_generation,
@@ -5807,7 +5857,7 @@ class LiveRuntime:
         def revoke_published(reason):
             with self._lock:
                 if self._render is not None and self._render["token"] == published_token:
-                    self._revoke_render(reason)
+                    self._retire_material_owner(self._refresh_render_owner(), reason)
 
         def publish_fit(fit, *, review_pending=False):
             nonlocal published_token, review_core
@@ -5829,15 +5879,22 @@ class LiveRuntime:
                     self.invalidate('registered-group-resource-unavailable', source=action)
                     return self._receipt(action, payload, success=False, reason='registered-group-resource-unavailable',
                                          messageDetail=str(error)[:512])
-            if profile == "shared-structure" and display["displayKind"] == "shared-structure":
-                from client_route_preferences import shared_structure_display_current
-                display_current = shared_structure_display_current(engine, map_id, floor, display)
-            else:
-                # Author/custom selection and structural fallback retain their
-                # original policy, source and generation checks.
-                current_display = self._display_layer(engine, map_id, floor, profile, variant_id=variant_id)
-                display_current = current_display["resourceIdentity"] == display["resourceIdentity"]
+            with self._lock:
+                proof_owner = self._refresh_render_owner()
+            try:
+                if profile == "shared-structure" and display["displayKind"] == "shared-structure":
+                    from client_route_preferences import shared_structure_display_current
+                    display_current = shared_structure_display_current(engine, map_id, floor, display)
+                else:
+                    # Author/custom selection and structural fallback retain
+                    # their original policy, source and generation checks.
+                    current_display = self._display_layer(engine, map_id, floor, profile, variant_id=variant_id)
+                    display_current = current_display["resourceIdentity"] == display["resourceIdentity"]
+            except DisplayResourceChanged:
+                withdraw_changed_display(proof_owner)
+                raise
             if not display_current:
+                withdraw_changed_display(proof_owner)
                 return self._receipt(action, payload, success=False, reason="display-resource-changed", stale=True)
             with self._lock:
                 if registered_family_identity(registered_state) != registered_family_identity(self._identity_native):
@@ -5866,7 +5923,8 @@ class LiveRuntime:
                     return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
                 source_core = review_core if review_core is not None else self._core
                 core = self._copy_pose_core(source_core) if (review_pending or identity_stage is not None
-                    or provisional_operation and self._render is not None) else source_core
+                    or provisional_operation and self._render is not None
+                    or self._retained_material_current(self._refresh_render_owner())) else source_core
                 self._seed_group_core(core,group)
                 core.begin_observation(cycle_id=cycle, map_id=map_id, floor=floor,
                                              frame_generation=frame_generation, frame_signature=(digest,))
@@ -5995,6 +6053,9 @@ class LiveRuntime:
             # Sibling material handoff and candidate tickets retain their
             # existing independent acknowledgment/eligibility protocols.
             if published_token is None and identity_stage is None and not provisional_operation:
+                with self._lock:
+                    if self._retained_material_current(self._refresh_render_owner()):
+                        return  # Keep completed pixels while final review owns the new verdict.
                 publish_fit(first, review_pending=True)
 
         host, preparation, steady_receipt = _prepare_alignment_host(engine, group, self._settings,

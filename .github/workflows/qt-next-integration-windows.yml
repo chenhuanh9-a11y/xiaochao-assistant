@@ -227,8 +227,9 @@ jobs:
                 'test_imported_s0_observation', 'test_identity_metadata_package_io',
                 'test_shared_structure_package_io', 'test_shared_version_package_io',
                 'test_entry_resource_io', 'test_main_entry_jobs', 'test_passport_entry_jobs', 'test_side_entry_jobs',
+                'test_local_structure_index',
                 'test_side_pose_recovery_jobs',
-                'test_observation_work_scheduler',
+                'test_observation_work_scheduler', 'test_map_local_structure_work',
                 'test_source_structure_jobs', 'test_native_condition_jobs',
                 'test_export_native_base_package',
                 'test_export_s0_difficult_native_base_package',
@@ -250,7 +251,7 @@ jobs:
                 'test_s1_floor_observation', 'test_s1_map_ui_geometry',
                 'test_client_shared_reference_context', 'test_client_structure_unification', 'test_client_local_identity_commit', 'test_group_review_lifecycle',
                 'test_client_imported_providers', 'test_client_native_base_provider',
-                'test_client_direct_structure_recognition', 'test_client_prepared_alignment', 'test_client_known_floor_recovery',
+                'test_client_direct_structure_recognition', 'test_client_local_structure_recognition', 'test_client_prepared_alignment', 'test_client_known_floor_recovery',
                 'test_client_imported_s1_provider'
               )
             }
@@ -283,6 +284,8 @@ jobs:
             'packaging-imported-display' {
               $modules = @(
                 'test_client_progressive_display', 'test_client_progressive_pixels',
+                'test_client_display_guard_consumption', 'test_client_formal_material_retention',
+                'test_client_similarity_protocol',
                 'test_imported_author_displays',
                 'test_client_imported_author_activation', 'test_client_imported_author_selection'
               )

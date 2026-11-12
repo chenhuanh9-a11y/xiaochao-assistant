@@ -34,6 +34,23 @@ class ProviderResourceBinding:
 class ProviderUnavailable(RuntimeError):
     unavailable = True
 
+
+class DisplayResourceChanged(ValueError):
+    """The display consumer proved its actual resource/source owner changed."""
+
+
+def _is_proven_display_resource_change(error):
+    from imported_resource_catalog import ResourceCatalogError
+    from star_map_import import ImportRejected
+    if isinstance(error, ResourceCatalogError):
+        return error.code == 'resource-catalog-superseded'
+    return isinstance(error, ImportRejected) and error.code in (
+        'resource-package-manifest-changed', 'resource-package-manifest-replaced',
+        'resource-package-component-root-changed', 'resource-package-component-reference-changed',
+        'imported-native-base-component-root-changed', 'imported-native-base-legacy-component-root-changed',
+        'imported-controls-component-root-changed', 'imported-s1-controls-component-root-changed',
+        'imported-difficult-native-context-base-bundle-mismatch', 'imported-s1-native-context-base-bundle-mismatch')
+
 def _local(root, relative):
     path = (root / str(relative)).resolve()
     if not path.is_relative_to(root):
@@ -163,6 +180,8 @@ class SharedReferenceProvider:
         self._operation_owners = operation_owners
         self._cache = OrderedDict()
         self._lock = threading.RLock()
+        from native_structure_display_material import NativeStructureDisplayMaterials
+        self._display_materials = NativeStructureDisplayMaterials()
 
     def _assert_current(self):
         if self._check_current is not None:
@@ -242,7 +261,100 @@ class SharedReferenceProvider:
                 raise ValueError('structure-identity-resource-owner-changed')
             operation.assert_owned()
 
-    def _load(self, profile, map_id, floor, *, read_resource=None, operation=None, force_fresh=False):
+    def _consume_reference(self, reference, operation, consume):
+        try:
+            return reference if consume is None else consume(reference)
+        finally:
+            # A display consumer reads the actual reference before this same
+            # original post guard, including when its metadata read fails.
+            self._assert_read_current(operation)
+
+    def _freeze_native_display_reference(self, reference):
+        from imported_resource_reader import ComponentResourceReader
+        from shared_structure_reference import SharedStructureResourceStore
+        from native_structure_display_material import freeze_native_reference
+        owners = self._operation_owners
+        bundle = getattr(owners, 'bundle', None)
+        if bundle is None or self._read_operation_owners(bundle) is None:
+            return reference
+        reader, source = bundle._values['reader'], bundle._values['fast_structure_source']
+        if (type(self.resources) is not SharedStructureResourceStore
+                or getattr(self.resources.load, '__func__', None) is not SharedStructureResourceStore.load
+                or type(reader) is not ComponentResourceReader
+                or self.resources.read_resource is not reader or source.reader is not reader
+                or reader.view is not bundle._view or source.view is not bundle._view
+                or reader.root != bundle._root or source.root != bundle._root):
+            return reference
+        return freeze_native_reference(reference, self)
+
+    def native_display_layer(self, reference, *, variant_id):
+        from shared_structure_display import structure_display_layer
+        owners = self._operation_owners
+        source = owners.bundle._values['fast_structure_source']
+        reader = owners.bundle._values['reader']
+        scope = (self._read_owner_state(), owners.read_state(), source._read_state(), reader._owner_state())
+        return self._display_materials.layer(reference, self, scope, variant_id, structure_display_layer)
+
+    def _consume_display_reference(self, engine, map_id, floor, consume):
+        """Consume one native display inside the original live pre/post guards.
+
+        This does not use or grant byte-batch/fresh-read permission. Unknown
+        readers, independent guards and real legacy lookups keep their caller.
+        """
+        from imported_resource_reader import ComponentResourceReader
+        from shared_structure_display import structure_display_identity
+        bundle = getattr(engine, 'qt_native_base', None)
+        owners = self._read_operation_owners(bundle)
+        check, source = getattr(engine, 'qt_assert_resource_current', None), getattr(engine, 'qt_fast_structure_source', None)
+        if (owners is None or getattr(engine, 'qt_shared_provider', None) is not self
+                or check is not self._check_current
+                or getattr(self._load, '__func__', None) is not SharedReferenceProvider._load):
+            return NotImplemented
+        reader = bundle._values['reader']
+        if (source is not bundle._values['fast_structure_source'] or type(reader) is not ComponentResourceReader
+                or self.resources.read_resource is not reader or source.reader is not reader
+                or reader.view is not bundle._view or source.view is not bundle._view
+                or reader.root != bundle._root or source.root != bundle._root):
+            return NotImplemented
+        if owners.legacy is not None and str(map_id) in owners.legacy._maps:
+            return NotImplemented
+        keys = [key for key in self.versions if key[1] == str(map_id) and key[3] == str(floor)]
+        if len(keys) != 1 or self.versions[keys[0]].get('sharedError'):
+            return NotImplemented
+        key = keys[0]
+        provider_state, owner_state = self._read_owner_state(), owners.read_state()
+        source_state, reader_state = source._read_state(), reader._owner_state()
+
+        def current_owners():
+            if (getattr(engine, 'qt_shared_provider', None) is not self
+                    or getattr(engine, 'qt_native_base', None) is not bundle
+                    or getattr(engine, 'qt_assert_resource_current', None) is not check
+                    or getattr(engine, 'qt_fast_structure_source', None) is not source
+                    or self._read_owner_state() != provider_state or owners.read_state() != owner_state
+                    or source._read_state() != source_state or reader._owner_state() != reader_state):
+                raise DisplayResourceChanged('display-resource-owner-changed')
+
+        reference, identity = None, None
+        def consuming(actual):
+            nonlocal reference, identity
+            current_owners()
+            reference, identity = actual, structure_display_identity(actual)
+            return consume(actual)
+
+        with self._lock:
+            # Keep this bounded read/consumer/post-guard and its cache proof
+            # together: ordinary readers may evict this key as soon as we leave.
+            current_owners()
+            value = self._load('shared-structure', map_id, floor, consume=consuming)
+            if reference is None:
+                raise ValueError('display-reference-unavailable')
+            current_owners()
+            if structure_display_identity(reference) != identity or self._cache.get(key) is not reference:
+                raise DisplayResourceChanged('display-resource-changed')
+            current_owners()
+            return value
+
+    def _load(self, profile, map_id, floor, *, read_resource=None, operation=None, force_fresh=False, consume=None):
         import numpy as np
         if force_fresh and operation is None:
             raise ValueError('structure-identity-resource-owner-changed')
@@ -250,8 +362,7 @@ class SharedReferenceProvider:
         if operation is None and self._legacy_reference_loader is not None:
             legacy = self._legacy_reference_loader(map_id, floor)
             if legacy is not None:
-                self._assert_read_current(operation)
-                return legacy
+                return self._consume_reference(legacy, operation, consume)
         keys = [key for key in self.versions if key[1] == str(map_id) and key[3] == str(floor)]
         if len(keys) != 1:
             return None
@@ -264,9 +375,9 @@ class SharedReferenceProvider:
             # since the ordinary provider cache has writable arrays/metadata.
             reference = None if force_fresh else self._cache.get(key)
             if reference is not None:
-                self._assert_read_current(operation)
+                value = self._consume_reference(reference, operation, consume)
                 self._cache.move_to_end(key)
-                return reference
+                return value
             if read_resource is None:
                 reference = self.resources.load(key[0], key[1], key[3], variant=key[2])
             else:
@@ -277,15 +388,18 @@ class SharedReferenceProvider:
                     or reference.metadata.get("canvas") != version["canvas"]
                     or any(reference.metadata.get(name) != value for name, value in version["expected"].items())):
                 return None
-            self._assert_read_current(operation)
+            if not force_fresh and operation is None and read_resource is None:
+                reference = self._freeze_native_display_reference(reference)
+            value = self._consume_reference(reference, operation, consume)
             if force_fresh:
                 # Keep this mutable decode private until its caller freezes
                 # it; ordinary cache readers must not acquire it in between.
-                return reference
+                return value
             self._cache[key] = reference
             while len(self._cache) > 6:
-                self._cache.popitem(last=False)
-            return reference
+                _, removed = self._cache.popitem(last=False)
+                self._display_materials.discard(removed)
+            return value
 
     def binding_metadata(self, profile, map_id, floor):
         self._assert_current()

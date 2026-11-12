@@ -296,7 +296,11 @@ class StructurePoseInputTests(unittest.TestCase):
 
     def test_preparation_ignores_mutable_warm_native_arrays_and_metadata(self):
         engine, mid, _ = self.engine()
-        warm = engine.qt_shared_provider('shared-structure', mid, '1')
+        provider = engine.qt_shared_provider
+        warm = provider('shared-structure', mid, '1')
+        warm = replace(warm, clean_mask=warm.clean_mask.copy(), validation_mask=warm.validation_mask.copy())
+        key = next(key for key in provider.versions if key[1] == mid and key[3] == '1')
+        provider._cache[key] = warm
         clean, validation = warm.clean_mask.copy(), warm.validation_mask.copy()
         metadata = json.dumps(warm.metadata, sort_keys=True)
         warm.clean_mask.fill(0)
@@ -316,6 +320,9 @@ class StructurePoseInputTests(unittest.TestCase):
         engine, mid, _ = self.engine()
         provider = engine.qt_shared_provider
         warm = provider('shared-structure', mid, '1')
+        warm = replace(warm, clean_mask=warm.clean_mask.copy(), validation_mask=warm.validation_mask.copy())
+        key = next(key for key in provider.versions if key[1] == mid and key[3] == '1')
+        provider._cache[key] = warm
         clean, metadata = warm.clean_mask.copy(), json.dumps(warm.metadata, sort_keys=True)
         freeze, consumers = pose._freeze_reference, []
 

@@ -187,17 +187,23 @@ class ManualS1FloorRuntime(unittest.TestCase):
                 self.assertEqual(state["floorSource"], "automatic-current-frame")
         self.assert_no_live_or_rank()
 
-    def test_stubpixel_missing_ambiguous_and_closed_revoke_pose(self):
+    def test_stubpixel_missing_and_ambiguous_keep_completed_pose_until_closed(self):
         for reason, opened in (("s1-floor-signed-labels-incomplete", True),
                                ("s1-floor-column-ambiguous", True), ("s1-floor-map-not-open", False)):
             with self.subTest(reason=reason):
                 self.runtime.dispatch("end_round"); self.raw, self.opened = -1, True
                 self.prepare(); self.pick()
+                source = self.runtime._render
                 with patch("s1_floor_observation.detect_s1_floor", return_value=stub_pixel_read(None, opened=opened, reason=reason)):
                     result = self.runtime.dispatch("observe_manual_floor")
                 self.assertFalse(result["success"], result)
-                self.assertIsNone(self.runtime._render)
-                self.assertFalse(self.runtime._core.snapshot()["displayAuthorized"])
+                if opened:
+                    self.assertIs(self.runtime._render, source)
+                    self.assertIsNotNone(self.runtime.render_payload(source["token"]))
+                    self.assertTrue(self.runtime._core.snapshot()["displayAuthorized"])
+                else:
+                    self.assertIsNone(self.runtime._render)
+                    self.assertFalse(self.runtime._core.snapshot()["displayAuthorized"])
                 self.assertEqual(self.runtime.snapshot()["observedFloor"], "")
 
     def test_four_floor_private_eligibility_never_comes_from_the_real_validation_flag(self):
@@ -205,13 +211,17 @@ class ManualS1FloorRuntime(unittest.TestCase):
             with self.subTest(floor=floor):
                 self.runtime.dispatch("end_round"); self.raw = -1
                 self.prepare(); self.pick()
+                source = self.runtime._render
+                fits = self.fitter.call_count
                 rejected = dict(stub_pixel_read(floor), automaticFloorEligible=False,
                                 observedFloorValidated=True)
                 with patch("s1_floor_observation.detect_s1_floor", return_value=rejected):
                     result = self.runtime.dispatch("observe_manual_floor")
                 self.assertFalse(result["success"], result)
                 self.assertEqual(self.runtime.snapshot()["observedFloor"], "")
-                self.assertIsNone(self.runtime._render)
+                self.assertIs(self.runtime._render, source)
+                self.assertIsNotNone(self.runtime.render_payload(source["token"]))
+                self.assertEqual(self.fitter.call_count, fits)
                 self.assert_no_live_or_rank()
 
     def test_stubpixel_cancellation_while_waiting_for_work_does_not_acquire_or_revoke(self):
@@ -245,6 +255,7 @@ class ManualS1FloorRuntime(unittest.TestCase):
         for stage in ("capture", "observer", "fitter"):
             with self.subTest(stage=stage):
                 self.runtime.dispatch("end_round"); self.prepare(); self.pick()
+                source = self.runtime._render
                 cancelled = threading.Event()
                 original_capture = self.capture.capture
                 def capture(*a, **kw):
@@ -259,8 +270,9 @@ class ManualS1FloorRuntime(unittest.TestCase):
                 with manager:
                     result = self.runtime.dispatch("fit_manual_frame", cancelled=cancelled)
                 self.assertFalse(result["success"], result)
-                self.assertIsNone(self.runtime._render)
-                self.assertFalse(self.runtime._core.snapshot()["displayAuthorized"])
+                self.assertIs(self.runtime._render, source)
+                self.assertIsNotNone(self.runtime.render_payload(source["token"]))
+                self.assertTrue(self.runtime._core.snapshot()["displayAuthorized"])
 
     def test_stubpixel_old_capture_exception_cannot_invalidate_a_new_mode_scope(self):
         for action in ("fit_manual_frame", "confirm_route"):
