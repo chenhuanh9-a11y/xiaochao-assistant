@@ -92,6 +92,218 @@ class SharedStructureRuntimeTests(unittest.TestCase):
         self.assertTrue(self.runtime.reference_payload()['candidateReference'])
         self.assertTrue(self.runtime.snapshot()['candidateProvisionalDisplayEnabled'])
 
+    def test_passive_refresh_keeps_material_and_does_not_repeat_catalogue_scan(self):
+        self.capture_choice_payload()
+        first = self.runtime._render
+        events = []
+        self.runtime.set_event_callback(events.append)
+        from client_live_runtime import _AlignmentHost as RuntimeHost
+        with patch.object(RuntimeHost, '_canonical_geometry_current_frame_residual',
+                return_value=(supported_pose()['selectedRouteCurrentFrameResidual'], None)), \
+             patch.object(self.engine, 'qt_structure_scan',
+                side_effect=AssertionError('same-opening poll repeated catalogue scan')):
+            for _ in range(3):
+                result = self.runtime.dispatch('refresh_map')
+                self.assertTrue(result['success'], result)
+                self.assertTrue(result['unchanged'], result)
+                self.assertIsNotNone(self.runtime.render_payload(first['token']))
+        self.assertFalse(any(row['event'] == 'render-revoked' for row in events), events)
+        self.assertEqual(self.runtime._map_id, '')
+        self.assertFalse(self.runtime._core.pose_by_map)
+
+    def test_refresh_replaces_only_after_new_frame_fit_and_retains_on_failure_or_cancel(self):
+        self.capture_choice_payload()
+        first = self.runtime._render
+        entered, release, cancelled = threading.Event(), threading.Event(), threading.Event()
+        self.capture.frame[0, 0] = 255
+        results = []
+        from client_live_runtime import _AlignmentHost as RuntimeHost
+        def fit(*args, **kwargs):
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return supported_pose()
+        with patch.object(RuntimeHost, '_canonical_geometry_current_frame_residual',
+                return_value=(dict(verified=False), None)), \
+             patch.object(_AlignmentHost, 'fit', side_effect=fit):
+            worker = threading.Thread(target=lambda: results.append(
+                self.runtime.dispatch('refresh_map', {}, cancelled)))
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.assertIsNotNone(self.runtime.render_payload(first['token']))
+                self.assertFalse(self.runtime.acknowledge_render_material(first['token'])['success'],
+                    'old material must not authorize the new observation')
+                cancelled.set()
+            finally:
+                release.set(); worker.join(5)
+        self.assertTrue(results[0]['stale'], results)
+        self.assertIsNotNone(self.runtime.render_payload(first['token']))
+        with patch.object(RuntimeHost, '_canonical_geometry_current_frame_residual',
+                return_value=(dict(verified=False), None)), \
+             patch.object(_AlignmentHost, 'fit', return_value=dict(success=False, reason='fixture-no-match')):
+            failed = self.runtime.dispatch('refresh_map')
+        self.assertFalse(failed['success'], failed)
+        self.assertIsNotNone(self.runtime.render_payload(first['token']))
+        replacement = supported_pose()
+        replacement['matrixSourceToClient'][0, 0] = 1.1
+        replacement['matrixSourceToClient'][1, 1] = 1.1
+        with patch.object(RuntimeHost, '_canonical_geometry_current_frame_residual',
+                return_value=(dict(verified=False), None)), \
+             patch.object(_AlignmentHost, 'fit', return_value=replacement):
+            result = self.runtime.dispatch('refresh_map')
+        self.assertTrue(result['success'], result)
+        current = self.runtime.render_payload(result['renderToken'])
+        self.assertNotEqual(current['token'], first['token'])
+        self.assertNotEqual(current['frameId'], first['frameId'])
+        self.assertIsNone(self.runtime.render_payload(first['token']))
+        self.assertAlmostEqual(current['canonicalMatrix'][0][0], 1.1)
+
+    def test_same_opening_probe_failure_retains_but_boundaries_retire_material(self):
+        self.capture_choice_payload()
+        first = self.runtime._render
+        with patch.object(self.capture, 'capture', side_effect=OSError('fixture capture failure')):
+            result = self.runtime.dispatch('refresh_map')
+        self.assertTrue(result['error'], result)
+        self.assertIsNotNone(self.runtime.render_payload(first['token']))
+        self.runtime.dispatch('close_map')
+        self.assertIsNone(self.runtime.render_payload(first['token']))
+        self.assertFalse(self.runtime.snapshot()['displayAuthorized'])
+
+    def test_floor_change_retires_material_before_new_floor_fit(self):
+        self.capture_choice_payload()
+        first = self.runtime._render
+        entered, release = threading.Event(), threading.Event()
+        results = []
+        self.runtime._observe.return_value = (dict(detected=True, mapOpen=True), '2',
+            dict(selectedFloor=2, mapOpen=True))
+        def fit(*args, **kwargs):
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return supported_pose()
+        with patch.object(_AlignmentHost, 'fit', side_effect=fit):
+            worker = threading.Thread(target=lambda: results.append(self.runtime.dispatch('refresh_map')))
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.assertIsNone(self.runtime.render_payload(first['token']))
+            finally:
+                release.set(); worker.join(5)
+        self.assertTrue(results[0]['success'], results)
+        self.assertEqual(self.runtime.render_payload(results[0]['renderToken'])['floor'], '2')
+
+    def test_close_during_replacement_rejects_late_fit(self):
+        self.capture_choice_payload()
+        first = self.runtime._render
+        self.capture.frame[0, 0] = 255
+        entered, release = threading.Event(), threading.Event()
+        results = []
+        from client_live_runtime import _AlignmentHost as RuntimeHost
+        def fit(*args, **kwargs):
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return supported_pose()
+        with patch.object(RuntimeHost, '_canonical_geometry_current_frame_residual',
+                return_value=(dict(verified=False), None)), \
+             patch.object(_AlignmentHost, 'fit', side_effect=fit):
+            worker = threading.Thread(target=lambda: results.append(self.runtime.dispatch('refresh_map')))
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.assertIsNotNone(self.runtime.render_payload(first['token']))
+                self.assertTrue(self.runtime.dispatch('close_map')['success'])
+                self.assertIsNone(self.runtime.render_payload(first['token']))
+            finally:
+                release.set(); worker.join(5)
+        self.assertFalse(results[0]['success'], results)
+        self.assertTrue(results[0]['stale'], results)
+        self.assertFalse(self.runtime.snapshot()['displayAuthorized'])
+
+    def test_passive_probe_retires_changed_capture_context(self):
+        self.capture_choice_payload()
+        first = self.runtime._render
+        with patch.object(self.runtime, '_capture_is_current', return_value=False):
+            result = self.runtime.dispatch('refresh_map')
+        self.assertEqual(result['reason'], 'capture-context-changed', result)
+        self.assertIsNone(self.runtime.render_payload(first['token']))
+
+    def test_candidate_material_and_passive_probe_reject_superseded_resource_owner(self):
+        self.capture_choice_payload()
+        first = self.runtime._render
+        with patch.object(self.engine, 'qt_resource_context_current', return_value=False):
+            result = self.runtime.dispatch('refresh_map')
+        self.assertEqual(result['reason'], 'resource-context-superseded', result)
+        self.assertIsNone(self.runtime._render)
+        self.assertFalse(self.runtime._core.snapshot()['displayAuthorized'])
+        self.assertIsNone(self.runtime.render_payload(first['token']))
+
+    def test_render_consumer_retires_superseded_resource_owner_without_probe(self):
+        self.capture_choice_payload()
+        first = self.runtime._render
+        with patch.object(self.engine, 'qt_resource_context_current', return_value=False):
+            self.assertIsNone(self.runtime.render_payload(first['token']))
+        self.assertIsNone(self.runtime._render)
+
+    def test_coordinator_candidate_poll_after_drag_uses_existing_probe_owner(self):
+        from types import SimpleNamespace
+        from client_coordinator import ClientCoordinator
+        self.capture_choice_payload()
+        self.drag_current_preview()
+        moved = self.runtime._render
+        self.capture.frame[0, 0] = 255
+        calls, results = [], []
+        def dispatch(action):
+            calls.append(action)
+            results.append(self.runtime.dispatch(action))
+        session = SimpleNamespace(busy=False, snapshot=self.runtime.snapshot(), dispatch=dispatch)
+        coordinator = SimpleNamespace(_closed=False, _closing=False, _binding_suspended=False,
+            _bound='123', session=session, resources=SimpleNamespace(busy=False, pendingKind=''),
+            _pointer_drag=None, _pending_context=None, _last_manual_floor_observation_at=0,
+            _native_candidate_preview_ready=ClientCoordinator._native_candidate_preview_ready,
+            _native_windows=SimpleNamespace(foreground_window=lambda: 123))
+        with patch.object(self.engine, 'qt_structure_scan',
+                side_effect=AssertionError('transient poll must not rescan candidates')):
+            ClientCoordinator._track_map(coordinator)
+        self.assertEqual(calls, ['observe_candidate_floor'])
+        self.assertTrue(results[0]['success'], results)
+        self.assertFalse(results[0]['fitAttempted'], results)
+        current = self.runtime.render_payload(moved['token'])
+        self.assertIsNotNone(current)
+        self.assertEqual(current['matrix'], moved['matrix'])
+        self.runtime.dispatch('close_map')
+        self.assertIsNone(self.runtime.render_payload(moved['token']))
+
+    def test_candidate_drag_capture_failure_keeps_successful_material(self):
+        self.capture_choice_payload()
+        self.drag_current_preview()
+        first = self.runtime._render
+        with patch.object(self.capture, 'capture', side_effect=OSError('fixture drag capture failure')):
+            result = self.runtime.dispatch('observe_candidate_floor')
+        self.assertTrue(result['error'], result)
+        self.assertIsNotNone(self.runtime.render_payload(first['token']))
+
+    def test_cancel_candidate_drag_probe_keeps_successful_material(self):
+        self.capture_choice_payload()
+        self.drag_current_preview()
+        first = self.runtime._render
+        entered, release, cancelled = threading.Event(), threading.Event(), threading.Event()
+        results = []
+        capture = self.capture.capture
+        def blocked(*args, **kwargs):
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return capture(*args, **kwargs)
+        with patch.object(self.capture, 'capture', side_effect=blocked):
+            worker = threading.Thread(target=lambda: results.append(
+                self.runtime.dispatch('observe_candidate_floor', {}, cancelled)))
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                cancelled.set()
+            finally:
+                release.set(); worker.join(5)
+        self.assertTrue(results[0]['stale'], results)
+        self.assertIsNotNone(self.runtime.render_payload(first['token']))
+
     def test_current_ticket_preview_is_retired_before_entry_identity_and_fit_is_reused(self):
         payload = self.capture_choice_payload()
         old = self.runtime._render

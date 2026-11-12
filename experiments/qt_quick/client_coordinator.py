@@ -553,8 +553,9 @@ class ClientCoordinator(QObject):
 
     @staticmethod
     def _native_candidate_preview_ready(state):
-        return (state.get("season") == "s1"
-                and state.get("nativeCandidatePreviewAvailable") is True
+        return ((state.get("nativeCandidatePreviewAvailable") is True
+                 or state.get("candidateProvisionalDisplayEnabled") is True
+                 and state.get("candidateStreamingEnabled") is True)
                 and not state.get("manualAlignmentSession"))
 
     def _map_resource_problem(self, state=None, *, allow_manual_floor=False):

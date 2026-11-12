@@ -120,6 +120,12 @@ class DragProbeContracts:
         self.assertFalse(self.runtime.snapshot()['displayAuthorized'])
         self.assertFalse(self.coordinator.alignedData)
 
+    def assert_retained(self, token):
+        qml.APP.processEvents()
+        self.assertIsNotNone(self.runtime.render_payload(token))
+        self.assertTrue(self.runtime.snapshot()['displayAuthorized'])
+        self.assertEqual(self.coordinator.alignedData.get('token'), token)
+
     def test_repeated_same_floor_drag_preserves_final_consumer_without_pose_writes(self):
         token = self.first['token']
         core = copy.deepcopy(self.runtime.snapshot()['core'])
@@ -149,13 +155,13 @@ class DragProbeContracts:
         if self.pool:
             self.assertEqual(self.pool.snapshot(), pool_state)
 
-    def test_unknown_floor_withdraws_then_fresh_capture_recovers(self):
+    def test_unknown_floor_retains_material_then_fresh_capture_replaces(self):
         self.drag()
         self.producer.floor = None
         result = self.runtime.dispatch('probe_map_after_drag')
         self.assertFalse(result['success'], result)
         self.assertEqual(result['reason'], 'current-floor-unavailable')
-        self.session.refreshRuntime(); self.assert_withdrawn(self.first['token'])
+        self.session.refreshRuntime(); self.assert_retained(self.first['token'])
         self.producer.floor = '-1'
         result = self.runtime.dispatch('capture_now')
         self.assertTrue(result['success'], result)
@@ -215,12 +221,12 @@ class DragProbeContracts:
         self.session.refreshRuntime(); qml.APP.processEvents()
         self.assertEqual(self.coordinator.alignedData['floor'], '-2')
 
-    def test_capture_failure_withdraws_and_next_capture_recovers(self):
+    def test_capture_failure_retains_material_and_next_capture_replaces(self):
         self.drag()
         with patch.object(self.capture, 'capture', side_effect=OSError('fixture-capture-error')):
             result = self.runtime.dispatch('probe_map_after_drag')
         self.assertTrue(result['error'], result)
-        self.session.refreshRuntime(); self.assert_withdrawn(self.first['token'])
+        self.session.refreshRuntime(); self.assert_retained(self.first['token'])
         self.assertTrue(self.runtime.dispatch('capture_now')['success'])
         self.session.refreshRuntime(); qml.APP.processEvents()
         self.assertTrue(self.coordinator.alignedData)
@@ -251,9 +257,9 @@ class DragProbeContracts:
             self.assertEqual(self.runtime._refresh_render_owner(), successors[0])
             self.assertIsNotNone(self.runtime.render_payload(self.first['token']))
         else:
-            # Atomic current-owner failure consumes its grant before return,
+            # The failed observation retains this opening's successful material
             # without the unsafe unlocked exception hand-off above.
-            self.session.refreshRuntime(); self.assert_withdrawn(self.first['token'])
+            self.session.refreshRuntime(); self.assert_retained(self.first['token'])
 
     def test_negative_observation_revokes_and_second_miss_closes(self):
         self.drag()
