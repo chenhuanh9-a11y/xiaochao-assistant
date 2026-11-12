@@ -96,7 +96,11 @@ class MapRecoveryLateErrorContracts(unittest.TestCase):
                 token = before["consumer"]["token"]
                 self.assertTrue(token)
                 self.assertTrue(before["displayAuthorized"])
-                self.assertIsNotNone(self.runtime.render_payload(token))
+                material = self.runtime.render_payload(token)
+                self.assertIsNotNone(material)
+                self.assertTrue(material['poseFinalVerified'])
+                self.assertEqual(material['reviewStatus'], 'complete')
+                self.assertFalse(material.get('requiresMaterialAck'))
                 self.assertIsNone(self.coordinator._pointer_drag)
                 self.ui.windows.hide.reset_mock()
                 if cancel:
@@ -113,11 +117,11 @@ class MapRecoveryLateErrorContracts(unittest.TestCase):
                     receipt={key: receipt.get(key) for key in ("action", "success", "stale", "error", "reason")},
                     revocations=[row.get("reason") for row in self.traces
                         if row.get("stage") == "render-revoked"]), ensure_ascii=True), flush=True)
-                self.assertFalse(after["displayAuthorized"],
-                    "recovery must retire its own untransferred authorization at this terminal")
-                self.assertIsNone(self.runtime.render_payload(token))
-                self.assertFalse(self.coordinator.alignedData)
-                self.assertTrue(any(call.args == ("aligned",)
+                self.assertTrue(after["displayAuthorized"],
+                    "a completed current material must survive a later worker terminal")
+                self.assertIsNotNone(self.runtime.render_payload(token))
+                self.assertEqual(self.coordinator.alignedData.get('token'), token)
+                self.assertFalse(any(call.args == ("aligned",)
                     for call in self.ui.windows.hide.call_args_list))
                 if cancel:
                     self.assertGreaterEqual(self.session.stale_results, 1)
@@ -128,15 +132,21 @@ class MapRecoveryLateErrorContracts(unittest.TestCase):
                     self.assertTrue(any(row.get("stage") == "action-receipt"
                         and row.get("action") == "recover_map_open"
                         and row.get("status") == "exception" for row in self.traces))
+                self.keys._dispatch_action('escape', dict(createdAt=self.now))
+                self.settle()
+                self.assertFalse(self.runtime.snapshot()['mapOpen'])
+                self.assertFalse(self.runtime.snapshot()['core']['displayAuthorized'])
+                self.assertIsNone(self.runtime.render_payload(token))
+                self.assertFalse(self.coordinator.alignedData)
             finally:
                 release.set()
                 self.wait_for(lambda: self.session._pool.activeThreadCount() == 0,
                     "recovery terminal worker did not exit")
 
-    def test_current_recovery_tail_exception_revokes_own_grant_and_keeps_error_receipt(self):
+    def test_current_recovery_tail_error_keeps_complete_material_and_error_receipt(self):
         self.assert_tail_without_new_owner(cancel=False)
 
-    def test_cancelled_recovery_without_new_drag_retires_its_own_published_grant(self):
+    def test_cancelled_recovery_without_new_drag_keeps_its_completed_material(self):
         self.assert_tail_without_new_owner(cancel=True)
 
     def test_late_recovery_error_after_current_drag_cannot_revoke_new_owner(self):

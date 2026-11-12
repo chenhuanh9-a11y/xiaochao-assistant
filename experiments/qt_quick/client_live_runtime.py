@@ -4942,9 +4942,16 @@ class LiveRuntime:
                         or published_owner is not None and published_owner != self._refresh_render_owner()):
                     self._retire_refresh_owner(payload.get("_recoveryRenderOwner"))
                     return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
-                self.invalidate("runtime-error", source=f'map-recovery:{action}:{type(error).__name__}')
+                # A post-solve worker error does not invalidate an already
+                # completed, current material. Preserve the error receipt and
+                # end recovery; close/context/floor changes still revoke it.
+                retained = self._retained_material_current(self._refresh_render_owner())
+                if retained:
+                    self.cancel_map_open_recovery('recovery-error-material-retained')
+                else:
+                    self.invalidate("runtime-error", source=f'map-recovery:{action}:{type(error).__name__}')
             return self._receipt(action, payload, success=False, reason=f"{type(error).__name__}:{error}",
-                error=True, **self._error_fields(error, action))
+                error=True, sourceRetained=retained, **self._error_fields(error, action))
         finally:
             with self._lock:
                 self._capture_pending = False
