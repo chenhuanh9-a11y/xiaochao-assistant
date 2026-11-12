@@ -310,9 +310,12 @@ class ImportedGroupRuntimeTests(unittest.TestCase):
 
     def test_registry_replaced_during_canonical_fit_rejects_new_pose_before_render_authorization(self):
         self.assertTrue(self.dispatch("start_round")["success"])
+        self.assertTrue(self.runtime._candidate_provisional_enabled(self.engine))
         original = self.registry_path.read_bytes()
 
         def fit_then_replace_registry(*args, **kwargs):
+            self.assertEqual(self.runtime.snapshot()["identityPhase"], "GROUP_LOCKED")
+            self.assertFalse(self.runtime._candidate_provisional_enabled(self.engine))
             completed_fit = dict(self.fit)
             self.registry_path.write_bytes(b"{registry changed after canonical fit")
             return completed_fit
@@ -329,6 +332,85 @@ class ImportedGroupRuntimeTests(unittest.TestCase):
             self.assertIsNone(self.runtime._render)
         finally:
             self.registry_path.write_bytes(original)
+
+    def test_cancel_or_end_round_during_locked_canonical_fit_rejects_late_pose(self):
+        for boundary in ("cancel", "end_round"):
+            with self.subTest(boundary=boundary):
+                self.assertTrue(self.dispatch("start_round")["success"])
+                self.assertTrue(self.runtime._candidate_provisional_enabled(self.engine))
+                stopped = threading.Event()
+
+                def fit_after_boundary(*args, **kwargs):
+                    self.assertEqual(self.runtime.snapshot()["identityPhase"], "GROUP_LOCKED")
+                    self.assertFalse(self.runtime._candidate_provisional_enabled(self.engine))
+                    if boundary == "cancel":
+                        stopped.set()
+                    else:
+                        self.assertTrue(self.dispatch("end_round")["success"])
+                    return dict(self.fit)
+
+                state = self.runtime.snapshot()
+                payload = {key: state[key] for key in ("mode", "profileId", "roundId", "frameId")}
+                payload["generation"] = 22
+                try:
+                    with patch.object(_AlignmentHost, "fit", side_effect=fit_after_boundary) as fit_hook:
+                        result = self.runtime.dispatch("capture_now", payload, cancelled=stopped.is_set)
+                    self.assertEqual(fit_hook.call_count, 1)
+                    self.assertFalse(result["success"], result)
+                    self.assertEqual(result["reason"], "cancelled-or-stale")
+                    self.assertTrue(result.get("stale"), result)
+                    self.assertFalse(result.get("renderToken"))
+                    self.assertIsNone(self.runtime._render)
+                    self.assertIsNone(self.runtime._s1_structure_ticket)
+                    self.assertFalse(self.runtime._automatic_candidate_rows)
+                    if boundary == "end_round":
+                        self.assertIsNone(self.runtime._s1_structure_session)
+                    else:
+                        self.assertFalse(self.runtime._s1_structure_session.snapshot()["currentSupportedMapIds"])
+                finally:
+                    self.assertTrue(self.dispatch("end_round")["success"])
+
+    def test_cancel_or_end_round_with_final_registry_read_failure_keeps_stale_receipt(self):
+        for boundary in ("cancel", "end_round"):
+            with self.subTest(boundary=boundary):
+                self.assertTrue(self.dispatch("start_round")["success"])
+                stopped = threading.Event()
+                validate, reads = self.registry.validate, []
+                boundary_message = []
+
+                def validate_then_invalidate(*args, **kwargs):
+                    validate(*args, **kwargs)
+                    reads.append(True)
+                    if len(reads) == 2:
+                        self.assertEqual(self.runtime.snapshot()["identityPhase"], "GROUP_LOCKED")
+                        if boundary == "cancel":
+                            stopped.set()
+                        else:
+                            self.assertTrue(self.dispatch("end_round")["success"])
+                        boundary_message.append(self.runtime.snapshot()["message"])
+                        raise ValueError("registry-read-failed-after-boundary")
+
+                state = self.runtime.snapshot()
+                payload = {key: state[key] for key in ("mode", "profileId", "roundId", "frameId")}
+                payload["generation"] = 22
+                try:
+                    with patch.object(self.registry, "validate", side_effect=validate_then_invalidate):
+                        result = self.runtime.dispatch("capture_now", payload, cancelled=stopped.is_set)
+                    self.assertEqual(len(reads), 2)
+                    self.assertFalse(result["success"], result)
+                    self.assertEqual(result["reason"], "cancelled-or-stale")
+                    self.assertTrue(result.get("stale"), result)
+                    self.assertFalse(result.get("renderToken"))
+                    self.assertIsNone(self.runtime._render)
+                    self.assertIsNone(self.runtime._s1_structure_ticket)
+                    self.assertFalse(self.runtime._automatic_candidate_rows)
+                    if boundary == "end_round":
+                        self.assertIsNone(self.runtime._s1_structure_session)
+                    else:
+                        self.assertFalse(self.runtime._s1_structure_session.snapshot()["currentSupportedMapIds"])
+                    self.assertEqual(self.runtime.snapshot()["message"], boundary_message[0])
+                finally:
+                    self.assertTrue(self.dispatch("end_round")["success"])
 
 
 if __name__ == "__main__":

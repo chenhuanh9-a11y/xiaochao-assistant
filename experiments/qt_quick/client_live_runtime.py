@@ -1067,9 +1067,12 @@ class LiveRuntime:
                         structure_ticket=(session, ticket), structure_current=current)
                 elif not entry_selection and first_result is None:
                     last_material_reason = 'identity-not-uniquely-verified'
-            if not provisional_display and first_result is not None and not first_result.get('success'):
-                # Preserve the solver's concrete capability/resource failure.
-                # It may have revoked its own context before returning.
+            if first_result is not None and not first_result.get('success'):
+                # Entry evidence may lock identity after this stream began as
+                # a provisional display. Preserve its solver's concrete failure,
+                # including one that revoked its own context before returning.
+                if first_result.get('stale'):
+                    withdraw("stream-scan-cancelled")
                 return first_result
             # A locked ID outlives an UNKNOWN current fit/material result, but
             # its old pixels do not. Final round locks never reopen identity;
@@ -5701,10 +5704,11 @@ class LiveRuntime:
                 validate_established_registered_family(engine, registered_state)
             except (OSError, ValueError) as error:
                 with self._lock:
-                    if not obsolete() and frame_current() and engine is self._engine:
-                        self.invalidate('registered-group-resource-unavailable', source=action)
-                return self._receipt(action, payload, success=False, reason='registered-group-resource-unavailable',
-                                     messageDetail=str(error)[:512])
+                    if obsolete() or not frame_current() or engine is not self._engine:
+                        return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+                    self.invalidate('registered-group-resource-unavailable', source=action)
+                    return self._receipt(action, payload, success=False, reason='registered-group-resource-unavailable',
+                                         messageDetail=str(error)[:512])
             current_display = self._display_layer(engine, map_id, floor, self._profile, variant_id=variant_id)
             if current_display["resourceIdentity"] != display["resourceIdentity"]:
                 return self._receipt(action, payload, success=False, reason="display-resource-changed", stale=True)

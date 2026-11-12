@@ -81,7 +81,7 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.patches = [patch("map_interface_observation.detect_map_interface", return_value=dict(detected=True)),
                         patch("floor_control_region.locate_vertical_floor_controls",
                               side_effect=lambda frame, mode, **kw: synthetic_read(mode)),
-                        patch.object(_AlignmentHost, "fit", side_effect=lambda *a: copy.deepcopy(self.fit))]
+                        patch.object(_AlignmentHost, "fit", side_effect=lambda *a, entry_candidate=None: copy.deepcopy(self.fit))]
         for item in self.patches:
             item.start(); self.addCleanup(item.stop)
 
