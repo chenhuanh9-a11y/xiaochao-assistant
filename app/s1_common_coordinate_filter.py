@@ -415,7 +415,7 @@ class CommonCoordinateFilter:
                 return result('coordinate-resources-unavailable', detail='prepared-pool-context-mismatch')
         except (KeyError,TypeError,ValueError,OSError) as e:return result('coordinate-resources-unavailable',detail=str(e))
         if data is None or cancelled():return result('coordinate-work-obsolete')
-        from single_map_structure import current_part
+        from structure_observation import observed_wall_fragment_edges
         from fast_structure_alignment import sample_edges
         solutions=[]
         for ctx in contexts:
@@ -451,7 +451,7 @@ class CommonCoordinateFilter:
         hyp=np.unique(np.concatenate([solution[1] for solution in solutions]),axis=0)
         if len(hyp)>120000:return result('current-common-coordinate-budget-exhausted')
         evidence=dict(evidence,validatedCommonDomains=len(solutions))
-        edge=current_part(frame,ctx,'observed').copy()
+        edge=observed_wall_fragment_edges(frame,ctx)
         if anchor is not None:
             x,y=map(lambda v:int(round(v)),anchor['center']);edge[max(0,y-20):y+21,max(0,x-20):x+21]=False
         points=sample_edges(edge,500)

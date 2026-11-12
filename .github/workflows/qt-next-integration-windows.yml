@@ -228,6 +228,7 @@ jobs:
                 'test_shared_structure_package_io', 'test_shared_version_package_io',
                 'test_entry_resource_io', 'test_main_entry_jobs', 'test_passport_entry_jobs', 'test_side_entry_jobs',
                 'test_local_structure_index', 'test_shared_observation_dependencies',
+                'test_s1_common_wall_evidence',
                 'test_side_pose_recovery_jobs',
                 'test_observation_work_scheduler', 'test_map_local_structure_work',
                 'test_source_structure_jobs', 'test_native_condition_jobs',
