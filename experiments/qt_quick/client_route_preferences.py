@@ -103,6 +103,33 @@ class _DisplaySelection:
         return SharedAuthorDisplayPolicy._effective_route_profile(self, map_id, floor)
 
 
+def _display_reference(engine, map_id, floor):
+    """Original guarded provider read, shared by preparation and publication."""
+    def check_current():
+        check = getattr(engine, 'qt_assert_resource_current', None)
+        if callable(check):
+            check()
+
+    check_current()
+    reference = engine.qt_shared_provider("shared-structure", map_id, floor)
+    if reference is None:
+        raise ValueError("display-reference-unavailable")
+    return reference, check_current
+
+
+def shared_structure_display_current(engine, map_id, floor, prepared):
+    """Recheck the actual source without rebuilding its already owned pixels.
+
+    binding_metadata describes the expected versions table. The actual guarded
+    provider read is still required: its cached reference metadata can differ.
+    """
+    from shared_structure_display import structure_display_identity
+    reference, check_current = _display_reference(engine, map_id, floor)
+    identity = structure_display_identity(reference)
+    check_current()
+    return identity == prepared["resourceIdentity"]
+
+
 def prepare_display_layer(engine, map_id, floor, preferred, *, variant_id="variant-01"):
     """Original author -> custom/base (missing only) -> structural display chain.
 
@@ -115,15 +142,7 @@ def prepare_display_layer(engine, map_id, floor, preferred, *, variant_id="varia
     from nightmare_candidate import imread_unicode
     from shared_structure_display import structure_display_layer
 
-    def check_current():
-        check = getattr(engine, 'qt_assert_resource_current', None)
-        if callable(check):
-            check()
-
-    check_current()
-    reference = engine.qt_shared_provider("shared-structure", map_id, floor)
-    if reference is None:
-        raise ValueError("display-reference-unavailable")
+    reference, check_current = _display_reference(engine, map_id, floor)
 
     def metadata(layer, *, author_status="none", fallback_reason=""):
         check_current()

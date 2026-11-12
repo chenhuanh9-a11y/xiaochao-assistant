@@ -6,6 +6,7 @@ peer-review test keeps the real host entry; correction replaces only the solver.
 import copy
 from dataclasses import replace
 import threading
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -26,6 +27,19 @@ class ProgressiveDisplayContracts(unittest.TestCase):
         self.addCleanup(self.fixture.doCleanups)
         self.runtime = self.fixture.runtime
         self.first = dict(copy.deepcopy(self.fixture.fit), markerOccludedWallObservation=True)
+
+    def real_reference_provider(self):
+        """Use the production guarded cache; only its decoded input is fixture data."""
+        from client_providers import SharedReferenceProvider
+        reference = self.fixture.engine.qt_shared_provider('shared-structure', 'fixture-map', '1')
+        key = ('fixture', 'fixture-map', 'variant-01', '1')
+        version = dict(path=reference.path.resolve(), binding=copy.deepcopy(reference.metadata['binding']),
+            canvas=copy.deepcopy(reference.metadata['canvas']),
+            expected=dict(structureVersionKey=reference.metadata['structureVersionKey']))
+        provider = SharedReferenceProvider(reference.path.parent,
+            SimpleNamespace(load=lambda *args, **kwargs: reference), {key: version})
+        self.fixture.engine.qt_shared_provider = provider
+        return provider, key
 
     def run_review(self, final=None, *, boundary=None, real_host=False, cancel_event=None):
         entered, release = threading.Event(), threading.Event()
@@ -101,6 +115,82 @@ class ProgressiveDisplayContracts(unittest.TestCase):
         self.assertFalse(final["pixels"].flags.writeable)
         self.assertAlmostEqual(final["matrix"][0][2] - pending["matrix"][0][2], 17)
         np.testing.assert_allclose(self.runtime._group.root_pose, corrected["matrixSourceToClient"])
+
+    def test_explicit_shared_material_is_generated_once_for_both_publications(self):
+        from shared_structure_display import structure_display_layer
+        from client_route_preferences import shared_structure_display_current
+        self.real_reference_provider()
+        with patch('shared_structure_display.structure_display_layer', wraps=structure_display_layer) as build, \
+             patch('client_route_preferences.shared_structure_display_current',
+                 wraps=shared_structure_display_current) as validate:
+            pending, result, _ = self.run_review()
+        self.assertTrue(result['success'], result)
+        self.assertEqual(build.call_count, 1, 'each publication must validate without regenerating pixels')
+        self.assertEqual(validate.call_count, 2, 'provisional and final publication each validate the source')
+        final = self.runtime.render_payload(result['renderToken'])
+        self.assertIs(final['pixels'], pending['pixels'])
+        self.assertFalse(final['pixels'].flags.writeable)
+
+    def test_shared_publication_rechecks_the_original_resource_guard(self):
+        available = [True]
+        def current():
+            if not available[0]:
+                raise ValueError('controlled-display-resource-superseded')
+        self.fixture.engine.qt_assert_resource_current = current
+        pending, result, _ = self.run_review(boundary=lambda row: available.__setitem__(0, False))
+        self.assertFalse(result['success'], result)
+        self.assertIn('controlled-display-resource-superseded', result['reason'])
+        self.assertIsNone(self.runtime.render_payload(pending['token']))
+
+    def test_author_structural_fallback_keeps_full_policy_rechecks(self):
+        self.fixture.dispatch('set_route_profile', profileId='another-author')
+        original = self.runtime._display_layer
+        with patch.object(self.runtime, '_display_layer', wraps=original) as prepare:
+            pending, result, _ = self.run_review()
+        self.assertTrue(result['success'], result)
+        self.assertEqual(prepare.call_count, 3)
+        final = self.runtime.render_payload(result['renderToken'])
+        self.assertEqual(final['profileId'], 'another-author')
+        self.assertEqual(final['effectiveProfileId'], 'shared-structure')
+        self.assertTrue(final['fallback'])
+
+    def test_custom_source_keeps_its_original_recheck_and_rejects_replacement(self):
+        identity = ['custom-v1']
+        pixels = np.full((20, 24, 4), 255, np.uint8)
+        self.fixture.engine.qt_custom_display = lambda *args: dict(pixels=pixels,
+            matrixDisplayToReference=np.eye(3), resourceIdentity=identity[0],
+            displayKind='custom-gallery', displayLabel='fixture custom', routeProfileId='shared-structure')
+        self.fixture.dispatch('set_route_profile', profileId='custom:fixture')
+        original = self.runtime._display_layer
+        with patch.object(self.runtime, '_display_layer', wraps=original) as prepare:
+            pending, result, _ = self.run_review(boundary=lambda row: identity.__setitem__(0, 'custom-v2'))
+        self.assertEqual(prepare.call_count, 3)
+        self.assertFalse(result['success'], result)
+        self.assertEqual(result['reason'], 'display-resource-changed')
+        self.assertIsNone(self.runtime.render_payload(pending['token']))
+
+    def test_mutable_reference_binding_cannot_change_the_prepared_identity(self):
+        reference = self.fixture.engine.qt_shared_provider('shared-structure', 'fixture-map', '1')
+        pending, result, _ = self.run_review(boundary=lambda row:
+            reference.metadata['binding'].__setitem__('variant', 'replacement'))
+        self.assertFalse(result['success'], result)
+        self.assertEqual(result['reason'], 'display-resource-changed')
+        self.assertIsNone(self.runtime.render_payload(pending['token']))
+
+    def test_prepared_display_bridge_is_detached_from_mutable_provider_result(self):
+        layers = []
+        original = self.runtime._display_layer
+        def display(*args, **kwargs):
+            layer = original(*args, **kwargs)
+            layers.append(layer)
+            return layer
+        def mutate(row):
+            layers[0]['matrixDisplayToReference'][0, 2] += 50
+        with patch.object(self.runtime, '_display_layer', side_effect=display):
+            pending, result, _ = self.run_review(boundary=mutate)
+        self.assertTrue(result['success'], result)
+        final = self.runtime.render_payload(result['renderToken'])
+        np.testing.assert_allclose(final['matrix'], pending['matrix'])
 
     def test_peer_correction_reuses_pixel_features_but_reprojects_player(self):
         frame = self.fixture.capture.frame
@@ -248,13 +338,17 @@ class ProgressiveDisplayContracts(unittest.TestCase):
                 self.assertIsNone(self.runtime._render)
 
     def test_same_path_resource_replacement_rejects_final_commit(self):
-        original = self.runtime._display_layer
-        replacement = [False]
-        def display(*args, **kwargs):
-            layer = original(*args, **kwargs)
-            return dict(layer, resourceIdentity="replacement") if replacement[0] else layer
-        with patch.object(self.runtime, "_display_layer", side_effect=display):
-            pending, result, _ = self.run_review(boundary=lambda row: replacement.__setitem__(0, True))
+        provider, key = self.real_reference_provider()
+        expected = provider.binding_metadata('shared-structure', 'fixture-map', '1')
+        def replacement(row):
+            # Replace the actual cache result at the same physical path. The
+            # versions metadata lookup deliberately still reports the old ID.
+            reference = provider._cache[key]
+            metadata = copy.deepcopy(reference.metadata)
+            metadata['structureVersionKey'] = 'replacement'
+            provider._cache[key] = replace(reference, metadata=metadata)
+            self.assertEqual(provider.binding_metadata('shared-structure', 'fixture-map', '1'), expected)
+        pending, result, _ = self.run_review(boundary=replacement)
         self.assertFalse(result["success"])
         self.assertEqual(result["reason"], "display-resource-changed")
         self.assertIsNone(self.runtime.render_payload(pending["token"]))

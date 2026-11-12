@@ -1,5 +1,13 @@
 """Render the actual reference mask without granting identity or pose rights."""
+from copy import deepcopy
+
 import numpy as np
+
+
+def structure_display_identity(reference):
+    """Small source snapshot, detached from a provider's mutable metadata."""
+    return dict(path=str(reference.path), binding=deepcopy(reference.metadata['binding']),
+        structureVersionKey=reference.metadata.get('structureVersionKey'))
 
 
 def structure_display_layer(reference):
@@ -10,7 +18,6 @@ def structure_display_layer(reference):
     pixels.setflags(write=False)
     draft = reference.metadata.get('sourceClass') == 'legacy-clean-working-draft'
     return dict(pixels=pixels, matrixDisplayToReference=np.eye(3),
-        resourceIdentity=dict(path=str(reference.path), binding=reference.metadata['binding'],
-            structureVersionKey=reference.metadata.get('structureVersionKey')),
+        resourceIdentity=structure_display_identity(reference),
         displayKind='shared-structure', displayLabel='历史结构草稿' if draft else '结构底图',
         routeProfileId='shared-structure')

@@ -5742,14 +5742,21 @@ class LiveRuntime:
                     observedFloor=observed_floor, targetFloor=str(floor), fitAttempted=False)
             display_generation = getattr(self, "_display_generation", 0)
             group_intent_generation = self._group_intent_generation
+            profile = self._profile
             variant_id = self._settings.get("zhan10CoffinVariantId", "variant-01")
         # Static reference follows the independently confirmed map and floor;
         # a failed pose solve must not also remove the player's reference map.
-        display = self._display_layer(engine, map_id, floor, self._profile, variant_id=variant_id)
+        prepared_display = self._display_layer(engine, map_id, floor, profile, variant_id=variant_id)
+        # One solve owns its material. Detach only small metadata and the bridge;
+        # neither a provider nor a later publication may rewrite this snapshot.
+        display = {key: value if key == "pixels" else copy.deepcopy(value)
+            for key, value in prepared_display.items()}
+        display["matrixDisplayToReference"] = np.asarray(display["matrixDisplayToReference"], np.float64)
+        display["matrixDisplayToReference"].setflags(write=False)
         reference_pixels = np.ascontiguousarray(display["pixels"][:, :, [2, 1, 0, 3]])
         reference_pixels.setflags(write=False)
         with self._lock:
-            if display_generation != getattr(self, "_display_generation", 0):
+            if display_generation != getattr(self, "_display_generation", 0) or profile != self._profile:
                 return self._receipt(action, payload, success=False, reason="stale-display-settings", stale=True)
             if (group_intent_generation != self._group_intent_generation
                     or manual_choice is None and self._group_choice_inflight is not None):
@@ -5759,11 +5766,11 @@ class LiveRuntime:
             if capture_generation != self._capture_generation():
                 return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
             reference_sheet = dict(token=uuid4().hex, pixels=reference_pixels,
-                season=self._season, mode=self._mode, profileId=self._profile, mapId=map_id, floor=floor, roundId=self._round,
+                season=self._season, mode=self._mode, profileId=profile, mapId=map_id, floor=floor, roundId=self._round,
                 variantId=display.get("variantId"), displayGeneration=display_generation,
                 resourceIdentity=display["resourceIdentity"], captureGeneration=capture_generation, engineIdentity=id(engine),
                 referenceAuthorized=self._evidence_kind == "live-client-capture", evidenceKind=self._evidence_kind,
-                preferredProfileId=self._profile, effectiveProfileId=display.get("effectiveProfileId", display["routeProfileId"]),
+                preferredProfileId=profile, effectiveProfileId=display.get("effectiveProfileId", display["routeProfileId"]),
                 displayKind=display["displayKind"], displayLabel=display["displayLabel"],
                 routeProfileId=display["routeProfileId"], authorStatus=display.get("authorStatus", "none"), fallback=display.get("fallback", False),
                 fallbackReason=display.get("fallbackReason", ""), **self._identity_fields())
@@ -5818,8 +5825,15 @@ class LiveRuntime:
                     self.invalidate('registered-group-resource-unavailable', source=action)
                     return self._receipt(action, payload, success=False, reason='registered-group-resource-unavailable',
                                          messageDetail=str(error)[:512])
-            current_display = self._display_layer(engine, map_id, floor, self._profile, variant_id=variant_id)
-            if current_display["resourceIdentity"] != display["resourceIdentity"]:
+            if profile == "shared-structure" and display["displayKind"] == "shared-structure":
+                from client_route_preferences import shared_structure_display_current
+                display_current = shared_structure_display_current(engine, map_id, floor, display)
+            else:
+                # Author/custom selection and structural fallback retain their
+                # original policy, source and generation checks.
+                current_display = self._display_layer(engine, map_id, floor, profile, variant_id=variant_id)
+                display_current = current_display["resourceIdentity"] == display["resourceIdentity"]
+            if not display_current:
                 return self._receipt(action, payload, success=False, reason="display-resource-changed", stale=True)
             with self._lock:
                 if registered_family_identity(registered_state) != registered_family_identity(self._identity_native):
@@ -5835,7 +5849,7 @@ class LiveRuntime:
                     staged_observation=staged_observation)
                 return self._receipt(action, payload, success=False, reason=reason)
             with self._lock:
-                if display_generation != getattr(self, "_display_generation", 0):
+                if display_generation != getattr(self, "_display_generation", 0) or profile != self._profile:
                     return self._receipt(action, payload, success=False, reason="stale-display-settings", stale=True)
                 if (group_intent_generation != self._group_intent_generation
                         or manual_choice is None and self._group_choice_inflight is not None):
@@ -5874,7 +5888,7 @@ class LiveRuntime:
                 rgba = reference_pixels
                 live = self._evidence_kind == "live-client-capture"
                 target_render = dict(token=uuid4().hex, epoch=epoch, authorizationId=token.authorization_id,
-                    season=self._season, mode=self._mode, profileId=self._profile, mapId=map_id, floor=floor,
+                    season=self._season, mode=self._mode, profileId=profile, mapId=map_id, floor=floor,
                     roundId=self._round, cycleId=cycle, frameId=frame_id, generation=frame_generation,
                     matrix=render_matrix.tolist(), canonicalMatrix=canonical.tolist(), pixels=rgba,
                     routeWidth=rgba.shape[1], routeHeight=rgba.shape[0], clientWidth=width, clientHeight=height,
@@ -5885,7 +5899,7 @@ class LiveRuntime:
                     resourceIdentity=display["resourceIdentity"], displayKind=display["displayKind"],
                     referencePath=display.get("referencePath", ""),
                     displayLabel=display["displayLabel"], routeProfileId=display["routeProfileId"],
-                    preferredProfileId=self._profile, effectiveProfileId=display.get("effectiveProfileId", display["routeProfileId"]),
+                    preferredProfileId=profile, effectiveProfileId=display.get("effectiveProfileId", display["routeProfileId"]),
                     authorStatus=display.get("authorStatus", "none"), fallback=display.get("fallback", False),
                     fallbackReason=display.get("fallbackReason", ""),
                     variantId=display.get("variantId"), displayGeneration=display_generation,
