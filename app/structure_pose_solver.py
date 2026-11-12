@@ -233,11 +233,12 @@ class StructurePoseSolver:
                 components = visible_map_components(frame, observation_bounds=bounds)
             return components
 
-        def fit_one(candidate_frame, map_id, floor, cancelled, *, observation_bounds=None):
+        def fit_one(candidate_frame, map_id, floor, cancelled, *, observation_bounds=None, entry_candidate=None):
             if candidate_frame is not frame or tuple(observation_bounds or ()) != bounds:
                 raise ValueError("structure-scan-observation-context-mismatch")
             return self.fit(frame, map_id, floor, cancelled,
-                            observation_bounds=bounds, _scan_observation=(geometry, islands))
+                            observation_bounds=bounds, _scan_observation=(geometry, islands),
+                            **(dict(entry_candidate=entry_candidate) if entry_candidate is not None else {}))
         return fit_one
 
     def fit(self, frame, map_id, floor, cancelled, entry_candidate=None, *, observation_bounds=None, _scan_observation=None):
@@ -487,7 +488,7 @@ class StructurePoseSolver:
         hint = self.pose_priors.get((str(map_id), str(floor)))
         options = {"pose_prior": hint} if hint is not None else {}
         fit = try_alignment(self, frame, map_id, floor, cancelled=cancelled,
-                            entry_seed=entry_candidate, context=context, **options)
+                            context=context, **options)
         strategy = "shared-fast-alignment"
         identity_profile = (self.engine.identity_profile_for_map(map_id)
             if callable(getattr(self.engine, "identity_profile_for_map", None))
@@ -524,8 +525,12 @@ class StructurePoseSolver:
             fit = recover_registered_floor(self, frame, map_id, floor, reference, cancelled)
             strategy = "shared-registered-floor-recovery"
         if fit is None:
+            from entry_pose_proposals import entry_pose_proposals_for_reference
+            proposals = entry_pose_proposals_for_reference(entry_candidate, map_id, floor,
+                reference, self.author_coordinate_adapters)
             fit = self._alignment_v2_independent_member_fit(frame, reference.clean_mask, map_id, floor,
-                "shared-structure", cancelled=cancelled, context=context)
+                "shared-structure", cancelled=cancelled, context=context,
+                **(dict(entry_pose_proposals=proposals) if proposals else {}))
             strategy = "shared-initial-structure"
         def record_fit(value):
             if self.collect_fit_diagnostics:

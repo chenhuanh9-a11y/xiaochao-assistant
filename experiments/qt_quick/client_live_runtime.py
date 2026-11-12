@@ -591,25 +591,6 @@ class LiveRuntime:
         bind_identity_context(engine, priority=lambda: current("_identity_priority"),
                               context=lambda: current("_identity_prior"))
 
-    @staticmethod
-    def _current_entry_seeds(rows, floor):
-        import numpy as np
-        seeds = {}
-        for row in rows:
-            entry = row.get("difficultEntry") or {}
-            checked = entry.get("verification") or {}
-            if (entry.get("mapId") != row.get("mapId") or str(entry.get("floor", floor)) != str(floor)
-                    or checked.get("success") is not True or entry.get("poseAmbiguous")
-                    or (entry.get("entryCrossCheck") or {}).get("contradicted") is True):
-                continue
-            try:
-                matrix = np.asarray(checked.get("matrixSourceToClient"), dtype=float)
-                if matrix.shape == (3, 3) and np.isfinite(matrix).all():
-                    seeds[row["mapId"]] = entry
-            except (ValueError, TypeError):
-                pass
-        return seeds
-
     def _identity_observation_current(self):
         observation = self._last_observation
         return bool(observation is not None and observation["frame_id"] == self._frame_id
@@ -1294,9 +1275,10 @@ class LiveRuntime:
 
     def _commit_identity_rows(self, engine, rows, frame, floor, epoch, frame_id, cancelled, *,
                               identity_snapshot, rediscover=False):
-        """The runtime alone consumes entry evidence; this method schedules no work."""
+        """The runtime alone commits identity; this reducer schedules no work."""
+        from entry_pose_proposals import current_entry_pose_seeds
         previous, context, intent_generation = identity_snapshot
-        seeds = self._current_entry_seeds(rows, floor)
+        seeds = current_entry_pose_seeds(rows, floor)
         state, proposal = stage_similarity_rank(None if rediscover else previous, rows, context,
             hashlib.sha256(frame.tobytes()).hexdigest(), seeds, group_only=True)
         group_evidence = similarity_evidence_summary(proposal, state)

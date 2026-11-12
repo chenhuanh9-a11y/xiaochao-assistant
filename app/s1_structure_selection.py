@@ -19,6 +19,7 @@ import uuid
 import numpy as np
 
 from entry_evidence_work import EntryEvidenceWork, FrameSnapshot, ObservationWorkScheduler
+from entry_pose_proposals import current_entry_pose_seeds
 
 
 @dataclass(frozen=True)
@@ -90,11 +91,21 @@ class _StructureFitWork(EntryEvidenceWork):
         self.order, self.floor, self.fit = order, floor, fit
         self.cancelled, self.bounds, self.preferred = cancelled, bounds, preferred
         self.last_fit = None
+        self.entry_proposals = {}
         super().__init__(snapshot)
+
+    def accept_entry_proposals(self, rows):
+        proposals = current_entry_pose_seeds(rows or (), self.floor)
+        self.entry_proposals = copy.deepcopy({mid: entry for mid, entry in proposals.items() if mid in self.order})
+        priority = ([self.preferred] if self.preferred in self.order else [])
+        priority.extend(mid for mid in self.entry_proposals if mid not in priority)
+        self.order = tuple(priority) + tuple(mid for mid in self.order if mid not in priority)
 
     def _fit(self, map_id):
         try:
-            fit = self.fit(self.frame, map_id, self.floor, self.cancelled, observation_bounds=self.bounds)
+            proposal = self.entry_proposals.get(map_id)
+            fit = self.fit(self.frame, map_id, self.floor, self.cancelled, observation_bounds=self.bounds,
+                **(dict(entry_candidate=proposal) if proposal is not None else {}))
         except MemoryError:
             raise
         except Exception:
@@ -113,6 +124,10 @@ class _StructureFitWork(EntryEvidenceWork):
 class _ObservationWork(EntryEvidenceWork):
     """Dependencies and canonical poses share one driver, frame and deadline."""
     def __init__(self, snapshot, entry, fit):
+        if entry is not None and entry.frame_snapshot is not snapshot:
+            entry.close()
+            fit.close()
+            raise ValueError('entry-frame-snapshot-mismatch')
         self.entry, self.fit, self.entry_rows = entry, fit, None
         super().__init__(snapshot)
 
@@ -130,6 +145,7 @@ class _ObservationWork(EntryEvidenceWork):
             finally:
                 self.entry_rows = self.entry.finish()
             yield self._job(None, 'entry-evidence', lambda: None)
+            self.fit.accept_entry_proposals(self.entry_rows)
         yield from self._delegate(self.fit)
 
 

@@ -253,6 +253,93 @@ class EntryObservationTests(unittest.TestCase):
         self.assertFalse(row['strongSuggestion'])
         self.assertFalse(engine.last_difficult_evidence['tilemapEntry']['identityAuthorizationAllowed'])
 
+    def test_current_proposal_reaches_prepared_fit_and_keeps_the_complete_pool(self):
+        engine = self.engine(unique=True)
+        engine.qt_rank_ready = False
+        matrix = [[.5, 0., 200.], [0., .5, 150.], [0., 0., 1.]]
+        engine.entry_identity.verify.return_value = dict(success=True, matrixSourceToClient=matrix)
+        calls = []
+        def prepare(frame, bounds):
+            def fit(actual, mid, floor, cancelled, **kwargs):
+                self.assertIs(actual, frame)
+                self.assertEqual(kwargs['observation_bounds'], bounds)
+                calls.append((mid, kwargs.get('entry_candidate')))
+                return dict(success=False, reason='fixture-canonical-unknown')
+            return fit
+        c = StructureCatalog('s0', 'nightmare', 'real-fixture-base', ('map-b', 'map-a'), ('2',))
+        scanner = StructureCandidateScanner(c, lambda *a, **kw: self.fail('unprepared fit'),
+            prepare_fit=prepare)
+        report = scanner.scan(self.fixture.frame, floor='2', floor_source='operator-declared',
+            prepare_entry=engine.prepare_entry_observation)
+        self.assertEqual([mid for mid, _ in calls], ['map-a', 'map-b'])
+        self.assertTrue(calls[0][1]['verification']['success'])
+        self.assertFalse(calls[0][1]['identityVerified'])
+        self.assertFalse(calls[0][1]['poseVerified'])
+        self.assertIsNone(calls[1][1])
+        self.assertEqual(report['checkedMapIds'], ['map-a', 'map-b'])
+        self.assertEqual(report['unscannedMapIds'], [])
+        self.assertEqual(report['unknownMapIds'], ['map-b', 'map-a'])
+        self.assertEqual(report['supportedMapIds'], [])
+        self.assertFalse(report['identityHardGatePassed'])
+
+    def test_entry_from_another_snapshot_cannot_seed_the_current_fit(self):
+        engine = self.engine(unique=True)
+        c = StructureCatalog('s0', 'nightmare', 'real-fixture-base', ('map-a', 'map-b'), ('2',))
+        fit = Mock(side_effect=AssertionError('foreign frame fit'))
+        def prepare(snapshot, floor, **kwargs):
+            return engine.prepare_entry_observation(FrameSnapshot(snapshot.pixels), floor, **kwargs)
+        with self.assertRaisesRegex(ValueError, 'entry-frame-snapshot-mismatch'):
+            StructureCandidateScanner(c, fit).scan(self.fixture.frame, floor='2',
+                floor_source='operator-declared', prepare_entry=prepare)
+        fit.assert_not_called()
+
+    def test_entry_hint_keeps_preferred_and_planned_scope_and_cannot_revive_cancel(self):
+        engine = self.engine(unique=True)
+        engine.qt_rank_ready = False
+        engine.entry_identity.verify.return_value = dict(success=True, matrixSourceToClient=np.eye(3))
+        c = StructureCatalog('s0', 'nightmare', 'real-fixture-base', ('map-b', 'map-a'), ('2',))
+        for options, expected in ((dict(preferred_map_id='map-b'), ['map-b', 'map-a']),
+                                  (dict(planned_map_ids=('map-b',)), ['map-b'])):
+            with self.subTest(options=options):
+                fit = Mock(return_value=dict(success=False, reason='fixture-unknown'))
+                report = StructureCandidateScanner(c, fit).scan(self.fixture.frame, floor='2',
+                    floor_source='operator-declared', prepare_entry=engine.prepare_entry_observation, **options)
+                self.assertEqual([call.args[1] for call in fit.call_args_list], expected)
+                self.assertEqual(set(report['checkedMapIds']) | set(report['unscannedMapIds']), set(c.map_ids))
+                self.assertFalse(report['identityHardGatePassed'])
+        cancelled = [False]
+        def stop(report):
+            cancelled[0] = True
+            return False
+        fit = Mock(side_effect=AssertionError('cancelled hint fit'))
+        report = StructureCandidateScanner(c, fit).scan(self.fixture.frame, floor='2',
+            floor_source='operator-declared', prepare_entry=engine.prepare_entry_observation,
+            on_entry_evidence=stop, cancelled=lambda: cancelled[0])
+        fit.assert_not_called()
+        self.assertEqual(report['status'], 'cancelled')
+
+    def test_ui_evidence_and_fit_mutations_do_not_change_the_entry_source_rows(self):
+        engine = self.engine(unique=True)
+        engine.qt_rank_ready = False
+        matrix = np.eye(3)
+        engine.entry_identity.verify.return_value = dict(success=True, matrixSourceToClient=matrix)
+        c = StructureCatalog('s0', 'nightmare', 'real-fixture-base', ('map-b', 'map-a'), ('2',))
+        def publish(report):
+            entry = next(r['difficultEntry'] for r in report['rows'] if r.get('difficultEntry'))
+            entry['verification']['matrixSourceToClient'][0, 2] = 3000
+            return False
+        def fit(frame, mid, floor, cancelled, **kwargs):
+            proposal = kwargs.get('entry_candidate')
+            if proposal is not None:
+                self.assertEqual(proposal['verification']['matrixSourceToClient'][0, 2], 0)
+                proposal['verification']['matrixSourceToClient'][0, 2] = 6000
+            return dict(success=False, reason='fixture-unknown')
+        report = StructureCandidateScanner(c, fit).scan(self.fixture.frame, floor='2',
+            floor_source='operator-declared', prepare_entry=engine.prepare_entry_observation, on_entry_evidence=publish)
+        entry = next(r['difficultEntry'] for r in report['entryEvidence']['rows'] if r.get('difficultEntry'))
+        self.assertEqual(entry['verification']['matrixSourceToClient'][0, 2], 0)
+        self.assertEqual(matrix[0, 2], 0)
+
     def test_closing_before_competing_probe_keeps_both_maps_unknown(self):
         engine = self.engine(unique=True)
         work = engine.prepare_entry_observation(self.fixture.frame, '2', deadline=float('inf'))
