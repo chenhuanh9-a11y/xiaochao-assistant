@@ -94,22 +94,32 @@ class PoseInputsUnavailable(ValueError):
 class _RecordingReader:
     def __init__(self, reader):
         self.reader, self.payloads = reader, {}
+        self._root = reader.root
 
     def __call__(self, path):
+        key = _path_key(path)
+        previous = self.payloads.get(key)
+        if previous is not None:
+            return previous[1]
         # Keep semantic preflight inside the component read scope. In
         # particular, the existing batch reader attaches the actual FileRef to
         # NPZ-header failures; optional consumers must not guess their origin.
         raw = self.reader.read_many((path,), expected_root=self.reader.root)[0]
-        key = _path_key(path)
-        previous = self.payloads.get(key)
-        if previous is not None and previous[1] != raw:
-            raise PoseInputsUnavailable("pose-input-bytes-changed-during-preparation")
         self.payloads[key] = (Path(path), bytes(raw))
         return raw
 
-    def recheck(self):
-        for path, raw in tuple(self.payloads.values()):
-            if self.reader(path) != raw:
+    def recheck(self, *, cancelled=None):
+        if self.reader.root != self._root:
+            raise PoseInputsUnavailable("pose-input-resource-binding-changed")
+        recorded = tuple(self.payloads.values())
+        relatives = tuple(self.reader.relative_path(path) for path, _ in recorded)
+        # The first read already checked payload semantics. Re-read every
+        # actual file under the original component's byte/manifest/selection
+        # checks; exact byte equality needs no second JSON/NPZ decode.
+        current = self.reader.view.read_many(relatives, expected_root=self._root,
+                                             cancelled=cancelled)
+        for (_, raw), actual in zip(recorded, current):
+            if actual != raw:
                 raise PoseInputsUnavailable("pose-input-bytes-changed-during-preparation")
 
 
@@ -545,7 +555,7 @@ def prepare_structure_pose_inputs(engine, map_id, floor, *, resource_revision,
         passportSourceAvailable=bundle.passport_source_available,
         mainError=main.error, sideDoorError=side.side_door_error,
         sideSearchError=side.side_search_error, passportError=side.passport_error))
-    read.recheck()
+    read.recheck(cancelled=cancelled)
     if pose_index_source is not None:
         # Keep the existing source/digest admission at preparation publication,
         # without retaining the file-reading index/provider in the RAM result.

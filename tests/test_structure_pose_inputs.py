@@ -233,6 +233,22 @@ class StructurePoseInputTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.prepare(engine, mid)
 
+    def test_repeated_preparation_read_decodes_once_but_rechecks_actual_bytes(self):
+        from structure_pose_inputs import _RecordingReader
+        engine, _, _ = self.engine()
+        reader = engine.qt_native_base.reader
+        path = reader.root / engine.qt_native_base.interfaces['identityPack']
+        recorded = _RecordingReader(reader)
+        with patch.object(reader, '_check_payload', wraps=reader._check_payload) as preflight:
+            first = recorded(path)
+            self.assertEqual(recorded(path), first)
+            recorded.recheck()
+        self.assertEqual(preflight.call_count, 1, 'identical validated JSON must not be reparsed')
+        path.write_bytes(b'changed-after-first-read')
+        self.assertEqual(recorded(path), first)
+        with self.assertRaises(ValueError):
+            recorded.recheck()
+
     def test_preparation_rejects_byte_manifest_reader_root_and_selection_changes(self):
         for mutation in ("bytes", "manifest", "reader", "source-root", "base-selection", "controls-selection"):
             with self.subTest(mutation=mutation):
@@ -340,7 +356,7 @@ class StructurePoseInputTests(unittest.TestCase):
         engine, mid, _ = self.engine()
         reference = engine.qt_shared_provider("shared-structure", mid, "1")
         root = engine.qt_native_base.reader.root
-        relative = reference.path.relative_to(root).as_posix()
+        relative = engine.qt_native_base.reader.relative_path(reference.path)
         engine.grid_locator = DifficultGridLocator(root, {(mid, "1"): dict(
             gridResource=relative, sourceShape=[8, 8], gridUnitPixels=12)})
         engine.pose_index_candidates = MethodType(DifficultCandidateEngine.pose_index_candidates, engine)
@@ -393,7 +409,7 @@ class StructurePoseInputTests(unittest.TestCase):
         root = engine.qt_native_base.reader.root
         optional = engine.qt_shared_provider("shared-structure", mid, "2").path
         engine.grid_locator = DifficultGridLocator(root, {(mid, "1"): dict(
-            gridResource=optional.relative_to(root).as_posix(), sourceShape=[8, 8], gridUnitPixels=12)})
+            gridResource=engine.qt_native_base.reader.relative_path(optional), sourceShape=[8, 8], gridUnitPixels=12)})
         engine.pose_index_candidates = MethodType(DifficultCandidateEngine.pose_index_candidates, engine)
         optional.write_bytes(b"unavailable optional grid payload")
         inputs = self.prepare(engine, mid, pose_index_enabled=True)
