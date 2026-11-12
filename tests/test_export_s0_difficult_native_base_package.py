@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 import numpy as np
@@ -191,6 +192,75 @@ class S0DifficultNativeBaseTests(unittest.TestCase):
 
     view = base_fixture.ImportedNativeBaseTests.view
     change = staticmethod(base_fixture.ImportedNativeBaseTests.change)
+
+    def test_typed_layers_supply_preparations_to_the_real_online_loader(self):
+        from client_providers import SharedReferenceProvider
+        from fast_structure_alignment import load_prepared, prepare
+
+        bundle = decode_s0_difficult(self.view())
+        source = bundle.fast_structure_source
+        self.assertEqual(set(source.entries), set(bundle.resources.entries))
+        self.assertEqual(source.gaps, ())
+        self.assertEqual(self.receipt['fastPreparedLayerCount'], 58)
+        provider = SharedReferenceProvider(source.root, bundle.resources, bundle.versions,
+            legacy_reference_loader=bundle.legacy_references.reference,
+            check_current=bundle.assert_current)
+        native_id = next(mid for mid in IDS if mid != LEGACY)
+        for floor in FLOORS:
+            reference = provider(PROFILE, native_id, floor)
+            expected = prepare(reference.clean_mask)
+            with patch('fast_structure_alignment.prepare', side_effect=AssertionError('online preparation')):
+                actual = load_prepared(reference, source=source)
+            self.assertIsNotNone(actual)
+            self.assertEqual(actual.shape, expected.shape)
+            self.assertEqual(actual.pitch, expected.pitch)
+            for name in ('distance', 'chains', 'rays'):
+                np.testing.assert_array_equal(getattr(actual, name), getattr(expected, name))
+        self.assertFalse(any(key[1] == LEGACY for key in source.entries))
+
+    def test_legacy_reference_keeps_its_capability_gap_with_native_preparations(self):
+        from types import SimpleNamespace
+        from client_providers import SharedReferenceProvider
+        from structure_pose_solver import StructurePoseSolver
+
+        bundle = decode_s0_difficult(self.view())
+        source = bundle.fast_structure_source
+        provider = SharedReferenceProvider(source.root, bundle.resources, bundle.versions,
+            legacy_reference_loader=bundle.legacy_references.reference,
+            check_current=bundle.assert_current)
+        engine = SimpleNamespace(pack=bundle.pack, qt_adapters=bundle.adapters,
+            qt_shared_provider=provider, qt_fast_structure_source=source,
+            qt_assert_resource_current=bundle.assert_current)
+        reference = provider(PROFILE, LEGACY, '1')
+        self.assertIs(reference.metadata['authorizesStructureValidation'], False)
+        host = StructurePoseSolver(engine, collect_fit_diagnostics=True)
+        frame = np.zeros((720, 1280, 3), np.uint8)
+        with patch.object(source, 'acquire_prepared_use', wraps=source.acquire_prepared_use) as acquire:
+            result = host.fit(frame, LEGACY, '1', lambda: False)
+        self.assertFalse(result['success'])
+        acquire.assert_not_called()
+        self.assertTrue(any(e.get('reason') == 'fast-structure-validation-unavailable' for e in host.events))
+        reference.path.write_bytes(b'changed-required-legacy-binary')
+        with self.assertRaisesRegex(ValueError, 'file-integrity-mismatch'):
+            host.fit(frame, LEGACY, '1', lambda: False)
+
+    def test_wrong_derived_preparation_cannot_be_published(self):
+        original = exporter._add_fast_preparations
+        def corrupt(payloads, typed):
+            index_path = original(payloads, typed)
+            prepared = json.loads(payloads[index_path])['entries'][0]['preparedResource']
+            with np.load(BytesIO(payloads[prepared]), allow_pickle=False) as archive:
+                arrays = {name: archive[name] for name in archive.files}
+            arrays['distance'][0, 0] ^= np.uint16(1)
+            buffer = BytesIO()
+            np.savez_compressed(buffer, **arrays)
+            payloads[prepared] = buffer.getvalue()
+            return index_path
+        fixture = S0DifficultSourceFixture(self.root / 'wrong-derived')
+        with patch.object(exporter, '_add_fast_preparations', side_effect=corrupt):
+            with self.assertRaisesRegex(ValueError, 'derived-mismatch'):
+                fixture.export()
+        self.assertFalse(fixture.output.exists())
 
     def test_mixed_complete_pool_and_source_bytes_remain_distinct(self):
         bundle = decode_s0_difficult(self.view())

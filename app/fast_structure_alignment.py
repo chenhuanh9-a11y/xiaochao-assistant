@@ -528,6 +528,11 @@ def _try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_see
     reference = assistant._shared_structure_reference('shared-structure', map_id, floor)
     if reference is None:
         return None
+    if getattr(reference, 'metadata', {}).get('authorizesStructureValidation') is False:
+        if getattr(assistant, 'collect_fit_diagnostics', False):
+            assistant._log('experimental-fast-alignment', mapId=map_id, floor=floor,
+                           reason='fast-structure-validation-unavailable', accepted=False)
+        return None
     source = getattr(getattr(assistant, 'engine', None), 'qt_fast_structure_source', None)
     loader = getattr(assistant, '_load_fast_structure_prepared', None)
     prepared = (loader(reference, cancelled=cancelled) if loader is not None else

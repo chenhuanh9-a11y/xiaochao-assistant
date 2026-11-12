@@ -404,7 +404,8 @@ def _s0_difficult_base_payloads(source):
     runtime = {key: interfaces[key] for key in
         ('identityPack', 'sourceManifest', 'typedIndex', 'coordinatePack', 'neutralDisplay', 'identityEntries')}
     runtime.update(identityProfile='shared-structure', entryEvidenceRole=ENTRY_ROLE,
-                   entryResourceAnchor='component-root', nativePassports='unavailable', legacyClean=legacy)
+                   entryResourceAnchor='component-root', nativePassports='unavailable', legacyClean=legacy,
+                   fastStructureIndex=_add_fast_preparations(payloads, typed))
     payloads['resource-context.json'] = _encoded(dict(schema='xingtu-native-recognition-base-v1',
         season='s0', mode='difficult', runtimeInterfaces=runtime))
     return payloads, len(ids)
@@ -792,18 +793,24 @@ def _round_trip(path, destination, *, season='s0', mode='nightmare'):
         inspected = archives.inspect_archive(path)
         saved = archives.save_archive(path, destination, expected_archive_sha256=inspected.archive_sha256)
         refs = {ref.component_id: ref for ref in saved.component_refs}
-        bundle = decode_native_base(PackageView(destination, refs['base']), season='s0', mode='difficult')
+        base_view = PackageView(destination, refs['base'])
+        bundle = decode_native_base(base_view, season='s0', mode='difficult')
         controls = S0ControlsProfile(PackageView(destination, refs['controls']))
         context = controls.for_context('s0', 'difficult')
         if context is None or set(context.contract.floor_ids) != set(bundle.pack.floors):
             _reject('roundtrip-controls-floors')
+        from client_providers import SharedReferenceProvider
+        provider = SharedReferenceProvider(base_view.root, bundle.resources, bundle.versions,
+            check_current=bundle.assert_current)
+        bundle.fast_structure_source.validate_all(provider, compare_derived=True)
         bundle.assert_current()
         return dict(mapCount=len(bundle.pack.maps), typedLayerCount=len(bundle.resources.entries),
             legacyLayerCount=len(bundle.legacy_references.bindings) if bundle.legacy_references else 0,
             mainEntries=len(bundle.entry_identity.entries), localEntries=len(bundle.side_entry_identity.entries),
             controlsTemplates=len(controls.templates.labels), controlsLabels=list(controls.templates.label_values),
             rankReady=bundle.rank_ready, nativePassportsAvailable=bundle.passport_source_available,
-            semanticSideEntries=bundle.semantic_side_entries, **_group_report(bundle))
+            semanticSideEntries=bundle.semantic_side_entries,
+            fastPreparedLayerCount=len(bundle.fast_structure_source.entries), **_group_report(bundle))
     if (season, mode) != ('s0', 'nightmare'):
         _reject('context-unsupported')
     from difficult_entry_identity import MapEntryGeometryIdentity

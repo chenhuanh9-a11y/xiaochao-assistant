@@ -339,6 +339,7 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 - 主入口 probe 保留源条目的 `proposalOnly`、`authorizesPose`、`authorizesIdentity`；入口复核通过不能升级资源用途。当前帧公共入口工作在不具正式排名资格的上下文中，也不给历史草稿、出口锚点或侧门恢复授予正式身份；几何提案和原复核结果保留，独立结构求解仍必须验证本帧。自动 provisional 全图显示继续沿原 S1 专用用途，不借此开放 S0 自动锁图。
 - 参考结构 provider 显式接收历史资源加载函数与生命周期检查函数；导入来源直接调用已解码的历史资源 owner，不绕经显示用 native context 再检查两遍。provider 保留调用前后上下文校验，加载器保留实际文件和内容检查。native context 的绑定读取保留“基础 → 控件 → 基础”顺序，再从同一次基础读取中核对实际 view、ref 与 reader 根；同对象复用该次 root，独立 view 仍检查各自选择与实际 root，并在其后重新核对 bundle 及 reader 绑定。没有新增跨帧有效性缓存，也不将这些逐项检查称为原子快照。
 - 同一 `FrameSnapshot` 的入口几何提案现由共同 observation work 交给 fit work，不再止于身份事件。纯提取逻辑在 `entry_pose_proposals` 共用；未通过、歧义、出口矛盾、错图/错层与非有限矩阵不作提示。明确 preferred 保持第一，提案只调整完整池的顺序；传递值隔离 UI 和求解方修改。prepared fit 将提案送入原独立初始求解，先核实际参考绑定与两个 profile 桥一致，不对已有 source→client 矩阵再次坐标变换。入口提案与 pose-index 提案分开：不继承后者抑制普通搜索的策略，不使用已确认位姿的锁尺度先验，也不放开旧隐式 ROI 入口恢复。轴锁定点对应、墙法线尺度拟合、普通轮廓/marker 候选、区域边缘/栅格及 canonical residual 仍裁决同一当前 component；入口提案在普通假设生成完成后合并去重，保留重复结构歧义、预算不足、矛盾 peer 和失败回退。没有入口任务的 S1 路径保持原调用。
+- S0 困难制包现与 S0 噩梦共用 `_add_fast_preparations`，从实际导出的 typed native clean 资源离线生成距离场、拐角链及方向数据，声明在基础包的 `fastStructureIndex`。制包回读核对完整 typed 索引和逐层派生值，运行时仍消费既有 imported fast source；旧包缺预制资源仍保留原回退，不在当前帧生成。混合池里的历史二值参考没有新增预制数据或资格；共同快速贴合入口明确拒绝 `authorizesStructureValidation=False` 的参考，并保留诊断，后续求解及实际所需字节的最终复核仍由原资源边界负责。此改动不缩候选、不改预算或残差门槛，性能收益须另用新包实帧回放证明。
 - 定向回归从实际资源保存/激活/默认工厂进入，合成画面、楼层观测或候选 fit 的替换范围在测试中注明；显式确认后的负例重新捕获黑帧并运行真实共享 solver。它们不代表真实样本识别成功、可见像素或速度达标；四模式完整回放与性能阶段仍待完成。
 
 ### P5 旧格式退役验收清单

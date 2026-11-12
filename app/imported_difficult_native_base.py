@@ -165,7 +165,7 @@ def decode_s0_difficult(view):
             or context.get('schema') != SCHEMA or (context.get('season'), context.get('mode')) != ('s0', 'difficult')):
         _reject('difficult-context-invalid')
     interfaces = context['runtimeInterfaces']
-    if (not isinstance(interfaces, dict) or set(interfaces) - {'reviewedFrontGroups'} != INTERFACES
+    if (not isinstance(interfaces, dict) or set(interfaces) - {'reviewedFrontGroups', 'fastStructureIndex'} != INTERFACES
             or interfaces.get('identityProfile') != PROFILE or interfaces.get('entryEvidenceRole') != ENTRY_ROLE
             or interfaces.get('entryResourceAnchor') != 'component-root'
             or interfaces.get('nativePassports') != 'unavailable'):
