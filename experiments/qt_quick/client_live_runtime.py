@@ -1184,8 +1184,11 @@ class LiveRuntime:
                     # owes one full catalogue pass, regardless of that ledger.
                     scan_plan, scan_revision = ((tuple(catalog.map_ids) if recovery_scan else tuple(pool.remaining)),
                         pool.revision) if private_enabled else ((), None)
+                    # A first preview cannot stop standalone S1's initial scan.
+                    # Its separate ACK-based preferred reuse remains below.
                     options = dict(first_material_committed=(first_material_committed
-                        if not recovery_scan and payload.get("forceCatalogue") is not True
+                        if (catalog.season == 's0' or private_enabled)
+                        and not recovery_scan and payload.get("forceCatalogue") is not True
                         and action not in ("reselect_map", "map_reselection") else None))
                     if private_enabled:
                         options['planned_map_ids'] = scan_plan

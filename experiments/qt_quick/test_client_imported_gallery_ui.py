@@ -584,8 +584,12 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
                 self.assertTrue(capabilities['dataReady'])
                 self.assertTrue(capabilities['rankReady'])
                 self.assertFalse(capabilities['liveReady'])
-                self.assertFalse(capabilities['floorObservation']['automaticFloorEligible'])
-                self.assertFalse(capabilities['candidateObservation']['candidateReady'])
+                floor_capability = capabilities['floorObservation']
+                self.assertEqual(floor_capability['validationScope'], 'source-image-replay')
+                self.assertEqual(floor_capability['sourceReplayFloors'], [-1, -2, -3, -4])
+                self.assertFalse(floor_capability['liveValidated'])
+                self.assertTrue(capabilities['candidateObservation']['candidateReady'])
+                self.assertFalse(capabilities['candidateObservation']['liveValidated'])
                 image = item('galleryLargePreview')
                 if image is None or not image.isVisible():
                     if not click("galleryViewAuthor_" + PROFILE_ID):

@@ -18,32 +18,36 @@ class ImportedRuntimeControlsTests(unittest.TestCase):
     def test_s1_manual_and_candidate_observation_consume_actual_external_parameters(self):
         """Capabilities/engine are fixtures; profile and pixels are actual.
 
-        Direct observation does not bypass the production start-round gap or
-        qualify external source replay. Neither branch may borrow defaults.
+        Equivalent decoded inputs reuse reviewed source replay. Changed inputs
+        remain unreviewed; neither branch may silently borrow defaults.
         """
         fixture = s1_profiles.ImportedS1Controls()
         self.addCleanup(fixture.doCleanups)
-        controls = fixture.profile()
+        changed = s1_profiles.document()
+        changed['mapUi']['minimumCorrelation']['close'] = .63
+        profiles = ((fixture.profile(), '-3', 'source-image-replay'),
+                    (fixture.profile(changed), None, 'external-controls-unreviewed'))
         from s1_floor_observation import detect_s1_floor
         for mode in ('difficult', 'nightmare'):
             registry = manual_s1.FloorRegistry(mode)
             engine = registry.engine
-            engine.qt_controls_profile = controls
             engine.qt_native_context.structure_candidate_capability = dict(candidateReady=True)
             runtime = LiveRuntime(engine_factories=registry, evidence_kind='recorded')
             self.addCleanup(runtime.shutdown)
             runtime._mode, runtime._season, runtime._engine = mode, 's1', engine
-            for manual in (True, False):
-                runtime._manual_alignment = manual
-                with self.subTest(mode=mode, manual=manual), \
-                     patch('s1_floor_observation.detect_s1_floor', wraps=detect_s1_floor) as observed:
-                    observation, floor, read = runtime._observe(engine, s1_profiles.bright_frame((-3,)))
-                    self.assertIs(observed.call_args.kwargs.get('controls'), controls)
-                    self.assertTrue(observation['detected'], (observation, read))
-                    self.assertIsNone(floor)
-                    self.assertIsNone(read['selectedFloor'])
-                    self.assertFalse(read['observedFloorValidated'])
-                    self.assertEqual(read['validationScope'], 'external-controls-unreviewed')
+            for controls, expected_floor, scope in profiles:
+                engine.qt_controls_profile = controls
+                for manual in (True, False):
+                    runtime._manual_alignment = manual
+                    with self.subTest(mode=mode, manual=manual, scope=scope), \
+                         patch('s1_floor_observation.detect_s1_floor', wraps=detect_s1_floor) as observed:
+                        observation, floor, read = runtime._observe(engine, s1_profiles.bright_frame((-3,)))
+                        self.assertIs(observed.call_args.kwargs.get('controls'), controls)
+                        self.assertTrue(observation['detected'], (observation, read))
+                        self.assertEqual(floor, expected_floor)
+                        self.assertEqual(read['selectedFloor'], -3 if expected_floor else None)
+                        self.assertEqual(read['observedFloorValidated'], expected_floor is not None)
+                        self.assertEqual(read['validationScope'], scope)
 
     def test_live_observation_conflicts_and_hits_use_external_floor_mapping(self):
         fixture = pixels.ImportedS0ObservationTests()
