@@ -106,6 +106,18 @@ Component.prototype.createOperations = function() {
     // A signal-handler exception cannot fail native installation. Make program
     // integrity an ordinary DO operation before writing the maintenance tool.
     component.addOperation("Execute", "{0}", helper, "verify-program", "@TargetDir@");
+    if (installer.value("TrialUpgradeActive", "false") === "true") {
+        // QtIFW re-registers the product only on first install. Keep this
+        // update in its native operation journal, including normal UNDO.
+        var guid = installer.value("ProductUUID", "");
+        var hive = installer.value("AllUsers", "false") === "true" ? "HKEY_LOCAL_MACHINE" : "HKEY_CURRENT_USER";
+        var registration = hive + "\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" + guid;
+        var location = installer.value(registration + "\\InstallLocation", "", QSettings.NativeFormat);
+        if (!/^\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}$/i.test(guid) ||
+                normal(location) !== normal(installer.value("TargetDir")))
+            throw new Error("无法核对原安装的 Windows 版本登记，请保留现场并检查日志。");
+        component.addOperation("GlobalConfig", registration, "DisplayVersion", installer.value("ProductVersion"));
+    }
     if (installer.value("TrialPortable") === "true" && installer.value("TrialUpgradeActive", "false") !== "true")
         component.addOperation("Execute", "{0}", helper, "install-maps", "@TargetDir@");
     if (fault === "after-extract")

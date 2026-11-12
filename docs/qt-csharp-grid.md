@@ -10,6 +10,8 @@
 
 原生文件、组件版本及持久新维护器的controller和实际安装helper均通过后才切换owner、按原明确意图恢复watcher配置并清除本次pending。更新失败保留原程序备份和pending；可从已完成native阶段向前核验收尾，不能把QtIFW撤销称为自动恢复旧程序或断电原子性。新装、覆盖、失败后重试、数据保留和卸载需绑定最终同源Setup分别验证。
 
+QtIFW 的 updater 不会自动刷新 Windows 卸载项的 DisplayVersion。升级组件使用原生 GlobalConfig operation，仅更新 ProductUUID 和 InstallLocation 均与当前安装相符的既有登记；失败时沿用原生 UNDO。持久维护器的最终核验同时回读实际登记版本，不能只凭组件或程序版本认定更新完成。
+
 Windows静默加载失败须直接返回错误：实测同一坏PE在普通Python和Inno继承的线程错误模式不同，后者可卡在CreateProcess而无法受子进程wait超时约束。启动器仅在当前线程创建子进程时临时加入SEM_FAILCRITICALERRORS并恢复；创建失败保留原生错误，更新状态退回真实的创建前阶段。首次安装中断且同一Setup尚无维护器时仍走原prepare/quarantine恢复，其他实例不接管。
 
 当前工作区已合入origin/main的交付/发版约定；本轮按用户指定版本准备安装候选，不自动覆盖本机安装、不操作游戏、不发布公告或自动合并PR。完整实机和端到端性能仍未证明；新包就绪后由用户本机验收，后续发布沿用既有发版列车授权。历史独立测试包与证据保留。

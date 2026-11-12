@@ -57,6 +57,13 @@ function Controller() {
         // Read the actual persisted controller and its installed helper while the wrapper still owns
         // the runtime lease. A stale maintenance controller cannot pass this.
         trialRun("verify-program");
+        var maintenancePolicy = JSON.parse(installer.readFile(support + "/_internal/qtifw-trial-policy.json", "UTF-8"));
+        if (maintenancePolicy.upgradeCapable) {
+            var hive = installer.value("AllUsers", "false") === "true" ? "HKEY_LOCAL_MACHINE" : "HKEY_CURRENT_USER";
+            var registration = hive + "\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" + installer.value("ProductUUID");
+            if (installer.value(registration + "\\DisplayVersion", "", QSettings.NativeFormat) !== maintenancePolicy.targetVersion.version)
+                throw new Error("Windows 安装版本登记尚未完成，请重新运行同一个 Setup。");
+        }
         console.log("XINGTU_MAINTENANCE_SOURCE_VERIFIED: " + __INSTANCE__);
         return;
     }

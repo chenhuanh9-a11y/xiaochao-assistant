@@ -18,6 +18,7 @@ import sys
 import time
 import traceback
 import uuid
+import winreg
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -52,6 +53,25 @@ def xml(path, root, fields):
 def versions(target):
     return {p.findtext("Name"): p.findtext("Version")
             for p in ET.parse(target / "components.xml").findall("Package")}
+
+
+def registration(target):
+    """Read only this fixture's native uninstall entry, including view aliases."""
+    result = {}
+    for hive_name, hive in (("HKCU", winreg.HKEY_CURRENT_USER), ("HKLM", winreg.HKEY_LOCAL_MACHINE)):
+        for view in (winreg.KEY_WOW64_32KEY, winreg.KEY_WOW64_64KEY):
+            with winreg.OpenKey(hive, r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+                                0, winreg.KEY_READ | view) as parent:
+                for index in range(winreg.QueryInfoKey(parent)[0]):
+                    name = winreg.EnumKey(parent, index)
+                    with winreg.OpenKey(parent, name) as key:
+                        try:
+                            location = winreg.QueryValueEx(key, "InstallLocation")[0]
+                        except FileNotFoundError:
+                            continue
+                        if Path(location).resolve() == target.resolve():
+                            result[hive_name + ":" + name] = winreg.QueryValueEx(key, "DisplayVersion")[0]
+    return result
 
 
 class NativeUpgrade:
@@ -271,11 +291,11 @@ class NativeUpgrade:
         shutil.copytree(fixture["folder"] / "packages", packages)
         script = packages / PACKAGE / "meta/component.js"
         text = script.read_text(encoding="utf-8")
-        verification = 'component.addOperation("Execute", "{0}", helper, "verify-program", "@TargetDir@");'
-        assert text.count(verification) == 1, "Real component verification operation unavailable"
+        checkpoint = 'component.addOperation("GlobalConfig", registration, "DisplayVersion", installer.value("ProductVersion"));'
+        assert text.count(checkpoint) == 1, "Real component registration operation unavailable"
         # Change only the copied fixture metadata. The production helper keeps
         # faultsAllowed=false and will reject this additional Execute with 2.
-        text = text.replace(verification, verification + '\n    component.addOperation("Execute", "{0}", helper, "fail", "@TargetDir@");', 1)
+        text = text.replace(checkpoint, checkpoint + '\n        component.addOperation("Execute", "{0}", helper, "fail", "@TargetDir@");', 1)
         write(script, text)
         repository = folder / "repository"
         result = self.run("repogen-post-extract-failure", [self.ifw / "repogen.exe", "-p", packages, repository])
@@ -290,13 +310,15 @@ class NativeUpgrade:
             oldComponentUndo=data.find(b'Removing files extracted from "1.0.0program.7z"'),
             newComponentExtract=data.find(b'Extracting "1.1.3program.7z"'),
             newProgramVerified=data.find(b'{"verified": true'),
+            newVersionRegistration=data.find(b'perform org.xingtu.qtifw.realtrial operation: GlobalConfig'),
             injectedExecuteRejected=data.find(b'fault-injection-disabled'),
+            versionRegistrationUndone=data.find(b'undo org.xingtu.qtifw.realtrial operation: GlobalConfig'),
         )
         assert all(value >= 0 for value in offsets.values()), offsets
         assert list(offsets.values()) == sorted(offsets.values()), offsets
         assert b'arguments: "fail ' in data, "Native engine did not execute injected helper fail operation"
         return dict(nativeLog=str(logs[0]), observedOrderOffsets=offsets,
-                    boundary="after old UNDO, new Extract and successful verify-program")
+                    boundary="after old UNDO, new Extract, verify-program and version registration; native UNDO restores old version")
 
     def assert_upgraded(self, target, new, sentinels, label):
         for name, data in new["values"].items():
@@ -306,6 +328,8 @@ class NativeUpgrade:
         assert not (target / "program/obsolete-owned-v1.txt").exists()
         assert not (target / PENDING).exists()
         assert versions(target) == {PACKAGE: "1.1.3", DATA_PACKAGE: "1.1.3"}
+        registered = registration(target)
+        assert len(registered) == 1 and set(registered.values()) == {"1.1.3"}, registered
         owner = json.loads((target / OWNER).read_bytes())
         assert owner == dict(instance=new["policy"]["instance"], payloadSource=new["policy"]["payloadSource"],
                              phase="complete", target=str(target))
@@ -326,6 +350,7 @@ class NativeUpgrade:
             assert (backup / "program" / name).read_bytes() == data, "old backup " + name
         self.report["cases"][label] = dict(success=True, nativePayloadVerified=True,
             userSentinels=len(sentinels), owner=owner, components=versions(target),
+            uninstallRegistration=registered,
             nextMaintenanceExitCode=result["exitCode"], newControllerLoaded=True,
             oldProgramBackup=str(backup), userDataInProgramInventory=False)
         self.save()
@@ -382,6 +407,8 @@ class NativeUpgrade:
                             repository.rename(faulty)
                         unavailable.rename(repository)
                     assert failed["exitCode"] != 0
+                    failed_registration = registration(target)
+                    assert len(failed_registration) == 1 and set(failed_registration.values()) == {"1.1.2"}, failed_registration
                     pending = json.loads((target / PENDING).read_bytes())
                     assert pending["stage"] == "native-in-progress"
                     backup = target / pending["backup"]
@@ -425,6 +452,7 @@ raise SystemExit("Existing ready path unexpectedly admitted pending upgrade")
                         previousHelperReadyBlocked=True, originalBackupRetainedAcrossRetry=True,
                         existingCommittedReadyPathBlocked=True,
                         userSentinelsRetainedImmediatelyAfterFailure=True,
+                        previousUninstallVersionRetainedAfterFailure=failed_registration,
                         failureBoundary=(post_extract_evidence["boundary"] if post_extract_evidence
                                          else "repository unavailable before payload extraction"))
                     if post_extract_evidence:
