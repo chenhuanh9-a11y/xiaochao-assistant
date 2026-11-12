@@ -9,9 +9,11 @@ from fractions import Fraction
 import math
 import unittest
 import warnings
+from unittest.mock import patch
 
 import numpy as np
 
+import structure_identity_index as identity_index
 from structure_identity_index import (ConstellationA, DirectedAnchor, DirectoryEntry,
     FingerprintResult, MapFloorKey, NumericPoseUnresolved, StructureIdentityIndex,
     anchors_from_arrays, anchors_from_observed)
@@ -64,10 +66,86 @@ def query(anchors=None):
     return ConstellationA(polygon_anchors() if anchors is None else anchors, True)
 
 
+def direction_distractors():
+    anchor = polygon_anchors()[0]
+    relative = np.asarray(anchor.points) - anchor.points[1]
+    return tuple(replace(anchor, feature_id=f"noise-{i}", center_id=f"noise-{i}",
+        points=-relative + (20000 + 100 * i, 20000), rays=-np.asarray(anchor.rays))
+        for i in range(300))
+
+
 class StructureIdentityIndexTests(unittest.TestCase):
     def assert_never_locks(self, result):
         self.assertIs(result.authorizesIdentity, False)
         self.assertIs(result.lock, False)
+
+    def test_batch_direction_prefilter_contains_every_original_direction_acceptance(self):
+        query_rays = np.asarray(((1., 0.), (0., 1.)))
+        rng = np.random.default_rng(4071)
+        angles = list(rng.uniform(-math.pi, math.pi, 1000))
+        for floor in (-1., 0., .95, 1.):
+            boundary = math.acos(floor)
+            near = [sign * boundary + delta for sign in (-1, 1)
+                    for delta in (-1e-14, -1e-15, 0., 1e-15, 1e-14)]
+            rays = np.asarray([((math.cos(angle), math.sin(angle)),
+                                (-math.sin(angle), math.cos(angle))) for angle in (*angles, *near)])
+            expected = np.asarray([np.all(identity_index._unit_dot_upper(query_rays, row) >= floor)
+                                   for row in rays])
+            actual = identity_index._direction_prefilter(query_rays, rays, np.asarray((floor, floor)))
+            with self.subTest(floor=floor):
+                self.assertTrue(np.all(actual[expected]))
+                if floor > -1:
+                    self.assertFalse(np.all(actual))
+
+    def test_batched_filter_preserves_all_pose_families_and_logical_work(self):
+        features = tuple(anchor for i in range(40)
+                         for anchor in polygon_anchors((350 * (i % 8), 300 * (i // 8)), f"{i}-")) + direction_distractors()
+        index = make_index([entry("repeated", features)])
+        original_filter = identity_index._direction_prefilter
+        batch_sizes = []
+
+        def record(query_rays, source_rays, floor):
+            batch_sizes.append(len(source_rays))
+            return original_filter(query_rays, source_rays, floor)
+
+        with patch.object(identity_index, "_direction_prefilter", side_effect=record):
+            batched = index.retrieve(query(), epsilon=.1, max_work=None)
+        # All-possible prefilter recreates the original per-posting exact path;
+        # hypot/fsum, continuous intervals, graph checks and DFS remain real.
+        with patch.object(identity_index, "_direction_prefilter",
+                          side_effect=lambda q, s, f: np.ones(len(s), dtype=bool)):
+            original = index.retrieve(query(), epsilon=.1, max_work=None)
+        self.assertEqual(batched, original)
+        self.assertEqual(len(batched.proposals), 40)
+        self.assertGreater(len(batch_sizes), 6)
+        self.assertGreater(max(batch_sizes), 1)
+        self.assertLessEqual(max(batch_sizes), 256)
+
+    def test_batch_rejects_are_charged_and_cancellation_keeps_the_same_prefix(self):
+        features = tuple(anchor for i in range(24)
+                         for anchor in polygon_anchors((350 * i, 0), f"{i}-")) + direction_distractors()
+        index = make_index([entry("repeated", features)])
+
+        def run(maximum, *, exact_path=False, stop_after=None):
+            calls = 0
+            def cancelled():
+                nonlocal calls
+                calls += 1
+                return stop_after is not None and calls >= stop_after
+            context = (patch.object(identity_index, "_direction_prefilter",
+                        side_effect=lambda q, s, f: np.ones(len(s), dtype=bool)) if exact_path else
+                       patch.object(identity_index, "_direction_prefilter", wraps=identity_index._direction_prefilter))
+            with context:
+                result = index.retrieve(query(), epsilon=.1, max_work=maximum, cancelled=cancelled)
+            return result, calls
+
+        for maximum in (0, 1, 17, 257, 512, 2048, None):
+            with self.subTest(maximum=maximum):
+                self.assertEqual(run(maximum), run(maximum, exact_path=True))
+        for stop_after in (2, 257, 513, 1000):
+            with self.subTest(stop_after=stop_after):
+                self.assertEqual(run(None, stop_after=stop_after),
+                                 run(None, exact_path=True, stop_after=stop_after))
 
     def test_unique_positive_fingerprint_is_only_a_proposal(self):
         result = make_index([entry("one")]).retrieve(query(), epsilon=.1)

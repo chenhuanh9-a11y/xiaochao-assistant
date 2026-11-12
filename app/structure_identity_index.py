@@ -63,6 +63,29 @@ def _unit_dot_upper(left, right):
     return np.asarray(upper)
 
 
+_DIRECTION_BLOCK_SIZE = 256
+
+
+def _direction_prefilter(query_rays, source_rays, ray_floor):
+    """Cheap necessary condition, never the final direction decision.
+
+    These rays came from finite 2D hypot normalization. Their unit-scale
+    normalization and two-term dot errors are bounded independently of pixel
+    epsilon. A deliberately loose 64 ulp(1) envelope also contains the original
+    _unit_dot_upper's 16-ulp envelope. Only obvious rejects are removed here;
+    every survivor still passes through that unchanged hypot/fsum check.
+    """
+    try:
+        with np.errstate(over="raise", invalid="raise", divide="raise", under="ignore"):
+            dot = np.sum(source_rays * query_rays, axis=2)
+            upper = np.minimum(1.0, np.nextafter(dot + 64 * math.ulp(1.0), np.inf))
+        if not np.isfinite(upper).all():
+            raise _Unfinished("numeric-direction-prefilter-unresolved")
+        return np.all(upper >= ray_floor, axis=1)
+    except FloatingPointError as error:
+        raise _Unfinished("numeric-direction-prefilter-unresolved") from error
+
+
 @dataclass(frozen=True)
 class DirectedAnchor:
     """A measured [previous, centre, next] chain with stable physical IDs.
@@ -497,6 +520,9 @@ class StructureIdentityIndex:
         self.directory_gaps = tuple(gaps)
         self._postings = tuple(sorted(postings, key=lambda row: row.ratio))
         self._ratios = tuple(posting.ratio for posting in self._postings)
+        self._direction_rays = np.asarray([posting.rays for posting in self._postings],
+                                          dtype=np.float64).reshape(-1, 2, 2)
+        self._direction_rays.setflags(write=False)
 
     def retrieve(self, constellation: ConstellationA, *, epsilon: float,
                  minimum_ray_dot: float = .95, max_work: int | None = 100_000,
@@ -509,6 +535,10 @@ class StructureIdentityIndex:
         A must be chosen before consulting this directory; no B is accepted.
         minimum_ray_dot is a loose pruning threshold on resolved long arms;
         short-arm thresholds include angular uncertainty implied by epsilon.
+        Work remains one unit per visited posting, including batch-prefiltered
+        rejects, plus the existing query/entry/DFS units. Direction batches are
+        computed only after checking/charging their first posting; every later
+        posting retains its own cancel/deadline/budget check.
         """
         if not math.isfinite(epsilon) or epsilon < 0:
             raise ValueError("epsilon-invalid")
@@ -599,8 +629,17 @@ class StructureIdentityIndex:
                     raise _Unfinished("numeric-query-ratio-range-unresolved")
                 start = bisect_left(self._ratios, np.nextafter(lower, -np.inf))
                 end = bisect_right(self._ratios, np.nextafter(upper, np.inf))
-                for posting in self._postings[start:end]:
+                direction_mask = None
+                for position in range(start, end):
                     work.check()
+                    offset = (position - start) % _DIRECTION_BLOCK_SIZE
+                    if offset == 0:
+                        stop = min(end, position + _DIRECTION_BLOCK_SIZE)
+                        direction_mask = _direction_prefilter(qrays,
+                            self._direction_rays[position:stop], ray_floor)
+                    if not direction_mask[offset]:
+                        continue
+                    posting = self._postings[position]
                     if np.any(_unit_dot_upper(qrays, posting.rays) < ray_floor):
                         continue
                     interval = _extend_interval((0.0, math.inf, tolerance), empty, empty,
