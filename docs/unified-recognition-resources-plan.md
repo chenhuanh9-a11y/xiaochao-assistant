@@ -28,6 +28,8 @@
 
 后续开发新增 `constraint_kind='corner-centre'` 的索引、观测和独立 B 验证接口，只约束实际角点中心及射线方向；默认仍为 `full-chain`，生产 Qt 尚未切换。该接口不授予身份或锁图资格，目录缺口、观测独立性、当前帧全局复核及资源资格仍须分别解决。两种约束不得混用；方向门槛只影响新中心模型，原完整链模型的端点容差保持原行为。回归模块 `test_structure_identity_corner_centre` 纳入既有 fit-simulation CI。
 
+直接结构接线的计算接口进一步分为同步 `compute()` 与固定 proposal 的当前帧复核：前者返回实际 typed observation/recognition，后者消费已准备只读资源并调用原 canonical residual，不运行完整 `fit()`、改矩阵或选择最低残差。完整识别状态、未决/失败家族及输入顺序保留；姿态通过不能代替完整地图排他证据。`preparation_resources` 仅记录初次实际读取的 prepared FileRef（可能没有可用解码），不授予几何或身份资格。诊断线程复用同步计算，真正 race/runtime 唯一赢家接线仍待完成。定向模块 `test_structure_identity_fixed_pose` 纳入同一既有 CI。
+
 ## 新增阶段目标：流程清晰且处理耗时恢复原版水平（2026-11-12）
 
 四模式共用可追踪的识别与贴合管线，在保留既有证据、候选竞争和结果资格的前提下，让整合版对同批真实样本的处理耗时恢复到原版代码水平。此阶段目标补充 P3/P4，不替代首贴约 500ms、已锁图重开约 300ms 的最终目标，也不将原版耗时视为用户体验合格线。

@@ -6,7 +6,12 @@ display authorization and material acknowledgments.
 from __future__ import annotations
 
 import copy
+from dataclasses import dataclass
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from structure_identity_recognition import StructureIdentityRecognition
 
 from g_cycle_observation import emit as _test_evidence
 
@@ -607,3 +612,139 @@ class PreparedStructurePoseSolver(StructurePoseSolver):
             return dict(success=False, reason="structure-work-obsolete")
         return self._fit_regions(frame, map_id, floor, cancelled, entry_candidate,
             observation_bounds=observation_bounds, _scan_observation=_scan_observation)
+
+
+def validate_fixed_structure_identity_pose(inputs, snapshot, proposal, *, frame_key,
+        shape_snapshot_id, resource_binding, cancelled=None, deadline=None):
+    """Check one direct proposal at its unchanged H against current pixels.
+
+    This is a geometry-only consumer of prepared inputs. It performs no fit,
+    resource read, identity commit or comparison with another pose family.
+    Frame/resource metadata comes from the producing computation, never from a
+    successful residual. Its caller still owns source/observation qualification.
+    """
+    import numpy as np
+    from alignment_observation import rendered_profile_residual_is_verified
+    from entry_evidence_work import FrameSnapshot
+    from structure_identity_index import NumericPoseUnresolved, PoseProposal
+    from structure_pose_inputs import PreparedStructurePoseInputs
+
+    if not isinstance(inputs, PreparedStructurePoseInputs) or not isinstance(snapshot, FrameSnapshot):
+        raise TypeError("prepared-pose-inputs-and-frame-snapshot-required")
+    if not isinstance(proposal, PoseProposal):
+        raise TypeError("structure-identity-pose-proposal-required")
+
+    def failure(reason, **values):
+        return dict(success=False, reason=reason, mapId=proposal.key.map_id,
+                    floor=proposal.key.floor, frameKey=snapshot.frame_key,
+                    shapeSnapshotId=snapshot.sha256, **values)
+
+    def stopped():
+        if cancelled is not None and cancelled():
+            return "structure-work-obsolete"
+        if deadline is not None and time.perf_counter() >= deadline:
+            return "structure-work-time-budget-exhausted"
+        return None
+
+    reason = stopped()
+    if reason:
+        return failure(reason)
+    if frame_key != snapshot.frame_key or shape_snapshot_id != snapshot.sha256:
+        return failure("direct-proposal-frame-mismatch")
+    if resource_binding != inputs.binding:
+        return failure("direct-proposal-resource-binding-mismatch")
+    key = proposal.key
+    if (key.mode != inputs.binding.season + ":" + inputs.binding.mode
+            or key.map_id != inputs.map_id or key.floor not in inputs.floors
+            or (key.map_id, key.floor) not in inputs.references):
+        return failure("direct-proposal-prepared-scope-mismatch")
+    # Each invocation has its own host. Candidate fitting cannot change the
+    # direct consumer's map/floor or its mutable residual cache/resource member.
+    host = PreparedStructurePoseSolver(inputs)
+    reference = host._shared_structure_reference("shared-structure", key.map_id, key.floor)
+    if reference is None:
+        return failure("shared-reference-unavailable")
+    binding = reference.metadata.get("binding", {})
+    if (binding.get("mapId") != key.map_id or str(binding.get("floor")) != key.floor
+            or binding.get("variant", "variant-01") != key.variant):
+        return failure("direct-proposal-reference-binding-mismatch")
+    # Compare the producer's existing FileRef/metadata serialization with the
+    # actual prepared reference. Path.relative_to is lexical; this boundary
+    # must never resolve/stat a path or consult the live manifest/reader.
+    import json
+    from imported_resource_packages import FileRef
+    from structure_identity_resources import _binding_text
+    try:
+        declared = json.loads(proposal.resource_binding)
+        component = inputs.binding.component_ref
+        reference_resource = FileRef(component,
+            reference.path.relative_to(reference.resource_root).as_posix())
+        # The preparation owner retained this FileRef from the initial actual
+        # payload read. A proposal cannot choose its own expected resource.
+        prepared_resource = inputs.preparation_resources[(key.map_id, key.floor)]
+        expected = json.loads(_binding_text(reference_resource, prepared_resource, reference.metadata))
+        if declared != expected:
+            return failure("direct-proposal-source-binding-mismatch")
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return failure("direct-proposal-source-binding-mismatch")
+    try:
+        original_matrix = proposal.matrix_source_to_query
+        matrix = np.asarray(original_matrix, dtype=np.float64)
+    except (ValueError, TypeError, OverflowError, NumericPoseUnresolved):
+        return failure("direct-proposal-matrix-unresolved")
+    if (matrix.shape != (3, 3) or not np.isfinite(matrix).all() or matrix[0, 0] <= 0
+            or matrix[1, 1] != matrix[0, 0] or matrix[0, 1] != 0 or matrix[1, 0] != 0
+            or not np.array_equal(matrix[2], (0., 0., 1.))):
+        return failure("direct-proposal-matrix-invalid")
+    reason = stopped()
+    if reason:
+        return failure(reason)
+    residual, context = host._canonical_geometry_current_frame_residual(snapshot.pixels,
+        key.map_id, key.floor, "shared-structure", original_matrix, reference.clean_mask)
+    reason = stopped()
+    if reason:
+        return failure(reason, residual=residual, matrixSourceToClient=original_matrix)
+    if not rendered_profile_residual_is_verified(residual):
+        return failure("canonical-current-frame-residual-unverified", residual=residual,
+                       matrixSourceToClient=original_matrix)
+    return dict(success=True, mapId=key.map_id, floor=key.floor,
+        frameKey=snapshot.frame_key, shapeSnapshotId=snapshot.sha256,
+        matrixSourceToClient=original_matrix, selectedRouteCurrentFrameResidual=residual,
+        coordinateSpace="shared-structure-to-client", routeProfileId="shared-structure",
+        coordinatePackId=context["coordinatePackId"], strategy="direct-structure-fixed-proposal")
+
+
+@dataclass(frozen=True)
+class FixedStructureIdentityValidation:
+    """Complete recognition plus one geometry result per original B family."""
+    recognition: StructureIdentityRecognition
+    pose_checks: tuple[dict, ...]
+
+
+def validate_fixed_structure_identity_poses(inputs, snapshot, recognition, *,
+        shape_snapshot_id, resource_binding, cancelled=None, deadline=None):
+    """Retain the full recognition and every B family in its original order.
+
+    An unresolved sibling remains present even if another family has verified
+    B and canonical geometry. Neither list length nor a successful pose grants
+    identity uniqueness; the original recognition retains its full verdict.
+    """
+    from structure_identity_recognition import StructureIdentityRecognition
+    if not isinstance(recognition, StructureIdentityRecognition):
+        raise TypeError("structure-identity-recognition-required")
+    checks = []
+    for evidence in recognition.pose_checks:
+        proposal, held_out = evidence.proposal, evidence.held_out
+        if held_out.verified:
+            fit = validate_fixed_structure_identity_pose(inputs, snapshot, proposal,
+                frame_key=recognition.frame_key, shape_snapshot_id=shape_snapshot_id,
+                resource_binding=resource_binding, cancelled=cancelled, deadline=deadline)
+        else:
+            # B has not validated this family, so canonical geometry must not
+            # silently turn it into a contender or erase its unresolved state.
+            fit = dict(success=False, reason="direct-heldout-" + held_out.status,
+                mapId=proposal.key.map_id, floor=proposal.key.floor,
+                frameKey=recognition.frame_key, shapeSnapshotId=shape_snapshot_id)
+        checks.append(dict(fit, heldOutStatus=held_out.status, heldOutReason=held_out.reason,
+                           qualificationGaps=list(recognition.qualification_gaps)))
+    return FixedStructureIdentityValidation(recognition, tuple(checks))

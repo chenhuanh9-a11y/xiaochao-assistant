@@ -308,6 +308,7 @@ jobs:
                 'test_structure_identity_resource_batch', 'test_structure_identity_read_operation',
                 'test_structure_identity_observation', 'test_structure_identity_recognition',
                 'test_structure_identity_corner_centre',
+                'test_structure_identity_fixed_pose',
                 'test_client_providers', 'test_feature_test_round_lock', 'test_s1_playtest_round_lock',
                 'test_s1_playtest_round_lock_qml', 'test_s1_formal_round_lock', 'test_s1_resources_changed_chain',
                 'test_s1_native_candidate_preview', 'test_wall_raster_local_distances', 'test_marker_implicit_domain',
