@@ -829,6 +829,7 @@ class LiveRuntime:
         def current():
             return (owns_ticket() and not self._cancelled(cancelled)
                 and self._active and self._map_open and self._observation_stream_enabled(engine)
+                and _engine_resource_current(engine)
                 and settings_generation == self._settings_generation
                 and display_generation == getattr(self, "_display_generation", 0)
                 and intent_generation == self._group_intent_generation
@@ -1448,6 +1449,11 @@ class LiveRuntime:
             if (self._cancelled(cancelled) or epoch != self._epoch or frame_id != self._frame_id
                     or intent_generation != self._group_intent_generation or self._group_choice_inflight is not None):
                 return None, None, "stale-context"
+            if engine is not self._engine:
+                return None, None, "stale-context"
+            if not _engine_resource_current(engine):
+                self.invalidate("resource-context-superseded")
+                return None, None, "resource-context-superseded"
             if not self._identity_observation_current():
                 self.invalidate("capture-context-changed")
                 return None, None, "capture-context-changed"

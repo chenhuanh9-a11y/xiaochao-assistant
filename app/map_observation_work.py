@@ -97,10 +97,37 @@ class MapObservationWork(EntryEvidenceWork):
 
     def _recovery(self, result):
         self.side_rows, self.side_diagnostics, self.side_winner, self.original_group_recovery = result
-        if not self.identity_authorized:
+        if self.side_winner is not None and not self._local_identity_authorized(self.side_winner):
             self.side_winner = None
         if 'recovery' in self.errors:
+            self.side_winner = None
             self.side_diagnostics = dict(reason='side-resource-unavailable', error=self.errors['recovery'], complete=False)
+
+    def _local_identity_authorized(self, winner):
+        """Consume the already adjudicated winner's actual source purpose.
+
+        The catalogue rank flag also covers other, unqualified entry paths. It
+        cannot discard a complete local competition over an admitted native
+        source. Resolve purpose after competition; never filter a forbidden
+        winner and promote an unverified lower hypothesis instead.
+        """
+        entries = getattr(self.engine.side_entry_identity, 'entries', None)
+        if entries is None:
+            return self.identity_authorized
+        sources = [entry[0] for entry in entries if all(
+            entry[0].get(key) == winner.get(key)
+            for key in ('mapId', 'floor', 'region', 'sourceProduct'))]
+        if len(sources) != 1:
+            return False
+        source = sources[0]
+        for row in (winner, source):
+            if (row.get('proposalOnly') is True or row.get('authorizesIdentity') is False
+                    or row.get('authorizesPose') is False
+                    or row.get('sourceClass') == 'legacy-clean'
+                    or row.get('sourceKind') == 'legacy-manually-reconstructed-clean-structure'):
+                return False
+        return bool(self.identity_authorized
+            or source.get('sourceKind') == 'game-rendered-shared-structure')
 
     def _source(self, result):
         self.source_candidates = result

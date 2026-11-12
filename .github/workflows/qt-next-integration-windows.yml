@@ -247,7 +247,7 @@ jobs:
             'packaging-imported-runtime' {
               $modules = @(
                 'test_s1_floor_observation', 'test_s1_map_ui_geometry',
-                'test_client_shared_reference_context', 'test_client_structure_unification', 'test_group_review_lifecycle',
+                'test_client_shared_reference_context', 'test_client_structure_unification', 'test_client_local_identity_commit', 'test_group_review_lifecycle',
                 'test_client_imported_providers', 'test_client_native_base_provider',
                 'test_client_direct_structure_recognition', 'test_client_prepared_alignment', 'test_client_known_floor_recovery',
                 'test_client_imported_s1_provider'
