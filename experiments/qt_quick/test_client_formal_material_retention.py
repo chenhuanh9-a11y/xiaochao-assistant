@@ -315,6 +315,7 @@ class NativeDisplayResourceRetention(unittest.TestCase):
     setUpClass = local_identity.LocalIdentityCommitTests.__dict__["setUpClass"]
     setUp = local_identity.LocalIdentityCommitTests.setUp
     opening = local_identity.LocalIdentityCommitTests.opening
+    drain_race = local_identity.LocalIdentityCommitTests.drain_race
 
     def assert_cache_replacement_retires_material(self, *, publication):
         import shared_structure_display as display

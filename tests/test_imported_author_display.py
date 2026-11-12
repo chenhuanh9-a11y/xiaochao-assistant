@@ -66,7 +66,7 @@ class _AuthorDisplayFixture(unittest.TestCase):
     def layer(self, floor='-4', path='images/route.png'):
         mid = self.source.ids[0]
         reference = self.provider('shared-structure', mid, floor)
-        relative = reference.path.relative_to(self.base_view.root).as_posix()
+        relative = self.base.reader.relative_path(reference.path)
         return dict(mapId=mid, floor=floor, displayPath=path, displayShapeHW=[3,5],
             referenceResource=relative, referenceShapeHW=list(reference.shape),
             coordinateSpace=reference.metadata['canvas']['coordinateSpace'],

@@ -617,6 +617,7 @@ class PreparedStructureStaticPayloads:
     common: PreparedStructureCommonModels
     payloads: Mapping
     references: Mapping
+    layer_refs: Mapping
     retained_bytes: int
     _coordinate: object = field(repr=False, compare=False)
     _reference_source: object = field(repr=False, compare=False)
@@ -645,6 +646,10 @@ def prepare_structure_pose_static_payloads(engine, *, cancelled=None):
     revision = getattr(engine, 'qt_resource_revision', 0)
     common.assert_current(engine, revision, cancelled)
     common._check()
+    # Paths may use either spelling of an admitted Windows 8.3 root. Bind
+    # their component namespace once, before publishing memory-only inputs.
+    layer_refs = {key: FileRef(common._component, common._reader.relative_path(row['path']))
+                  for key, (row, _) in common.layers.items()}
     coordinate, references = getattr(engine, 'qt_s1_coordinate_recognition', None), {}
     if coordinate is not None:
         from client_s1_coordinate_recognition import PreparedS1CoordinateRecognition
@@ -655,34 +660,33 @@ def prepare_structure_pose_static_payloads(engine, *, cancelled=None):
         for key, (row, _) in common.layers.items():
             reference = coordinate.references.get(key)
             if (not _common_reference_valid(reference, row)
-                    or _path_key(reference.path) != _path_key(row['path'])):
+                    or FileRef(common._component, common._reader.relative_path(reference.path)) != layer_refs[key]):
                 raise PoseInputsUnavailable('pose-input-reference-binding-mismatch')
             references[key] = reference
-    typed_paths, optional, paths = [], set(), []
+    typed_refs, optional, prepared_refs = [], set(), []
     for key, (row, declaration) in common.layers.items():
         if key not in references:
-            typed_paths.append(Path(row['path']))
+            typed_refs.append(layer_refs[key])
         if declaration is not None:
             reference_ref, prepared_ref = declaration
-            if common._reader.relative_path(row['path']) != reference_ref.path:
+            if layer_refs[key] != reference_ref:
                 return None  # Preserve the original source's mismatch handling.
-            path = common._root / prepared_ref.path
-            paths.append(path)
+            prepared_refs.append(prepared_ref)
             optional.add(prepared_ref)
     # Inventory bytes are already bound to the admitted component. Do not load
     # a snapshot that cannot fit together with its common models/references.
-    typed_paths, paths = tuple(dict.fromkeys(typed_paths)), tuple(dict.fromkeys(paths))
+    typed_refs, prepared_refs = tuple(dict.fromkeys(typed_refs)), tuple(dict.fromkeys(prepared_refs))
     references = MappingProxyType(references)
     required_bytes = _bytes_used(references) + sum(
-        common._reader._inventory[common._reader.relative_path(path)]['bytes'] for path in typed_paths)
+        common._reader._inventory[ref.path]['bytes'] for ref in typed_refs)
     if required_bytes >= engine.qt_pose_input_cache.max_bytes:
         return None
     payloads = {}
     def stage(file_ref, raw):
-        payloads[_path_key(common._root / file_ref.path)] = raw
-    if typed_paths:
+        payloads[file_ref] = raw
+    if typed_refs:
         try:
-            common._reader.read_many(typed_paths, expected_root=common._root,
+            common._reader.read_many(tuple(common._root / ref.path for ref in typed_refs), expected_root=common._root,
                                      cancelled=cancelled, on_payload=stage)
         except (OSError, ValueError):
             common._reader.view._assert_current()
@@ -699,22 +703,21 @@ def prepare_structure_pose_static_payloads(engine, *, cancelled=None):
             metadata = references[key].metadata
         else:
             try:
-                metadata = validate_structure_declarations(payloads[_path_key(row['path'])],
+                metadata = validate_structure_declarations(payloads[layer_refs[key]],
                     expected_binding=row['binding'], expected_shape=row['canvas']['shapeHW'])
             except (OSError, ValueError) as error:
-                error.resource_file_ref = FileRef(common._component, common._reader.relative_path(row['path']))
+                error.resource_file_ref = layer_refs[key]
                 raise
         if metadata.get('authorizesStructureValidation') is not False and declaration is not None:
             permitted.add(declaration[1])
     optional.intersection_update(permitted)
-    pending = tuple(path for path in paths
-        if FileRef(common._component, common._reader.relative_path(path)) in optional)
-    required_bytes += sum(common._reader._inventory[common._reader.relative_path(path)]['bytes'] for path in pending)
+    pending = tuple(ref for ref in prepared_refs if ref in optional)
+    required_bytes += sum(common._reader._inventory[ref.path]['bytes'] for ref in pending)
     if required_bytes >= engine.qt_pose_input_cache.max_bytes:
         return None
     while pending:
         try:
-            common._reader.read_many(pending, expected_root=common._root,
+            common._reader.read_many(tuple(common._root / ref.path for ref in pending), expected_root=common._root,
                                      cancelled=cancelled, on_payload=stage)
         except (OSError, ValueError) as error:
             failed = getattr(error, 'resource_file_ref', None)
@@ -725,14 +728,14 @@ def prepare_structure_pose_static_payloads(engine, *, cancelled=None):
             common.assert_current(engine, revision, cancelled)
             if failed not in optional:
                 raise
-            failed_key = _path_key(common._root / failed.path)
-            pending = tuple(path for path in pending
-                if _path_key(path) not in payloads and _path_key(path) != failed_key)
+            pending = tuple(ref for ref in pending if ref not in payloads and ref != failed)
         else:
             pending = ()
     common._check()
-    snapshot = PreparedStructureStaticPayloads(common, MappingProxyType(payloads), references,
-        _bytes_used((payloads, references)), coordinate, coordinate.references if coordinate is not None else None)
+    layer_refs = MappingProxyType(layer_refs)
+    snapshot = PreparedStructureStaticPayloads(common, MappingProxyType(payloads), references, layer_refs,
+        _bytes_used((payloads, references, layer_refs)), coordinate,
+        coordinate.references if coordinate is not None else None)
     snapshot.assert_current(engine, revision, cancelled)
     return snapshot
 
@@ -752,7 +755,7 @@ def _prepare_from_common(engine, common, map_id, floor, floors, revision, indexe
         row, declaration = common.layers[key]
         path = row['path']
         try:
-            raw = (None if key in payloads.references else payloads.payloads[_path_key(path)]) if payloads else (
+            raw = (None if key in payloads.references else payloads.payloads[payloads.layer_refs[key]]) if payloads else (
                 common._reader.read_many((path,), expected_root=common._root, cancelled=cancelled)[0])
         except (OSError, ValueError) as error:
             required_ref = FileRef(common._component, common._reader.relative_path(path))
@@ -801,10 +804,12 @@ def _prepare_from_common(engine, common, map_id, floor, floors, revision, indexe
         fast_allowed = reference.metadata.get('authorizesStructureValidation') is not False
         if fast_allowed and declaration is not None:
             reference_ref, prepared_ref = declaration
-            if common._reader.relative_path(path) != reference_ref.path:
+            reference_matches = (payloads.layer_refs[key] == reference_ref if payloads is not None else
+                                 common._reader.relative_path(path) == reference_ref.path)
+            if not reference_matches:
                 raise PoseInputsUnavailable('pose-input-reference-binding-mismatch')
             try:
-                raw = payloads.payloads.get(_path_key(common._root / prepared_ref.path)) if payloads else (
+                raw = payloads.payloads.get(prepared_ref) if payloads else (
                     common._reader.read_many((common._root / prepared_ref.path,), expected_root=common._root,
                                             cancelled=cancelled)[0])
             except (OSError, ValueError) as error:

@@ -268,7 +268,8 @@ class StructurePoseSolver:
             routeProfileId="shared-structure", selectedRouteCurrentFrameResidual=residual,
             difficultEntryValidation=checked, inliers=len(context.get("nodes", ())))
 
-    def prepare_structure_scan(self, frame, observation_bounds, *, fit_callback=None):
+    def prepare_structure_scan(self, frame, observation_bounds, *, fit_callback=None,
+                               automatic_region=False):
         """One scan owns raw observations; no cache survives into another frame.
 
         Each candidate gets a fresh context containing only source-independent
@@ -282,12 +283,18 @@ class StructurePoseSolver:
         bounds = tuple(observation_bounds)
         fit = self.fit if fit_callback is None else fit_callback
         observations, components = {}, None
+        automatic_region = automatic_region and bounds == (0, 0, frame.shape[1], frame.shape[0])
 
         def geometry(visible=None):
             key = None if visible is None else id(visible)
             if key not in observations:
-                context = current_geometry(frame, observation_bounds=bounds,
-                                           visible_override=visible)
+                # Full client pixels are the input canvas, not an instruction
+                # to treat HUD/scenery as map geometry. Automatic capture keeps
+                # the original map-region extraction before explicit islands.
+                context = current_geometry(frame) if automatic_region and visible is None else None
+                if context is None:
+                    context = current_geometry(frame, observation_bounds=bounds,
+                                               visible_override=visible)
                 if context is not None:
                     for part in ("nodes", "edge", "observed", "lines"):
                         current_part(frame, context, part)

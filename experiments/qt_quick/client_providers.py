@@ -593,6 +593,13 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
                        on_coordinate_history=None, coordinate_pool_ids=None,
                        coordinate_pool_revision=None, coordinate_source_current=None):
         check_current()
+        if getattr(engine, 'qt_native_base', None) is not None:
+            # Admit the actual selection once before starting either worker.
+            # Their numerical work and callbacks keep the existing RAM owner
+            # checks; a cached engine alone cannot attest an updated catalog.
+            source_current = getattr(engine, 'qt_assert_resource_current', None)
+            if source_current is not None:
+                source_current()
         if not getattr(engine, 'qt_rank_ready', True) and not getattr(engine, 'qt_structure_scan_ready', False):
             raise ProviderUnavailable(';'.join(getattr(engine, 'qt_rank_gaps', ())) or 'recognition-rank-unavailable')
         from structure_pose_solver import StructurePoseSolver
@@ -639,7 +646,8 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
                     return dict(success=False, reason='structure-work-obsolete')
                 return result
         prepare_fit = (None if fixed else
-            lambda f, bounds: host.prepare_structure_scan(f, bounds, fit_callback=fit))
+            lambda f, bounds: host.prepare_structure_scan(f, bounds, fit_callback=fit,
+                automatic_region=catalog.season == 's0'))
         scanner = StructureCandidateScanner(catalog, fit, clock=time.perf_counter,
             prepare_fit=prepare_fit)
         if frame_snapshot is not None and (not isinstance(frame_snapshot, FrameSnapshot)

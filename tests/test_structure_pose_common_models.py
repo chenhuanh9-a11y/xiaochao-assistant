@@ -10,6 +10,7 @@ import shared_structure_reference
 
 from client_imported_providers import build_native_engine
 from client_paths import RuntimePaths
+from imported_resource_packages import FileRef
 from structure_pose_inputs import (DEFAULT_CACHE_BYTES, PoseInputsUnavailable,
     prepare_structure_pose_inputs, prepare_structure_pose_common_models)
 import test_structure_pose_inputs as fixture
@@ -37,11 +38,15 @@ class StructurePoseCommonModelsTests(unittest.TestCase):
         engine.qt_resource_context_current = lambda: all(current.values())
         return engine, mid, current
 
-    def first_read_failure(self, target, before_error=None):
+    def first_read_failure(self, common, target, before_error=None):
+        target_ref = FileRef(common._component, common._reader.relative_path(target))
         read, attempts = resource_snapshot_io.read_stable_file, []
         def fail_once(path, *args, **kwargs):
-            if Path(path) == target:
-                attempts.append(True)
+            actual_ref = None
+            if Path(path).suffix.casefold() == '.npz':
+                actual_ref = FileRef(common._component, common._reader.relative_path(path))
+            if actual_ref == target_ref:
+                attempts.append(actual_ref)
                 if len(attempts) == 1:
                     if before_error is not None:
                         before_error()
@@ -58,7 +63,7 @@ class StructurePoseCommonModelsTests(unittest.TestCase):
                 recovery = next(fl for fl in common.pack.floors if fl != floor)
                 self.assertFalse(any(key[1] == mid and key[3] == floor
                                      for key in engine.qt_shared_provider._cache))
-                attempts, fault = self.first_read_failure(row['path'])
+                attempts, fault = self.first_read_failure(common, row['path'])
                 with patch.object(engine, 'qt_pose_common_models', common if enabled else None), fault:
                     inputs = prepare_structure_pose_inputs(engine, mid, floor, resource_revision=4,
                                                           recovery_floors=(recovery,))
@@ -77,7 +82,7 @@ class StructurePoseCommonModelsTests(unittest.TestCase):
                 common = engine.qt_pose_common_models
                 (mid, floor), (row, _) = next(iter(common.layers.items()))
                 self.assertIsNotNone(engine.qt_shared_provider('shared-structure', mid, floor))
-                attempts, fault = self.first_read_failure(row['path'])
+                attempts, fault = self.first_read_failure(common, row['path'])
                 with patch.object(engine, 'qt_pose_common_models', common if enabled else None), fault:
                     with self.assertRaisesRegex(PoseInputsUnavailable, 'reference-decode-unavailable'):
                         prepare_structure_pose_inputs(engine, mid, floor, resource_revision=4)
@@ -100,7 +105,7 @@ class StructurePoseCommonModelsTests(unittest.TestCase):
                     # Isolate the real view selection guard from the factory
                     # callback; both must retain their original refusal.
                     engine.qt_resource_context_current = lambda: True
-                attempts, fault = self.first_read_failure(row['path'], change)
+                attempts, fault = self.first_read_failure(common, row['path'], change)
                 expected = {'cancel': 'import-cancelled', 'selection': 'selection-superseded',
                             'owner': 'resource-binding-changed'}[kind]
                 with fault, self.assertRaisesRegex(ValueError, expected):
@@ -113,7 +118,7 @@ class StructurePoseCommonModelsTests(unittest.TestCase):
         common = engine.qt_pose_common_models
         (mid, floor), (_, declaration) = next(iter(common.layers.items()))
         self.assertIsNotNone(engine.qt_shared_provider('shared-structure', mid, floor))
-        attempts, fault = self.first_read_failure(common._root / declaration[1].path)
+        attempts, fault = self.first_read_failure(common, common._root / declaration[1].path)
         with fault:
             inputs = prepare_structure_pose_inputs(engine, mid, floor, resource_revision=4)
         reference = inputs.reference('shared-structure', mid, floor)
@@ -128,11 +133,13 @@ class StructurePoseCommonModelsTests(unittest.TestCase):
         common = engine.qt_pose_common_models
         (mid, floor), (row, _) = next(iter(common.layers.items()))
         engine.qt_resource_context_current = lambda: True
-        attempts, fault = self.first_read_failure(row['path'])
+        target_ref = FileRef(common._component, common._reader.relative_path(row['path']))
+        attempts, fault = self.first_read_failure(common, row['path'])
         decode, consumed = shared_structure_reference.load_shared_structure, []
         def change_after_decoder(path, **kwargs):
             reference = decode(path, **kwargs)
-            if Path(path) == row['path'] and reference is None:
+            actual_ref = FileRef(common._component, common._reader.relative_path(path))
+            if actual_ref == target_ref and reference is None:
                 consumed.append(True)
                 current['controls'] = False
             return reference

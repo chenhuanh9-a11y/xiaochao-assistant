@@ -505,6 +505,7 @@ class NativeMaterialRuntimeConsumptionTests(unittest.TestCase):
     setUpClass = local_identity.LocalIdentityCommitTests.__dict__['setUpClass']
     setUp = local_identity.LocalIdentityCommitTests.setUp
     opening = local_identity.LocalIdentityCommitTests.opening
+    drain_race = local_identity.LocalIdentityCommitTests.drain_race
 
     def test_factory_cold_read_keeps_full_proofs_then_warm_uses_actual_ram_metadata(self):
         provider = self.engine.qt_shared_provider

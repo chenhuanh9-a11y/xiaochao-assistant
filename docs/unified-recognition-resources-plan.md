@@ -888,9 +888,11 @@ S1 默认显示从正式静态 snapshot 取得同源参考，仍按原顺序执�
 
 静态 common pose models 在资源准备时生成一次，目标首次准备只解码其 typed/fast 文件，原 reader/decoder 与首次失败语义保留。common 与两个目标输入共同受原 512 MiB 上限约束。正式 factory 发布的结构显示来源可在其 provider 锁内复用自有只读 BGRA/RGBA 与实际元数据；普通 LRU 淘汰只触发重建，真实资源更新使当前发布失效。未知 provider、作者显示或独立 guard 仍走原检查。本片的功能回放不等于正式性能复测，最终数据须绑定干净远端提交。
 
+静态 payload 在资源准备阶段用原 `FileRef` 绑定各层及压缩字节，允许同一 Windows 安装根的真实长/短名称；不按绝对路径文本重复推导其身份。目标准备只消费已保存的绑定，S1 自有 reference 对象保持原 identity，无快照时仍走原 guarded reader。识别 scan 入口在启动两 worker 前调用一次原实际来源/选择检查；后续数值和回调沿用 RAM owner 检查，不能用“工厂仍缓存此 engine”冒充目录选择仍有效。
+
 本地真实临时 archive/export/decode/provider/prepared loader 的六项资源回归控制数值 fit，仅验证生命周期；坏参考、坏准备、首显前损坏、取消与下一帧不会沿用旧输入均覆盖，其中“未使用 fast 时参考损坏”的新负例先失败后修复。三片相关回归分别为 34、89、71 项通过，生产 S1 两模式实际导入 fast 入口一项通过，最后资源/渐进显示/区域仲裁 35 项通过；并不据此证明实帧速度、位姿或游戏验收。新的资源回归加入原联合 workflow，保留原模块、分组和时限。
 
-该片未完成观察域与先验策略拆分：scanner 的全客户区边界仍可能触发多区域搜索，扫描实例尚未完整接入 runtime 的 group/settings/steady。S0 困难及导入 S1 的资格缺口也未因此解除。需继续整理实际编排，再绑定同提交实帧回放判断性能阶段是否达到。
+自动 scanner 区分完整客户区输入坐标与初始地图观测区：共享 `prepare_structure_scan` 用参数保留原观测语义。S0 provider 保留整幅输入和显式 solver scope，首个观测优先使用原 `current_geometry(frame)` 自动取图；没有自动观测时再按完整边界提取。S1 provider 保持原完整客户区取图，避免默认 S0 ROI 截掉其有效结构。后续 island 与显式子 ROI 保留原范围和观测独立性，manual/普通调用默认语义不变；该参数不复制求解器，不以局部提案开启入口固定H资格，也不跳过 canonical 残差或原 marker peer 检查。扫描实例尚未完整接入 runtime 的 group/settings/steady；剩余资格及性能问题仍须绑定最终提交回放证明，不能仅由观察域接线宣称解决。
 
 同一准备来源的索引、typed reference 和 prepared arrays 现由 `PackageView.read_many` 在一次组件读取中处理。单文件与批量读取共享同一 payload 实现；每个文件仍检查路径归属、无链接、常规文件、稳定读取、实际字节数与既有摘要，整批返回前重查 manifest 内容/文件身份及当前选择。`ComponentResourceReader` 对两条入口沿用相同 JSON/NPZ 预检查。可选准备失败时仍重读必需索引与参考；取消、资源替换和必需文件损坏不能降为普通准备缺失。这只合并重复资源操作，不改变求解顺序、预算、候选、位姿或显示资格，性能收益须另以同提交回放记录。
 

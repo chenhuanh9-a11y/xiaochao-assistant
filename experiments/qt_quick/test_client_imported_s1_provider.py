@@ -87,13 +87,19 @@ class ImportedS1ProviderTests(unittest.TestCase):
         self.assertEqual(display['pixels'].shape, (8, 8, 4))
 
     def test_actual_rank_uses_s1_scanner_and_keeps_all_unverified_competitors(self):
+        from structure_pose_solver import StructurePoseSolver
         self.activate()
         engine = self.engine()
+        prepare_scan = StructurePoseSolver.prepare_structure_scan
         with patch.object(engine.entry_identity, 'rank', side_effect=AssertionError('old entry rank used')), \
              patch.object(engine.side_entry_identity, 'rank', side_effect=AssertionError('old side rank used')), \
-             patch.object(engine, 'qt_s1_structure_rank', wraps=engine.qt_s1_structure_rank) as scanner:
+             patch.object(engine, 'qt_s1_structure_rank', wraps=engine.qt_s1_structure_rank) as scanner, \
+             patch.object(StructurePoseSolver, 'prepare_structure_scan', autospec=True,
+                 side_effect=prepare_scan) as scan_preparation:
             rows = engine.rank(np.zeros((1200, 1920, 3), np.uint8), floor='-1')
         self.assertEqual(scanner.call_count, 1)
+        self.assertEqual(scan_preparation.call_count, 1)
+        self.assertIs(scan_preparation.call_args.kwargs['automatic_region'], False)
         self.assertIsInstance(rows, list)
         report = engine.last_s1_structure_scan
         self.assertEqual(report['expectedMapIds'], list(self.source.ids))

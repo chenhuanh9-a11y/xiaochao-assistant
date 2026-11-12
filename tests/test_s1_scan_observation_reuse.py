@@ -76,6 +76,57 @@ class ScanObservationReuseTests(unittest.TestCase):
         self.assertNotIn('entry_observation', calls[1])
         self.assertIs(calls[2]['entry_observation'], owner)
 
+    def test_automatic_map_region_reuses_original_extraction_with_full_client_coordinates(self):
+        contexts = []
+        query = np.zeros(self.frame.shape[:2], np.uint8)
+        automatic = dict(query=query, observationBounds=(10, 12, 55, 48))
+        def fit(frame, mid, floor, cancelled, *args, **kwargs):
+            self.assertIs(frame, self.frame)
+            self.assertEqual(kwargs['observation_bounds'], self.bounds)
+            context = kwargs['_context']
+            contexts.append(context)
+            self.assertEqual(context['observationBounds'], automatic['observationBounds'])
+            return dict(success=True, reason='controlled-fit')
+        with patch('single_map_structure.current_geometry', return_value=automatic) as geometry, \
+             patch.object(self.host, '_fit_observation', side_effect=fit):
+            prepared = self.host.prepare_structure_scan(self.frame, self.bounds,
+                automatic_region=True)
+            geometry.assert_not_called()
+            for mid in ('a', 'b'):
+                prepared(self.frame, mid, '-1', lambda: False, observation_bounds=self.bounds,
+                    entry_observation=None)
+        geometry.assert_called_once_with(self.frame)
+        self.assertIsNot(contexts[0], contexts[1])
+        self.assertIs(contexts[0]['query'], contexts[1]['query'])
+
+    def test_missing_automatic_region_falls_back_to_the_full_client_domain(self):
+        context = dict(query=np.zeros(self.frame.shape[:2], np.uint8), observationBounds=self.bounds)
+        def fit(*args, **kwargs):
+            self.assertEqual(kwargs['_context']['observationBounds'], self.bounds)
+            return dict(success=True, reason='controlled-fit')
+        with patch('single_map_structure.current_geometry', side_effect=[None, context]) as geometry, \
+             patch.object(self.host, '_fit_observation', side_effect=fit):
+            prepared = self.host.prepare_structure_scan(self.frame, self.bounds,
+                automatic_region=True)
+            prepared(self.frame, 'a', '-1', lambda: False, observation_bounds=self.bounds)
+        self.assertEqual(len(geometry.call_args_list), 2)
+        self.assertEqual(geometry.call_args_list[0].kwargs, {})
+        self.assertEqual(geometry.call_args_list[1].kwargs,
+            dict(observation_bounds=self.bounds, visible_override=None))
+
+    def test_automatic_region_cannot_expand_an_explicit_subregion(self):
+        bounds = (10, 12, 55, 48)
+        context = dict(query=np.zeros(self.frame.shape[:2], np.uint8), observationBounds=bounds)
+        def fit(*args, **kwargs):
+            self.assertEqual(kwargs['_context']['observationBounds'], bounds)
+            return dict(success=True, reason='controlled-fit')
+        with patch('single_map_structure.current_geometry', return_value=context) as geometry, \
+             patch.object(self.host, '_fit_observation', side_effect=fit):
+            prepared = self.host.prepare_structure_scan(self.frame, bounds,
+                automatic_region=True)
+            prepared(self.frame, 'a', '-1', lambda: False, observation_bounds=bounds)
+        geometry.assert_called_once_with(self.frame, observation_bounds=bounds, visible_override=None)
+
     def test_component_arbitration_and_cancel_remain_fail_closed(self):
         query = np.zeros((60, 80), np.uint8)
         islands = [(None, (5, 5, 20, 20), dict(area=200)),

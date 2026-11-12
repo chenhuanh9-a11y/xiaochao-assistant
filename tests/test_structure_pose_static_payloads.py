@@ -1,10 +1,13 @@
 """Actual imported factory/pose preparation; numerical algorithms stay real."""
 from collections import Counter
 from contextlib import ExitStack
+import ctypes
+from dataclasses import replace
 import json
+import os
 from pathlib import Path
 import tempfile
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
@@ -21,7 +24,7 @@ from client_providers import SharedReferenceProvider, prepare_pose_solver
 from imported_native_base import decode_native_base
 from imported_resource_archive import save_archive
 from imported_resource_catalog import ResourceResolver, SCHEMA
-from imported_resource_packages import PackageView
+from imported_resource_packages import FileRef, PackageView
 import test_structure_pose_inputs as fixture
 import test_client_s1_coordinate_recognition as coordinate_fixture
 from test_imported_author_display import _AuthorDisplayFixture
@@ -34,10 +37,28 @@ class StructurePoseStaticPayloadTests(unittest.TestCase):
         coordinate_fixture.S1CoordinateRecognitionTests.setUpClass.__func__(cls)
     archive = fixture.StructurePoseInputTests.__dict__['archive']
 
-    def factory(self, season='s1', mode='difficult', *, raw=None, author_display=False):
+    def short_alias(self, path):
+        if os.name != 'nt':
+            self.skipTest('GetShortPathNameW is Windows-only')
+        get_short_path = ctypes.windll.kernel32.GetShortPathNameW
+        get_short_path.argtypes = (ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32)
+        get_short_path.restype = ctypes.c_uint32
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = get_short_path(str(path), buffer, len(buffer))
+        if not 0 < length < len(buffer):
+            self.skipTest('GetShortPathNameW could not obtain a real alias for this temp path')
+        alias = Path(buffer.value)
+        if os.path.normcase(str(alias)) == os.path.normcase(str(path)):
+            self.skipTest('8.3 aliases are unavailable for this temp path on this volume')
+        self.assertTrue(alias.samefile(path))
+        return alias
+
+    def factory(self, season='s1', mode='difficult', *, raw=None, author_display=False, short_root=False):
         temporary = tempfile.TemporaryDirectory(prefix='pose-payload-factory-')
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
+        if short_root:
+            root = self.short_alias(root.resolve())
         raw = self.archive(season, mode)[0] if raw is None else raw
         archive = root / 'base.zip'
         archive.write_bytes(raw)
@@ -104,6 +125,94 @@ class StructurePoseStaticPayloadTests(unittest.TestCase):
         self.assertEqual(counts['fastDecodes'], 2)
         self.assertEqual(len(solvers), 2)
 
+    def test_real_short_root_factory_prepares_all_modes_without_target_path_resolution(self):
+        for season, mode in (('s0', 'difficult'), ('s0', 'nightmare'), ('s1', 'difficult'), ('s1', 'nightmare')):
+            with self.subTest(season=season, mode=mode):
+                _, get_engine, _ = self.factory(season, mode, short_root=True)
+                engine = get_engine()
+                static = engine.qt_pose_static_payloads
+                self.assertIsNotNone(static)
+                self.assertTrue(all(isinstance(ref, FileRef) for ref in static.payloads))
+                keys = tuple(static.common.layers)[:2]
+                entries = engine.qt_native_base.resources.entries
+                for mid, floor in keys:
+                    resource = entries[static.common.pack.identity_profiles[mid], mid, 'variant-01', floor]
+                    self.assertEqual(static.layer_refs[mid, floor],
+                                     FileRef(static.common._component, resource['resourcePath']))
+                with ExitStack() as stack:
+                    counts = self.counts(stack)
+                    stack.enter_context(patch.object(Path, 'resolve',
+                        side_effect=AssertionError('aliased target filesystem resolve')))
+                    inputs = [prepare_pose_solver(engine, *key)[0].inputs for key in keys]
+                self.assertEqual(counts['viewLoads'], 0)
+                self.assertEqual(counts['stableReads'], 0)
+                self.assertTrue(all(value.preparations[key] is not None for key, value in zip(keys, inputs)))
+
+    def test_real_short_root_coordinate_and_author_references_keep_their_actual_owner(self):
+        for mode in ('difficult', 'nightmare'):
+            source, _, digest, _ = self.cases[mode]
+            for author_display in (False, True):
+                with self.subTest(mode=mode, author_display=author_display):
+                    _, get_engine, _ = self.factory('s1', mode, raw=source.output.read_bytes(),
+                        author_display=author_display, short_root=True)
+                    with patch.object(coordinate, 'EXPECTED_INDEX_SHA256', digest):
+                        engine = get_engine()
+                    helper, static = engine.qt_s1_coordinate_recognition, engine.qt_pose_static_payloads
+                    self.assertIsNotNone(helper)
+                    self.assertIsNotNone(static)
+                    key = next(iter(static.references))
+                    self.assertNotEqual(os.path.normcase(str(helper.references[key].path)),
+                        os.path.normcase(str(static.common.layers[key][0]['path'])))
+                    with ExitStack() as stack:
+                        counts = self.counts(stack)
+                        stack.enter_context(patch.object(Path, 'resolve',
+                            side_effect=AssertionError('aliased coordinate target filesystem resolve')))
+                        inputs = prepare_pose_solver(engine, *key)[0].inputs
+                    self.assertEqual(counts, Counter(fastDecodes=1))
+                    self.assertIs(inputs.references[key], helper.references[key])
+                    self.assertIsNotNone(inputs.preparations[key])
+                    if author_display:
+                        self.assertEqual(engine.qt_optional_displays.errors, {})
+
+    def test_coordinate_reference_path_cannot_bind_another_actual_file_or_installation(self):
+        source, _, digest, _ = self.cases['difficult']
+        prepare = structure_pose_inputs.prepare_structure_pose_static_payloads
+        for kind in ('declared-file', 'other-component', 'outside', 'symlink'):
+            with self.subTest(kind=kind):
+                _, get_engine, root = self.factory(raw=source.output.read_bytes(), short_root=True)
+                def at_activation(engine, **kwargs):
+                    common, helper = engine.qt_pose_common_models, engine.qt_s1_coordinate_recognition
+                    self.assertIsNotNone(helper)
+                    key = next(iter(common.layers))
+                    reference = helper.references[key]
+                    if kind == 'declared-file':
+                        other = next(target for target in common.layers if target != key)
+                        wrong_path = common.layers[other][0]['path']
+                    elif kind == 'other-component':
+                        wrong_path = common._root.parent / 'controls' / 'same-reference.npz'
+                        wrong_path.write_bytes(reference.path.read_bytes())
+                    elif kind == 'outside':
+                        wrong_path = root / 'same-reference.npz'
+                        wrong_path.write_bytes(reference.path.read_bytes())
+                    else:
+                        link = root / 'component-link'
+                        try:
+                            link.symlink_to(common._root, target_is_directory=True)
+                        except (OSError, NotImplementedError) as error:
+                            self.skipTest(f'directory symlink creation is unavailable: {error}')
+                        wrong_path = link / common._reader.relative_path(reference.path)
+                    references = dict(helper.references)
+                    references[key] = replace(reference, path=wrong_path)
+                    helper.references = MappingProxyType(references)
+                    return prepare(engine, **kwargs)
+                reason = {'declared-file': 'pose-input-reference-binding-mismatch',
+                    'other-component': 'imported-reader-path-outside-component',
+                    'outside': 'imported-reader-path-outside-component', 'symlink': 'linked-target'}[kind]
+                with patch.object(coordinate, 'EXPECTED_INDEX_SHA256', digest), \
+                        patch.object(structure_pose_inputs, 'prepare_structure_pose_static_payloads', at_activation), \
+                        self.assertRaisesRegex(RuntimeError, reason):
+                    get_engine()
+
     def test_four_modes_keep_original_decoded_arrays_sources_and_geometry(self):
         for season, mode in (('s0', 'difficult'), ('s0', 'nightmare'), ('s1', 'difficult'), ('s1', 'nightmare')):
             with self.subTest(season=season, mode=mode):
@@ -154,14 +263,17 @@ class StructurePoseStaticPayloadTests(unittest.TestCase):
             common = engine.qt_pose_common_models
             key, (row, declaration) = next(iter(common.layers.items()))
             target = common._root / declaration[1].path if optional else row['path']
-            seen.update(engine=engine, key=key, target=target)
+            target_ref = FileRef(common._component, common._reader.relative_path(target))
+            seen.update(engine=engine, key=key, target=target, target_ref=target_ref)
             if warm:
                 self.assertIsNotNone(engine.qt_shared_provider('shared-structure', *key))
             read = resource_snapshot_io.read_stable_file
             def fail_once(path, *args, **options):
+                actual_ref = None
                 if Path(path).suffix == '.npz':
-                    attempts[Path(path)] += 1
-                if Path(path) == target and attempts[target] == 1:
+                    actual_ref = FileRef(common._component, common._reader.relative_path(path))
+                    attempts[actual_ref] += 1
+                if actual_ref == target_ref and attempts[target_ref] == 1:
                     if cancel:
                         stopped.append(True)
                     if changed is not None:
@@ -179,7 +291,7 @@ class StructurePoseStaticPayloadTests(unittest.TestCase):
                 attempts, seen, fault = self.snapshot_fault(optional=False, warm=warm)
                 with fault, self.assertRaisesRegex(RuntimeError, 'resource-package-file-unavailable') as raised:
                     get_engine()
-                self.assertEqual(attempts[seen['target']], 1)
+                self.assertEqual(attempts[seen['target_ref']], 1)
                 self.assertEqual(raised.exception.__cause__.resource_file_ref.path,
                     seen['engine'].qt_pose_common_models._reader.relative_path(seen['target']))
 
@@ -188,7 +300,7 @@ class StructurePoseStaticPayloadTests(unittest.TestCase):
         attempts, seen, fault = self.snapshot_fault(optional=True, warm=True)
         with fault:
             engine = get_engine()
-        self.assertEqual(attempts[seen['target']], 1)
+        self.assertEqual(attempts[seen['target_ref']], 1)
         self.assertTrue(all(count == 1 for count in attempts.values()), attempts)
         key = seen['key']
         recovery = next(floor for floor in engine.pack.floors if floor != key[1])
@@ -220,7 +332,7 @@ class StructurePoseStaticPayloadTests(unittest.TestCase):
                             'selection': 'resource-catalog-superseded'}[kind]
                 with fault, self.assertRaisesRegex(RuntimeError, expected):
                     get_engine()
-                self.assertEqual(attempts[seen['target']], 1)
+                self.assertEqual(attempts[seen['target_ref']], 1)
 
     def test_prepared_ram_survives_later_disk_damage_but_new_preparation_rejects_it(self):
         _, get_engine, _ = self.factory()

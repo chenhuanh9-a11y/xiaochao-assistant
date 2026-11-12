@@ -8,6 +8,7 @@ import numpy as np
 
 from client_live_runtime import LiveRuntime
 from structure_pose_solver import PreparedStructurePoseSolver as _AlignmentHost
+from structure_pose_solver import StructurePoseSolver
 from client_engine import INITIAL_IDENTITY_BUDGET_SECONDS
 from client_providers import ProviderUnavailable, attach_structure_scanner
 from s1_structure_selection import StructureCatalog, StructureCandidateScanner
@@ -54,11 +55,16 @@ class SharedStructureRuntimeTests(unittest.TestCase):
             captured.append(result)
             return result
         self.runtime._observe.reset_mock()
+        prepare_scan = StructurePoseSolver.prepare_structure_scan
         with patch.object(self.capture, 'capture', side_effect=acquire), \
-             patch.object(_AlignmentHost, 'fit', return_value=supported_pose()):
+             patch.object(_AlignmentHost, 'fit', return_value=supported_pose()), \
+             patch.object(StructurePoseSolver, 'prepare_structure_scan', autospec=True,
+                 side_effect=prepare_scan) as scan_preparation:
             result = self.runtime.dispatch('capture_now')
         self.assertTrue(result['success'], result)
         self.assertEqual(len(captured), 1)
+        self.assertEqual(scan_preparation.call_count, 1)
+        self.assertIs(scan_preparation.call_args.kwargs['automatic_region'], True)
         self.runtime._observe.assert_called_once()
         pixels = captured[0].frame_bgr
         self.assertIs(self.runtime._observe.call_args.args[1], pixels)

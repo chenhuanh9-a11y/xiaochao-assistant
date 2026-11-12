@@ -174,7 +174,7 @@ class ImportedNativeAdmissionScopeTests(unittest.TestCase):
         preflight = resource_reader.validate_npz_bytes
         observations = []
 
-        def verify_with_count(view, reader, resources, versions):
+        def verify_with_count(view, reader, resources, versions, coordinate_index=None):
             by_raw = {view.path(row['resourcePath']).read_bytes(): row['resourcePath']
                       for row in resources.entries.values()}
             counts = Counter()
@@ -185,7 +185,7 @@ class ImportedNativeAdmissionScopeTests(unittest.TestCase):
 
             with patch.object(resource_reader, 'validate_npz_bytes', actual_preflight), \
                     patch.object(declarations, 'validate_npz_bytes', actual_preflight):
-                verify(view, reader, resources, versions)
+                verify(view, reader, resources, versions, coordinate_index)
             observations.append(counts)
 
         def load_with_full_reader(store, *args, **kwargs):
