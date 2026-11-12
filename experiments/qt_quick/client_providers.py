@@ -68,16 +68,24 @@ def _build_memory_store(pack, memory_root, resource_root, *, production=PRODUCTI
 
 
 class _SharedReferenceReadOperation:
-    """One successful byte batch, with real proofs around RAM-only reads."""
+    """One bounded live operation; only a successful byte batch grants reads."""
     def __init__(self, provider, owners, binding, cancelled):
         self.provider, self.owners, self.cancelled = provider, owners, cancelled
-        self.source, self.source_state, self.paths = binding
+        if binding is None:
+            self.source = owners.bundle._values['fast_structure_source']
+            self.source_state, self.paths = self.source._read_state(), None
+        else:
+            self.source, self.source_state, self.paths = binding
         self.provider_state, self.owner_state = provider._read_owner_state(), owners.read_state()
         self.closed = False
         self.assert_owned()
         provider._assert_current()
         self.assert_owned()
         self.legacy_keys = owners.legacy_keys()
+        self.assert_owned()
+        self.values = MappingProxyType(dict(owners.bundle._values))
+        self.binding = (owners.bundle._view, owners.bundle._root,
+                        self.values['component_ref'], self.values['reader'])
         self.assert_owned()
 
     def assert_owned(self):
@@ -87,6 +95,19 @@ class _SharedReferenceReadOperation:
                 or self.owners.read_state() != self.owner_state
                 or self.source._read_state() != self.source_state):
             raise ValueError('structure-identity-resource-owner-changed')
+
+    def attach_batch(self, batch):
+        """Advance an already checked preparation only after a real full read."""
+        from imported_fast_structure import _PreparedReadBatch
+        self.assert_owned()
+        if type(batch) is not _PreparedReadBatch:
+            return False  # The original guarded consumers retain first failures.
+        source, state, paths = batch.verified_binding()
+        if self.paths is not None or source is not self.source or state != self.source_state:
+            raise ValueError('structure-identity-resource-owner-changed')
+        self.paths = paths
+        self.assert_owned()
+        return True
 
     def read_reference(self, profile, map_id, floor, *, read_resource):
         return self._read_reference(profile, map_id, floor, read_resource=read_resource, fresh=False)[0]
@@ -150,16 +171,16 @@ class SharedReferenceProvider:
     def __call__(self, profile, map_id, floor):
         return self._load(profile, map_id, floor)
 
-    def batch_bindings(self, requests):
+    def batch_bindings(self, requests, *, operation=None):
         """Real native lookup paths; legacy references keep their own loader."""
-        self._assert_current()
+        self._assert_read_current(operation)
         result = []
         for profile, map_id, floor in requests:
             keys = [key for key in self.versions if key[1] == str(map_id) and key[3] == str(floor)]
             if len(keys) == 1 and not self.versions[keys[0]].get("sharedError"):
                 row = self.versions[keys[0]]
                 result.append((row["binding"], row["path"]))
-        self._assert_current()
+        self._assert_read_current(operation)
         return tuple(result)
 
     def read_with_resource(self, profile, map_id, floor, *, read_resource):
@@ -170,12 +191,11 @@ class SharedReferenceProvider:
         return tuple(id(getattr(self, name)) for name in ('root', 'resources', 'versions',
             '_legacy_reference_loader', '_check_current', '_operation_owners', '_cache', '_lock'))
 
-    def begin_read_operation(self, bundle, batch, *, cancelled=None):
-        from imported_fast_structure import _PreparedReadBatch
+    def _read_operation_owners(self, bundle):
         from imported_legacy_references import ImportedLegacyReferences
         from imported_native_context import ImportedResourceOwners
         owners, guard, legacy = self._operation_owners, self._check_current, self._legacy_reference_loader
-        if (type(batch) is not _PreparedReadBatch or type(owners) is not ImportedResourceOwners
+        if (type(owners) is not ImportedResourceOwners
                 or owners.bundle is not bundle or owners.base_view is not bundle._view
                 or owners.controls._view is not owners.controls_view
                 or self.resources is not bundle._values['resources']
@@ -187,6 +207,27 @@ class SharedReferenceProvider:
                 type(owners.legacy) is not ImportedLegacyReferences
                 or getattr(legacy, '__self__', None) is not owners.legacy
                 or getattr(legacy, '__func__', None) is not ImportedLegacyReferences.reference))):
+            return None
+        return owners
+
+    def begin_prepare_operation(self, bundle, source, *, cancelled=None):
+        """Check live owners once, without granting any byte-batch read yet."""
+        owners = self._read_operation_owners(bundle)
+        if owners is None or source is not bundle._values['fast_structure_source']:
+            return None
+        return _SharedReferenceReadOperation(self, owners, None, cancelled)
+
+    def begin_read_operation(self, bundle, batch, *, cancelled=None, preparation=None):
+        from imported_fast_structure import _PreparedReadBatch
+        if preparation is not None:
+            self._assert_read_current(preparation)
+            if preparation.owners.bundle is not bundle:
+                raise ValueError('structure-identity-resource-owner-changed')
+            return preparation if preparation.attach_batch(batch) else None
+        if type(batch) is not _PreparedReadBatch:
+            return None
+        owners = self._read_operation_owners(bundle)
+        if owners is None:
             return None
         binding = batch.verified_binding()
         if binding[0] is not bundle._values['fast_structure_source']:

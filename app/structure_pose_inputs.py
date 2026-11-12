@@ -364,13 +364,13 @@ def _new_reference(provider_reference, bundle, read, root):
         resource_root=root, read_resource=read)
 
 
-def _prepare_locators(bundle, pack, references, read, interfaces, root, map_id, floors, *, cancelled=None):
+def _prepare_locators(values, pack, references, read, interfaces, root, map_id, floors, *, cancelled=None):
     from difficult_entry_identity import MapEntryGeometryIdentity
     from difficult_side_entry_identity import MapLocalEntryIdentity
     from side_door_recognition import SideDoorRecognizer
     table = _ReferenceTable(MappingProxyType(dict(references)))
     directory = root / interfaces["identityEntries"]
-    admitted_main, admitted_side = bundle.entry_identity, bundle.side_entry_identity
+    admitted_main, admitted_side = values['entry_identity'], values['side_entry_identity']
     reusable = (admitted_main.error is None
         and (not admitted_side.semantic_side_entries
              or admitted_side.side_door_error is None and admitted_side.side_search_error is None)
@@ -404,14 +404,14 @@ def _prepare_locators(bundle, pack, references, read, interfaces, root, map_id, 
             structure_store=table, shared_reference_provider=table,
             profile_id=interfaces["identityProfile"], profile_for_map=pack.identity_profiles.__getitem__,
             read_resource=read, typed_index_path=root / interfaces["typedIndex"],
-            exit_icon_path=root / interfaces["exitIcon"] if bundle.semantic_side_entries else None,
-            semantic_side_entries=bundle.semantic_side_entries,
-            passport_source_available=bundle.passport_source_available)
+            exit_icon_path=root / interfaces["exitIcon"] if values['semantic_side_entries'] else None,
+            semantic_side_entries=values['semantic_side_entries'],
+            passport_source_available=values['passport_source_available'])
     if main.error is not None:
         raise PoseInputsUnavailable("pose-input-main-locator:" + main.error)
-    if side.side_door_error != bundle.side_entry_identity.side_door_error or side.side_search_error != bundle.side_entry_identity.side_search_error:
+    if side.side_door_error != admitted_side.side_door_error or side.side_search_error != admitted_side.side_search_error:
         raise PoseInputsUnavailable("pose-input-side-locator-capability-changed")
-    passports = bundle.legacy_passports
+    passports = values['legacy_passports']
     if passports is not None:
         declaration = interfaces.get("legacyClean") or {}
         if reusable:
@@ -513,9 +513,24 @@ def prepare_structure_pose_inputs(engine, map_id, floor, *, resource_revision,
         raise PoseInputsUnavailable("pose-input-validated-native-base-required")
     provider, source = engine.qt_shared_provider, engine.qt_fast_structure_source
     check = engine.qt_assert_resource_current
-    check()
-    view, root, component, reader = bundle.read_binding()
-    pack, interfaces, season = bundle.pack, bundle.interfaces, bundle.season
+    # This operation checks the actual live context before exposing its small
+    # static model snapshot. It grants no reference reads until a successful
+    # byte batch is attached below. Independent/legacy guards keep their path.
+    preparation_operation = None
+    begin_prepare = getattr(provider, 'begin_prepare_operation', None)
+    if callable(begin_prepare) and check is getattr(provider, '_check_current', None):
+        preparation_operation = begin_prepare(bundle, source, cancelled=cancelled)
+    from imported_native_context import ImportedResourceOwners
+    if preparation_operation is None:
+        check()
+        view, root, component, reader = bundle.read_binding()
+        model_state = ImportedResourceOwners.bundle_state(bundle)
+        values = MappingProxyType(dict(bundle._values))
+    else:
+        view, root, component, reader = preparation_operation.binding
+        values = preparation_operation.values
+        model_state = ImportedResourceOwners.bundle_state(bundle)
+    pack, interfaces, season = (values[name] for name in ('pack', 'interfaces', 'season'))
     map_id, floor = str(map_id), str(floor)
     floors = tuple(dict.fromkeys((floor, *(str(value) for value in recovery_floors))))
     if map_id not in pack.by_id or not set(floors) <= set(pack.floors):
@@ -544,16 +559,19 @@ def prepare_structure_pose_inputs(engine, map_id, floor, *, resource_revision,
     if (callable(getattr(provider, "batch_bindings", None))
             and callable(getattr(provider, "read_with_resource", None))
             and callable(getattr(source, "prepare_batch", None))
-            and getattr(provider, "resources", None) is bundle.resources
-            and getattr(provider, "versions", None) is bundle.versions):
+            and getattr(provider, "resources", None) is values['resources']
+            and getattr(provider, "versions", None) is values['versions']):
         requests = tuple(("shared-structure", map_id, target_floor) for target_floor in floors)
+        bindings = (provider.batch_bindings(requests, operation=preparation_operation)
+                    if preparation_operation is not None else provider.batch_bindings(requests))
         # The typed metadata owns fast-validation use. Do not pre-read its
         # optional payload or index before the fresh reference establishes it.
-        batch = source.prepare_batch(provider.batch_bindings(requests), cancelled=cancelled,
+        batch = source.prepare_batch(bindings, cancelled=cancelled,
                                      include_prepared=False)
         begin = getattr(provider, "begin_read_operation", None)
         if callable(begin):
-            operation = begin(bundle, batch, cancelled=cancelled)
+            operation = (begin(bundle, batch, cancelled=cancelled, preparation=preparation_operation)
+                         if preparation_operation is not None else begin(bundle, batch, cancelled=cancelled))
     from imported_fast_structure import _PreparedReadFailure
     # Preserve the first required failure at the original reference decoder,
     # rather than retrying into success and delivering it to a later consumer.
@@ -623,7 +641,7 @@ def prepare_structure_pose_inputs(engine, map_id, floor, *, resource_revision,
         if batch is not None:
             batch.release()
     batch = payload = decoded = None
-    main, side = _prepare_locators(bundle, ram_pack, references, read, interfaces, root, map_id, floors,
+    main, side = _prepare_locators(values, ram_pack, references, read, interfaces, root, map_id, floors,
                                   cancelled=cancelled)
     grid = _prepare_grid(engine, map_id, floors, read, pose_index_enabled)
     if grid is not None:
@@ -648,9 +666,9 @@ def prepare_structure_pose_inputs(engine, map_id, floor, *, resource_revision,
     main.read_resource = side.read_resource = ram_reader
     if side._exit_recognizer is not None:
         side._exit_recognizer.read_resource = ram_reader
-    capabilities = _freeze(dict(rankReady=bundle.rank_ready,
-        semanticSideEntries=bundle.semantic_side_entries,
-        passportSourceAvailable=bundle.passport_source_available,
+    capabilities = _freeze(dict(rankReady=values['rank_ready'],
+        semanticSideEntries=values['semantic_side_entries'],
+        passportSourceAvailable=values['passport_source_available'],
         mainError=main.error, sideDoorError=side.side_door_error,
         sideSearchError=side.side_search_error, passportError=side.passport_error))
     read.recheck(cancelled=cancelled)
@@ -665,13 +683,20 @@ def prepare_structure_pose_inputs(engine, map_id, floor, *, resource_revision,
         payload = source.read(current, cancelled=cancelled)
         if value is not None and (payload is None or payload[1] != identity):
             raise PoseInputsUnavailable("pose-input-preparation-changed")
-    if operation is not None:
-        operation.finish()
-    check()
-    final_view, final_root, final_component, final_reader = bundle.read_binding()
+    owner_operation = preparation_operation if preparation_operation is not None else operation
+    if owner_operation is not None:
+        owner_operation.finish()
+    if preparation_operation is None:
+        check()
+        final_view, final_root, final_component, final_reader = bundle.read_binding()
+    else:
+        # finish() performed the real live context proof and compared all of
+        # its current model/binding owners. Reuse the proven binding in RAM.
+        final_view, final_root, final_component, final_reader = preparation_operation.binding
     if (getattr(engine, "qt_native_base", None) is not bundle or engine.qt_shared_provider is not provider
             or engine.qt_fast_structure_source is not source or engine.qt_assert_resource_current is not check
             or (final_view, final_root, final_component, final_reader) != (view, root, component, reader)
+            or ImportedResourceOwners.bundle_state(bundle) != model_state
             or source_binding != source_state()
             or any(getattr(provider, name) is not value for name, value in provider_fields.items())):
         raise PoseInputsUnavailable("pose-input-resource-binding-changed")

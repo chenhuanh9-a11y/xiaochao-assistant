@@ -22,6 +22,34 @@ class ImportedResourceOwners:
     def _view_state(view):
         return (id(view), view.resource_root, view.component_ref, id(view._assert_current))
 
+    @staticmethod
+    def _model_state(model, fields):
+        return None if model is None else (id(model), tuple(id(getattr(model, name, None)) for name in fields))
+
+    @classmethod
+    def bundle_state(cls, bundle):
+        """RAM owners of the admitted models used by a short preparation.
+
+        Query observation caches are deliberately excluded. Replacement of a
+        static model, its source/reader or decoded containers invalidates the
+        operation; actual backing bytes still require the normal live reads.
+        """
+        values = bundle._values
+        names = ('pack', 'resources', 'versions', 'reader', 'interfaces', 'season', 'mode',
+            'component_ref', 'adapters', 'entry_identity', 'side_entry_identity', 'exit_recognizer',
+            'legacy_references', 'legacy_passports', 'fast_structure_source', 'rank_ready',
+            'semantic_side_entries', 'passport_source_available')
+        return (id(values), tuple(id(values[name]) for name in names),
+            cls._model_state(values['pack'], ('pack_id', 'mode', 'floors', 'maps', 'by_id', 'identity_profiles')),
+            cls._model_state(values['resources'], ('resource_root', 'index_path', 'read_resource', 'entries')),
+            cls._model_state(values['adapters'], ('path', '_read_resource', '_raw', 'profiles', 'maps')),
+            cls._model_state(values['entry_identity'], ('root', 'read_resource', 'entries', 'error')),
+            cls._model_state(values['side_entry_identity'], ('root', 'read_resource', 'entries', 'passports',
+                'entry_coverage', 'semantic_gaps', 'side_doors', 'side_search', 'exit_icon_path',
+                'semantic_side_entries', 'passport_source_available', 'side_door_error', 'side_search_error',
+                'passport_error')),
+            cls._model_state(values['exit_recognizer'], ('read_resource', 'exit_icon', 'references', 'taxonomy_by_map')))
+
     def read_state(self):
         """RAM ownership only; guarded properties belong at the two boundaries."""
         bundle, controls, native, legacy = self.bundle, self.controls, self.native, self.legacy
@@ -29,7 +57,7 @@ class ImportedResourceOwners:
         reader = values['reader']
         return (self._view_state(self.base_view), self._view_state(self.controls_view),
             id(bundle), id(bundle._view), bundle._root, values['component_ref'],
-            tuple(id(values[name]) for name in ('pack', 'resources', 'versions', 'reader', 'fast_structure_source')),
+            self.bundle_state(bundle),
             id(reader.view), reader.root, id(controls), id(controls._view), controls._root,
             None if native is None else (id(native), id(native._base_view), id(native._bundle),
                 id(native._controls), native._root, native._component_ref),

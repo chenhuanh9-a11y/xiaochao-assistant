@@ -32,6 +32,8 @@
 
 原 local 链独立于上述新指纹检索：完整 `SideEntryEvidence` 竞争与 `SidePoseRecovery`/`verified_side_candidate` 已得到合格 native 赢家时，不能再由整包 `qt_rank_ready=False` 将它抹掉。消费者按实际 side entry 的地图、层、区域、产品及源用途核对赢家，legacy、缺绑定或明确禁止仍拒绝，不删除竞争者另找次优。main proposal 的真实用途限制、未完成/歧义/失败与资源失效检查保持；只有当前 local 结论进入既有 runtime 身份归约，不提升整包声明、学习或语义门库存。生产 `map` 入口的定向模块 `test_client_local_identity_commit` 纳入既有 runtime CI。
 
+首次贴合准备复用同一次短期 operation 的已验证静态模型和绑定，避免每个 getter 再次解析路径、读取 manifest。首阶段仅取得快照，实际成功的 typed byte batch attach 后才可 fresh 读取；末次实际字节、上下文、模型归属及取消检查保留，失败或未知 loader 沿原 guarded 路径。真实导出/安装的 cold S0D fixture 中 manifest 读取 52→25、catalog proof 134→53；这是调用次数回归，尚非实际首贴耗时结论。`test_structure_pose_preparation_context` 纳入既有 fit-simulation CI，四模式与 legacy 等联合回归 52 项通过。
+
 ## 新增阶段目标：流程清晰且处理耗时恢复原版水平（2026-11-12）
 
 四模式共用可追踪的识别与贴合管线，在保留既有证据、候选竞争和结果资格的前提下，让整合版对同批真实样本的处理耗时恢复到原版代码水平。此阶段目标补充 P3/P4，不替代首贴约 500ms、已锁图重开约 300ms 的最终目标，也不将原版耗时视为用户体验合格线。
