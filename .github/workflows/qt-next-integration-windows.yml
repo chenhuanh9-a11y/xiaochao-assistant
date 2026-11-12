@@ -284,7 +284,7 @@ jobs:
             'packaging-imported-display' {
               $modules = @(
                 'test_client_progressive_display', 'test_client_progressive_pixels',
-                'test_client_display_guard_consumption', 'test_client_formal_material_retention',
+                'test_client_display_guard_consumption', 'test_client_formal_material_retention', 'test_client_s1_display_ram',
                 'test_client_similarity_protocol',
                 'test_imported_author_displays',
                 'test_client_imported_author_activation', 'test_client_imported_author_selection'
