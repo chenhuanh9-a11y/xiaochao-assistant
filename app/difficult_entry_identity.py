@@ -282,6 +282,7 @@ class MapEntryGeometryIdentity:
         source=source[:,1];hypotheses=[]
         oriented=np.min(np.sum(qrays[:,None]*rays[None],axis=3),axis=2)>=.95
         oriented_pairs=np.nonzero(oriented)
+        oriented_query_points=qpoints[oriented_pairs[0]]
         oriented_queries=[np.flatnonzero(oriented[:, index]) for index in range(len(source))]
         main_ids=np.flatnonzero(main)
         # Two entry corners seed scale; different measured corners and
@@ -302,7 +303,8 @@ class MapEntryGeometryIdentity:
                 compatible=(errors<=2)&(scales*item['unit']>=8)&(scales*item['unit']<=min(frame.shape[:2])/4)
                 for pair_index in np.flatnonzero(compatible):
                     qi=qa[pair_index];s=float(scales[pair_index]);t=qpoints[qi]-s*source[si]
-                    self._score_hypothesis(item,source,main,qpoints,oriented,s,t,hypotheses,oriented_pairs)
+                    self._score_hypothesis(item,source,main,qpoints,oriented,s,t,hypotheses,
+                                           oriented_pairs,oriented_query_points)
         if hypotheses:
             hypotheses.sort(key=lambda h:-h['chainCount'])
             # Updating an existing hypothesis can move it beside another
@@ -426,15 +428,18 @@ class MapEntryGeometryIdentity:
             wallRefinement=wall_refinement,entryWalls=wall_check,matrixSourceToClient=matrix.tolist())
 
     @staticmethod
-    def _score_hypothesis(item,source,main,qpoints,oriented,s,t,hypotheses,oriented_pairs=None):
+    def _score_hypothesis(item,source,main,qpoints,oriented,s,t,hypotheses,oriented_pairs=None,
+                          oriented_query_points=None):
         anchor=np.array(item['center'])*s+t
         if any(np.linalg.norm(anchor-h['anchor'])<3 and abs(s-h['scale'])*item['unit']<.25 for h in hypotheses):return
         # Only measured corners contribute. Fog is never a missing-room vote.
         qi,si=np.nonzero(oriented) if oriented_pairs is None else oriented_pairs
+        if oriented_query_points is None:
+            oriented_query_points=qpoints[qi]
         for iteration in range(3):
             # Direction-incompatible pairs were always discarded. Compute the
             # same distances only for compatible pairs, in np.argwhere order.
-            errors=np.linalg.norm(qpoints[qi]-(source*s+t)[si],axis=1)
+            errors=np.linalg.norm(oriented_query_points-(source*s+t)[si],axis=1)
             hit=errors<=3
             qhit,shit=qi[hit],si[hit]
             unique=(np.bincount(qhit,minlength=len(qpoints))[qhit]==1)&(np.bincount(shit,minlength=len(source))[shit]==1)
@@ -446,9 +451,11 @@ class MapEntryGeometryIdentity:
             # supplies independent support. Partial entries require a wider
             # two-dimensional neighborhood at the identity decision above.
             if main_count<2:return
-            a=source[pairs[:,1]];b=qpoints[pairs[:,0]];centered=a-a.mean(axis=0)
-            proposed_s=float(np.sum(centered*(b-b.mean(axis=0)))/np.sum(centered*centered))
-            proposed_t=b.mean(axis=0)-proposed_s*a.mean(axis=0)
+            a=source[pairs[:,1]];b=qpoints[pairs[:,0]]
+            a_mean,b_mean=a.mean(axis=0),b.mean(axis=0)
+            centered=a-a_mean
+            proposed_s=float(np.sum(centered*(b-b_mean))/np.sum(centered*centered))
+            proposed_t=b_mean-proposed_s*a_mean
             # The final pairs were measured at the current supported pose.
             # LS can reduce RMS while moving one counted pair past 3 px;
             # reject that refinement rather than retain unsupported score.
