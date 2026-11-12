@@ -106,7 +106,7 @@ Component.prototype.createOperations = function() {
     // A signal-handler exception cannot fail native installation. Make program
     // integrity an ordinary DO operation before writing the maintenance tool.
     component.addOperation("Execute", "{0}", helper, "verify-program", "@TargetDir@");
-    if (installer.value("TrialPortable") === "true")
+    if (installer.value("TrialPortable") === "true" && installer.value("TrialUpgradeActive", "false") !== "true")
         component.addOperation("Execute", "{0}", helper, "install-maps", "@TargetDir@");
     if (fault === "after-extract")
         component.addOperation("Execute", "{0}", helper, "pause", "@TargetDir@");

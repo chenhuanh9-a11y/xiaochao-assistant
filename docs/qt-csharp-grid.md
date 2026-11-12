@@ -1,5 +1,19 @@
 # Qt + Python 产品的 C# grid 局部优化
 
+## 当前交付任务：1.1.3 正式身份覆盖更新（2026-11-13）
+
+用户明确要求制作1.1.3正式包，覆盖已交付的1.1.2。数字版本升至1.0.0.25；保留Qt/Python/C#计算边界，正式production身份恢复原有完整功能，不把独立Grid Test包改名冒充正式版。原1.1.2实际由`build_qtifw_trial.py --release`生成，目录为T/program，外层有QtIFW维护器和owner；原Inno升级器不能仅凭payload AppId接管这个布局。
+
+本轮沿用QtIFW组件所有权。单一Setup用Inno提供目录选择、确认与进度，包内QtIFW处理新装；已验证的production 1.1.2通过原维护器读取包内本地仓库更新，同时替换维护器的controller/QRC。不是新离线Setup直接切换updater，也不让用户先卸载。原生机制依据[QtIFW CLI](https://doc.qt.io/qtinstallerframework/ifw-cli.html)、[更新组件](https://doc.qt.io/qtinstallerframework/ifw-updates.html)与[installer脚本API](https://doc.qt.io/qtinstallerframework/scripting-installer.html)。原生合成实验已证明外部script单独使用不会持久替换旧controller，必须同时更新rcc及一次性installerbase副本；不能把原工具路径交给会消费该输入的QtIFW。
+
+升级适配器在独占资源lease内核对旧owner、production来源、实际程序库存及组件记录，先复制旧程序与维护元数据到T/recovery-files，再执行原生组件更新；设置、作者包、自建路线及活动资源不列入替换或删除清单。未知新程序路径碰撞明确拒绝。复用旧1.1.2已经识别的`program/work/pending-installer-upgrade.json`阻止中断后的启动；QtIFW适配器以独立schema认领自己的记录，不绕过其他资源事务，原Inno协调器遇此记录仍失败关闭。普通资源检查保持原调用入口，适配器只在自身标记核验后复用资源事务部分。
+
+原生文件、组件版本及持久新维护器的controller和实际安装helper均通过后才切换owner、按原明确意图恢复watcher配置并清除本次pending。更新失败保留原程序备份和pending；可从已完成native阶段向前核验收尾，不能把QtIFW撤销称为自动恢复旧程序或断电原子性。新装、覆盖、失败后重试、数据保留和卸载需绑定最终同源Setup分别验证。
+
+Windows静默加载失败须直接返回错误：实测同一坏PE在普通Python和Inno继承的线程错误模式不同，后者可卡在CreateProcess而无法受子进程wait超时约束。启动器仅在当前线程创建子进程时临时加入SEM_FAILCRITICALERRORS并恢复；创建失败保留原生错误，更新状态退回真实的创建前阶段。首次安装中断且同一Setup尚无维护器时仍走原prepare/quarantine恢复，其他实例不接管。
+
+当前工作区已合入origin/main的交付/发版约定；本轮按用户指定版本准备安装候选，不自动覆盖本机安装、不操作游戏、不发布公告或自动合并PR。完整实机和端到端性能仍未证明；新包就绪后由用户本机验收，后续发布沿用既有发版列车授权。历史独立测试包与证据保留。
+
 ## 范围与起点
 
 当前工作区 `E:\codex\worktrees\qt-csharp-hybrid\星图`，分支 `codex/qt-csharp-grid-20261110`，起点为正式 Qt 基线 `cc5100c6e3cea425ac4dbed82df92623754f81fa`。本任务只优化 `_grid` 网格候选计算及必要通信、进程恢复、打包兼容和验证，不是框架迁移。原 Qt UI、捕获/输入/浮层、设置与资源操作继续使用，不为本任务迁移或重做。
