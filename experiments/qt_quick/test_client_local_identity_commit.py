@@ -17,6 +17,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from client_live_runtime import LiveRuntime
+from difficult_entry_identity import MainEntryEvidence, MapEntryGeometryIdentity
 from difficult_side_entry_identity import MapLocalEntryIdentity
 from map_observation_work import MapObservationWork
 from side_entry_evidence import SideEntryEvidence
@@ -58,6 +59,7 @@ class LocalIdentityCommitTests(unittest.TestCase):
         self.probed = []
         self.probed_by_lane = {}
         self.recovered = []
+        self.observations = []
         self.queries = []
         self.scan_reports = []
         self.stack = ExitStack()
@@ -117,6 +119,7 @@ class LocalIdentityCommitTests(unittest.TestCase):
         recovery = MapObservationWork._recovery
         def record_recovery(work, result):
             self.recovered.append(copy.deepcopy(result[2]))
+            self.observations.append(work)
             return recovery(work, result)
         self.stack.enter_context(patch.object(MapObservationWork, '_recovery', record_recovery))
         self.verify = Mock(side_effect=lambda frame, row, **kwargs: dict(success=True,
@@ -127,6 +130,7 @@ class LocalIdentityCommitTests(unittest.TestCase):
                 self.before_verify(lane, row)
             return self.verify(frame, row, **kwargs)
         self.stack.enter_context(patch.object(MapLocalEntryIdentity, 'verify', verify))
+        self.original_fit = PreparedStructurePoseSolver.fit
         self.fit = self.stack.enter_context(patch.object(PreparedStructurePoseSolver, 'fit',
             return_value=resources.supported_pose()))
         # The owner deliberately does not join a losing numerical kernel.
@@ -143,6 +147,31 @@ class LocalIdentityCommitTests(unittest.TestCase):
     def opening(self):
         self.sequence += 1
         return self.runtime.dispatch('map', dict(openIntent=True, inputSequence=self.sequence))
+
+    def supply_main_pose_conflict(self):
+        """Supply main numeric measurements from its real decoded source row.
+
+        Main source purpose, all-source jobs, finalization and side adjudication
+        remain production code. Only contour/probe and pixel-fit results change.
+        """
+        points = np.array([[100.+i*20, 100.+(i%3)*30] for i in range(8)])
+        self.stack.enter_context(patch.object(MainEntryEvidence, '_observation',
+            return_value=(dict(query=np.ones((720, 1280), np.uint8)),
+                          [dict(point=p) for p in points], points, np.zeros((8, 2, 2)))))
+        def probe(locator, frame, entry, qpoints, qrays):
+            item = entry[0]
+            if item['mapId'] != self.target:
+                return None
+            return dict(mapId=item['mapId'], profileId=locator.profile_for_map(item['mapId']),
+                entryKind='main', score=12., poseAmbiguous=False,
+                sourceProduct=item['sourceProduct'],
+                hypothesis=dict(chainCount=12, mainChains=3, neighborChains=9, neighborExtentGrid=[4., 4.]),
+                **{key: item[key] for key in ('proposalOnly', 'authorizesPose', 'authorizesIdentity')})
+        self.stack.enter_context(patch.object(MapEntryGeometryIdentity, '_probe_entry', probe))
+        matrix = np.eye(3)
+        matrix[0, 2] = 4.
+        self.stack.enter_context(patch.object(MapEntryGeometryIdentity, 'verify',
+            return_value=dict(success=True, residual=dict(verified=True), matrixSourceToClient=matrix.tolist())))
 
     def restart(self):
         self.runtime.dispatch('end_round')
@@ -325,6 +354,93 @@ class LocalIdentityCommitTests(unittest.TestCase):
         self.assertTrue(reopened['success'], reopened)
         self.assertEqual(self.runtime.render_payload(reopened['renderToken'])['mapId'], self.target)
 
+    def test_identity_only_conflict_runs_ordinary_canonical_fit_and_known_map_reopen(self):
+        from entry_pose_proposals import completed_entry_pose_candidate
+        from structure_pose_solver import StructurePoseSolver
+        from test_structure_identity_observation import pixel_fixture
+        self.supply_main_pose_conflict()
+        # Actual pixel extraction remains real. The fixture canvas is not the
+        # decoded map: only the fast H and final image-residual measurements
+        # below are supplied; prepared scope/canonical provenance stay real.
+        self.capture.frame[:720, :1200] = pixel_fixture()[1][:720]
+        fits, fixed, residuals = [], [], []
+        original_fixed = StructurePoseSolver._fit_fixed_entry_proposal
+        def fit(host, *args, **kwargs):
+            value = self.original_fit(host, *args, **kwargs)
+            fits.append((host, value))
+            return value
+        def fixed_proposal(host, *args, **kwargs):
+            value = original_fixed(host, *args, **kwargs)
+            fixed.append(value)
+            return value
+        def residual(frame, route, matrix, **kwargs):
+            residuals.append((frame, np.asarray(matrix).copy(), kwargs.get('shared_reference')))
+            return dict(verified=True, reason='supplied-image-residual', withinThreePixels=.95)
+        with patch.object(PreparedStructurePoseSolver, 'fit', fit), \
+             patch.object(StructurePoseSolver, '_fit_fixed_entry_proposal', fixed_proposal), \
+             patch('fast_structure_alignment.try_alignment', side_effect=lambda *a, **kw:
+                 dict(success=True, reason='supplied-fast-H', matrixSourceToClient=np.eye(3),
+                      diagnostics=dict(queryChains=8))) as fast, \
+             patch('nightmare_candidate.selected_route_current_frame_residual', side_effect=residual), \
+             patch('client_live_runtime.INITIAL_IDENTITY_BUDGET_SECONDS', 8.):
+            result = self.opening()
+            self.drain_race()
+            self.assertTrue(result['success'], result)
+            winners = [row for row in self.recovered if row is not None]
+            self.assertTrue(winners)
+            self.assertTrue(all(row['identityOnly'] and not row['poseVerified'] for row in winners))
+            completed = []
+            for observation in self.observations:
+                if observation._complete and observation.side_winner is not None:
+                    completed.append(observation)
+                    self.assertIsNone(completed_entry_pose_candidate(
+                        observation, observation.frame, self.target, '1'))
+                    main = next(row for row in observation.entry_rows if row['mapId'] == self.target)
+                    self.assertTrue(main['proposalOnly'])
+                    self.assertFalse(main['authorizesIdentity'])
+                    self.assertFalse(main['authorizesPose'])
+                    self.assertFalse(main['identityVerified'])
+            self.assertTrue(completed, 'the identity must come from completed current source work')
+            self.assertTrue(fixed)
+            self.assertFalse(any(value and value.get('success') for value in fixed),
+                ('identityOnly cannot take the fixed-H shortcut', fixed))
+            self.assertGreater(fast.call_count, 0, 'the ordinary canonical fit must execute')
+            successful = [value for _, value in fits if value.get('success')]
+            self.assertTrue(successful, fits)
+            self.assertTrue(all(value['strategy'] == 'shared-fast-alignment' for value in successful))
+            self.assertTrue(residuals)
+            self.assertTrue(all(reference is not None for _, _, reference in residuals))
+            self.assertTrue(all(value['selectedRouteCurrentFrameResidual']['poseVerifiedAgainstCanonicalGeometry']
+                                for value in successful))
+            state = self.runtime.snapshot()
+            self.assertTrue(state['identityLocked'])
+            self.assertEqual(state['mapId'], self.target)
+            row = self.runtime.render_payload(result['renderToken'])
+            self.assertEqual(row['mapId'], self.target)
+            self.assertFalse(row['candidateDisplayOnly'])
+            self.assertTrue(self.runtime.acknowledge_render_material(row['token'])['success'])
+            self.assertIn(self.target, self.runtime._core.pose_by_map)
+            self.runtime.dispatch('close_map')
+            self.assertTrue(self.runtime.snapshot()['identityLocked'])
+            self.assertFalse(self.runtime.snapshot()['displayAuthorized'])
+            self.assertFalse(self.runtime.acknowledge_render_material(row['token'])['success'])
+            previous_fits = len(fits)
+            with patch.object(self.engine, 'qt_structure_scan',
+                    side_effect=AssertionError('identityOnly known-map reopen repeated catalogue scan')):
+                reopened = self.opening()
+            self.assertTrue(reopened['success'], reopened)
+            self.assertEqual(self.runtime.render_payload(reopened['renderToken'])['mapId'], self.target)
+            self.assertTrue(self.runtime.snapshot()['identityLocked'])
+            self.assertGreater(len(fits), previous_fits, 'a new opening still requires a current-frame fit')
+            self.runtime.dispatch('close_map')
+            with patch('nightmare_candidate.selected_route_current_frame_residual',
+                    return_value=dict(verified=False, reason='supplied-current-frame-residual-rejected')):
+                rejected = self.opening()
+            self.assertFalse(rejected['success'], rejected)
+            self.assertTrue(self.runtime.snapshot()['identityLocked'])
+            self.assertFalse(self.runtime.snapshot()['displayAuthorized'])
+            self.assertIsNone(self.runtime.render_payload(reopened['renderToken']))
+
     def test_legacy_winner_is_not_authorized_or_replaced_by_lower_native_proposal(self):
         self.hypotheses = {LEGACY: 12., self.target: 8.}
         self.opening()
@@ -344,18 +460,23 @@ class LocalIdentityCommitTests(unittest.TestCase):
         self.assert_unlocked()
 
     def test_explicit_source_denial_and_missing_native_purpose_cannot_lock(self):
+        self.supply_main_pose_conflict()
         for field, value in (('proposalOnly', True), ('authorizesPose', False),
                 ('authorizesIdentity', False), ('sourceKind', None)):
             self.source_changes = {field: value}
             with self.subTest(field=field):
                 self.opening()
                 self.assertEqual(self.recovered[0]['mapId'], self.target)
+                self.assertTrue(self.recovered[0]['identityOnly'])
+                self.assertFalse(self.recovered[0]['poseVerified'])
                 self.assert_unlocked()
             self.restart()
         self.source_changes = {}
         self.foreign_source = True
         self.opening()
         self.assertEqual(self.recovered[0]['mapId'], self.target)
+        self.assertTrue(self.recovered[0]['identityOnly'])
+        self.assertFalse(self.recovered[0]['poseVerified'])
         self.assert_unlocked()
 
     def test_unfinished_failed_and_budget_exhausted_competition_cannot_lock(self):

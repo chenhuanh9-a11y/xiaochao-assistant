@@ -244,16 +244,24 @@ def verified_side_candidate(rows,diagnostics,floor,main_rows,frame_shape,*,speed
     if matrix.shape!=(3,3) or not np.isfinite(matrix).all():return None
     height,width=frame_shape[:2]
     extent=np.array([[0,0,1],[width,0,1],[0,height,1],[width,height,1]])
+    pose_consistent=True
     for main in main_rows:
         if (main.get('entryCrossCheck') or {}).get('contradicted') is True:continue
         checked=main.get('verification') or {}
         if not checked.get('success'):continue
         if main['mapId']!=candidate['mapId']:return None
-        try:delta=matrix@np.linalg.inv(np.asarray(checked['matrixSourceToClient']))-np.eye(3)
-        except (ValueError,np.linalg.LinAlgError):return None
-        if np.linalg.norm((extent@delta.T)[:,:2],axis=1).max()>3:return None
-    return dict(candidate,identityVerified=True,poseVerified=True,identityOnly=False,locatorKind='side',
-        identityEvidence='complete-unique-side-structure-and-current-author')
+        try:
+            main_matrix=np.asarray(checked.get('matrixSourceToClient'))
+            if main_matrix.shape!=(3,3) or not np.isfinite(main_matrix).all():return None
+            delta=matrix@np.linalg.inv(main_matrix)-np.eye(3)
+        except (TypeError,ValueError,np.linalg.LinAlgError):return None
+        # Same-map pose disagreement cannot identify a different map. Retain
+        # it as unresolved pose evidence and still inspect every later main.
+        if np.linalg.norm((extent@delta.T)[:,:2],axis=1).max()>3:pose_consistent=False
+    return dict(candidate,identityVerified=True,poseVerified=pose_consistent,
+        identityOnly=not pose_consistent,locatorKind='side',
+        identityEvidence=('complete-unique-side-structure-and-current-author' if pose_consistent
+            else 'complete-same-map-side-competition-pose-unresolved'))
 
 
 class MapIdentityEngine(NightmareCandidateEngine):
