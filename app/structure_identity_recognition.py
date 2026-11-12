@@ -8,13 +8,14 @@ chooses A, changes a matrix, resolves competing maps or ranks pose families.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from fractions import Fraction
 import math
 import time
 
 import numpy as np
 
 from structure_identity_index import (Correspondence, FingerprintResult, PoseProposal,
-                                      StructureIdentityIndex)
+    NumericPoseUnresolved, StructureIdentityIndex, _active_points, _ordered_rays, _unit_dot_upper)
 from structure_identity_observation import (StructureIdentityObservation, _Cancelled,
     constellation_issue, independence_violations)
 
@@ -96,13 +97,33 @@ def _arms(points):
     return ((points[1], points[0]), (points[1], points[2]))
 
 
-def _segments_overlap(first, second):
+def _exact_segments_overlap(first, second):
+    # Only a centre ablation's support check needs this rare fallback. Full
+    # endpoints are still required to prove independence, but their unused
+    # lengths must not create floating overflow in the centre model.
+    a, b, c, d = (tuple(Fraction(float(value)) for value in point)
+                  for segment in (first, second) for point in segment)
+    u, v, offset = (tuple(right[i] - left[i] for i in (0, 1))
+                    for left, right in ((a, b), (c, d), (a, c)))
+    if u[0] * v[1] - u[1] * v[0] != 0 or u[0] * offset[1] - u[1] * offset[0] != 0:
+        return False
+    axis = 0 if abs(u[0]) >= abs(u[1]) else 1
+    return max(min(a[axis], b[axis]), min(c[axis], d[axis])) <= min(
+        max(a[axis], b[axis]), max(c[axis], d[axis]))
+
+
+def _segments_overlap(first, second, *, exact_on_overflow=False):
     a, b = np.asarray(first[0]), np.asarray(first[1])
     c, d = np.asarray(second[0]), np.asarray(second[1])
-    with np.errstate(all="raise"):
-        u, v, offset = b - a, d - c, c - a
-        cross = u[0] * v[1] - u[1] * v[0]
-        collinear = u[0] * offset[1] - u[1] * offset[0]
+    try:
+        with np.errstate(all="raise"):
+            u, v, offset = b - a, d - c, c - a
+            cross = u[0] * v[1] - u[1] * v[0]
+            collinear = u[0] * offset[1] - u[1] * offset[0]
+    except FloatingPointError:
+        if exact_on_overflow:
+            return _exact_segments_overlap(first, second)
+        raise
     if not np.isfinite([*u, *v, *offset, cross, collinear]).all():
         raise _Unfinished("b-source-independence-numeric-unresolved")
     if cross != 0 or collinear != 0:
@@ -112,10 +133,11 @@ def _segments_overlap(first, second):
         max(a[axis], b[axis]), max(c[axis], d[axis]))
 
 
-def _source_independent(anchor, vertices, arms):
+def _source_independent(anchor, vertices, arms, constraint_kind="full-chain"):
     if set(anchor.points) & vertices:
         return False
-    return not any(_segments_overlap(left, right) for left in _arms(anchor.points) for right in arms)
+    return not any(_segments_overlap(left, right, exact_on_overflow=constraint_kind == "corner-centre")
+                   for left in _arms(anchor.points) for right in arms)
 
 
 def _connections(qi, pair, chosen, query):
@@ -140,9 +162,7 @@ def verify_fixed_b(proposal, source_entry, observation, *, max_work=100_000,
     """
     began = time.perf_counter()
     work = _Work(max_work, cancelled, deadline)
-    slack = 16 * np.finfo(np.float64).eps * max(1.0, max(
-        (abs(value) for anchor in observation.b for point in anchor.points for value in point), default=1.0))
-    slack = max(slack, proposal.pose_region.roundoff_slack)
+    slack = 0.0
 
     def result(status, reason, pairs=()):
         correspondences = tuple(Correspondence(observation.b[qi].feature_id,
@@ -156,6 +176,18 @@ def verify_fixed_b(proposal, source_entry, observation, *, max_work=100_000,
 
     try:
         work.check()
+        kind = observation.constraint_kind
+        if kind not in ("full-chain", "corner-centre") or getattr(proposal, "constraint_kind", None) != kind:
+            return result("unresolved", "constraint-kind-mismatch")
+        ray_floor = None
+        if kind == "corner-centre":
+            ray_floor = getattr(proposal, "minimum_ray_dot", None)
+            if ray_floor is None or not math.isfinite(ray_floor) or not -1 <= ray_floor <= 1:
+                return result("unresolved", "b-ray-threshold-unavailable")
+        slack = 16 * np.finfo(np.float64).eps * max(1.0, max(
+            (abs(value) for anchor in observation.b for point in _active_points(anchor.points, kind)
+             for value in point), default=1.0))
+        slack = max(slack, proposal.pose_region.roundoff_slack)
         if observation.a.source_independent is not True or observation.issues:
             return result("unresolved", "observation-partition-not-ready")
         if source_entry.key != proposal.key or source_entry.resource_binding != proposal.resource_binding:
@@ -178,25 +210,30 @@ def verify_fixed_b(proposal, source_entry, observation, *, max_work=100_000,
         for anchor in source_entry.anchors:
             work.check()
             if (anchor.feature_id in source_entry.eligible_feature_ids
-                    and _source_independent(anchor, source_vertices, source_arms)):
+                    and _source_independent(anchor, source_vertices, source_arms, kind)):
                 source.append(anchor)
         choices, numeric_pending = {}, False
         tolerance = observation.epsilon + slack
         for qi, query in enumerate(observation.b):
             choices[qi] = []
+            active_query = _active_points(query.points, kind)
+            query_rays = _ordered_rays(query, (0, 1, 2), kind) if kind == "corner-centre" else None
             for anchor in source:
                 for order in ((0, 1, 2), (2, 1, 0)):
                     work.check()
                     points = tuple(anchor.points[index] for index in order)
                     with np.errstate(over="raise", invalid="raise", divide="raise"):
-                        product = scale * np.asarray(points)
+                        if (kind == "corner-centre" and
+                                np.any(_unit_dot_upper(query_rays, _ordered_rays(anchor, order, kind)) < ray_floor)):
+                            continue
+                        product = scale * _active_points(points, kind)
                         predicted = product + translation
-                        error = float(np.max(np.abs(predicted - query.points)))
+                        error = float(np.max(np.abs(predicted - active_query)))
                         # Dimensionless unit-roundoff allowance for evaluating
                         # this fixed global affine map, not extra pixel epsilon.
                         arithmetic = float(4 * np.finfo(np.float64).eps * (
                             np.max(np.abs(product)) + np.max(np.abs(translation))
-                            + np.max(np.abs(query.points))))
+                            + np.max(np.abs(active_query))))
                     if not math.isfinite(error) or not math.isfinite(arithmetic):
                         raise _Unfinished("b-fixed-matrix-numeric-unresolved")
                     if error + arithmetic <= tolerance:
@@ -219,7 +256,7 @@ def verify_fixed_b(proposal, source_entry, observation, *, max_work=100_000,
                        and old_pair.anchor.center_id != pair.anchor.center_id
                        for old_qi, old_pair in chosen.items()):
                     continue
-                if not _connections(qi, pair, chosen, observation.b):
+                if kind == "full-chain" and not _connections(qi, pair, chosen, observation.b):
                     continue
                 chosen[qi] = pair
                 found = visit(depth + 1, chosen, used_centres | {pair.anchor.center_id: observation.b[qi].center_id})
@@ -238,7 +275,7 @@ def verify_fixed_b(proposal, source_entry, observation, *, max_work=100_000,
     except (_Unfinished, _Cancelled) as error:
         reason = str(error) or "cancelled"
         return result("cancelled" if reason == "cancelled" else "unresolved", reason)
-    except (FloatingPointError, RecursionError):
+    except (FloatingPointError, RecursionError, NumericPoseUnresolved):
         return result("unresolved", "b-geometry-numeric-or-depth-unresolved")
 
 
@@ -279,6 +316,9 @@ def recognize_structure_identity(index, observation, *, source_qualification_iss
     if stopped() or "observation-cancelled" in observation.issues:
         issues.append("cancelled")
         return result("cancelled")
+    if getattr(index, "constraint_kind", None) != observation.constraint_kind:
+        issues.append("constraint-kind-mismatch")
+        return result("unresolved")
     a_issues = tuple(issue for issue in observation.issues if not issue.startswith("b-"))
     if a_issues:
         issues.extend(a_issues)

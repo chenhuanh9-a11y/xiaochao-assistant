@@ -1,10 +1,11 @@
 """Positive, whole-directory retrieval of an already selected constellation A.
 
 This module consumes geometry, never pixels, author displays, B/holdout evidence,
-or a per-map pose solver.  Its model is positive uniform scale and translation
-with a closed, per-coordinate screen error ``epsilon`` at all three chain
-points. Directed rays and positive endpoint/centre connections are also checked;
-both prev/next arm orders are indexed because contour traversal may reverse.
+or a per-map pose solver. Its model is positive uniform scale and translation
+with a closed, per-coordinate screen error ``epsilon``. The default constrains
+all three chain points; the explicit corner-centre ablation constrains centres
+and both directed rays without endpoint lengths or connections. Both prev/next
+arm orders are indexed because contour traversal may reverse.
 It is a fingerprint/proposal producer; even a unique fingerprint cannot lock.
 
 The caller owns the complete competition domain, current resource bindings,
@@ -25,6 +26,28 @@ import numpy as np
 
 
 AnchorId = str | int
+
+
+def _constraint_kind(value):
+    if value not in ("full-chain", "corner-centre"):
+        raise ValueError("constraint-kind-invalid")
+    return value
+
+
+def _active_points(points, constraint_kind):
+    """Coordinates constrained by a model; complete chains remain evidence."""
+    points = np.asarray(points, dtype=np.float64)
+    return points[1:2] if _constraint_kind(constraint_kind) == "corner-centre" else points
+
+
+def _ordered_rays(anchor, order, constraint_kind):
+    if constraint_kind == "corner-centre":
+        # DirectedAnchor already normalized and checked these measured rays.
+        # The ablation must not recompute unused endpoint lengths or ratios.
+        return np.asarray(anchor.rays)[[0, 1] if order == (0, 1, 2) else [1, 0]]
+    points = np.asarray(anchor.points)[list(order)]
+    delta = points[[0, 2]] - points[1]
+    return delta / _lengths_2d(delta)[:, None]
 
 
 def _stable_id(value):
@@ -177,9 +200,11 @@ class DirectoryEntry:
 class ConstellationA:
     anchors: tuple[DirectedAnchor, ...]
     source_independent: bool
+    constraint_kind: str = "full-chain"
 
     def __post_init__(self):
         object.__setattr__(self, "anchors", tuple(self.anchors))
+        _constraint_kind(self.constraint_kind)
 
 
 @dataclass(frozen=True)
@@ -212,7 +237,7 @@ class PoseRegion:
     gives x/y bands for q = scale * (source - source_origin) + translation.
     Global translation_bounds are an outward floating conversion of those
     bands; a usable global float64 matrix still requires seed certification.
-    Bounds use all original coordinates, including endpoints.
+    Points are the active constraints selected from each complete chain.
     """
 
     scale_interval: tuple[float, float]
@@ -220,6 +245,10 @@ class PoseRegion:
     query_points: tuple
     epsilon: float
     roundoff_slack: float = 0.0
+    constraint_kind: str = "full-chain"
+
+    def __post_init__(self):
+        _constraint_kind(self.constraint_kind)
 
     @property
     def source_origin(self):
@@ -297,6 +326,11 @@ class PoseProposal:
     resource_binding: str
     correspondences: tuple[Correspondence, ...]
     pose_region: PoseRegion
+    minimum_ray_dot: float = .95
+
+    @property
+    def constraint_kind(self):
+        return self.pose_region.constraint_kind
 
     @property
     def matrix_source_to_query(self):
@@ -316,6 +350,11 @@ class UnresolvedPoseProposal:
     correspondences: tuple[Correspondence, ...]
     pose_region: PoseRegion
     reason: str
+    minimum_ray_dot: float = .95
+
+    @property
+    def constraint_kind(self):
+        return self.pose_region.constraint_kind
 
 
 @dataclass(frozen=True)
@@ -344,7 +383,7 @@ class _Posting:
     anchor: DirectedAnchor
     points: np.ndarray
     rays: np.ndarray
-    ratio: float
+    ratio: float | None
     arm_order: tuple[int, int, int]
 
 
@@ -397,6 +436,11 @@ def _extend_interval(interval, old_source, old_query, source, query):
     try:
         with np.errstate(all="raise"):
             lo, hi, epsilon = interval
+            twice_epsilon = 2 * epsilon
+            if (not math.isfinite(lo) or math.isnan(hi) or hi == -math.inf
+                    or not math.isfinite(epsilon) or epsilon < 0
+                    or not math.isfinite(twice_epsilon)):
+                raise _Unfinished("numeric-scale-interval-unresolved")
             all_source = np.concatenate((old_source, source))
             all_query = np.concatenate((old_query, query))
             delta_source = (source[:, None] - all_source[None]).reshape(-1)
@@ -404,12 +448,12 @@ def _extend_interval(interval, old_source, old_query, source, query):
             if not np.isfinite([delta_source, delta_query]).all():
                 raise _Unfinished("numeric-point-differences-unresolved")
             zero = delta_source == 0
-            if np.any(np.abs(delta_query[zero]) > 2 * epsilon):
+            if np.any(np.abs(delta_query[zero]) > twice_epsilon):
                 return None
             nonzero = ~zero
             if np.any(nonzero):
-                lower = (delta_query[nonzero] - 2 * epsilon) / delta_source[nonzero]
-                upper = (delta_query[nonzero] + 2 * epsilon) / delta_source[nonzero]
+                lower = (delta_query[nonzero] - twice_epsilon) / delta_source[nonzero]
+                upper = (delta_query[nonzero] + twice_epsilon) / delta_source[nonzero]
                 if not np.isfinite([lower, upper]).all():
                     raise _Unfinished("numeric-scale-constraints-unresolved")
                 # Outward rounding: a floating boundary must not drop a
@@ -418,7 +462,10 @@ def _extend_interval(interval, old_source, old_query, source, query):
                 next_hi = float(np.min(np.maximum(lower, upper)))
                 lo = max(lo, float(np.nextafter(next_lo, -np.inf)))
                 hi = min(hi, float(np.nextafter(next_hi, np.inf)))
-            if not math.isfinite(lo) or not math.isfinite(hi):
+            # One centre constrains translation only. Its natural positive
+            # scale interval is still unbounded until another centre arrives.
+            # Computed constraint boundaries above must nevertheless be finite.
+            if not math.isfinite(lo) or math.isnan(hi) or hi == -math.inf:
                 raise _Unfinished("numeric-scale-interval-unresolved")
             if hi <= 0 or lo > hi:
                 return None
@@ -445,17 +492,20 @@ def _positive_connections(query, source, chosen, query_anchors):
 
 
 class StructureIdentityIndex:
-    """All eligible source anchors indexed by ordered arm-length ratio.
+    """All eligible source anchors for the explicitly selected constraint.
 
     The explicit domain is independent of available entries. Missing/forbidden
-    resources remain gaps instead of disappearing from competition. Ratio
-    intervals only schedule work; no top-K, Hough winner or local-solver failure
+    resources remain gaps instead of disappearing from competition. Full-chain
+    ratios only schedule work; corner-centre visits every posting. No top-K,
+    Hough winner or local-solver failure
     removes a competitor. Exhaustive correspondence search is budgeted and may
     return unresolved. This first version favours completeness over speed.
     """
 
     def __init__(self, competition_domain: Iterable[MapFloorKey],
-                 entries: Iterable[DirectoryEntry], *, directory_complete: bool | None):
+                 entries: Iterable[DirectoryEntry], *, directory_complete: bool | None,
+                 constraint_kind: str = "full-chain"):
+        self.constraint_kind = _constraint_kind(constraint_kind)
         self.domain, self.entries = tuple(competition_domain), tuple(entries)
         if len(set(self.domain)) != len(self.domain):
             raise ValueError("duplicate-competition-domain-key")
@@ -504,22 +554,27 @@ class StructureIdentityIndex:
                     try:
                         with np.errstate(all="raise"):
                             points = np.asarray(anchor.points)[list(arm_order)]
-                            delta = points[[0, 2]] - points[1]
-                            lengths = _lengths_2d(delta)
-                            # Use point-derived directions, not a producer's
-                            # accepted raw-ray discrepancy.
-                            rays = delta / lengths[:, None]
-                            ratio = float(lengths[0] / lengths[1])
-                        if (not np.isfinite(rays).all() or not math.isfinite(ratio)
-                                or ratio <= 0):
+                            if self.constraint_kind == "corner-centre":
+                                rays = _ordered_rays(anchor, arm_order, self.constraint_kind)
+                                ratio = None
+                            else:
+                                delta = points[[0, 2]] - points[1]
+                                lengths = _lengths_2d(delta)
+                                # Preserve the original point-derived full-chain descriptor.
+                                rays = delta / lengths[:, None]
+                                ratio = float(lengths[0] / lengths[1])
+                        if (not np.isfinite(rays).all() or (ratio is not None
+                                and (not math.isfinite(ratio) or ratio <= 0))):
                             raise FloatingPointError("nonfinite-source-descriptor")
                     except FloatingPointError:
                         gap(f"numeric-source-descriptor-unresolved:{anchor.feature_id}")
                         break
                     postings.append(_Posting(index, anchor, points, rays, ratio, arm_order))
         self.directory_gaps = tuple(gaps)
-        self._postings = tuple(sorted(postings, key=lambda row: row.ratio))
-        self._ratios = tuple(posting.ratio for posting in self._postings)
+        self._postings = (tuple(postings) if self.constraint_kind == "corner-centre" else
+                          tuple(sorted(postings, key=lambda row: row.ratio)))
+        self._ratios = (tuple(posting.ratio for posting in self._postings)
+                        if self.constraint_kind == "full-chain" else ())
         self._direction_rays = np.asarray([posting.rays for posting in self._postings],
                                           dtype=np.float64).reshape(-1, 2, 2)
         self._direction_rays.setflags(write=False)
@@ -530,11 +585,12 @@ class StructureIdentityIndex:
                  cancelled: Callable[[], bool] | None = None):
         """Retrieve all compatible assignments/pose regions, or report unfinished.
 
-        epsilon is an L-infinity SCREEN-coordinate error per chain point.
+        epsilon is an L-infinity SCREEN-coordinate error per active point.
         fingerprint_unique means one (mode,map_id), never unique floor/pose.
         A must be chosen before consulting this directory; no B is accepted.
-        minimum_ray_dot is a loose pruning threshold on resolved long arms;
-        short-arm thresholds include angular uncertainty implied by epsilon.
+        minimum_ray_dot applies to both directed rays in corner-centre. The
+        original full-chain short-arm envelope retains angular uncertainty
+        implied by endpoint epsilon.
         Work remains one unit per visited posting, including batch-prefiltered
         rejects, plus the existing query/entry/DFS units. Direction batches are
         computed only after checking/charging their first posting; every later
@@ -557,6 +613,9 @@ class StructureIdentityIndex:
                                      retrieval_complete and len(maps) == 1, work.done,
                                      unresolved_proposals=tuple(unresolved_proposals))
 
+        if getattr(constellation, "constraint_kind", None) != self.constraint_kind:
+            unresolved.append("constraint-kind-mismatch")
+            return result(False)
         if constellation.source_independent is not True:
             unresolved.append("constellation-a-source-independence-not-declared")
             return result(False)
@@ -583,7 +642,7 @@ class StructureIdentityIndex:
         # boundary; otherwise equivalent scale/translation can lose a posting
         # by several ULPs. This is exposed separately from caller epsilon.
         query_magnitude = max(1.0, epsilon, float(np.max(np.abs(
-            np.asarray([anchor.points for anchor in query_anchors])))))
+            np.asarray([_active_points(anchor.points, self.constraint_kind) for anchor in query_anchors])))))
         roundoff_slack = 16 * np.finfo(np.float64).eps * query_magnitude
         tolerance = epsilon + roundoff_slack
         if not math.isfinite(tolerance):
@@ -595,40 +654,38 @@ class StructureIdentityIndex:
             candidates = [dict() for _ in self.entries]
             for query_index, query in enumerate(query_anchors):
                 work.check()
-                with np.errstate(all="raise"):
-                    qpoints = np.asarray(query.points)
-                    qdelta = qpoints[[0, 2]] - qpoints[1]
-                    lengths = _lengths_2d(qdelta)
-                    qrays = qdelta / lengths[:, None]
-                    # An endpoint and its centre can each err by sqrt(2)*epsilon.
-                    # Triangle inequality makes this interval a conservative
-                    # superset for every positive continuous scale.
-                    error = 2 * math.sqrt(2) * tolerance
-                if not np.isfinite(qrays).all() or not math.isfinite(error):
-                    raise _Unfinished("numeric-query-descriptor-unresolved")
-                # With point errors, a short arm's direction is uncertain.
-                # A source arm lies in the radius-error ball around the
-                # measured query vector. If that ball contains zero, no
-                # direction can safely exclude it. Otherwise its largest
-                # angle is asin(error / query_length). Keep directed rays,
-                # but never let a fixed angular window drop an epsilon-
-                # compatible correspondence before original-point checks.
-                with np.errstate(all="raise"):
-                    ray_floor = np.full(2, -1.0)
-                    resolved = lengths > error
-                    ray_floor[resolved] = np.sqrt(np.maximum(0.0,
-                        1 - (error / lengths[resolved]) ** 2))
-                    ray_floor = np.minimum(minimum_ray_dot, ray_floor)
-                    lower = max(0.0, float((lengths[0] - error) / (lengths[1] + error)))
-                    # This explicit infinity denotes an unbounded interval;
-                    # arithmetic overflow/NaN is separately unresolved.
-                    upper = (float((lengths[0] + error) / (lengths[1] - error))
-                             if lengths[1] > error else math.inf)
-                if (not np.isfinite(ray_floor).all() or not math.isfinite(lower)
-                        or (lengths[1] > error and not math.isfinite(upper))):
-                    raise _Unfinished("numeric-query-ratio-range-unresolved")
-                start = bisect_left(self._ratios, np.nextafter(lower, -np.inf))
-                end = bisect_right(self._ratios, np.nextafter(upper, np.inf))
+                qpoints = _active_points(query.points, self.constraint_kind)
+                if self.constraint_kind == "corner-centre":
+                    qrays = _ordered_rays(query, (0, 1, 2), self.constraint_kind)
+                    ray_floor = np.full(2, minimum_ray_dot)
+                    start, end = 0, len(self._postings)
+                else:
+                    with np.errstate(all="raise"):
+                        full_points = np.asarray(query.points)
+                        qdelta = full_points[[0, 2]] - full_points[1]
+                        lengths = _lengths_2d(qdelta)
+                        qrays = qdelta / lengths[:, None]
+                        # Both endpoints and centres have screen-coordinate error.
+                        error = 2 * math.sqrt(2) * tolerance
+                    if not np.isfinite(qrays).all() or not math.isfinite(error):
+                        raise _Unfinished("numeric-query-descriptor-unresolved")
+                    # Keep the original full-chain angular-uncertainty envelope
+                    # and ratio scheduling. Centre constraints use neither arm
+                    # lengths nor an endpoint-derived scale restriction.
+                    with np.errstate(all="raise"):
+                        ray_floor = np.full(2, -1.0)
+                        resolved = lengths > error
+                        ray_floor[resolved] = np.sqrt(np.maximum(0.0,
+                            1 - (error / lengths[resolved]) ** 2))
+                        ray_floor = np.minimum(minimum_ray_dot, ray_floor)
+                        lower = max(0.0, float((lengths[0] - error) / (lengths[1] + error)))
+                        upper = (float((lengths[0] + error) / (lengths[1] - error))
+                                 if lengths[1] > error else math.inf)
+                    if (not np.isfinite(ray_floor).all() or not math.isfinite(lower)
+                            or (lengths[1] > error and not math.isfinite(upper))):
+                        raise _Unfinished("numeric-query-ratio-range-unresolved")
+                    start = bisect_left(self._ratios, np.nextafter(lower, -np.inf))
+                    end = bisect_right(self._ratios, np.nextafter(upper, np.inf))
                 direction_mask = None
                 for position in range(start, end):
                     work.check()
@@ -643,7 +700,7 @@ class StructureIdentityIndex:
                     if np.any(_unit_dot_upper(qrays, posting.rays) < ray_floor):
                         continue
                     interval = _extend_interval((0.0, math.inf, tolerance), empty, empty,
-                                                posting.points, qpoints)
+                                                _active_points(posting.points, self.constraint_kind), qpoints)
                     if interval is not None:
                         candidates[posting.entry_index].setdefault(query_index, []).append(posting)
             for entry_index, choices in enumerate(candidates):
@@ -665,7 +722,8 @@ class StructureIdentityIndex:
                             chosen[qi].arm_order)
                             for qi in range(len(query_anchors)))
                         region = PoseRegion(interval[:2], tuple(map(tuple, source_points)),
-                                            tuple(map(tuple, query_points)), epsilon, roundoff_slack)
+                                            tuple(map(tuple, query_points)), epsilon, roundoff_slack,
+                                            self.constraint_kind)
                         try:
                             region.seed()
                         except NumericPoseUnresolved as error:
@@ -673,10 +731,10 @@ class StructureIdentityIndex:
                             if reason not in unresolved:
                                 unresolved.append(reason)
                             unresolved_proposals.append(UnresolvedPoseProposal(entry.key,
-                                entry.resource_binding, correspondences, region, str(error)))
+                                entry.resource_binding, correspondences, region, str(error), minimum_ray_dot))
                         else:
                             proposals.append(PoseProposal(entry.key, entry.resource_binding,
-                                                          correspondences, region))
+                                                          correspondences, region, minimum_ray_dot))
                         return
                     qi = order[depth]
                     query = query_anchors[qi]
@@ -689,17 +747,20 @@ class StructureIdentityIndex:
                                and old_posting.anchor.center_id != posting.anchor.center_id
                                for old_qi, old_posting in chosen.items()):
                             continue
-                        if not _positive_connections(query, posting, chosen, query_anchors):
+                        if (self.constraint_kind == "full-chain"
+                                and not _positive_connections(query, posting, chosen, query_anchors)):
                             continue
+                        active_source = _active_points(posting.points, self.constraint_kind)
+                        active_query = _active_points(query.points, self.constraint_kind)
                         next_interval = _extend_interval(interval, source_points, query_points,
-                                                         posting.points, np.asarray(query.points))
+                                                         active_source, active_query)
                         if next_interval is None:
                             continue
                         chosen[qi] = posting
                         visit(depth + 1, chosen, used_centres |
                               {posting.anchor.center_id: query.center_id}, next_interval,
-                              np.concatenate((source_points, posting.points)),
-                              np.concatenate((query_points, np.asarray(query.points))))
+                              np.concatenate((source_points, active_source)),
+                              np.concatenate((query_points, active_query)))
                         del chosen[qi]
 
                 visit(0, {}, {}, (0.0, math.inf, tolerance), empty, empty)

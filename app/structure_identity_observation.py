@@ -17,7 +17,7 @@ import numpy as np
 
 from entry_evidence_work import FrameSnapshot
 from single_map_structure import current_geometry, current_part, observed_corner_chains
-from structure_identity_index import ConstellationA, DirectedAnchor
+from structure_identity_index import ConstellationA, DirectedAnchor, _constraint_kind
 
 
 OBSERVATION_QUALIFICATION_GAPS = (
@@ -125,6 +125,11 @@ class StructureIdentityObservation:
     qualification_gaps: tuple[str, ...] = OBSERVATION_QUALIFICATION_GAPS
 
     @property
+    def constraint_kind(self):
+        # A is the sole observation-side writer of the model selection.
+        return getattr(self.a, "constraint_kind", None)
+
+    @property
     def geometry_ready(self):
         return not self.issues
 
@@ -150,7 +155,8 @@ def _choose_a(pool, cancelled):
 
 
 def partition_observed_chains(records, *, frame_key, frame_shape, observation_bounds=None,
-                              epsilon=3.0, support_halo=5, cancelled=None):
+                              epsilon=3.0, support_halo=5, cancelled=None,
+                              constraint_kind="full-chain"):
     """Partition caller-supplied measured records without a source catalogue.
 
     A candidates use even cells of a fixed 4x4 screen grid; B uses odd cells.
@@ -158,6 +164,7 @@ def partition_observed_chains(records, *, frame_key, frame_shape, observation_bo
     removed, never replaced by selecting a more convenient A constellation.
     """
     began = time.perf_counter()
+    _constraint_kind(constraint_kind)
     if not math.isfinite(epsilon) or epsilon < 0:
         raise ValueError("observation-epsilon-invalid")
     if isinstance(support_halo, bool) or not isinstance(support_halo, int) or support_halo < 5:
@@ -203,16 +210,17 @@ def partition_observed_chains(records, *, frame_key, frame_shape, observation_bo
         issues.append("observation-cancelled")
         a, b = (), ()
     return StructureIdentityObservation(str(frame_key), (height, width), bounds,
-        ConstellationA(tuple(a), True), tuple(b), float(epsilon), support_halo, len(records),
+        ConstellationA(tuple(a), True, constraint_kind), tuple(b), float(epsilon), support_halo, len(records),
         len(a_pool), len(b_pool), tuple(rejected), tuple(excluded), tuple(issues),
         (time.perf_counter() - began) * 1000)
 
 
 def observe_structure_identity(snapshot, *, observation_bounds=None, epsilon=3.0,
-                               support_halo=5, cancelled=None):
+                               support_halo=5, cancelled=None, constraint_kind="full-chain"):
     """Run the actual current_geometry/current_part/measured-chain channel."""
     if not isinstance(snapshot, FrameSnapshot):
         raise TypeError("structure-identity-frame-snapshot-required")
+    _constraint_kind(constraint_kind)
     frame = snapshot.pixels
     if frame.ndim != 3 or frame.shape[2] < 3:
         raise ValueError("structure-identity-colour-frame-required")
@@ -238,7 +246,7 @@ def observe_structure_identity(snapshot, *, observation_bounds=None, epsilon=3.0
         issue = "observation-cancelled"
     result = partition_observed_chains(records, frame_key=snapshot.frame_key,
         frame_shape=frame.shape, observation_bounds=actual_bounds, epsilon=epsilon,
-        support_halo=support_halo, cancelled=cancelled)
+        support_halo=support_halo, cancelled=cancelled, constraint_kind=constraint_kind)
     issues = tuple(dict.fromkeys((*((issue,) if issue else ()), *result.issues)))
     return StructureIdentityObservation(result.frame_key, result.frame_shape, result.observation_bounds,
         result.a, result.b, result.epsilon, result.support_halo, result.measured_chain_count,
