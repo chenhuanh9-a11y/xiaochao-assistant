@@ -170,7 +170,7 @@ def build_structure_identity_resources(bundle, provider, *, floor=None, cancelle
     entrypoint = FileRef(component, view.component["entrypoint"])
     declarations = (view.path(entrypoint.path), view.path(bundle.interfaces["identityPack"]),
                     bundle.resources.index_path)
-    batch = None
+    batch = operation = None
     batch_provider = (callable(getattr(provider, "batch_bindings", None))
         and callable(getattr(provider, "read_with_resource", None))
         and getattr(provider, "resources", None) is bundle.resources
@@ -183,13 +183,19 @@ def build_structure_identity_resources(bundle, provider, *, floor=None, cancelle
             if pack.identity_profiles.get(item.id) and item.layers.get(fl) is not None)
         batch = source.prepare_batch(provider.batch_bindings(requests),
                                      required_paths=declarations, cancelled=cancelled)
+        begin = getattr(provider, 'begin_read_operation', None)
+        if callable(begin):
+            operation = begin(bundle, batch, cancelled=cancelled)
     if batch is None:
         reader.read_many(declarations, expected_root=root, cancelled=cancelled)
     entries, infos, reads = [], [], []
     for item in pack.maps:
         for fl in floors:
             files._check_cancelled(cancelled)
-            bundle.assert_current()
+            if operation is None:
+                bundle.assert_current()
+            else:
+                operation.assert_owned()
             key = MapFloorKey(mode, item.id, fl, "variant-01")
             profile = pack.identity_profiles.get(item.id)
             reference = None
@@ -199,9 +205,12 @@ def build_structure_identity_resources(bundle, provider, *, floor=None, cancelle
             elif item.layers.get(fl) is None:
                 reason = "declared-native-layer-unavailable"
             else:
-                reference = (provider.read_with_resource(profile, item.id, fl,
-                    read_resource=batch.read_resource) if batch is not None
-                    else provider(profile, item.id, fl))
+                if operation is not None:
+                    reference = operation.read_reference(profile, item.id, fl, read_resource=batch.read_resource)
+                else:
+                    reference = (provider.read_with_resource(profile, item.id, fl,
+                        read_resource=batch.read_resource) if batch is not None
+                        else provider(profile, item.id, fl))
                 if reference is None:
                     reason = "typed-footprint-reference-unavailable"
             metadata = reference.metadata if reference is not None else {}
@@ -286,6 +295,8 @@ def build_structure_identity_resources(bundle, provider, *, floor=None, cancelle
         batch.release()
     batch = loader = use = None
     result.check_current(cancelled=cancelled)
+    if operation is not None:
+        operation.finish()
     if batch_provider and any(getattr(provider, name, None) is not value for name, value in zip(
             ("root", "resources", "versions", "_legacy_reference_loader", "_check_current"), provider_state)):
         raise ValueError("structure-identity-resource-owner-changed")

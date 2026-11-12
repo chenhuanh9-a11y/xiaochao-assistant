@@ -67,9 +67,59 @@ def _build_memory_store(pack, memory_root, resource_root, *, production=PRODUCTI
         Path(resource_root) / ".qt-no-portable-seeds.json" if season == "s0" else None)
 
 
+class _SharedReferenceReadOperation:
+    """One successful byte batch, with real proofs around RAM-only reads."""
+    def __init__(self, provider, owners, binding, cancelled):
+        self.provider, self.owners, self.cancelled = provider, owners, cancelled
+        self.source, self.source_state, self.paths = binding
+        self.provider_state, self.owner_state = provider._read_owner_state(), owners.read_state()
+        self.closed = False
+        self.assert_owned()
+        provider._assert_current()
+        self.assert_owned()
+        self.legacy_keys = owners.legacy_keys()
+        self.assert_owned()
+
+    def assert_owned(self):
+        import star_map_import as files
+        files._check_cancelled(self.cancelled)
+        if (self.closed or self.provider._read_owner_state() != self.provider_state
+                or self.owners.read_state() != self.owner_state
+                or self.source._read_state() != self.source_state):
+            raise ValueError('structure-identity-resource-owner-changed')
+
+    def read_reference(self, profile, map_id, floor, *, read_resource):
+        from imported_fast_structure import _PreparedReadBatch
+        self.assert_owned()
+        batch = getattr(read_resource, '__self__', None)
+        if (type(batch) is not _PreparedReadBatch
+                or getattr(read_resource, '__func__', None) is not _PreparedReadBatch.read_resource
+                or batch.verified_binding() != (self.source, self.source_state, self.paths)):
+            raise ValueError('structure-identity-resource-owner-changed')
+        provider = self.provider
+        # Only an admitted, disjoint native lookup may omit the legacy attempt.
+        # Actual legacy and unknown lookups retain the original guarded loader.
+        keys = [key for key in provider.versions if key[1] == str(map_id) and key[3] == str(floor)]
+        if (str(map_id), str(floor)) in self.legacy_keys or len(keys) != 1:
+            return provider.read_with_resource(profile, map_id, floor, read_resource=read_resource)
+        relative = self.source.reader.relative_path(provider.versions[keys[0]]['path'])
+        if relative not in self.paths:
+            raise ValueError('structure-identity-resource-owner-changed')
+        return provider._load(profile, map_id, floor, read_resource=read_resource, operation=self)
+
+    def finish(self):
+        try:
+            self.assert_owned()
+            self.provider._assert_current()
+            self.assert_owned()
+        finally:
+            self.closed = True
+
+
 class SharedReferenceProvider:
     """Version-checked typed references; six-entry cache, no pose/UI state."""
-    def __init__(self, root, resources, versions, *, legacy_reference_loader=None, check_current=None):
+    def __init__(self, root, resources, versions, *, legacy_reference_loader=None, check_current=None,
+                 operation_owners=None):
         if check_current is not None and not callable(check_current):
             raise TypeError('reference lifetime guard must be callable')
         if legacy_reference_loader is not None and not callable(legacy_reference_loader):
@@ -77,6 +127,7 @@ class SharedReferenceProvider:
         self.root, self.resources, self.versions = root, resources, versions
         self._legacy_reference_loader = legacy_reference_loader
         self._check_current = check_current
+        self._operation_owners = operation_owners
         self._cache = OrderedDict()
         self._lock = threading.RLock()
 
@@ -103,13 +154,48 @@ class SharedReferenceProvider:
         """Use an operation reader with the original checks and cache behavior."""
         return self._load(profile, map_id, floor, read_resource=read_resource)
 
-    def _load(self, profile, map_id, floor, *, read_resource=None):
+    def _read_owner_state(self):
+        return tuple(id(getattr(self, name)) for name in ('root', 'resources', 'versions',
+            '_legacy_reference_loader', '_check_current', '_operation_owners', '_cache', '_lock'))
+
+    def begin_read_operation(self, bundle, batch, *, cancelled=None):
+        from imported_fast_structure import _PreparedReadBatch
+        from imported_legacy_references import ImportedLegacyReferences
+        from imported_native_context import ImportedResourceOwners
+        owners, guard, legacy = self._operation_owners, self._check_current, self._legacy_reference_loader
+        if (type(batch) is not _PreparedReadBatch or type(owners) is not ImportedResourceOwners
+                or owners.bundle is not bundle or owners.base_view is not bundle._view
+                or owners.controls._view is not owners.controls_view
+                or self.resources is not bundle._values['resources']
+                or self.versions is not bundle._values['versions']
+                or getattr(guard, '__self__', None) is not owners
+                or getattr(guard, '__func__', None) is not ImportedResourceOwners.assert_current):
+            return None
+        if ((owners.legacy is None and legacy is not None) or (owners.legacy is not None and (
+                type(owners.legacy) is not ImportedLegacyReferences
+                or getattr(legacy, '__self__', None) is not owners.legacy
+                or getattr(legacy, '__func__', None) is not ImportedLegacyReferences.reference))):
+            return None
+        binding = batch.verified_binding()
+        if binding[0] is not bundle._values['fast_structure_source']:
+            return None
+        return _SharedReferenceReadOperation(self, owners, binding, cancelled)
+
+    def _assert_read_current(self, operation):
+        if operation is None:
+            self._assert_current()
+        else:
+            if type(operation) is not _SharedReferenceReadOperation or operation.provider is not self:
+                raise ValueError('structure-identity-resource-owner-changed')
+            operation.assert_owned()
+
+    def _load(self, profile, map_id, floor, *, read_resource=None, operation=None):
         import numpy as np
-        self._assert_current()
-        if self._legacy_reference_loader is not None:
+        self._assert_read_current(operation)
+        if operation is None and self._legacy_reference_loader is not None:
             legacy = self._legacy_reference_loader(map_id, floor)
             if legacy is not None:
-                self._assert_current()
+                self._assert_read_current(operation)
                 return legacy
         keys = [key for key in self.versions if key[1] == str(map_id) and key[3] == str(floor)]
         if len(keys) != 1:
@@ -121,7 +207,7 @@ class SharedReferenceProvider:
         with self._lock:
             reference = self._cache.get(key)
             if reference is not None:
-                self._assert_current()
+                self._assert_read_current(operation)
                 self._cache.move_to_end(key)
                 return reference
             if read_resource is None:
@@ -134,7 +220,7 @@ class SharedReferenceProvider:
                     or reference.metadata.get("canvas") != version["canvas"]
                     or any(reference.metadata.get(name) != value for name, value in version["expected"].items())):
                 return None
-            self._assert_current()
+            self._assert_read_current(operation)
             self._cache[key] = reference
             while len(self._cache) > 6:
                 self._cache.popitem(last=False)

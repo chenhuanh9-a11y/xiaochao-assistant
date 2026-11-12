@@ -3,6 +3,43 @@ from imported_native_base import NativeBaseBundle
 from imported_resource_packages import PackageView
 
 
+class ImportedResourceOwners:
+    """Actual base/controls owners used by one explicit reference read operation."""
+    def __init__(self, base_view, bundle, controls, native=None, legacy=None):
+        self.base_view, self.bundle, self.controls = base_view, bundle, controls
+        self.controls_view = controls._view
+        self.native, self.legacy = native, legacy
+
+    def assert_current(self):
+        if self.native is not None:
+            self.native.assert_current()
+        else:
+            self.bundle.assert_current()
+            self.controls.assert_current()
+            self.bundle.assert_current()
+
+    @staticmethod
+    def _view_state(view):
+        return (id(view), view.resource_root, view.component_ref, id(view._assert_current))
+
+    def read_state(self):
+        """RAM ownership only; guarded properties belong at the two boundaries."""
+        bundle, controls, native, legacy = self.bundle, self.controls, self.native, self.legacy
+        values = bundle._values
+        reader = values['reader']
+        return (self._view_state(self.base_view), self._view_state(self.controls_view),
+            id(bundle), id(bundle._view), bundle._root, values['component_ref'],
+            tuple(id(values[name]) for name in ('pack', 'resources', 'versions', 'reader', 'fast_structure_source')),
+            id(reader.view), reader.root, id(controls), id(controls._view), controls._root,
+            None if native is None else (id(native), id(native._base_view), id(native._bundle),
+                id(native._controls), native._root, native._component_ref),
+            None if legacy is None else legacy.read_owner_state())
+
+    def legacy_keys(self):
+        return (frozenset((key[1], key[3]) for key in self.legacy.bindings)
+                if self.legacy is not None else frozenset())
+
+
 class ImportedNativeContext:
     """Bind a validated base and controls; subclasses own capability semantics."""
 

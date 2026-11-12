@@ -85,6 +85,11 @@ class _PreparedReadBatch:
         self._current()
         return self.payloads[self.source.reader.relative_path(path)]
 
+    def verified_binding(self):
+        """Describe only a complete successful read, without retaining its bytes."""
+        self._current()
+        return self.source, self.state, frozenset(self.payloads)
+
     def read(self, reference):
         return self.source._read(reference, self._read_many, self._current)
 

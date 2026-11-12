@@ -110,6 +110,12 @@ class ImportedLegacyReferences:
         return {(self._profile, mid, 'variant-01', floor): deepcopy(canvas)
                 for mid in self._maps for floor, canvas in self._canvases.items()}
 
+    def read_owner_state(self):
+        """RAM owner description; actual legacy reads retain their own checks."""
+        return (id(self), id(self._view), self._root, id(self._reader),
+                id(self._reader.view), self._reader.root, id(self._store),
+                self._maps, id(self._canvases), self._profile)
+
     def reference(self, map_id, floor):
         self.assert_current()
         if str(map_id) not in self._maps or str(floor) not in self._canvases:

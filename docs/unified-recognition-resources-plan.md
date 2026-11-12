@@ -817,6 +817,8 @@ python -m unittest test_client_progressive_display test_client_progressive_pixel
 
 首次贴合准备复用已准入的静态模型时，其入口、身份/typed 索引、坐标与已成功解码的入口 backing 文件，通过原组件批读检查实际字节及既有清单声明，保留本次读取和最终重读记录，不重复 JSON/NPZ 内容遍历。坐标矩阵仍由原适配器解析，求解所用数组仍冻结为独立只读值；未准入或可选输入、模型能力缺失时的加载器继续原语义预检与错误分类。历史 passports 的成功模型不重复解析或追加，实际文件仍须通过完整性和当前选择检查。
 
+完整域索引的成功批读使用显式短寿命 reference operation：开始及最终字节复核后实际检查基础、控件与选择上下文，逐层只核对本次 provider、bundle、控件、native、legacy、source/reader 的内存归属。读取仍复用原 provider 解码和有界 LRU；只有已准入 legacy 集合之外的 native 请求省去无用 legacy 尝试。失败前缀、普通 callable、自定义 guard/legacy loader 保留原读取与首错分类。operation 不持有批次或其 reader 回调跨越最终复核，不进入逐帧数学求解，也不增加身份或楼层资格。
+
 0059 的现有状态先在外层捕获为只含参考、尺度、覆盖和坐标信息的数据；generation 收据留在 runtime。纯计算保留原 0059 → fast → 原入口/恢复与残差复核顺序。runtime 的求解、刷新残差和 material ACK 记忆三处使用准备输入；早期数值结果只排入有界队列，由调用线程检查和发布，退出时取消并收取该次数值任务。日志分别记录准备、数值调用及完整调用耗时，候选 ticket 复用已有贴合时不补造一次计算耗时。
 
 识别与贴合同时开发。导入引擎准备时建立完整地图域的直接结构索引，逐帧以真实楼层和同一 `FrameSnapshot` 并行运行直接检索与原候选 scanner；保留未扫描竞争者、缺层和 legacy 缺口。直接分支当前提供诊断，`authorizesIdentity` 与 `lock` 始终为 false：source-observation 等价、fog 分类、当前帧 canonical 残差及身份资格尚未补齐。候选路径不等待该诊断分支收尾；这不等于两路有效锁图竞争已经完成。四模式同样本正式计时、可见像素及游戏验收仍待执行。
