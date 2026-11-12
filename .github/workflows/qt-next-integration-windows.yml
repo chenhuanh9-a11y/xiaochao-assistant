@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [features, core, diagnostics, packaging, packaging-imported-data, packaging-imported-runtime, packaging-imported-display-data, packaging-imported-display, packaging-imported-display-integration, tutorials, map-defaults, season-ui, next-version-contracts, author-snapshots, installer-reset, fit-simulation, main-baseline, released-baseline]
+        group: [features, core, diagnostics, packaging, packaging-imported-data, packaging-imported-runtime, packaging-imported-activation, packaging-imported-display-data, packaging-imported-display, packaging-imported-display-integration, tutorials, map-defaults, season-ui, next-version-contracts, author-snapshots, installer-reset, fit-simulation, main-baseline, released-baseline]
     env:
       PYTHONPATH: 'app;tests;tools;experiments/qt_quick'
       QT_QPA_PLATFORM: offscreen
@@ -249,8 +249,15 @@ jobs:
                 'test_s1_floor_observation', 'test_s1_map_ui_geometry',
                 'test_client_shared_reference_context', 'test_client_structure_unification', 'test_group_review_lifecycle',
                 'test_client_imported_providers', 'test_client_native_base_provider',
-                'test_client_direct_structure_recognition', 'test_client_prepared_alignment',
-                'test_client_imported_s1_provider',
+                'test_client_direct_structure_recognition', 'test_client_prepared_alignment', 'test_client_known_floor_recovery',
+                'test_client_imported_s1_provider'
+              )
+            }
+            # 7ef reached the unchanged 25m cap during the final S1 activation
+            # UI module. Preserve every module and its separate process, with
+            # provider/fit and activation/lifecycle work in separate jobs.
+            'packaging-imported-activation' {
+              $modules = @(
                 'test_client_imported_difficult_provider', 'test_client_imported_difficult_activation_ui',
                 'test_client_imported_group_registry', 'test_client_imported_group_runtime',
                 'test_client_imported_admission',

@@ -52,20 +52,28 @@ def recover_registered_floor(host, frame, map_id, floor, reference, cancelled=No
     # As in the original caller, a main locator error is terminal rather than
     # silently converting missing entrance resources into broad search.
     try:
-        main_rows, main_diagnostics = engine.entry_identity.rank(
-            frame, floor, map_id=map_id, budget_seconds=.35)
-        if obsolete():
-            return dict(success=False, reason="structure-work-obsolete")
-        main = next((row for row in main_rows if same_target(row) and row.get("poseVerified")
-                     and (row.get("verification") or {}).get("success")), None)
-        if main is not None:
-            host._log("registered-floor-main-attempt", mapId=map_id, floor=floor,
-                      success=True, diagnostics=main_diagnostics)
-            return fit(main, main_diagnostics, "registered-floor-main-geometry")
+        main_locator = engine.entry_identity
+        pose_source = getattr(main_locator, 'has_pose_eligible_source', None)
+        # Proposal-only entrance geometry remains available to identification.
+        # It cannot satisfy this pose-only consumer, even after expensive
+        # verification; move straight to the original local fallback instead.
+        if not callable(pose_source) or pose_source(map_id, floor) is not False:
+            main_rows, main_diagnostics = main_locator.rank(
+                frame, floor, map_id=map_id, budget_seconds=.35)
+            if obsolete():
+                return dict(success=False, reason="structure-work-obsolete")
+            main = next((row for row in main_rows if same_target(row) and row.get("poseVerified")
+                         and (row.get("verification") or {}).get("success")), None)
+            if main is not None:
+                host._log("registered-floor-main-attempt", mapId=map_id, floor=floor,
+                          success=True, diagnostics=main_diagnostics)
+                return fit(main, main_diagnostics, "registered-floor-main-geometry")
     except (ValueError, TypeError, KeyError, OSError, cv2.error) as error:
         host._log("registered-floor-main-unavailable", mapId=map_id, floor=floor, error=str(error))
         return dict(success=False, reason="registered-floor-main-resource-unavailable")
 
+    if obsolete():
+        return dict(success=False, reason="structure-work-obsolete")
     try:
         candidates, diagnostics = locator.rank(frame, floor, map_id=map_id, budget_seconds=.35)
     except (ValueError, TypeError, KeyError, OSError, cv2.error) as error:

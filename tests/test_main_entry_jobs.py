@@ -121,6 +121,9 @@ class MainEntryJobTests(unittest.TestCase):
         for purpose, pose_allowed, identity_allowed in purposes:
             with self.subTest(purpose=purpose):
                 front = self.source(ids=('map-a',), purpose=purpose)
+                self.assertEqual(front.has_pose_eligible_source('map-a', '2'), pose_allowed)
+                self.assertFalse(front.has_pose_eligible_source('map-a', '1'))
+                self.assertFalse(front.has_pose_eligible_source('foreign', '2'))
                 self.observations(front)
                 for known in (None, 'map-a'):
                     _, (rows, diagnostic) = self.drain(front.prepare_rank(self.frame, '2', map_id=known))

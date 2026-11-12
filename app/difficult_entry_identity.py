@@ -7,6 +7,10 @@ import cv2
 from entry_evidence_work import EntryEvidenceJob as MainEntryJob, EntryEvidenceWork
 
 
+def _pose_source_eligible(source):
+    return source.get('proposalOnly', False) is False and source.get('authorizesPose', True) is True
+
+
 def entry_geometry(frame):
     """Difficult entry at bottom of map was outside legacy 22–80% crop.
 
@@ -226,6 +230,15 @@ class MapEntryGeometryIdentity:
             context['authorVisible']=(visible[0].copy(),visible[1],visible[2]) if visible is not None else None
         return context['authorVisible']
 
+    def has_pose_eligible_source(self, map_id, floor):
+        """Resource purpose only; this does not verify a current-frame pose.
+
+        A known-map pose consumer can omit a producer with no eligible source.
+        General candidate ranking still retains every proposal and competitor.
+        """
+        return any(item['mapId'] == map_id and str(item['floor']) == str(floor)
+                   and _pose_source_eligible(item) for item, *_ in self.entries)
+
     def rank(self,frame,floor,*,budget_seconds=None,map_id=None,route=None,candidate_map_ids=None):
         started=time.perf_counter()
         if not any(item['floor']==str(floor) for item,*_ in self.entries):
@@ -291,7 +304,7 @@ class MapEntryGeometryIdentity:
             # Proposal geometry still competes and can seed a later independent
             # fit. Passing this entry check cannot upgrade its resource purpose.
             row['poseVerified']=bool(row is winner and not row['poseAmbiguous']
-                and row.get('proposalOnly',False) is False and row.get('authorizesPose',True) is True
+                and _pose_source_eligible(row)
                 and row['hypothesis']['neighborChains']>=6 and row['score']>=10
                 and (row['hypothesis']['mainChains']>=3 or (
                     row['hypothesis']['neighborChains']>=8
