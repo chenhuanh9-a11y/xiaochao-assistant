@@ -1,5 +1,8 @@
 """Production imported provider preparation/cache -> real RAM-only solver."""
 from contextlib import ExitStack, contextmanager
+import builtins
+import io
+import os
 from pathlib import Path
 import threading
 import unittest
@@ -30,13 +33,15 @@ class PreparedAlignmentProviderTests(unittest.TestCase):
 
     @contextmanager
     def no_resource_io(self):
+        # Keep owner/read callback identities intact. Block the actual file
+        # operations for warm preparation and numerical fit, with no exceptions
+        # for manifests, metadata or alternate path spellings.
         def denied(*args, **kwargs):
-            raise AssertionError('cached-compute-touched-resource-io')
+            raise AssertionError('cached-compute-touched-component-resource')
         with ExitStack() as stack:
-            for owner, name in ((self.engine, 'qt_assert_resource_current'),
-                                (self.engine.qt_shared_provider, '_assert_current'),
-                                (self.engine.qt_fast_structure_source, 'read'),
-                                (Path, 'stat'), (Path, 'resolve'), (Path, 'read_bytes')):
+            for owner, name in ((Path, 'stat'), (Path, 'resolve'), (Path, 'read_bytes'),
+                                (os, 'open'), (os, 'stat'), (os, 'lstat'),
+                                (builtins, 'open'), (io, 'open')):
                 stack.enter_context(patch.object(owner, name, side_effect=denied))
             yield
 
@@ -46,11 +51,23 @@ class PreparedAlignmentProviderTests(unittest.TestCase):
         self.assertFalse(cold['cacheHit'])
         with self.no_resource_io():
             second, warm = prepare_pose_solver(self.engine, self.mid, '1')
+        with self.no_resource_io():
             fit = second.fit(self.frame, self.mid, '1', lambda: False)
+            self.assertTrue(pose_inputs_current(self.engine, second.inputs))
         self.assertTrue(warm['cacheHit'])
         self.assertIs(second.inputs, first.inputs)
         self.assertFalse(fit['success'])
-        self.assertTrue(pose_inputs_current(self.engine, second.inputs))
+        # A positive control uses the real component reader with an extended
+        # lexical alias that escapes the reader's exact-root fast path but
+        # resolves back into the same component file.
+        reference = second.inputs.reference('shared-structure', self.mid, '1')
+        component_reader = self.engine.qt_native_base._values['reader']
+        relative = Path(component_reader.relative_path(reference.path))
+        component_root = self.engine.qt_native_base._root
+        alias = component_root.parent / '..' / component_root.parent.name / component_root.name / relative
+        with self.no_resource_io():
+            with self.assertRaisesRegex(AssertionError, 'cached-compute-touched-component-resource'):
+                component_reader(alias)
 
     def test_factory_invalidation_rejects_old_preparation_before_io(self):
         host, _ = prepare_pose_solver(self.engine, self.mid, '1')
@@ -172,6 +189,9 @@ class PreparedAlignmentProviderTests(unittest.TestCase):
         first, _ = prepare_pose_solver(self.engine, self.mid, '1')
         reference = first.inputs.reference('shared-structure', self.mid, '1')
         original_mask = reference.clean_mask.copy()
+        # Keep the real provider's already admitted reference so that the
+        # next cold decode classifies the damaged bytes as unavailable.
+        self.engine.qt_shared_provider('shared-structure', self.mid, '1')
         reference.path.write_bytes(b'changed-after-preparation')
         with self.no_resource_io():
             cached, info = prepare_pose_solver(self.engine, self.mid, '1')
@@ -179,6 +199,10 @@ class PreparedAlignmentProviderTests(unittest.TestCase):
         self.assertTrue(info['cacheHit'])
         self.assertTrue(np.array_equal(reference.clean_mask, original_mask))
         self.engine.qt_pose_input_cache.invalidate()
+        # The imported factory also keeps its admitted static payload snapshot;
+        # clear it to make the next preparation exercise the damaged file on
+        # disk instead of legitimately reusing that earlier RAM snapshot.
+        self.engine.qt_pose_static_payloads = None
         with self.assertRaisesRegex(PoseInputsUnavailable, 'reference-decode-unavailable'):
             prepare_pose_solver(self.engine, self.mid, '1')
 
