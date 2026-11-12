@@ -18,6 +18,7 @@ import client_route_preferences as preferences
 from client_live_runtime import LiveRuntime
 from structure_pose_inputs import _original_native_loaders
 import shared_structure_display as display
+import test_imported_author_displays as author_display_fixture
 import test_client_s1_coordinate_recognition as coordinate_fixture
 
 
@@ -38,6 +39,11 @@ class S1DisplayRamTests(unittest.TestCase):
         for key, value in before.items():
             if isinstance(value, np.ndarray):
                 np.testing.assert_array_equal(after[key], value, err_msg=key)
+            elif key == 'resourceIdentity':
+                self.assertIs(type(after[key]['path']), type(value['path']))
+                self.assertTrue(Path(after[key]['path']).samefile(value['path']))
+                self.assert_json_contract({name: item for name, item in after[key].items() if name != 'path'},
+                    {name: item for name, item in value.items() if name != 'path'})
             else:
                 self.assertEqual(after[key], value, key)
 
@@ -55,8 +61,12 @@ class S1DisplayRamTests(unittest.TestCase):
             self.assertEqual(actual, expected)
 
     def assert_reference_contract(self, actual, original):
-        self.assertEqual((actual.path, actual.resource_root, actual.shape),
-            (original.path, original.resource_root, original.shape))
+        self.assertTrue(actual.path.samefile(original.path))
+        if original.resource_root is None:
+            self.assertIsNone(actual.resource_root)
+        else:
+            self.assertTrue(actual.resource_root.samefile(original.resource_root))
+        self.assertEqual(actual.shape, original.shape)
         self.assert_json_contract(actual.metadata, original.metadata)
         self.assert_json_contract(actual.native_wall_segments, original.native_wall_segments)
         for name in ('clean_mask', 'validation_mask', 'known_boundary', 'unknown_mask'):
@@ -182,6 +192,33 @@ class S1DisplayRamTests(unittest.TestCase):
                 self.assertEqual(missing['preferredProfileId'], 'missing-author')
                 self.assertEqual(missing['effectiveProfileId'], 'shared-structure')
                 self.assertNotIn('rgbaPixels', missing)
+
+    def test_selected_author_uses_original_pixels_and_bridge_with_a_real_windows_short_root(self):
+        for mode in ('difficult', 'nightmare'):
+            with self.subTest(mode=mode):
+                original = self.author_engine(mode)
+                root = original.qt_native_base.reader.view.resource_root.resolve()
+                alias = author_display_fixture.ImportedAuthorDisplaysTests.short_path_alias(self, root)
+                resolver = coordinate_fixture.ResourceResolver(alias,
+                    supported_capabilities=coordinate_fixture.SUPPORTED_CAPABILITIES)
+                factories = coordinate_fixture.build_imported_engine_factories(resolver,
+                    coordinate_fixture.RuntimePaths(root.parent, False))
+                self.addCleanup(factories.invalidate)
+                with patch.object(coordinate_fixture.coordinate, 'EXPECTED_INDEX_SHA256', self.cases[mode][2]):
+                    engine = factories._get(mode, season='s1')
+                _, mid, floor = next(key for key in engine.qt_optional_displays.bindings
+                    if key[0] == 'author-fixture')
+                references = engine.qt_s1_coordinate_recognition.references
+                actual = preferences.prepare_display_layer(engine, mid, floor, 'author-fixture')
+                self.assertEqual(actual['displayKind'], 'author-route')
+                self.assertFalse(actual['fallback'])
+                expected = np.full((3, 5, 4), (33, 22, 11, 44), np.uint8)
+                expected[1, 2] = (3, 2, 1, 0)
+                np.testing.assert_array_equal(actual['pixels'], expected)
+                np.testing.assert_array_equal(actual['matrixDisplayToReference'],
+                    [[.8, .2, 1], [.1, 1.2, 2], [0, 0, 1]])
+                self.assertIs(engine.qt_s1_coordinate_recognition.references, references)
+                self.assertIs(engine.qt_pose_static_payloads.references[mid, floor], references[mid, floor])
 
     def test_native_layer_can_replace_structural_fallback_without_using_material_cache(self):
         engine, mid, floor = self.context()

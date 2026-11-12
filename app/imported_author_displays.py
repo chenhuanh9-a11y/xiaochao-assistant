@@ -9,8 +9,10 @@ import numpy as np
 
 from author_route_catalog import AuthorRouteProfile, AuthorRouteVariant
 from imported_author_display import decode_author_display
+from imported_resource_packages import FileRef
 from optional_author_displays import OptionalAuthorDisplayAdapters
 from s1_author_displays import S1AuthorCatalog
+import star_map_import as files
 
 
 class _DisplayCatalog(S1AuthorCatalog):
@@ -143,12 +145,34 @@ class ImportedAuthorDisplays:
         self.assert_current()
         return row
 
+    def _binding_for_path(self, path):
+        path = Path(path)
+        row = next((value for value in self.bindings.values() if value['path'] == path), None)
+        if row is not None:
+            return row
+        # PackageView preserves an admitted Windows 8.3 root. An alias must
+        # identify this component's declared file, not merely its relative name.
+        references = {}
+        for value in self.bindings.values():
+            package = value['package']
+            if package not in references:
+                try:
+                    relative = package._reader.relative_path(path)
+                except files.ImportRejected as error:
+                    if error.code != 'imported-reader-path-outside-component':
+                        raise
+                    references[package] = None
+                else:
+                    references[package] = FileRef(package.component_ref, relative)
+            if references[package] == value['layer'].image:
+                return value
+        return None
+
     def pixels(self, path, role):
         self.assert_current()
         if role not in {'full-reference', 'minimap', 'aligned-overlay'}:
             raise ValueError('imported-author-display-role-invalid')
-        path = Path(path).resolve()
-        row = next((value for value in self.bindings.values() if value['path'] == path), None)
+        row = self._binding_for_path(path)
         if row is None:
             raise ValueError('imported-author-display-path-unregistered')
         package, layer = row['package'], row['layer']
