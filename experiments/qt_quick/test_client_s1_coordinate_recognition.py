@@ -176,6 +176,57 @@ class S1CoordinateRecognitionTests(unittest.TestCase):
                 self.assertEqual(prepared.observer.filter.retained_pool_bytes, 0)
                 self.assertTrue(engine.qt_pose_common_models is not None)
 
+    def test_static_floor_preparation_reuses_full_declared_pool_without_pixels_or_io(self):
+        import fast_structure_alignment
+        for mode in self.cases:
+            with self.subTest(mode=mode):
+                engine = self.engine(mode)
+                prepared = engine.qt_s1_coordinate_recognition
+                common = prepared.observer.filter
+                # Direct build_native_engine lacks factory publication. Bind
+                # its first revision before testing a later replacement.
+                engine.qt_resource_revision = 1
+                self.assertTrue(prepared.current())
+                with ExitStack() as stack:
+                    for owner, name in ((Path, 'read_bytes'), (Path, 'read_text'),
+                            (ComponentResourceReader, '__call__'), (ComponentResourceReader, 'read_many')):
+                        stack.enter_context(patch.object(owner, name,
+                            side_effect=AssertionError('static-floor-preparation-read-files')))
+                    evaluate = stack.enter_context(patch.object(common, 'evaluate',
+                        side_effect=AssertionError('static-preparation-created-frame-evidence')))
+                    build = stack.enter_context(patch.object(fast_structure_alignment, 'prepare',
+                        wraps=fast_structure_alignment.prepare))
+                    first = prepared.prepare_static_floor('-1')
+                    count = build.call_count
+                    self.assertGreater(count, 0)
+                    second = prepared.prepare_static_floor('-1')
+                    self.assertEqual(build.call_count, count)
+                    evaluate.assert_not_called()
+                self.assertEqual(first['status'], 'prepared')
+                self.assertEqual(first['mapCount'], len(prepared.catalog.map_ids))
+                self.assertTrue(first['cacheRetained'])
+                self.assertEqual(second['status'], 'prepared')
+                self.assertFalse(first['identityAuthorized'])
+                self.assertEqual(len(common._cache), 1)
+                self.assertLessEqual(common.retained_pool_bytes, common.max_cache_bytes)
+                revision = getattr(engine, 'qt_resource_revision', 0)
+                engine.qt_resource_revision = revision + 1
+                with patch.object(common, '_pool', side_effect=AssertionError('obsolete-source-warmed')):
+                    self.assertEqual(prepared.prepare_static_floor('-1')['status'], 'obsolete')
+
+    def test_formal_factory_prepares_only_declared_first_floor_without_observing_a_frame(self):
+        for mode in self.cases:
+            with self.subTest(mode=mode), patch.object(CommonCoordinateFilter, 'evaluate',
+                    side_effect=AssertionError('factory-created-coordinate-evidence')):
+                engine = self.author_engine(mode)
+                prepared = engine.qt_s1_coordinate_recognition
+                result = engine.qt_resource_inventory['s1StaticCoordinatePreparation']
+                self.assertEqual(result['status'], 'prepared')
+                self.assertEqual(result['floor'], prepared.catalog.floors[0])
+                self.assertEqual(result['mapCount'], len(prepared.catalog.map_ids))
+                self.assertFalse(result['identityAuthorized'])
+                self.assertEqual(len(prepared.observer.filter._cache), 1)
+
     def test_old_package_has_specific_gap_and_no_software_asset_fallback(self):
         source = S1NativeBaseSourceFixture(self.root / 'old-package')
         source.export()

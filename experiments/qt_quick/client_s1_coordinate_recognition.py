@@ -7,6 +7,7 @@ round pool, acknowledged materials, identity and display publication.
 from dataclasses import replace
 from pathlib import Path
 import threading
+import time
 from types import MappingProxyType, SimpleNamespace
 
 from imported_native_base import (NativeBaseBundle, S1_COORDINATE_INTERFACE,
@@ -68,7 +69,7 @@ class PreparedS1CoordinateRecognition:
         locator = GateAnchorLocator(asset_dir=asset_root, read_resource=asset_read)
         references, retained = {}, 0
         # Read actual guarded bytes, not the ordinary mutable provider cache.
-        # The static refs are bounded separately; no floor pools are preheated.
+        # Static references are bounded separately from the reusable floor pool.
         entries = bundle.resources.entries
         for mid in catalog.map_ids:
             for floor in catalog.floors:
@@ -153,6 +154,34 @@ class PreparedS1CoordinateRecognition:
         return dict(schemaVersion=1, mode=self.catalog.mode, resourceKey=self.catalog.resource_key,
             floor=str(floor), coordinateVerified=False, identityAuthorized=False,
             evaluatedMapIds=list(ids), contradictedMapIds=[], unknownMapIds=list(ids), reason=reason)
+
+    def prepare_static_floor(self, floor, *, cancelled=None):
+        """Prepare declared resources only, without a frame or identity result."""
+        started = time.perf_counter()
+        floor = str(floor)
+        result = dict(floor=floor, identityAuthorized=False,
+                      scope='static-common-coordinate-resources')
+        if floor not in self.catalog.floors:
+            return dict(result, status='unavailable', reason='coordinate-scope-invalid', elapsedMs=0.)
+        with self._lock:
+            stopped = lambda: (cancelled is not None and cancelled()) or not self.current()
+            if stopped():
+                return dict(result, status='obsolete', elapsedMs=(time.perf_counter()-started)*1000)
+            ids = tuple(sorted(self.catalog.map_ids))
+            try:
+                pool = self.observer.filter._pool(ids, floor, stopped)
+            except (OSError, ValueError, KeyError) as error:
+                # An optional warm attempt must not disable other floors or
+                # change the current-frame consumer's original failure policy.
+                return dict(result, status='unavailable', reason=str(error),
+                            elapsedMs=(time.perf_counter()-started)*1000)
+            if pool is None or stopped():
+                return dict(result, status='obsolete', elapsedMs=(time.perf_counter()-started)*1000)
+            key = (self.catalog.resource_key, ids, floor)
+            return dict(result, status='prepared', mapCount=len(ids),
+                cacheRetained=self.observer.filter._cache.get(key) is pool,
+                retainedPoolBytes=self.observer.filter.retained_pool_bytes,
+                elapsedMs=(time.perf_counter()-started)*1000)
 
     def prepare(self, frame, pool_ids, floor, *, cancelled, stage=None):
         with self._lock:

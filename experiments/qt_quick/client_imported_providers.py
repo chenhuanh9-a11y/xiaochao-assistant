@@ -280,6 +280,13 @@ class ImportedEngineFactories(EngineFactories):
             retained = engine.qt_pose_static_payloads.retained_bytes
             engine.qt_resource_inventory['staticPosePayloadBytes'] = retained
             engine.qt_pose_input_cache.max_bytes -= retained
+        coordinate = getattr(engine, 'qt_s1_coordinate_recognition', None)
+        if coordinate is not None:
+            # This is a preparation hint from declared floor metadata, not an
+            # observed game floor. Every later observation still proves floor,
+            # pool scope and geometry through the original consumer.
+            prepared = coordinate.prepare_static_floor(coordinate.catalog.floors[0])
+            engine.qt_resource_inventory['s1StaticCoordinatePreparation'] = prepared
         engine.qt_assert_resource_current()
         return engine
 
