@@ -9,9 +9,12 @@ import time
 import cv2
 
 from entry_evidence_work import EntryEvidenceWork
+from entry_pose_proposals import current_entry_pose_seeds
 
 
 class MapObservationWork(EntryEvidenceWork):
+    pose_proposals_enabled = True
+
     def __init__(self, engine, frame, floor, *, deadline, prior=None):
         self.engine, self.floor = engine, str(floor)
         self.identity_authorized = bool(getattr(engine, 'qt_rank_ready', True))
@@ -159,10 +162,15 @@ class MapObservationWork(EntryEvidenceWork):
     def _pose_checkpoint(self, rows):
         # This is only a seed snapshot. The entry plan is still running; its
         # identity reducer and completed-work pose shortcut are not available.
+        if not self.pose_proposals_enabled:
+            return
         def snapshot():
+            wrapped = [dict(mapId=row['mapId'], difficultEntry=dict(row, floor=self.floor))
+                       for row in rows]
+            seeds = current_entry_pose_seeds(wrapped, self.floor)
             self.pose_proposal_rows = copy.deepcopy([
-                dict(mapId=row['mapId'], difficultEntry=dict(row, floor=self.floor))
-                for row in rows])
+                dict(mapId=map_id, difficultEntry=entry)
+                for map_id, entry in seeds.items()])
         yield self._job(None, 'entry-pose-proposals', snapshot)
 
     def _entry_jobs(self):
@@ -262,6 +270,8 @@ class LocalStructureObservationWork(MapObservationWork):
     identity. Main/passport contradictions and registered-family conditions
     still use the same jobs and reducers as the original observation plan.
     """
+    pose_proposals_enabled = False
+
     def __init__(self, engine, frame, floor, *, deadline, prepared_index=None):
         self.prepared_index = prepared_index
         super().__init__(engine, frame, floor, deadline=deadline)

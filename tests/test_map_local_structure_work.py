@@ -33,6 +33,32 @@ class LocalStructureWorkTests(unittest.TestCase):
         ObservationWorkScheduler().drive(work, on_job_finished=lambda job: phases.append(job.phase))
         return work, phases, work.finish()
 
+    def test_identity_only_driver_keeps_the_same_complete_identity_without_preview(self):
+        class EmptySourceWork:
+            def next_job(self):
+                return None
+            def finish(self, **kwargs):
+                return dict(candidates=[], candidateCount=0, complete=True, evaluatedEntryCount=0)
+
+        def run(work_type):
+            engine = self.fixture.engine(unique=True)
+            engine.prepare_source_structure_candidates = Mock(return_value=EmptySourceWork())
+            snapshot = FrameSnapshot(self.fixture.fixture.frame)
+            work = work_type(engine, snapshot, '2', deadline=float('inf'))
+            phases = []
+            ObservationWorkScheduler().drive(work, on_job_finished=lambda job: phases.append(job.phase))
+            return work, phases, work.finish()
+
+        candidate, candidate_phases, candidate_rows = run(map_observation_work.MapObservationWork)
+        direct, direct_phases, direct_rows = run(map_observation_work.LocalStructureObservationWork)
+
+        summary = lambda rows: {row['mapId']: row['identityHardGatePassed'] for row in rows}
+        self.assertEqual(set(summary(direct_rows)), {'map-a', 'map-b'})
+        self.assertEqual(summary(direct_rows), summary(candidate_rows))
+        self.assertIn('entry-pose-proposals', candidate_phases)
+        self.assertNotIn('entry-pose-proposals', direct_phases)
+        self.assertTrue(direct.entry_complete)
+
     def test_complete_source_competition_finishes_without_auxiliary_tail(self):
         engine = self.make()
         work, phases, rows = self.run_work(engine)
@@ -40,6 +66,7 @@ class LocalStructureWorkTests(unittest.TestCase):
         self.assertEqual({row['mapId'] for row in rows}, {'map-a', 'map-b'})
         self.assertEqual([row['mapId'] for row in rows if row['identityHardGatePassed']], ['map-a'])
         self.assertEqual([phase for phase in phases if phase == 'main:probe'], ['main:probe'] * 2)
+        self.assertNotIn('entry-pose-proposals', phases)
         engine.prepare_source_structure_candidates.assert_not_called()
         engine.entry_advisory.assert_not_called()
 

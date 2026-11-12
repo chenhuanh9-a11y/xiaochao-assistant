@@ -7,8 +7,10 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from entry_evidence_work import EntryEvidenceWork, FrameSnapshot, ObservationWorkScheduler
-from s1_structure_selection import StructureCandidateScanner, StructureCatalog, StructureEvidenceSession
+from s1_structure_selection import (StructureCandidateScanner, StructureCatalog,
+                                    StructureEvidenceSession, _StructureFitWork)
 from map_identity_engine import MapIdentityEngine
+import map_observation_work
 from client_region_capture import ClientCaptureContext, RegionCapture
 from test_s1_structure_selection import catalog, pose
 import test_main_entry_jobs as main_fixture
@@ -281,6 +283,62 @@ class EntryObservationTests(unittest.TestCase):
         self.assertEqual(report['unknownMapIds'], ['map-b', 'map-a'])
         self.assertEqual(report['supportedMapIds'], [])
         self.assertFalse(report['identityHardGatePassed'])
+
+    def test_proposal_checkpoint_filters_before_copy_and_preserves_consumer_selection(self):
+        class UnqualifiedLargePayload:
+            def __deepcopy__(self, memo):
+                raise AssertionError('unqualified proposal payload was copied')
+
+        def seed(map_id, marker, *, success=True, **extra):
+            entry = dict(mapId=map_id, floor='2', marker=marker,
+                metadata={'nested': [marker]}, verification=dict(success=success,
+                    matrixSourceToClient=np.eye(3)))
+            entry.update(extra)
+            return entry
+
+        rows = [
+            seed('map-b', 'first-b'),
+            seed('map-a', 'only-valid-a'),
+            seed('map-b', 'last-valid-b', proposalOnly=True, authorizesPose=False),
+            seed('map-a', 'invalid-later-a', success=False,
+                 unqualifiedPayload=UnqualifiedLargePayload()),
+            seed('map-c', 'ambiguous-c', poseAmbiguous=True,
+                 unqualifiedPayload=UnqualifiedLargePayload()),
+        ]
+        snapshot = FrameSnapshot(self.fixture.frame)
+        class CheckpointWork(map_observation_work.MapObservationWork):
+            def __init__(self, engine, frame, rows):
+                self.checkpoint_rows = rows
+                super().__init__(engine, frame, '2', deadline=float('inf'))
+            def _jobs(self):
+                yield from self._pose_checkpoint(self.checkpoint_rows)
+
+        observation = CheckpointWork(self.engine(unique=True), snapshot, rows)
+        ObservationWorkScheduler().drive(observation)
+        proposals = observation.pose_proposal_rows
+        self.assertEqual([row['mapId'] for row in proposals], ['map-b', 'map-a'])
+        self.assertEqual(proposals[0]['difficultEntry']['marker'], 'last-valid-b')
+        self.assertEqual(proposals[1]['difficultEntry']['marker'], 'only-valid-a')
+        self.assertEqual(set(proposals[0]['difficultEntry']),
+            set(rows[2]) | {'floor'})
+        self.assertEqual(proposals[0]['difficultEntry']['floor'], '2')
+        self.assertTrue(proposals[0]['difficultEntry']['proposalOnly'])
+        self.assertFalse(proposals[0]['difficultEntry']['authorizesPose'])
+        np.testing.assert_array_equal(
+            proposals[0]['difficultEntry']['verification']['matrixSourceToClient'],
+            rows[2]['verification']['matrixSourceToClient'])
+        self.assertIsNot(proposals[0]['difficultEntry'], rows[2])
+        self.assertIsNot(proposals[0]['difficultEntry']['metadata'], rows[2]['metadata'])
+
+        fit = _StructureFitWork(snapshot, ('map-c', 'map-a', 'map-b'), '2',
+            lambda *args, **kwargs: dict(success=False), lambda: False, None, None)
+        fit.accept_entry_proposals(proposals)
+        self.assertEqual(list(fit.entry_proposals), ['map-b', 'map-a'])
+        self.assertEqual(fit.entry_proposals['map-b']['marker'], 'last-valid-b')
+        proposals[0]['difficultEntry']['metadata']['nested'].append('checkpoint-mutation')
+        self.assertEqual(fit.entry_proposals['map-b']['metadata']['nested'], ['last-valid-b'])
+        fit.entry_proposals['map-a']['metadata']['nested'].append('consumer-mutation')
+        self.assertEqual(rows[1]['metadata']['nested'], ['only-valid-a'])
 
     def test_entry_from_another_snapshot_cannot_seed_the_current_fit(self):
         engine = self.engine(unique=True)
