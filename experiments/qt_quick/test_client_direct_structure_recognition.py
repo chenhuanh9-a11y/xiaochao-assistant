@@ -95,6 +95,19 @@ class DirectStructureRecognitionProviderTests(unittest.TestCase):
         self.assertEqual(report, expected)
         self.assertEqual(compute.call_count, 1)
 
+    def test_preparation_builds_descriptors_once_for_all_floors(self):
+        original = StructureIdentityIndex.__init__
+        constructions = []
+        def construct(index, domain, entries, **options):
+            constructions.append(tuple(domain))
+            original(index, constructions[-1], entries, **options)
+        with patch.object(StructureIdentityIndex, '__init__', new=construct):
+            self.direct.prepare()
+        self.assertEqual(self.direct.preparation['status'], 'prepared', self.direct.preparation)
+        self.assertEqual(len(constructions), 1)
+        for floor, index in self.direct.indexes.items():
+            self.assertEqual(index.domain, tuple(key for key in self.direct.resources.index.domain if key.floor == floor))
+
     def test_synchronous_cancel_deadline_and_stale_owner_cannot_return_live_proposals(self):
         for options, reason in ((dict(cancelled=lambda: True), 'cancelled-or-stale'),
                 (dict(deadline=time.perf_counter()-1), 'time-budget-exhausted')):

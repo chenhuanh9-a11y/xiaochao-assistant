@@ -304,7 +304,7 @@ jobs:
                 'test_observation_residual_reuse', 'test_structure_cache_memory',
                 'test_idvb0059_runtime', 'test_idvb0059_retained_display', 'test_client_idvb0059_adapter',
                 'test_prepared_idvb0059_input', 'test_structure_pose_inputs', 'test_structure_pose_preparation_context', 'test_prepared_structure_pose_solver',
-                'test_recognition_race', 'test_structure_identity_index', 'test_structure_identity_resources',
+                'test_recognition_race', 'test_structure_identity_index', 'test_structure_identity_floor_partition', 'test_structure_identity_resources',
                 'test_structure_identity_resource_batch', 'test_structure_identity_read_operation',
                 'test_structure_identity_observation', 'test_structure_identity_recognition',
                 'test_structure_identity_corner_centre',

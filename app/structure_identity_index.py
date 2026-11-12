@@ -17,7 +17,8 @@ entry can supply positive proposals, but cannot provide negative evidence.
 from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
-from dataclasses import dataclass, field
+from copy import copy
+from dataclasses import dataclass, field, replace
 import math
 import time
 from typing import Callable, Iterable
@@ -578,6 +579,33 @@ class StructureIdentityIndex:
         self._direction_rays = np.asarray([posting.rays for posting in self._postings],
                                           dtype=np.float64).reshape(-1, 2, 2)
         self._direction_rays.setflags(write=False)
+
+    def for_floor(self, floor: str):
+        """Partition prepared descriptors without repeating their construction.
+
+        Missing, forbidden and outside-domain entries keep their original gaps.
+        Posting order is inherited so retrieval budgets visit the same work as
+        an independently constructed index for this floor.
+        """
+        result = copy(self)
+        result.domain = tuple(key for key in self.domain if key.floor == floor)
+        entry_indices = {old: new for new, old in enumerate(
+            index for index, entry in enumerate(self.entries) if entry.key.floor == floor)}
+        result.entries = tuple(self.entries[index] for index in entry_indices)
+        global_gaps = tuple(gap for gap in self.directory_gaps
+                            if gap.key is None and gap.reason != 'competition-domain-empty')
+        empty = () if result.domain else (DirectoryGap(None, 'competition-domain-empty'),)
+        result.directory_gaps = global_gaps + empty + tuple(
+            gap for gap in self.directory_gaps if gap.key is not None and gap.key.floor == floor)
+        positions = [index for index, posting in enumerate(self._postings)
+                     if posting.entry_index in entry_indices]
+        result._postings = tuple(replace(self._postings[index],
+            entry_index=entry_indices[self._postings[index].entry_index]) for index in positions)
+        result._ratios = (tuple(posting.ratio for posting in result._postings)
+                          if self.constraint_kind == 'full-chain' else ())
+        result._direction_rays = self._direction_rays[positions]
+        result._direction_rays.setflags(write=False)
+        return result
 
     def retrieve(self, constellation: ConstellationA, *, epsilon: float,
                  minimum_ray_dot: float = .95, max_work: int | None = 100_000,

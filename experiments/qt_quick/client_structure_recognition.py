@@ -150,11 +150,10 @@ class DirectStructureRecognition:
             for floor in self.catalog.floors:
                 # All declared map IDs remain competitors, including absent or
                 # legacy layers. A candidate/pruned pool never defines this domain.
-                domain = tuple(key for key in resources.index.domain if key.floor == floor)
-                entries = tuple(row for row in resources.index.entries if row.key.floor == floor)
-                if {key.map_id for key in domain} != set(self.catalog.map_ids):
+                index = resources.index.for_floor(floor)
+                if {key.map_id for key in index.domain} != set(self.catalog.map_ids):
                     raise ValueError('direct-recognition-catalog-domain-mismatch')
-                indexes[floor] = StructureIdentityIndex(domain, entries, directory_complete=True)
+                indexes[floor] = index
             if not self.current():
                 raise ValueError('resource-context-superseded')
             self.resources, self.indexes = resources, indexes
