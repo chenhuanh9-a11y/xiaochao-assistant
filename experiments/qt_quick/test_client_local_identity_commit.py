@@ -74,8 +74,8 @@ class LocalIdentityCommitTests(unittest.TestCase):
         self.stack.enter_context(patch.object(MapLocalEntryIdentity, '_observe', observe))
         prepared = self.engine.qt_local_structure_recognition
         new_query = prepared._new_query_engine
-        def measured_query():
-            query = new_query()
+        def measured_query(**options):
+            query = new_query(**options)
             thread = threading.current_thread().name
             lane = {'recognition-candidate': 'candidate', 'recognition-structure': 'structure'}.get(thread)
             self.assertIsNotNone(lane, thread)

@@ -96,6 +96,10 @@ class MapObservationWork(EntryEvidenceWork):
             self.side_diagnostics = dict(reason='side-resource-unavailable', error=self.errors['side'], complete=False)
 
     def _prepare_local_rank(self, side, options):
+        prepared = getattr(self.engine, 'observation_prepared_index', None)
+        if prepared is not None:
+            return side.prepare_rank(self.frame_snapshot, self.floor, deadline=self.deadline,
+                                     prepared_index=prepared, **options)
         return side.prepare_rank(self.frame_snapshot, self.floor, deadline=self.deadline, **options)
 
     def _recovery(self, result):

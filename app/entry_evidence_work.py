@@ -1,7 +1,9 @@
 """Sequential source jobs; the scanner owns scheduling and runtime state."""
 from dataclasses import dataclass, field
+from copy import deepcopy
 import hashlib
 import json
+from threading import Event, Lock
 import time
 from typing import Callable
 
@@ -47,6 +49,90 @@ class EntryEvidenceJob:
     map_id: str | None
     phase: str
     run: Callable[[], None]
+
+
+class SharedObservationDependencies:
+    """Two consumers may share pure kernels, never their mutable reducers.
+
+    The scan owns this object and its immutable frame. Completed values are
+    copied before a consumer can mutate geometry caches or evidence rows. A
+    retiring consumer stops waiting without cancelling the other one's kernel.
+    """
+    def __init__(self, snapshot, floor, *, max_bytes=64 * 1024 * 1024):
+        if (not isinstance(snapshot, FrameSnapshot) or not isinstance(floor, str) or not floor
+                or type(max_bytes) is not int or max_bytes < 0):
+            raise ValueError('shared-observation-binding-invalid')
+        self.snapshot, self.floor, self.max_bytes = snapshot, str(floor), max_bytes
+        self._lock, self._values, self._bytes = Lock(), {}, 0
+
+    def owns(self, frame):
+        return frame is self.snapshot.pixels
+
+    @staticmethod
+    def _size(value):
+        if isinstance(value, np.ndarray):
+            return value.nbytes
+        if isinstance(value, (bytes, str)):
+            return len(value)
+        if isinstance(value, dict):
+            return sum(SharedObservationDependencies._size(v) for v in value.values())
+        if isinstance(value, (list, tuple)):
+            return sum(SharedObservationDependencies._size(v) for v in value)
+        return 64
+
+    @staticmethod
+    def value_key(value):
+        """Exact numerical inputs; no digest or mutable object equality."""
+        if isinstance(value, np.ndarray):
+            return ('array', value.dtype.str, value.shape, value.tobytes())
+        if isinstance(value, dict):
+            return tuple((key, SharedObservationDependencies.value_key(item))
+                         for key, item in sorted(value.items()))
+        if isinstance(value, (list, tuple)):
+            return tuple(SharedObservationDependencies.value_key(item) for item in value)
+        return value
+
+    def get(self, key, compute, *, cancelled=None, reusable=None):
+        cancelled = cancelled or (lambda: False)
+        if cancelled():
+            raise ValueError('entry-observation-consumer-cancelled')
+        with self._lock:
+            record = self._values.get(key)
+            producer = record is None
+            if producer:
+                record = dict(ready=Event())
+                self._values[key] = record
+        if producer:
+            try:
+                value = compute()
+                record['value'] = deepcopy(value)
+                record['reusable'] = reusable is None or reusable(value)
+                size = self._size(record['value']) + self._size(key)
+                with self._lock:
+                    if (not record['reusable']
+                            or len(self._values) > 256 or self._bytes + size > self.max_bytes):
+                        self._values.pop(key, None)
+                    else:
+                        self._bytes += size
+            except BaseException as error:
+                record['error'] = error
+                with self._lock:
+                    self._values.pop(key, None)
+            finally:
+                record['ready'].set()
+        else:
+            while not record['ready'].wait(.01):
+                if cancelled():
+                    raise ValueError('entry-observation-consumer-cancelled')
+        if cancelled():
+            raise ValueError('entry-observation-consumer-cancelled')
+        if 'error' in record:
+            raise record['error']
+        if not producer and not record['reusable']:
+            # A consumer with a later deadline must still perform its own work
+            # after another consumer's incomplete per-source attempt.
+            return compute()
+        return deepcopy(record['value'])
 
 
 class EntryEvidenceWork:

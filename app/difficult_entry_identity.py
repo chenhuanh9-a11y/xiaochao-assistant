@@ -78,14 +78,28 @@ class MainEntryEvidence(EntryEvidenceWork):
         super().__init__(frame if self.floor_indexed else None)
 
     def _observe(self):
-        self.context = self.engine.geometry(self.frame)
-        self.query = entry_corners(self.frame, self.context) if self.context else []
-        self.qpoints = np.array([row['point'] for row in self.query])
-        self.qrays = np.array([row['rays'] for row in self.query])
+        shared = getattr(self.engine, 'observation_dependencies', None)
+        if shared is not None and shared.owns(self.frame):
+            self.context, self.query, self.qpoints, self.qrays = shared.get(
+                ('main-observation',), self._observation,
+                cancelled=getattr(self.engine, 'observation_cancelled', None))
+            # The geometry and its lazy derived parts belong to this consumer.
+            self.engine._observation = (self.frame, self.context)
+            return
+        self.context, self.query, self.qpoints, self.qrays = self._observation()
+
+    def _observation(self):
+        context = self.engine.geometry(self.frame)
+        query = entry_corners(self.frame, context) if context else []
+        return context, query, np.array([row['point'] for row in query]), np.array([row['rays'] for row in query])
 
     def _probe(self, entry):
         self.evaluated_map_ids.append(entry[0]['mapId'])
-        row = self.engine._probe_entry(self.frame, entry, self.qpoints, self.qrays)
+        probe = lambda: self.engine._probe_entry(self.frame, entry, self.qpoints, self.qrays)
+        shared = getattr(self.engine, 'observation_dependencies', None)
+        row = (shared.get(('main-probe', tuple(id(part) for part in entry)), probe,
+                         cancelled=getattr(self.engine, 'observation_cancelled', None))
+               if shared is not None and shared.owns(self.frame) else probe())
         if row is not None:
             self.rows.append(row)
 
@@ -193,8 +207,15 @@ class MapEntryGeometryIdentity:
         here; every consumer still performs its current author validation.
         """
         cached=self._observation
-        if cached is not None and np.array_equal(cached[0],frame):
+        if cached is not None and (cached[0] is frame or np.array_equal(cached[0],frame)):
             return cached[1]
+        shared = getattr(self, 'observation_dependencies', None)
+        if shared is not None and shared.owns(frame):
+            # Geometry is a shared dependency of an already admitted kernel.
+            # A retiring producer must not poison the other lane's kernel.
+            context = shared.get(('entry-geometry',), lambda: entry_geometry(frame))
+            self._observation = (frame, context)
+            return context
         context=entry_geometry(frame)
         self._observation=(frame.copy(),context)
         return context
@@ -313,6 +334,16 @@ class MapEntryGeometryIdentity:
         if winner is not None:rows.sort(key=lambda r:(not r['identityVerified'],-r['score']))
 
     def verify(self,frame,row,*,context=None,route=None):
+        shared = getattr(self, 'observation_dependencies', None)
+        if shared is not None and shared.owns(frame):
+            actual_context = self.geometry(frame) if context is None else context
+            key = ('main-verify', id(self.shared_reference_provider), id(route),
+                   shared.value_key(row), shared.value_key(None if actual_context is None else
+                       {name: actual_context.get(name) for name in ('query', 'observationBounds')}))
+            return shared.get(key, lambda: self._verify_uncached(frame, row, context=actual_context, route=route))
+        return self._verify_uncached(frame, row, context=context, route=route)
+
+    def _verify_uncached(self,frame,row,*,context=None,route=None):
         from single_map_structure import regional_validation,_static_validation_context,partial_wall_geometry
         from nightmare_candidate import imread_unicode,selected_route_current_frame_residual
         item=next(e for e,*_ in self.entries if e['mapId']==row['mapId'])

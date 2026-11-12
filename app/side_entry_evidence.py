@@ -1,5 +1,6 @@
 """Resumable side structure search; measured poses do not write runtime state."""
 import time
+from copy import copy
 
 import cv2
 import numpy as np
@@ -50,6 +51,36 @@ class SideEntryEvidence(EntryEvidenceWork):
         self.scan_complete = not self.index_directory_gaps
 
     def _probe(self, entry):
+        shared = getattr(self.engine, 'observation_dependencies', None)
+        if shared is None or not shared.owns(self.frame):
+            return self._probe_uncached(entry)
+        local = (self.local_search or {}).get((entry[0]['mapId'], entry[0]['floor']))
+        indexed = (self.prepared_index.prepared_for(entry)
+                   if self.prepared_index is not None and local is None else None)
+        key = ('side-probe', tuple(id(part) for part in entry), id(local), id(indexed))
+        def probe():
+            # Only the per-source kernel is shared. Domain gaps, accumulated
+            # completeness, competitive bands and verification stay local.
+            isolated = copy(self)
+            isolated.rows, isolated.seed_count, isolated.scan_complete = [], 0, True
+            isolated.search_counts = {name: ([0] * len(value) if isinstance(value, list) else 0)
+                                      for name, value in self.search_counts.items()}
+            isolated._probe_uncached(entry)
+            return dict(rows=isolated.rows, seeds=isolated.seed_count,
+                        complete=isolated.scan_complete, counts=isolated.search_counts)
+        result = shared.get(key, probe,
+            cancelled=getattr(self.engine, 'observation_cancelled', None),
+            reusable=lambda value: value['complete'])
+        self.rows.extend(result['rows'])
+        self.seed_count += result['seeds']
+        self.scan_complete = self.scan_complete and result['complete']
+        for name, value in result['counts'].items():
+            if isinstance(value, list):
+                self.search_counts[name] = [a+b for a,b in zip(self.search_counts[name], value)]
+            else:
+                self.search_counts[name] += value
+
+    def _probe_uncached(self, entry):
         item, source, rays, spairs = entry
         frame, deadline, local_search = self.frame, self.deadline, self.local_search
         q, qr, qpairs = self.q, self.qr, self.qpairs
@@ -65,6 +96,7 @@ class SideEntryEvidence(EntryEvidenceWork):
                    if self.prepared_index is not None and prepared is None else None)
         if indexed is not None:
             source, rays, spairs = indexed.points, indexed.rays, indexed.pairs
+        screened = indexed is not None and indexed.lower is not None
         compatible = np.min(np.sum(qr[:, None] * rays[None], axis=3), axis=2) >= .95
         # Incompatible turns can never be hits. Keep row-major pair order
         # while evaluating only the same orientation-compatible entries.
@@ -103,8 +135,18 @@ class SideEntryEvidence(EntryEvidenceWork):
             eligible = ((scales*item['unit'] >= 8) & (scales*item['unit'] <= min(frame.shape[:2])/4)
                         & (np.linalg.norm(q[b]-q[a]-scales[:, None]*delta, axis=1) <= 3))
             scales, translations = scales[eligible], translations[eligible]
-            if indexed is not None:
+            if screened:
                 from local_structure_index import possible_turns
+                unique = []
+                for index, (scale, translation) in enumerate(zip(scales, translations)):
+                    if time.perf_counter() >= deadline:
+                        complete = False
+                        break
+                    key = tuple(np.rint(np.r_[scale * item['unit'] * 4, translation / 3]).astype(int))
+                    if key not in seen:
+                        seen.add(key)
+                        unique.append(index)
+                scales, translations = scales[unique], translations[unique]
                 upper = possible_turns(q, scales, translations, compatible, indexed)
             else:
                 upper = np.full(len(scales), 4, np.int32)
@@ -114,10 +156,11 @@ class SideEntryEvidence(EntryEvidenceWork):
                 if time.perf_counter() >= deadline:
                     complete = False
                     break
-                key = tuple(np.rint(np.r_[scale * item['unit'] * 4, translation / 3]).astype(int))
-                if key in seen:
-                    continue
-                seen.add(key)
+                if not screened:
+                    key = tuple(np.rint(np.r_[scale * item['unit'] * 4, translation / 3]).astype(int))
+                    if key in seen:
+                        continue
+                    seen.add(key)
                 if indexed is not None:
                     self.search_counts['preparedSeedsScreened'] += 1
                     if possible < 4:

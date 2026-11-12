@@ -46,7 +46,11 @@ class PreparedLocalStructureRecognition:
             side._exit_recognizer = SideDoorRecognizer(side.exit_icon_path, read_resource=side.read_resource)
         self._locators = _LocatorTemplates(main, side)
         domain = tuple((mid, floor) for mid in catalog.map_ids for floor in catalog.floors)
-        self.index = LocalStructureIndex(side.entries, competition_domain=domain, cancelled=cancelled)
+        # The optional raster bound costs more than ordinary correspondence
+        # search on the production domain. Prepare its immutable graph arrays
+        # once, while keeping the original exact seed search and all rivals.
+        self.index = LocalStructureIndex(side.entries, competition_domain=domain,
+                                        max_lower_bytes=0, cancelled=cancelled)
         if callable(check):
             check()
         if not self.current() or cancelled is not None and cancelled():
@@ -76,11 +80,16 @@ class PreparedLocalStructureRecognition:
         return bool(self._binding == self._owner() and (check is None or check())
             and (self._revision is None or self._revision == getattr(self.engine, 'qt_resource_revision', 0)))
 
-    def _new_query_engine(self):
+    def _new_query_engine(self, *, dependencies=None, cancelled=None):
         # Capture current runtime-bound callbacks, while sharing only immutable
         # prepared geometry and giving each lane its own observation caches.
         query = copy(self.engine)
         query.entry_identity, query.side_entry_identity = self._locators.new_queries()
+        if dependencies is not None:
+            for locator in (query.entry_identity, query.side_entry_identity):
+                locator.observation_dependencies = dependencies
+                locator.observation_cancelled = cancelled
+            query.observation_prepared_index = self.index.for_floor(dependencies.floor)
         recognizer = query.side_entry_identity._exit_recognizer
         if recognizer is not None:
             query.side_entry_identity._exit_recognizer = copy(recognizer)
@@ -102,11 +111,13 @@ class PreparedLocalStructureRecognition:
             setattr(query, name, lambda value=value: deepcopy(value))
 
     def run(self, snapshot, floor, *, cancelled=None, deadline=None, on_entry=None,
-            identity_context=None):
+            identity_context=None, dependencies=None):
         if not isinstance(snapshot, FrameSnapshot):
             raise TypeError('local-structure-frame-snapshot-required')
         if floor not in self.catalog.floors:
             raise ValueError('local-structure-floor-not-declared')
+        if dependencies is not None and (dependencies.snapshot is not snapshot or dependencies.floor != floor):
+            raise ValueError('local-structure-observation-binding-mismatch')
         if self._revision is None:
             self._revision = getattr(self.engine, 'qt_resource_revision', 0)
         started = time.perf_counter()
@@ -121,7 +132,8 @@ class PreparedLocalStructureRecognition:
             return dict(report, status='cancelled', elapsedMs=0.)
         if self.catalog.season == 's1':
             return dict(report, status='unavailable', reason='proposal-only-entry-evidence', elapsedMs=0.)
-        query = self._new_query_engine()
+        query = (self._new_query_engine() if dependencies is None else
+                 self._new_query_engine(dependencies=dependencies, cancelled=cancelled))
         self.bind_query_context(query, self.capture_identity_context()
             if identity_context is None else identity_context)
         work = LocalStructureObservationWork(query, snapshot, floor,

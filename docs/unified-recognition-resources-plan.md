@@ -874,6 +874,8 @@ python -m unittest test_client_progressive_display test_client_progressive_pixel
 
 同帧首贴只从实际完成的 `MapObservationWork` 私下取得入口位姿：整个作业及入口阶段均完成、没有失败/歧义、其 `FrameSnapshot.pixels` 必须就是当前求解帧，且源与 prepared 参考及坐标桥一致。矩阵从该作业的唯一结果取得，再以固定矩阵检查当前像素；原始 row 的标志或矩阵不能开启捷径。失败回到原 fast/recovery/initial 顺序。当前票据已有 canonical pose 时仍直接消费该 pose。身份确认与候选是同一地图/楼层/帧时，完整候选像素保持原显示凭据直到新合格材料原子替换；不同地图和过期观察继续撤销。
 
+S0 两条识别通道在单次 scan 内通过 `SharedObservationDependencies` 共享同帧几何、相同来源的单项 probe、相同数值输入的验证与恢复核。缓存只保存本次只读帧的纯计算结果，消费者取得独立副本；候选域、完整竞争域、目录缺口、竞争带、资格与身份归约各自保留。完整 source 结果可共享，不完整 source 只属于本次尝试；取消等待者不取消另一通道的在途核，迟到结果仍由原 ticket/race/runtime 校验。完成值保留上限为64MiB/256项，不代表整次扫描峰值内存。生产结构通道只准备 points/rays/pairs/deltas/denoms，采用原 exact seed 搜索；可选 raster bound 在实帧诊断中比普通搜索更慢，故默认不生成该距离场，不删候选或放宽阈值。功能回放恢复缺失材料不等于正式性能验收，须绑定干净提交复测。
+
 静态 common pose models 在资源准备时生成一次，目标首次准备只解码其 typed/fast 文件，原 reader/decoder 与首次失败语义保留。common 与两个目标输入共同受原 512 MiB 上限约束。正式 factory 发布的结构显示来源可在其 provider 锁内复用自有只读 BGRA/RGBA 与实际元数据；普通 LRU 淘汰只触发重建，真实资源更新使当前发布失效。未知 provider、作者显示或独立 guard 仍走原检查。本片的功能回放不等于正式性能复测，最终数据须绑定干净远端提交。
 
 本地真实临时 archive/export/decode/provider/prepared loader 的六项资源回归控制数值 fit，仅验证生命周期；坏参考、坏准备、首显前损坏、取消与下一帧不会沿用旧输入均覆盖，其中“未使用 fast 时参考损坏”的新负例先失败后修复。三片相关回归分别为 34、89、71 项通过，生产 S1 两模式实际导入 fast 入口一项通过，最后资源/渐进显示/区域仲裁 35 项通过；并不据此证明实帧速度、位姿或游戏验收。新的资源回归加入原联合 workflow，保留原模块、分组和时限。

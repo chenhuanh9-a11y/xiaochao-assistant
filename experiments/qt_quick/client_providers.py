@@ -558,7 +558,7 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
     bases can use the same scanner with only their checked shared references.
     """
     from s1_structure_selection import StructureCandidateScanner
-    from entry_evidence_work import FrameSnapshot
+    from entry_evidence_work import FrameSnapshot, SharedObservationDependencies
     from client_structure_recognition import DirectStructureRecognition
     from client_local_structure_recognition import PreparedLocalStructureRecognition
     from recognition_race import RecognitionObservation, RecognitionRace
@@ -646,6 +646,8 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
                 or frame_snapshot.pixels is not frame):
             raise ValueError('structure-scan-frame-snapshot-mismatch')
         snapshot = frame_snapshot if frame_snapshot is not None else FrameSnapshot(frame)
+        dependencies = (SharedObservationDependencies(snapshot, floor)
+                        if local is not None and identity_committed is not None else None)
         identity_context = local.capture_identity_context() if local is not None else None
         began = time.perf_counter()
         direct_deadline = min(deadline if deadline is not None else float('inf'),
@@ -677,7 +679,8 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
                 nonlocal entry_work
                 # Each worker owns its caches. Source qualification and the
                 # mature candidate plan are unchanged.
-                query = local._new_query_engine() if local is not None else engine
+                query = (local._new_query_engine(dependencies=dependencies, cancelled=stop)
+                         if local is not None else engine)
                 if local is not None:
                     local.bind_query_context(query, identity_context)
                 entry_work = query.prepare_entry_observation(snap, fl, **options)
@@ -737,7 +740,8 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
                 def structure_lane(observation, stop, progress, entry):
                     if local is not None:
                         return local.run(snapshot, floor, cancelled=stop,
-                            deadline=direct_deadline, on_entry=entry, identity_context=identity_context)
+                            deadline=direct_deadline, on_entry=entry, identity_context=identity_context,
+                            dependencies=dependencies)
                     from common_coordinate_observation import CommonCoordinateObservationWork
                     from entry_evidence_work import ObservationWorkScheduler
                     work = CommonCoordinateObservationWork(coordinate, snapshot, floor,
