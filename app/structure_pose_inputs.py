@@ -1,9 +1,9 @@
 """Prepare bounded, immutable RAM inputs for the existing structure solvers.
 
-Only preparation reads resources. Returned inputs contain no disk reader,
+Only resource preparation reads resources. Returned inputs contain no disk reader,
 catalog guard or publication permission. The runtime owns resource revisions,
-cancellation and result submission. New layer preparation reads its actual
-bytes; factory-prepared common models deliberately retain their admitted RAM.
+cancellation and result submission. Factory-prepared models and compressed
+layer payloads deliberately retain their admitted RAM.
 Explicit resource preparation/integrity checks can discover later disk damage.
 """
 from __future__ import annotations
@@ -595,9 +595,156 @@ def _original_native_loaders(common):
         and getattr(common._source.decode, '__func__', None) is ImportedFastStructureSource.decode)
 
 
+def _common_reference_valid(reference, row):
+    return (reference is not None and np.any(reference.clean_mask)
+        and _freeze(reference.metadata.get('canvas')) == row['canvas']
+        and all(_freeze(reference.metadata.get(name)) == value for name, value in row['expected'].items()))
+
+
+def _reference_decode_metadata(value):
+    # Saved metadata is JSON. Restore its list form for the unchanged fast
+    # decoder's exact comparison with JSON, without copying any mask arrays.
+    if isinstance(value, Mapping):
+        return {key: _reference_decode_metadata(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_reference_decode_metadata(item) for item in value]
+    return value
+
+
+@dataclass(frozen=True)
+class PreparedStructureStaticPayloads:
+    """The factory's actual admitted bytes; distance fields stay target-local."""
+    common: PreparedStructureCommonModels
+    payloads: Mapping
+    references: Mapping
+    retained_bytes: int
+    _coordinate: object = field(repr=False, compare=False)
+    _reference_source: object = field(repr=False, compare=False)
+
+    def assert_current(self, engine, revision, cancelled):
+        self.common.assert_current(engine, revision, cancelled)
+        if (getattr(engine, 'qt_pose_common_models', None) is not self.common
+                or self._coordinate is not None and (
+                    getattr(engine, 'qt_s1_coordinate_recognition', None) is not self._coordinate
+                    or self._coordinate.references is not self._reference_source
+                    or not self._coordinate.current())):
+            raise PoseInputsUnavailable('pose-input-resource-binding-changed')
+
+
+def prepare_structure_pose_static_payloads(engine, *, cancelled=None):
+    """Called once by the managed imported factory after its real admission.
+
+    Keep compressed bytes rather than a whole-context distance atlas. A failed
+    optional payload is a retained miss, never a retry or an engine rejection.
+    Required payload failures, cancellation and selection/owner changes retain
+    their original attribution. Independent/custom readers keep the old path.
+    """
+    common = getattr(engine, 'qt_pose_common_models', None)
+    if not isinstance(common, PreparedStructureCommonModels) or not _original_native_loaders(common):
+        return None
+    revision = getattr(engine, 'qt_resource_revision', 0)
+    common.assert_current(engine, revision, cancelled)
+    common._check()
+    coordinate, references = getattr(engine, 'qt_s1_coordinate_recognition', None), {}
+    if coordinate is not None:
+        from client_s1_coordinate_recognition import PreparedS1CoordinateRecognition
+        if type(coordinate) is not PreparedS1CoordinateRecognition or coordinate.engine is not engine:
+            return None
+        if not coordinate.current():
+            return None
+        for key, (row, _) in common.layers.items():
+            reference = coordinate.references.get(key)
+            if (not _common_reference_valid(reference, row)
+                    or _path_key(reference.path) != _path_key(row['path'])):
+                raise PoseInputsUnavailable('pose-input-reference-binding-mismatch')
+            references[key] = reference
+    typed_paths, optional, paths = [], set(), []
+    for key, (row, declaration) in common.layers.items():
+        if key not in references:
+            typed_paths.append(Path(row['path']))
+        if declaration is not None:
+            reference_ref, prepared_ref = declaration
+            if common._reader.relative_path(row['path']) != reference_ref.path:
+                return None  # Preserve the original source's mismatch handling.
+            path = common._root / prepared_ref.path
+            paths.append(path)
+            optional.add(prepared_ref)
+    # Inventory bytes are already bound to the admitted component. Do not load
+    # a snapshot that cannot fit together with its common models/references.
+    typed_paths, paths = tuple(dict.fromkeys(typed_paths)), tuple(dict.fromkeys(paths))
+    references = MappingProxyType(references)
+    required_bytes = _bytes_used(references) + sum(
+        common._reader._inventory[common._reader.relative_path(path)]['bytes'] for path in typed_paths)
+    if required_bytes >= engine.qt_pose_input_cache.max_bytes:
+        return None
+    payloads = {}
+    def stage(file_ref, raw):
+        payloads[_path_key(common._root / file_ref.path)] = raw
+    if typed_paths:
+        try:
+            common._reader.read_many(typed_paths, expected_root=common._root,
+                                     cancelled=cancelled, on_payload=stage)
+        except (OSError, ValueError):
+            common._reader.view._assert_current()
+            common.assert_current(engine, revision, cancelled)
+            raise
+    # The original typed declaration decoder owns this source capability too.
+    # In particular, a reference without validation authority must never read
+    # its fast preparation, even if that optional file is broken.
+    from imported_structure_declarations import validate_structure_declarations
+    permitted = set()
+    for key, (row, declaration) in common.layers.items():
+        common.assert_current(engine, revision, cancelled)
+        if key in references:
+            metadata = references[key].metadata
+        else:
+            try:
+                metadata = validate_structure_declarations(payloads[_path_key(row['path'])],
+                    expected_binding=row['binding'], expected_shape=row['canvas']['shapeHW'])
+            except (OSError, ValueError) as error:
+                error.resource_file_ref = FileRef(common._component, common._reader.relative_path(row['path']))
+                raise
+        if metadata.get('authorizesStructureValidation') is not False and declaration is not None:
+            permitted.add(declaration[1])
+    optional.intersection_update(permitted)
+    pending = tuple(path for path in paths
+        if FileRef(common._component, common._reader.relative_path(path)) in optional)
+    required_bytes += sum(common._reader._inventory[common._reader.relative_path(path)]['bytes'] for path in pending)
+    if required_bytes >= engine.qt_pose_input_cache.max_bytes:
+        return None
+    while pending:
+        try:
+            common._reader.read_many(pending, expected_root=common._root,
+                                     cancelled=cancelled, on_payload=stage)
+        except (OSError, ValueError) as error:
+            failed = getattr(error, 'resource_file_ref', None)
+            # A payload failure precedes read_many's final lifetime check.
+            # Complete that check even for an optional miss; no other error
+            # may be turned into a missing fast structure.
+            common._reader.view._assert_current()
+            common.assert_current(engine, revision, cancelled)
+            if failed not in optional:
+                raise
+            failed_key = _path_key(common._root / failed.path)
+            pending = tuple(path for path in pending
+                if _path_key(path) not in payloads and _path_key(path) != failed_key)
+        else:
+            pending = ()
+    common._check()
+    snapshot = PreparedStructureStaticPayloads(common, MappingProxyType(payloads), references,
+        _bytes_used((payloads, references)), coordinate, coordinate.references if coordinate is not None else None)
+    snapshot.assert_current(engine, revision, cancelled)
+    return snapshot
+
+
 def _prepare_from_common(engine, common, map_id, floor, floors, revision, indexed, cancelled, started):
     from imported_fast_structure import decode_prepared
     common.assert_current(engine, revision, cancelled)
+    payloads = getattr(engine, 'qt_pose_static_payloads', None)
+    if isinstance(payloads, PreparedStructureStaticPayloads):
+        payloads.assert_current(engine, revision, cancelled)
+    else:
+        payloads = None
     references, preparations, resources, gaps, matrices = {}, {}, {}, [], {}
     for target_floor in floors:
         common.assert_current(engine, revision, cancelled)
@@ -605,7 +752,8 @@ def _prepare_from_common(engine, common, map_id, floor, floors, revision, indexe
         row, declaration = common.layers[key]
         path = row['path']
         try:
-            raw = common._reader.read_many((path,), expected_root=common._root, cancelled=cancelled)[0]
+            raw = (None if key in payloads.references else payloads.payloads[_path_key(path)]) if payloads else (
+                common._reader.read_many((path,), expected_root=common._root, cancelled=cancelled)[0])
         except (OSError, ValueError) as error:
             required_ref = FileRef(common._component, common._reader.relative_path(path))
             if getattr(error, 'resource_file_ref', None) != required_ref:
@@ -633,23 +781,32 @@ def _prepare_from_common(engine, common, map_id, floor, floors, revision, indexe
             finally:
                 failure.release()
         else:
-            reference = load_shared_structure(path, expected_binding=row['binding'], resource_root=common._root,
-                read_resource=_RamReader({_path_key(path): raw}))
+            if payloads is not None and key in payloads.references:
+                reference = payloads.references[key]
+            else:
+                # The root was already resolved/admitted by the real factory.
+                # Passing no root avoids Path.resolve doing filesystem work in
+                # the original byte decoder; restore that same admitted root.
+                reference = load_shared_structure(path, expected_binding=row['binding'],
+                    resource_root=common._root if payloads is None else None,
+                    read_resource=_RamReader({_path_key(path): raw}))
+                if payloads is not None and reference is not None:
+                    reference = replace(reference, resource_root=common._root)
         resources[key], preparations[key] = None, None
-        if (reference is None or not np.any(reference.clean_mask) or _freeze(reference.metadata.get('canvas')) != row['canvas']
-                or any(_freeze(reference.metadata.get(name)) != value for name, value in row['expected'].items())):
+        if not (payloads is not None and key in payloads.references) and not _common_reference_valid(reference, row):
             references[key] = None
             gaps.append('shared-reference-unavailable:' + target_floor)
             continue
-        references[key] = _freeze_reference(reference)
+        references[key] = reference if payloads is not None and key in payloads.references else _freeze_reference(reference)
         fast_allowed = reference.metadata.get('authorizesStructureValidation') is not False
         if fast_allowed and declaration is not None:
             reference_ref, prepared_ref = declaration
             if common._reader.relative_path(path) != reference_ref.path:
                 raise PoseInputsUnavailable('pose-input-reference-binding-mismatch')
             try:
-                raw = common._reader.read_many((common._root / prepared_ref.path,), expected_root=common._root,
-                                              cancelled=cancelled)[0]
+                raw = payloads.payloads.get(_path_key(common._root / prepared_ref.path)) if payloads else (
+                    common._reader.read_many((common._root / prepared_ref.path,), expected_root=common._root,
+                                            cancelled=cancelled)[0])
             except (OSError, ValueError) as error:
                 if getattr(error, 'resource_file_ref', None) != prepared_ref:
                     raise
@@ -658,13 +815,16 @@ def _prepare_from_common(engine, common, map_id, floor, floors, revision, indexe
                 common._reader.view._assert_current()
                 common.assert_current(engine, revision, cancelled)
             else:
-                resources[key] = prepared_ref
-                try:
-                    decoded = decode_prepared(raw, reference)
-                    preparations[key] = PreparedStructure(_array(decoded.distance), _array(decoded.chains),
-                        _array(decoded.rays), decoded.pitch, tuple(decoded.shape))
-                except (OSError, ValueError):
-                    pass
+                if raw is not None:
+                    resources[key] = prepared_ref
+                    try:
+                        decode_reference = (replace(reference, metadata=_reference_decode_metadata(reference.metadata))
+                            if payloads is not None and key in payloads.references else reference)
+                        decoded = decode_prepared(raw, decode_reference)
+                        preparations[key] = PreparedStructure(_array(decoded.distance), _array(decoded.chains),
+                            _array(decoded.rays), decoded.pitch, tuple(decoded.shape))
+                    except (OSError, ValueError):
+                        pass
         if preparations[key] is None:
             gaps.append(('fast-prepared-unavailable:' if fast_allowed else
                          'fast-structure-validation-unavailable:') + target_floor)
@@ -679,6 +839,8 @@ def _prepare_from_common(engine, common, map_id, floor, floors, revision, indexe
         id(engine), id(common._bundle), id(common._provider), id(common._source))
     references, preparations, resources = map(MappingProxyType, (references, preparations, resources))
     retained = _bytes_used((references, preparations, resources, adapters, locators))
+    if payloads is not None:
+        payloads.assert_current(engine, revision, cancelled)
     common.assert_current(engine, revision, cancelled)
     return PreparedStructurePoseInputs(binding, map_id, floor, floors, references, preparations, resources,
         adapters, common.pack, common.capabilities, tuple(gaps), started, time.perf_counter(), retained,
@@ -1028,6 +1190,9 @@ class StructurePoseInputCache:
 
     def get(self, engine, map_id, floor, *, resource_revision, recovery_floors=(),
             pose_index_enabled=False, pose_index_source=None):
+        payloads = getattr(engine, 'qt_pose_static_payloads', None)
+        if isinstance(payloads, PreparedStructureStaticPayloads):
+            payloads.assert_current(engine, resource_revision, None)
         floors = tuple(dict.fromkeys((str(floor), *(str(value) for value in recovery_floors))))
         key = (id(engine), resource_revision, str(map_id), str(floor), floors,
                pose_index_enabled, pose_index_source)

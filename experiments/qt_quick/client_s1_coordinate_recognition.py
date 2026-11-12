@@ -12,6 +12,7 @@ from types import MappingProxyType, SimpleNamespace
 from imported_native_base import (NativeBaseBundle, S1_COORDINATE_INTERFACE,
     S1_COORDINATE_FILES, read_s1_coordinate_assets)
 from imported_native_context import ImportedResourceOwners
+from imported_author_displays import ImportedAuthorDisplays, _DisplayAdapters
 from shared_structure_reference import load_shared_structure
 from structure_pose_inputs import PreparedCoordinates, _array, _bytes_used, _freeze_reference
 import star_map_import as files
@@ -41,7 +42,8 @@ class PreparedS1CoordinateRecognition:
         if type(max_reference_bytes) is not int or max_reference_bytes < 0:
             raise ValueError('s1-coordinate-reference-byte-budget')
         self.engine, self.catalog, self._lock = engine, catalog, threading.RLock()
-        self._base, self._provider, self._adapters = bundle, engine.qt_shared_provider, engine.qt_adapters
+        self._base, self._provider = bundle, engine.qt_shared_provider
+        self._adapters = bundle._values['adapters']
         self._check = engine.qt_assert_resource_current
         self._revision = getattr(engine, 'qt_resource_revision', None)
         self._owners = self._provider._read_operation_owners(bundle)
@@ -113,6 +115,24 @@ class PreparedS1CoordinateRecognition:
         if not self.current():
             raise ValueError('s1-coordinate-resource-context-changed')
 
+    def _structure_adapters_current(self):
+        """Separate the admitted structure basis from its display-only wrapper."""
+        if self._base._values['adapters'] is not self._adapters:
+            return False
+        adapters = self.engine.qt_adapters
+        if adapters is self._adapters:
+            return True
+        if type(adapters) is not _DisplayAdapters:
+            return False
+        owner = adapters._owner
+        # This existing wrapper delegates shared-structure to its actual base.
+        # Do not call its display/selection guards from pure geometry work.
+        return bool(type(owner) is ImportedAuthorDisplays
+            and owner is self.engine.qt_optional_displays and owner.adapters is adapters
+            and owner._base is self._base and adapters._base is self._adapters
+            and adapters.canonical_pack_id == self._adapters.canonical_pack_id
+            and 'shared-structure' not in adapters.display_profiles)
+
     def current(self):
         """Existing owner/revision checks only; no file/catalog reads."""
         engine = self.engine
@@ -122,7 +142,7 @@ class PreparedS1CoordinateRecognition:
             self._revision = revision
         current = getattr(engine, 'qt_resource_context_current', None)
         return bool(engine.qt_native_base is self._base and engine.qt_shared_provider is self._provider
-            and engine.qt_adapters is self._adapters and engine.qt_assert_resource_current is self._check
+            and self._structure_adapters_current() and engine.qt_assert_resource_current is self._check
             and getattr(engine, 'qt_resource_revision', None) == self._revision
             and (current is None or current())
             and self._provider._read_operation_owners(self._base) is self._owners

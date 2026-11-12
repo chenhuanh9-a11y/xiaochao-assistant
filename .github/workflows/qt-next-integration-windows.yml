@@ -252,7 +252,7 @@ jobs:
                 'test_client_shared_reference_context', 'test_client_structure_unification', 'test_client_local_identity_commit', 'test_group_review_lifecycle',
                 'test_client_imported_providers', 'test_client_native_base_provider',
                 'test_client_direct_structure_recognition', 'test_client_local_structure_recognition', 'test_client_prepared_alignment', 'test_client_known_floor_recovery',
-                'test_client_imported_s1_provider'
+                'test_client_imported_s1_provider', 'test_client_s1_coordinate_recognition', 'test_client_common_coordinate_race', 'test_client_recognition_shutdown'
               )
             }
             # 7ef reached the unchanged 25m cap during the final S1 activation
@@ -307,8 +307,8 @@ jobs:
             'fit-simulation' { $modules = @(
                 'test_observation_residual_reuse', 'test_structure_cache_memory',
                 'test_idvb0059_runtime', 'test_idvb0059_retained_display', 'test_client_idvb0059_adapter',
-                'test_prepared_idvb0059_input', 'test_structure_pose_inputs', 'test_structure_pose_common_models', 'test_structure_pose_preparation_context', 'test_prepared_structure_pose_solver',
-                'test_entry_evidence_after_scan', 'test_qualified_entry_pose_reuse',
+                'test_prepared_idvb0059_input', 'test_structure_pose_inputs', 'test_structure_pose_common_models', 'test_structure_pose_static_payloads', 'test_structure_pose_preparation_context', 'test_prepared_structure_pose_solver',
+                'test_entry_evidence_after_scan', 'test_qualified_entry_pose_reuse', 'test_common_coordinate_observation',
                 'test_recognition_race', 'test_structure_identity_index', 'test_structure_identity_floor_partition', 'test_structure_identity_resources',
                 'test_structure_identity_resource_batch', 'test_structure_identity_read_operation',
                 'test_structure_identity_observation', 'test_structure_identity_recognition',

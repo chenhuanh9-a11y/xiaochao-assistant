@@ -167,11 +167,26 @@ class RecognitionRace:
         self._sessions = set()
         self._active = None
         self._sequence = 0
+        self._next_admission = 0
+        self._cancel_generation = 0
         self._closed = False
 
     @property
     def busy(self):
         return any(queue.busy for queue in self._queues.values())
+
+    def cancel(self):
+        """Retire accepted work without closing this reusable engine's queues."""
+        with self._lock:
+            # Explicit cancellation revokes preflights independently of normal
+            # submissions, which must remain able to supersede older work.
+            self._cancel_generation += 1
+            for session in tuple(self._sessions):
+                session.retire('cancelled')
+            if self._active is not None:
+                self._active.retire('cancelled')
+            for queue in self._queues.values():
+                queue.discard_pending()
 
     def close(self):
         with self._lock:
@@ -243,6 +258,9 @@ class RecognitionRace:
             if self._closed:
                 session.retire('closed')
                 return session.snapshot()
+            self._next_admission += 1
+            admission_sequence = self._next_admission
+            cancel_generation = self._cancel_generation
         if cancelled():
             session.retire('cancelled')
             return session.snapshot()
@@ -256,18 +274,26 @@ class RecognitionRace:
             if self._closed:
                 session.retire('closed')
                 return session.snapshot()
+            if cancel_generation != self._cancel_generation:
+                session.retire('cancelled')
+                return session.snapshot()
+            if admission_sequence <= self._sequence:
+                # A newer observation already submitted while this older
+                # preflight was outside the lock. Do not retire its session.
+                session.retire('superseded')
+                return session.snapshot()
             for previous in tuple(self._sessions):
                 previous.retire('superseded')
             if self._active is not None:
                 self._active.retire('superseded')
             self._active = session
             self._sessions.add(session)
-            self._sequence += 1
+            self._sequence = admission_sequence
             for name, lane in (('candidate', candidate), ('structure', structure)):
                 session.lanes[name]['state'] = 'queued'
                 self._queues[name].submit(
                     lambda name=name, lane=lane: self._work(session, name, observation, lane),
-                    lambda name=name: self._discarded(session, name), sequence=self._sequence)
+                    lambda name=name: self._discarded(session, name), sequence=admission_sequence)
         callbacks = dict(progress=on_progress, entry=on_entry, terminal=on_terminal, error=on_error)
         try:
             while not session.retired.is_set():

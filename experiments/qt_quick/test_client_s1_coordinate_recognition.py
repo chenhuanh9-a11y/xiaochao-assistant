@@ -5,6 +5,7 @@ existing expected-index pin is supplied as that fixture's digest. The real-data
 probe separately uses the unchanged production index and no patched pin.
 """
 from contextlib import ExitStack
+from copy import copy
 from copy import deepcopy
 import hashlib
 import json
@@ -14,15 +15,18 @@ import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+from uuid import uuid4
 
 import numpy as np
 
 import client_s1_coordinate_recognition as coordinate
-from client_imported_providers import build_native_engine
+from client_imported_providers import (SUPPORTED_CAPABILITIES, build_imported_engine_factories,
+                                       build_native_engine)
 from client_paths import RuntimePaths
 from imported_native_base import decode_native_base, S1_COORDINATE_INTERFACE, S1_COORDINATE_FILES
 from imported_resource_archive import save_archive
 from imported_resource_packages import PackageView
+from imported_resource_catalog import ResourceResolver
 from imported_resource_reader import ComponentResourceReader
 from imported_native_context import ImportedResourceOwners
 from s1_common_coordinate_filter import CommonCoordinateFilter
@@ -78,6 +82,83 @@ class S1CoordinateRecognitionTests(unittest.TestCase):
         with patch.object(coordinate, 'EXPECTED_INDEX_SHA256', digest):
             return build_native_engine(views['base'], views['controls'], RuntimePaths(self.root / ('runtime-' + mode), False),
                 season='s1', mode=mode)
+
+    def author_engine(self, mode):
+        """Actual display package + selected catalog + formal imported factory."""
+        from client_providers import SharedReferenceProvider
+        from test_imported_author_display import _AuthorDisplayFixture
+        fixture = _AuthorDisplayFixture('runTest')
+        self.addCleanup(fixture.doCleanups)
+        temporary = tempfile.TemporaryDirectory(prefix='coordinate-author-')
+        fixture.addCleanup(temporary.cleanup)
+        fixture.root, fixture.source = Path(temporary.name), self.cases[mode][0]
+        fixture.resources = fixture.root / 'resources'
+        saved = save_archive(fixture.source.output, fixture.resources)
+        fixture.refs = {ref.component_id: ref for ref in saved.component_refs}
+        fixture.base_view = PackageView(fixture.resources, fixture.refs['base'])
+        fixture.base = decode_native_base(fixture.base_view, season='s1', mode=mode)
+        fixture.provider = SharedReferenceProvider(fixture.base_view.root, fixture.base.resources,
+            fixture.base.versions, check_current=fixture.base.assert_current)
+        fixture.counter = 0
+        display, _, _ = fixture.package()
+        (fixture.resources / 'catalog.json').write_text(json.dumps(dict(schema='xingtu-resource-catalog-v1',
+            generation=uuid4().hex, contexts={f's1:{mode}': dict(
+                recognitionBase=fixture.wire(fixture.refs['base']), controls=fixture.wire(fixture.refs['controls']),
+                reviewedGroups=None)}, displays=[fixture.wire(display.component_ref)])), encoding='utf-8')
+        resolver = ResourceResolver(fixture.resources, supported_capabilities=SUPPORTED_CAPABILITIES)
+        factories = build_imported_engine_factories(resolver, RuntimePaths(fixture.root, False))
+        self.addCleanup(factories.invalidate)
+        with patch.object(coordinate, 'EXPECTED_INDEX_SHA256', self.cases[mode][2]):
+            return factories._get(mode, season='s1')
+
+    def test_actual_author_display_preserves_native_coordinate_preparation_and_ram_prior(self):
+        from imported_author_displays import _DisplayAdapters
+        for mode in ('difficult', 'nightmare'):
+            with self.subTest(mode=mode):
+                engine = self.author_engine(mode)
+                prepared, catalog = engine.qt_s1_coordinate_recognition, StructureCatalog.from_engine(engine)
+                native = engine.qt_native_base._values['adapters']
+                self.assertIs(type(engine.qt_adapters), _DisplayAdapters)
+                self.assertIs(engine.qt_adapters._base, native)
+                self.assertIn('author-fixture', engine.qt_optional_displays.profiles)
+                self.assertNotIn('shared-structure', engine.qt_adapters.display_profiles)
+                for floor in ('-1', '-4'):
+                    np.testing.assert_array_equal(
+                        engine.qt_adapters.matrix_profile_to_canonical('shared-structure', catalog.map_ids[0], floor),
+                        native.matrix_profile_to_canonical('shared-structure', catalog.map_ids[0], floor))
+                source = AcknowledgedPose(catalog.mode, catalog.resource_key, catalog.map_ids[0], '-1',
+                    ('round',), 'frame', ((1., 0, 30), (0, 1., 40), (0, 0, 1.)), True, True)
+                with ExitStack() as stack:
+                    for owner, name in ((Path, 'read_bytes'), (Path, 'read_text'),
+                            (ComponentResourceReader, '__call__'), (ComponentResourceReader, 'read_many')):
+                        stack.enter_context(patch.object(owner, name,
+                            side_effect=AssertionError('author-wrapper-caused-geometry-io')))
+                    self.assertTrue(prepared.current())
+                    self.assertIsNotNone(prepared.pose_prior(source, '-2', ('round',)))
+                    report = prepared.prepare(np.zeros((160, 240, 3), np.uint8), catalog.map_ids, '-1',
+                        cancelled=lambda: False)
+                    self.assertNotEqual(report['reason'], 'coordinate-work-obsolete')
+                    self.assertEqual(set(report['evaluatedMapIds']), set(catalog.map_ids))
+
+    def test_author_wrapper_does_not_authorize_unknown_or_replaced_structure_adapters(self):
+        engine = self.author_engine('difficult')
+        prepared, catalog = engine.qt_s1_coordinate_recognition, StructureCatalog.from_engine(engine)
+        native, display = engine.qt_native_base._values['adapters'], engine.qt_adapters
+        source = AcknowledgedPose(catalog.mode, catalog.resource_key, catalog.map_ids[0], '-1',
+            ('round',), 'frame', ((1., 0, 30), (0, 1., 40), (0, 0, 1.)), True, True)
+        changes = (
+            patch.object(engine, 'qt_adapters', copy(native)),
+            patch.object(display, '_base', copy(native)),
+            patch.object(display, 'display_profiles', set(display.display_profiles) | {'shared-structure'}),
+            patch.dict(engine.qt_native_base._values, adapters=copy(native)))
+        for index, change in enumerate(changes):
+            with self.subTest(change=index), change, ExitStack() as stack:
+                for owner, name in ((Path, 'read_bytes'), (Path, 'read_text'),
+                        (ComponentResourceReader, '__call__'), (ComponentResourceReader, 'read_many')):
+                    stack.enter_context(patch.object(owner, name, side_effect=AssertionError('adapter-check-read-files')))
+                self.assertFalse(prepared.current())
+                self.assertIsNone(prepared.pose_prior(source, '-2', ('round',)))
+        self.assertTrue(prepared.current())
 
     def test_declared_assets_are_admitted_and_attach_original_algorithms(self):
         for mode, (source, _, _, views) in self.cases.items():

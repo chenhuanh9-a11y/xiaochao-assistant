@@ -274,6 +274,12 @@ class ImportedEngineFactories(EngineFactories):
         engine.qt_resource_inventory['optionalResourceGaps'] = list(resources.optional_gaps) + (
             list(optional.errors.values()) if optional is not None else []) + (
             ['reviewed-groups-decoder-unavailable'] if resources.groups is not None else [])
+        from structure_pose_inputs import prepare_structure_pose_static_payloads
+        engine.qt_pose_static_payloads = prepare_structure_pose_static_payloads(engine)
+        if engine.qt_pose_static_payloads is not None:
+            retained = engine.qt_pose_static_payloads.retained_bytes
+            engine.qt_resource_inventory['staticPosePayloadBytes'] = retained
+            engine.qt_pose_input_cache.max_bytes -= retained
         engine.qt_assert_resource_current()
         return engine
 

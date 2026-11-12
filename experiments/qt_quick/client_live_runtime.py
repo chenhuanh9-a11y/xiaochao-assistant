@@ -364,7 +364,10 @@ class LiveRuntime:
         from client_idvb0059_adapter import Idvb0059Adapter
         self._steady = Idvb0059Adapter()
         from s1_private_experiment import LatestEvidenceQueue
+        from weakref import WeakSet
         self._s1_private_jobs = LatestEvidenceQueue()
+        self._recognition_races = WeakSet()
+        self._private_evidence_stopping = False
         self._private_observation_sequence = 0
         self._reset_identity()
         self._reset_floor_policy()
@@ -760,7 +763,7 @@ class LiveRuntime:
         if snapshot is None or shape[:2] != (dimensions[1], dimensions[0]):
             return self._receipt(action, payload, success=False, reason="stream-frame-shape-mismatch")
         with self._lock:
-            if (epoch != self._epoch or frame_id != self._frame_id or not self._observation_stream_enabled(engine)
+            if (self._private_evidence_stopping or epoch != self._epoch or frame_id != self._frame_id or not self._observation_stream_enabled(engine)
                     or not self._identity_observation_current()):
                 return self._receipt(action, payload, success=False, reason="stale-stream-observation", stale=True)
             session = self._s1_structure_session
@@ -824,6 +827,13 @@ class LiveRuntime:
         first_result = None
         entry_selection, entry_seed, entry_published, entry_preserved = None, None, False, False
         published_report = None
+        coordinate_work = None
+        coordinate_material_committed = False
+        coordinate_context = dict(season=catalog.season, mode=catalog.mode, floor=str(floor),
+            frameId=frame_id, roundId=round_id, epoch=epoch, cycleId=cycle,
+            privateFrameDigest=digest, privateResourceDigest=catalog.resource_key,
+            attemptId=payload.get('_diagnosticAttemptId', ''),
+            openingId=payload.get('_diagnosticOpeningId', ''), inputSequence=payload.get('inputSequence'))
         attempted = set()
         last_material_reason = "no-current-supported-candidates"
         started = time.monotonic()
@@ -843,7 +853,7 @@ class LiveRuntime:
                 and ticket == self._s1_structure_ticket)
 
         def current():
-            return (owns_ticket() and not self._cancelled(cancelled)
+            return (not self._private_evidence_stopping and owns_ticket() and not self._cancelled(cancelled)
                 and self._active and self._map_open and self._observation_stream_enabled(engine)
                 and _engine_resource_current(engine)
                 and settings_generation == self._settings_generation
@@ -926,8 +936,119 @@ class LiveRuntime:
 
         def identity_committed():
             with self._lock:
+                if private_enabled:
+                    row = self._render
+                    return bool(current() and self._s1_private_pool is pool and pool.locked_id
+                        and (not self._native_s1_final_round_lock or self._s1_round_map_id == pool.locked_id)
+                        and first_result is not None and row is not None
+                        and row.get('token') == first_result.get('renderToken')
+                        and row.get('mapId') == pool.locked_id and row.get('frameId') == frame_id
+                        and row.get('poseFinalVerified') is True and self._display_current(row))
                 return bool(current() and entry_selection and self._map_id == entry_selection
                     and self._gate.confirmed_id == entry_selection and self._durable_map_id == entry_selection)
+
+        def accept_current_material(mid, result):
+            nonlocal first_result
+            with self._lock:
+                row = self._render
+                if (not current() or private_enabled and (self._s1_private_pool is not pool or mid not in pool.remaining)
+                        or not result.get('success') or row is None
+                        or row.get('frameId') != frame_id or row.get('mapId') != mid
+                        or row.get('token') != result.get('renderToken')
+                        or row.get('poseFinalVerified') is not True or not self._display_current(row)):
+                    return False
+                first_result = result
+                if private_enabled and pool.accept_material(mid, coordinate_current=True):
+                    if self._native_s1_final_round_lock:
+                        self._s1_round_map_id = mid
+                        self._render.update(self._identity_fields())
+                    self._notify('private-experimental-locked', reason='private-unique-pool-current-material',
+                        **pool.snapshot(), privateResourceDigest=catalog.resource_key)
+                return True
+
+        def coordinate_source_current():
+            # Read-only cancellation only. All ledger/material authority is
+            # checked again under the runtime lock by its consumer.
+            return bool(private_enabled and not self._private_evidence_stopping
+                and engine is self._engine and self._private_pool_scope_current(pool)
+                and getattr(engine, 'qt_s1_coordinate_recognition', None) is not None
+                and engine.qt_s1_coordinate_recognition.current())
+
+        def coordinate_work_bound(work):
+            from common_coordinate_observation import CommonCoordinateObservationWork
+            return bool(isinstance(work, CommonCoordinateObservationWork)
+                and work.frame_snapshot is snapshot and work.catalog == catalog
+                and work.prepared is getattr(engine, 'qt_s1_coordinate_recognition', None)
+                and work.floor == str(floor) and work.prepared.current())
+
+        def queue_coordinate_history(work):
+            # Transfer an actual completed source report; never repeat its
+            # extraction/compare or ask a historical frame for current pixels.
+            if not coordinate_work_bound(work) or not work.coordinate_complete:
+                return
+            def consume():
+                with self._lock:
+                    if (not coordinate_source_current() or work.ledger_consumed
+                            or pool.retain_locked_identity and pool.locked_id):
+                        return
+                    self._consume_s1_coordinate_report(pool, catalog, str(floor), work.report,
+                        work.pool_ids, work.source_pool_revision, coordinate_context,
+                        current=coordinate_source_current, work=work)
+            self._s1_private_jobs.submit(consume, sequence=private_sequence)
+
+        def publish_coordinate(work, *, phase):
+            nonlocal coordinate_work, first_result, last_material_reason, coordinate_material_committed
+            with self._lock:
+                if not current() or not private_enabled or not coordinate_work_bound(work):
+                    return False
+                if phase == 'registered':
+                    coordinate_work = work
+                    return True
+                if work is not coordinate_work:
+                    return False
+                if phase == 'coordinate':
+                    if not work.coordinate_complete or work._failed:
+                        return False
+                    reason = self._consume_s1_coordinate_report(pool, catalog, str(floor), work.report,
+                        work.pool_ids, work.source_pool_revision, coordinate_context,
+                        current=current, work=work)
+                    if reason is None or not current():
+                        return False
+                    if (first_result is not None and (self._render is None
+                            or self._render.get('mapId') not in pool.remaining)):
+                        first_result = None
+                    if reason == 'private-contradiction-recovery':
+                        first_result = None
+                        last_material_reason = reason
+                        return False
+                    if len(pool.remaining) != 1:
+                        return False
+                    mid = pool.remaining[0]
+                    if first_result is not None and accept_current_material(mid, first_result):
+                        return False
+                    return dict(mapId=mid, poolRevision=pool.revision)
+                if (phase != 'complete' or not work.current_fit(engine, frame, work.map_id, floor, pool.revision)
+                        or pool.remaining != (work.map_id,)):
+                    return False
+                revision = pool.revision
+            try:
+                result = self._solve_observation(action, payload, cancelled, engine, None, epoch,
+                    captured, frame, floor, digest, capture_generation, frame_generation, frame_id, cycle,
+                    work.map_id, coordinate_observation=work,
+                    coordinate_pool_revision=revision,
+                    structure_current=lambda: current() and self._s1_private_pool is pool
+                        and pool.revision == revision and pool.remaining == (work.map_id,))
+            except MemoryError:
+                raise
+            except Exception as error:
+                # Ordinary material failures belong to this lane, just as in
+                # the candidate publication below. The other lane can recover;
+                # actual context invalidation still retires the whole request.
+                last_material_reason = type(error).__name__ + ':' + str(error)
+                return False
+            last_material_reason = result.get('reason', 'material-unavailable')
+            coordinate_material_committed = accept_current_material(work.map_id, result)
+            return coordinate_material_committed
 
         def publish(report):
             nonlocal first_result, last_material_reason, private_material_ms, published_report
@@ -952,7 +1073,7 @@ class LiveRuntime:
                         or not session.commit(report, ticket)):
                     return False
                 published_report = report
-                if entry_preserved:
+                if entry_preserved or coordinate_material_committed:
                     return True
                 self._identity_rank_rows = rows
                 if not self._provisional_display_map_id:
@@ -990,24 +1111,7 @@ class LiveRuntime:
                     continue
                 private_material_ms += (time.monotonic() - material_started) * 1000
                 last_material_reason = result.get("reason", "material-unavailable")
-                with self._lock:
-                    if (current() and (not private_enabled or self._s1_private_pool is pool and mid in pool.remaining)
-                            and result.get("success") and self._render is not None
-                            and self._render.get("frameId") == frame_id
-                            and self._render.get("mapId") == mid
-                            and self._render.get("token") == result.get("renderToken")
-                            and self._display_current(self._render)):
-                        first_result = result
-                        if (private_enabled and self._s1_private_pool is pool
-                                and pool.accept_material(mid, coordinate_current=True)):
-                            if self._native_s1_final_round_lock:
-                                self._s1_round_map_id = mid
-                                # Material was published just before the ledger
-                                # committed. Refresh identity metadata only; its
-                                # token, transform and display grant do not change.
-                                self._render.update(self._identity_fields())
-                            self._notify("private-experimental-locked", reason="private-unique-pool-current-material",
-                                **pool.snapshot(), privateResourceDigest=catalog.resource_key)
+                accept_current_material(mid, result)
             return True
 
         def preferred_material_committed(map_id):
@@ -1106,6 +1210,12 @@ class LiveRuntime:
                 if getattr(engine, 'qt_recognition_race', None) is not None:
                     options.update(on_entry_observation=publish_observed_entry,
                         identity_committed=identity_committed)
+                    if (private_enabled and getattr(engine, 'qt_s1_coordinate_recognition', None) is not None
+                            and not (pool.retain_locked_identity and pool.locked_id)):
+                        options.update(on_coordinate_work=publish_coordinate,
+                            on_coordinate_history=queue_coordinate_history,
+                            coordinate_pool_ids=tuple(pool.remaining), coordinate_pool_revision=pool.revision,
+                            coordinate_source_current=coordinate_source_current)
                 report = scan(frame, floor=str(floor), floor_source="current-frame-verified",
                     cancelled=obsolete, budget_seconds=scan_budget,
                     on_progress=publish, candidate_order=order, preferred_map_id=preferred,
@@ -1117,6 +1227,12 @@ class LiveRuntime:
                     _test_evidence('fit-evidence', frame, dict(report['fitEvidence'],
                         priorBinding=prior_binding, priorReason=prior_reason))
                 return report
+            with self._lock:
+                if self._private_evidence_stopping:
+                    return self._receipt(action, payload, success=False, reason='stale-stream-observation', stale=True)
+                race = getattr(engine, 'qt_recognition_race', None)
+                if race is not None:
+                    self._recognition_races.add(race)
             report = scan_current()
             if catalog.season == 's0' and report['status'] != 'cancelled' and not obsolete():
                 if not entry_published and 'entryEvidence' in report:
@@ -1245,19 +1361,28 @@ class LiveRuntime:
             # ordinary close, even if first paint lost the race. No UI authority
             # follows it. Queue ordering is capture admission, not finish time.
             if private_enabled and not (pool.retain_locked_identity and pool.locked_id):
-                self._enqueue_private_observation(pool, engine, catalog, captured, frame, str(floor),
-                    digest, epoch, frame_id, round_id, cycle, payload, private_sequence)
+                if coordinate_work is None or coordinate_work.retire_unstarted_source():
+                    self._enqueue_private_observation(pool, engine, catalog, captured, frame, str(floor),
+                        digest, epoch, frame_id, round_id, cycle, payload, private_sequence)
 
     @property
     def private_evidence_busy(self):
-        return self._s1_private_jobs.busy
+        with self._lock:
+            races = tuple(self._recognition_races)
+        return self._s1_private_jobs.busy or any(race.busy for race in races)
 
     def stop_private_evidence(self):
         # Stop admission first, then invalidate the running immutable task.
         # Exit drain polls busy; the UI never joins a native kernel here.
-        self._s1_private_jobs.shutdown()
         with self._lock:
+            if self._private_evidence_stopping:
+                return
+            self._private_evidence_stopping = True
+            races = tuple(self._recognition_races)
             self._clear_private_pool()
+        self._s1_private_jobs.shutdown()
+        for race in races:
+            race.cancel()
 
     def _clear_private_pool(self):
         self._s1_private_pool = None
@@ -1327,69 +1452,9 @@ class LiveRuntime:
                     before, revision = tuple(pool.remaining), pool.revision
                 evidence = engine.qt_s1_private_coordinate_prepare(owned_frame, before, floor,
                     cancelled=cancelled, stage=stage)
-                with self._lock:
-                    if not scope_current() or pool.revision != revision:
-                        self._private_record(context, "private-evidence-discarded", reason="private-owner-or-revision-changed",
-                            snapshotPoolRevision=revision, currentPoolRevision=pool.revision)
-                        return
-                    if (evidence.get("mode"), evidence.get("resourceKey"), evidence.get("floor")) != (
-                            catalog.mode, catalog.resource_key, floor):
-                        state = "failed"
-                        return
-                    was_locked = pool.locked_id
-                    reason = pool.observe(evidence)
-                    summary = evidence.get("coordinateEvidence", {})
-                    self._private_record(context, "private-pool-observed", reason=reason,
-                        privatePoolBefore=list(before), privatePoolAfter=list(pool.remaining),
-                        snapshotPoolRevision=revision, currentPoolRevision=pool.revision,
-                        privateContradictedMapIds=evidence.get("contradictedMapIds", []),
-                        privateUnknownMapIds=evidence.get("unknownMapIds", list(before)),
-                        privateCoordinateReason=evidence.get("reason", ""),
-                        privateCoordinateVerified=evidence.get("coordinateVerified") is True,
-                        privatePoseDomainNarrow=evidence.get("poseAvailable") is True,
-                        privateCoordinateBasis=summary.get("basis", ""), privateScaleRange=summary.get("scaleRange", []),
-                        privateCoordinateErrorPx=summary.get("pointCoordinateErrorBoundPx", summary.get("anchorErrorPx", 0)),
-                        privateHypothesisCount=summary.get("sharedHypothesisCount", 0),
-                        privateGateStatus=evidence.get("gateStatus", "unknown"),
-                        privateGateReason=evidence.get("gateReason", "private-coordinate-unavailable"),
-                        privateGateMs=evidence.get("gateMs", 0), privateObservationMs=evidence.get("observationMs", 0),
-                        privateCompareMs=evidence.get("elapsedMs", 0), privateTotalMs=evidence.get("totalMs", 0),
-                        privateResourceMs=evidence.get("resourceMs", 0),
-                        **pool.snapshot())
-                    if reason == "private-contradiction-recovery":
-                        self._private_contradiction_recovered(pool, was_locked, evidence, catalog)
-                    if reason == "private-pool-updated" and tuple(pool.remaining) != before:
-                        # Historical positive evidence may complete after paint.
-                        # Retire a now-excluded candidate immediately, not only
-                        # when a future foreground scan happens to publish.
-                        row = self._render
-                        if (row is not None and row.get("candidateDisplayOnly")
-                                and row.get("mapId") not in pool.remaining):
-                            self._s1_candidate_preference = self._s1_candidate_pose_hint = None
-                            self._revoke_render("s1-candidate-excluded")
-                        self._notify("s1-candidate-pool-changed", reason=reason,
-                            **pool.snapshot(), privateResourceDigest=catalog.resource_key)
-                    # Formal evidence needs bounded reasons too; the optional
-                    # private timing sink is deliberately disabled in production.
-                    try:
-                        self._recognition_diagnostic("s1-round-evidence", reason,
-                            inputs={key: context[key] for key in
-                                ("attemptId", "openingId", "roundId", "epoch", "cycleId", "floor")},
-                            remainingCount=len(pool.remaining),
-                            contradictedCount=len(evidence.get("contradictedMapIds", [])),
-                            unknownCount=len(evidence.get("unknownMapIds", before)),
-                            privatePoolAfter=list(pool.remaining),
-                            privateCoordinateReason=evidence.get("reason", "private-coordinate-unknown"),
-                            privateCoordinateVerified=evidence.get("coordinateVerified") is True,
-                            privatePoseDomainNarrow=evidence.get("poseAvailable") is True,
-                            candidateChecks=[{key: check[key] for key in
-                                ("mapId", "unavoidableMissCount", "sampleCount", "unavoidableSpanPx", "explicitContradiction")
-                                if key in check} for check in evidence.get("candidateChecks", [])[:32]],
-                            privatePoolId=pool.pool_id, privatePoolRevision=pool.revision,
-                            privateExperimentalLocked=bool(pool.locked_id))
-                    except Exception:
-                        pass  # Diagnostics cannot change the ledger result.
-                    state = "finished"
+                reason = self._consume_s1_coordinate_report(pool, catalog, floor, evidence,
+                    before, revision, context, current=scope_current)
+                state = "finished" if reason is not None else "cancelled"
             except BaseException as error:
                 state = "failed"
                 stage("prepare-error", state, (time.monotonic()-began)*1000, exceptionType=type(error).__name__)
@@ -1401,6 +1466,76 @@ class LiveRuntime:
             return
         stage("queue", "started", 0.)
         self._s1_private_jobs.submit(run, discard, sequence=sequence)
+
+    def _consume_s1_coordinate_report(self, pool, catalog, floor, evidence, before, revision,
+                                      context, *, current, work=None):
+        """The one pool writer, for current and historical coordinate evidence."""
+        with self._lock:
+            if work is not None and work.ledger_consumed:
+                return None
+            if not current() or pool.revision != revision or tuple(pool.remaining) != tuple(before):
+                self._private_record(context, "private-evidence-discarded", reason="private-owner-or-revision-changed",
+                    snapshotPoolRevision=revision, currentPoolRevision=pool.revision)
+                return None
+            if (not isinstance(evidence, dict) or
+                    (evidence.get("mode"), evidence.get("resourceKey"), evidence.get("floor")) !=
+                    (catalog.mode, catalog.resource_key, floor)):
+                return None
+            was_locked = pool.locked_id
+            reason = pool.observe(evidence)
+            if work is not None:
+                work.ledger_consumed = True
+            summary = evidence.get("coordinateEvidence", {})
+            self._private_record(context, "private-pool-observed", reason=reason,
+                privatePoolBefore=list(before), privatePoolAfter=list(pool.remaining),
+                snapshotPoolRevision=revision, currentPoolRevision=pool.revision,
+                privateContradictedMapIds=evidence.get("contradictedMapIds", []),
+                privateUnknownMapIds=evidence.get("unknownMapIds", list(before)),
+                privateCoordinateReason=evidence.get("reason", ""),
+                privateCoordinateVerified=evidence.get("coordinateVerified") is True,
+                privatePoseDomainNarrow=evidence.get("poseAvailable") is True,
+                privateCoordinateBasis=summary.get("basis", ""), privateScaleRange=summary.get("scaleRange", []),
+                privateCoordinateErrorPx=summary.get("pointCoordinateErrorBoundPx", summary.get("anchorErrorPx", 0)),
+                privateHypothesisCount=summary.get("sharedHypothesisCount", 0),
+                privateGateStatus=evidence.get("gateStatus", "unknown"),
+                privateGateReason=evidence.get("gateReason", "private-coordinate-unavailable"),
+                privateGateMs=evidence.get("gateMs", 0), privateObservationMs=evidence.get("observationMs", 0),
+                privateCompareMs=evidence.get("elapsedMs", 0), privateTotalMs=evidence.get("totalMs", 0),
+                privateResourceMs=evidence.get("resourceMs", 0), **pool.snapshot())
+            if reason == "private-contradiction-recovery":
+                self._private_contradiction_recovered(pool, was_locked, evidence, catalog)
+            if reason == "private-pool-updated" and tuple(pool.remaining) != tuple(before):
+                row = self._render
+                if (row is not None and row.get("candidateDisplayOnly")
+                        and row.get("mapId") not in pool.remaining):
+                    self._s1_candidate_preference = self._s1_candidate_pose_hint = None
+                    if work is not None:
+                        token = self._retire_candidate_preview(reason='s1-candidate-excluded')
+                        if token:
+                            self._notify('render-revoked', reason='s1-candidate-excluded', token=token)
+                    else:
+                        self._revoke_render("s1-candidate-excluded")
+                self._notify("s1-candidate-pool-changed", reason=reason,
+                    **pool.snapshot(), privateResourceDigest=catalog.resource_key)
+            try:
+                self._recognition_diagnostic("s1-round-evidence", reason,
+                    inputs={key: context[key] for key in
+                        ("attemptId", "openingId", "roundId", "epoch", "cycleId", "floor")},
+                    remainingCount=len(pool.remaining),
+                    contradictedCount=len(evidence.get("contradictedMapIds", [])),
+                    unknownCount=len(evidence.get("unknownMapIds", before)),
+                    privatePoolAfter=list(pool.remaining),
+                    privateCoordinateReason=evidence.get("reason", "private-coordinate-unknown"),
+                    privateCoordinateVerified=evidence.get("coordinateVerified") is True,
+                    privatePoseDomainNarrow=evidence.get("poseAvailable") is True,
+                    candidateChecks=[{key: check[key] for key in
+                        ("mapId", "unavoidableMissCount", "sampleCount", "unavoidableSpanPx", "explicitContradiction")
+                        if key in check} for check in evidence.get("candidateChecks", [])[:32]],
+                    privatePoolId=pool.pool_id, privatePoolRevision=pool.revision,
+                    privateExperimentalLocked=bool(pool.locked_id))
+            except Exception:
+                pass  # Diagnostics cannot change the ledger result.
+            return reason
 
     def _private_contradiction_recovered(self, pool, previous_lock, evidence, catalog):
         """Under the lifetime lock: retire old material, then emit one transition.
@@ -5776,7 +5911,8 @@ class LiveRuntime:
                            floor, digest, capture_generation, frame_generation, frame_id, cycle,
                            map_id, entry_candidate=None, *, identity_stage=None, manual_choice=None,
                            staged_observation=None, structure_ticket=None, structure_current=None,
-                           entry_observation=None):
+                           entry_observation=None, coordinate_observation=None,
+                           coordinate_pool_revision=None):
         import numpy as np
         from alignment_core_v2 import AlignmentCandidate
         from alignment_observation import rendered_profile_residual_is_verified
@@ -6098,18 +6234,38 @@ class LiveRuntime:
                         return  # Keep completed pixels while final review owns the new verdict.
                 publish_fit(first, review_pending=True)
 
-        host, preparation, steady_receipt = _prepare_alignment_host(engine, group, self._settings,
-            map_id, floor, frame=frame, cancelled=obsolete,
-            steady=None if staged_observation is not None else (self._steady, steady_context,
-            lambda context: not obsolete() and self._steady_is_current(context, captured),
-            self._steady_signature(captured)), usable_fit_callback=offer_usable_fit)
-        alignment_current = lambda: _alignment_host_current(engine, host, steady_receipt)
+        if coordinate_observation is not None:
+            from common_coordinate_observation import CommonCoordinateObservationWork
+            if (not isinstance(coordinate_observation, CommonCoordinateObservationWork)
+                    or not coordinate_observation.current_fit(engine, frame, map_id, floor,
+                        coordinate_pool_revision)):
+                return self._receipt(action, payload, success=False, reason='stale-common-coordinate-fit', stale=True)
+            # The actual structure lane already fitted this exact frame using
+            # admitted RAM references. Keep the original canonical host methods
+            # for failure evidence; do not prepare typed/fast inputs or fit again.
+            host = _AlignmentHost(coordinate_observation.prepared.observer.engine, group, self._settings)
+            preparation = dict(kind='current-common-coordinate-ram', fixedFitReused=True,
+                resourceReads=0)
+            steady_receipt = None
+            alignment_current = lambda: coordinate_observation.current_fit(
+                engine, frame, map_id, floor, coordinate_pool_revision)
+        else:
+            host, preparation, steady_receipt = _prepare_alignment_host(engine, group, self._settings,
+                map_id, floor, frame=frame, cancelled=obsolete,
+                steady=None if staged_observation is not None else (self._steady, steady_context,
+                lambda context: not obsolete() and self._steady_is_current(context, captured),
+                self._steady_signature(captured)), usable_fit_callback=offer_usable_fit)
+            alignment_current = lambda: _alignment_host_current(engine, host, steady_receipt)
         if obsolete():
             return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
         fit_started = time.monotonic()
         fit_timing = {}
         try:
-            if provisional_operation or structure_ticket is not None:
+            if coordinate_observation is not None:
+                fit = copy.deepcopy(coordinate_observation.pose)
+                fit_timing.update(elapsedMs=coordinate_observation.fit_ms,
+                    kind='common-coordinate-fixed-in-structure-lane')
+            elif provisional_operation or structure_ticket is not None:
                 # Reuse only the current ticket's already verified fit. All residual,
                 # material, floor, generation and capture checks below still run.
                 with self._lock:

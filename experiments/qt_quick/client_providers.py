@@ -568,9 +568,10 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
     direct = DirectStructureRecognition(engine, catalog)
     engine.qt_direct_structure_recognition = direct
     local = (PreparedLocalStructureRecognition(engine, catalog)
-        if getattr(engine, 'qt_native_base', None) is not None else None)
+        if catalog.season == 's0' and getattr(engine, 'qt_native_base', None) is not None else None)
     engine.qt_local_structure_recognition = local
-    race = RecognitionRace(clock=time.perf_counter) if local is not None else None
+    coordinate = getattr(engine, 'qt_s1_coordinate_recognition', None) if catalog.season == 's1' else None
+    race = RecognitionRace(clock=time.perf_counter) if local is not None or coordinate is not None else None
     engine.qt_recognition_race = race
 
     def check_current():
@@ -588,7 +589,9 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
                        first_material_committed=None, pose_priors=None, collect_fit_diagnostics=False,
                        on_entry_evidence=None, deadline=None, frame_snapshot=None,
                        on_direct_recognition=None, on_entry_observation=None,
-                       identity_committed=None):
+                       identity_committed=None, on_coordinate_work=None,
+                       on_coordinate_history=None, coordinate_pool_ids=None,
+                       coordinate_pool_revision=None, coordinate_source_current=None):
         check_current()
         if not getattr(engine, 'qt_rank_ready', True) and not getattr(engine, 'qt_structure_scan_ready', False):
             raise ProviderUnavailable(';'.join(getattr(engine, 'qt_rank_gaps', ())) or 'recognition-rank-unavailable')
@@ -701,10 +704,19 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
                 return on_entry_observation(value, entry_observation=entry_observation, channel=channel)
             return on_entry_evidence(value) if on_entry_evidence is not None else False
 
-        def consume_progress(value=None, *, material=None, map_id=None):
+        def consume_coordinate(work, phase):
             check_current()
             if cancelled is not None and cancelled():
                 return False
+            return on_coordinate_work(work, phase=phase) if on_coordinate_work is not None else False
+
+        def consume_progress(value=None, *, material=None, map_id=None,
+                             coordinate_work=None, coordinate_phase=None):
+            check_current()
+            if cancelled is not None and cancelled():
+                return False
+            if coordinate_work is not None:
+                return consume_coordinate(coordinate_work, coordinate_phase)
             if material is not None:
                 callback = preferred_material_committed if material == 'preferred' else first_material_committed
                 return callback(map_id) if callback is not None else False
@@ -714,7 +726,8 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
         try:
             # Only the runtime's actual commit predicate enables competition.
             # Legacy/custom callers keep the original synchronous candidate API.
-            if race is not None and identity_committed is not None:
+            if (race is not None and identity_committed is not None
+                    and (local is not None or on_coordinate_work is not None)):
                 last_report = None
                 candidate_terminal = None
                 local_report = None
@@ -722,14 +735,47 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
                 def candidate_lane(observation, stop, progress, entry):
                     return scan_candidate(stop, progress, entry)
                 def structure_lane(observation, stop, progress, entry):
-                    return local.run(snapshot, floor, cancelled=stop,
-                        deadline=direct_deadline, on_entry=entry, identity_context=identity_context)
+                    if local is not None:
+                        return local.run(snapshot, floor, cancelled=stop,
+                            deadline=direct_deadline, on_entry=entry, identity_context=identity_context)
+                    from common_coordinate_observation import CommonCoordinateObservationWork
+                    from entry_evidence_work import ObservationWorkScheduler
+                    work = CommonCoordinateObservationWork(coordinate, snapshot, floor,
+                        coordinate_pool_ids, coordinate_pool_revision, cancelled=stop,
+                        source_cancelled=(lambda: not coordinate_source_current())
+                            if coordinate_source_current is not None else stop)
+                    try:
+                        progress(None, coordinate_work=work, coordinate_phase='registered')
+                        def observed(job):
+                            if job.phase == 'common-coordinate':
+                                choice = progress(None, coordinate_work=work, coordinate_phase='coordinate')
+                                work.choose_owner_map(choice)
+                        status = ObservationWorkScheduler(clock=time.perf_counter).drive(work,
+                            cancelled=stop, deadline=direct_deadline, on_job_finished=observed)
+                        if status == 'complete' and work.map_id is not None:
+                            entry(None, coordinate_work=work)
+                        return dict(status=status, algorithm='entrance-common-coordinate-filter',
+                            floor=floor, frameKey=snapshot.frame_key, resourceKey=catalog.resource_key,
+                            coordinateMs=work.coordinate_ms, fitMs=work.fit_ms,
+                            reason=(work.report or {}).get('reason'),
+                            evaluatedMapIds=list((work.report or {}).get('evaluatedMapIds', ())))
+                    finally:
+                        work.close()
+                        # This callback only queues the actual report for the
+                        # existing historical owner; it never publishes pixels.
+                        if (work.coordinate_complete and not work.ledger_consumed
+                                and on_coordinate_history is not None):
+                            on_coordinate_history(work)
                 def progress(lane, value=None, **options):
                     nonlocal last_report
                     result = consume_progress(value, **options)
                     if value is not None:
                         last_report = value
                     return result
+                def entry(lane, value, *, coordinate_work=None, **options):
+                    if coordinate_work is not None:
+                        return consume_coordinate(coordinate_work, 'complete')
+                    return consume_entry(value, channel=lane, **options)
                 def terminal(lane, value):
                     nonlocal candidate_terminal, local_report
                     if lane == 'candidate':
@@ -740,7 +786,7 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
                 outcome = race.run(RecognitionObservation(snapshot, floor, catalog.resource_key),
                     candidate_lane, structure_lane, identity_committed=identity_committed,
                     on_progress=progress,
-                    on_entry=lambda lane, value, **kw: consume_entry(value, channel=lane, **kw),
+                    on_entry=entry,
                     on_terminal=terminal, on_error=lambda lane, error: errors.append((lane, error)),
                     cancelled=cancelled, deadline=direct_deadline)
                 report = candidate_terminal if candidate_terminal is not None else scanner.unresolved_report(
@@ -756,7 +802,13 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
                     report.update(status='cancelled')
                 if errors and candidate_terminal is None and outcome['status'] != 'identity-committed':
                     raise errors[0][1]
-                report['recognitionRace'] = outcome
+                # Queue results transfer by reference. The candidate terminal
+                # may be this report itself, so diagnostics must not embed the
+                # raw lane payload or retain its private observation working set.
+                report['recognitionRace'] = dict(status=outcome['status'], winner=outcome['winner'],
+                    lanes={name: dict(state=row['state'], cancelRequested=row['cancelRequested'],
+                        **(dict(errorType=type(row['error']).__name__) if row.get('error') is not None else {}))
+                        for name, row in outcome['lanes'].items()})
                 report['localStructureRecognition'] = local_report
             else:
                 report = scan_candidate(cancelled, consume_progress, consume_entry)
