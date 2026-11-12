@@ -135,29 +135,36 @@ class SideEntryEvidence(EntryEvidenceWork):
             eligible = ((scales*item['unit'] >= 8) & (scales*item['unit'] <= min(frame.shape[:2])/4)
                         & (np.linalg.norm(q[b]-q[a]-scales[:, None]*delta, axis=1) <= 3))
             scales, translations = scales[eligible], translations[eligible]
+            if not len(scales):
+                continue
+            # Preserve the original row-major, first-seen seed policy while
+            # quantizing a batch once instead of allocating np.r_ per seed.
+            seed_keys = np.rint(np.column_stack((scales * item['unit'] * 4,
+                                                translations / 3))).astype(int)
             if screened:
                 from local_structure_index import possible_turns
                 unique = []
-                for index, (scale, translation) in enumerate(zip(scales, translations)):
+                for index, seed_key in enumerate(seed_keys):
                     if time.perf_counter() >= deadline:
                         complete = False
                         break
-                    key = tuple(np.rint(np.r_[scale * item['unit'] * 4, translation / 3]).astype(int))
+                    key = tuple(seed_key)
                     if key not in seen:
                         seen.add(key)
                         unique.append(index)
                 scales, translations = scales[unique], translations[unique]
+                seed_keys = seed_keys[unique]
                 upper = possible_turns(q, scales, translations, compatible, indexed)
             else:
                 upper = np.full(len(scales), 4, np.int32)
             # Batch cheap residuals, preserve the original seed order and
             # deduplication order. Expensive full correspondences are sparse.
-            for scale, translation, possible in zip(scales, translations, upper):
+            for scale, translation, possible, seed_key in zip(scales, translations, upper, seed_keys):
                 if time.perf_counter() >= deadline:
                     complete = False
                     break
                 if not screened:
-                    key = tuple(np.rint(np.r_[scale * item['unit'] * 4, translation / 3]).astype(int))
+                    key = tuple(seed_key)
                     if key in seen:
                         continue
                     seen.add(key)

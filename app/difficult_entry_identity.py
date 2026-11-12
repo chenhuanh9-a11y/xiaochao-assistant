@@ -282,15 +282,19 @@ class MapEntryGeometryIdentity:
         source=source[:,1];hypotheses=[]
         oriented=np.min(np.sum(qrays[:,None]*rays[None],axis=3),axis=2)>=.95
         oriented_pairs=np.nonzero(oriented)
+        oriented_queries=[np.flatnonzero(oriented[:, index]) for index in range(len(source))]
         main_ids=np.flatnonzero(main)
         # Two entry corners seed scale; different measured corners and
         # neighboring rooms must support it. No complete wall endpoint
         # is inferred from a fog-clipped contour.
         for ai,si in enumerate(main_ids):
             for sj in main_ids[ai+1:]:
+                qa_ids, qb_ids = oriented_queries[si], oriented_queries[sj]
+                if not len(qa_ids) or not len(qb_ids):
+                    continue
                 delta=source[sj]-source[si];denom=float(delta@delta)
                 if denom<(.7*item['unit'])**2:continue
-                qa,qb=np.meshgrid(np.flatnonzero(oriented[:,si]),np.flatnonzero(oriented[:,sj]))
+                qa,qb=np.meshgrid(qa_ids,qb_ids)
                 qa=qa.ravel();qb=qb.ravel()
                 qdelta=qpoints[qb]-qpoints[qa]
                 scales=qdelta@delta/denom
