@@ -34,6 +34,10 @@
 
 首次贴合准备复用同一次短期 operation 的已验证静态模型和绑定，避免每个 getter 再次解析路径、读取 manifest。首阶段仅取得快照，实际成功的 typed byte batch attach 后才可 fresh 读取；末次实际字节、上下文、模型归属及取消检查保留，失败或未知 loader 沿原 guarded 路径。真实导出/安装的 cold S0D fixture 中 manifest 读取 52→25、catalog proof 134→53；这是调用次数回归，尚非实际首贴耗时结论。`test_structure_pose_preparation_context` 纳入既有 fit-simulation CI，四模式与 legacy 等联合回归 52 项通过。
 
+显式结构底图在同一次 solve 中只生成一次像素，渐进和最终 publish 仍各自通过原 provider 读取实际 reference 身份并核资源当前性，不以预期版本表替代实际缓存中的来源。首次材料的小元数据与坐标桥独立，像素直接复用；作者、自定义路线及结构回退仍执行原显示源复核。这只移除重复栅格化，不跳过提交时的当前帧、楼层、设置、取消及资源归属检查，也不代表首贴已达到目标。
+
+同 fit 的残差复用也覆盖未显式指定 observation bounds 的默认开图入口：最终 canonical 包装使用本次 solver 自行提取的同一 visible 观测，保留原数值核与完整缓存键。不同帧、矩阵、reference 或 visible 仍重新计算，fit 结束后清空；不信任 sensor 自报的 residual，也不跨帧延用结论。
+
 ## 新增阶段目标：流程清晰且处理耗时恢复原版水平（2026-11-12）
 
 四模式共用可追踪的识别与贴合管线，在保留既有证据、候选竞争和结果资格的前提下，让整合版对同批真实样本的处理耗时恢复到原版代码水平。此阶段目标补充 P3/P4，不替代首贴约 500ms、已锁图重开约 300ms 的最终目标，也不将原版耗时视为用户体验合格线。

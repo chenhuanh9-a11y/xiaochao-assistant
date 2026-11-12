@@ -558,7 +558,7 @@ class StructurePoseSolver:
         # exactly as the production canonical consumer does after any sensor.
         residual = self._rendered_profile_current_frame_residual(
             frame, reference.clean_mask, fit["matrixSourceToClient"], profile_id="shared-structure",
-            visible_override=context.get("visible") if explicit_domain else None)
+            visible_override=context.get("visible") if context is not None else None)
         if not rendered_profile_residual_is_verified(residual):
             return record_fit(dict(success=False, reason="canonical-current-frame-residual-unverified", residual=residual))
         from single_map_structure import observed_corner_chains, marker_occluded_corner_proposals

@@ -39,6 +39,25 @@ class ObservationResidualReuse(unittest.TestCase):
                 self.assertEqual(kernel.call_count, count)
                 self.assertIsNone(self.host._observation_residual_cache)
 
+    def test_default_map_open_domain_reuses_only_within_each_fit(self):
+        original = nightmare_candidate.selected_route_current_frame_residual
+        with patch('fast_structure_alignment.load_prepared', return_value=prepare(self.source)), patch(
+                'nightmare_candidate.selected_route_current_frame_residual', wraps=original) as kernel:
+            for count in (1, 2):
+                fit = self.host.fit(self.frame, 'synthetic', '-3', lambda: False)
+                self.assertTrue(fit['success'], fit['reason'])
+                self.assertEqual(kernel.call_count, count)
+                self.assertIsNone(self.host._observation_residual_cache)
+
+    def test_sensor_success_without_visible_map_is_still_rejected(self):
+        self.frame = np.zeros_like(self.frame)
+        with patch('fast_structure_alignment.try_alignment', return_value=dict(
+                success=True, matrixSourceToClient=self.truth)):
+            fit = self.host.fit(self.frame, 'synthetic', '-3', lambda: False)
+        self.assertFalse(fit['success'])
+        self.assertEqual(fit['reason'], 'canonical-current-frame-residual-unverified')
+        self.assertIsNone(self.host._observation_residual_cache)
+
     def test_local_room_additions_preserve_pose_without_relaxation(self):
         from test_marker_occluded_structure import run_fit
         for width in (8, 16, 32, 64):
