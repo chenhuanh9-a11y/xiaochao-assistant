@@ -98,7 +98,8 @@ class ComponentResourceReader:
         extension = self._check_size(relative)
         return self._check_payload(self.view.read(relative), extension)
 
-    def read_many(self, paths, *, expected_root=None, cancelled=None):
+    def read_many(self, paths, *, expected_root=None, cancelled=None, on_payload=None):
+        """Stage preflighted payloads locally; return only after the view proof."""
         relatives = tuple(self.relative_path(path) for path in paths)
         extensions = tuple(self._check_size(relative) for relative in relatives)
         ref = self.view.component_ref
@@ -109,8 +110,21 @@ class ComponentResourceReader:
                 except (OSError, ValueError) as error:
                     error.resource_file_ref = FileRef(ref, relative)
                     raise
+        if on_payload is None:
+            return self.view.read_many(relatives, expected_root=expected_root,
+                                       cancelled=cancelled, validate_payloads=validate)
+        by_relative = dict(zip(relatives, extensions))
+        def stage(file_ref, raw):
+            try:
+                self._check_payload(raw, by_relative[file_ref.path])
+            except (OSError, ValueError) as error:
+                error.resource_file_ref = file_ref
+                raise
+            # A caller's callback is outside payload classification. It may
+            # stage bytes, but cannot grant completed-batch availability.
+            on_payload(file_ref, raw)
         return self.view.read_many(relatives, expected_root=expected_root,
-                                   cancelled=cancelled, validate_payloads=validate)
+                                   cancelled=cancelled, on_payload=stage)
 
     def json(self, relative):
         return decode_resource_json(self(self.view.path(relative)))

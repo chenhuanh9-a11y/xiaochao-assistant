@@ -121,18 +121,21 @@ class StructureIdentityResources:
 
     def check_current(self, *, cancelled=None):
         self.assert_current()
-        self._reader.read_many(self._declarations, expected_root=self._root, cancelled=cancelled)
+        required, lookups, prepared_reads = list(self._declarations), [], []
         for read in self._reads:
             files._check_cancelled(cancelled)
             path = self._root / read.reference_resource.path
             if not read.uses_prepared_source:
-                self._reader(path)
+                required.append(path)
                 continue
             # ImportedFastStructureSource.read consumes only this typed lookup
             # header, and still verifies its real index/reference/prepared bytes.
             # A fresh lookup avoids pinning all decoded source masks in memory.
-            lookup = SimpleNamespace(path=path, metadata=dict(binding=dict(read.binding)))
-            payload = self._source.read(lookup, cancelled=cancelled)
+            lookups.append(SimpleNamespace(path=path, metadata=dict(binding=dict(read.binding))))
+            prepared_reads.append(read)
+        payloads = self._source.read_many(lookups, required_paths=tuple(dict.fromkeys(required)),
+                                          cancelled=cancelled)
+        for read, payload in zip(prepared_reads, payloads):
             identity = payload[1][:3] if payload is not None else None
             if identity != read.prepared_identity:
                 raise ValueError("structure-identity-prepared-resource-changed")
@@ -167,7 +170,21 @@ def build_structure_identity_resources(bundle, provider, *, floor=None, cancelle
     entrypoint = FileRef(component, view.component["entrypoint"])
     declarations = (view.path(entrypoint.path), view.path(bundle.interfaces["identityPack"]),
                     bundle.resources.index_path)
-    reader.read_many(declarations, expected_root=root, cancelled=cancelled)
+    batch = None
+    batch_provider = (callable(getattr(provider, "batch_bindings", None))
+        and callable(getattr(provider, "read_with_resource", None))
+        and getattr(provider, "resources", None) is bundle.resources
+        and getattr(provider, "versions", None) is bundle.versions)
+    provider_state = tuple(getattr(provider, name, None) for name in
+        ("root", "resources", "versions", "_legacy_reference_loader", "_check_current"))
+    if batch_provider:
+        requests = tuple((pack.identity_profiles[item.id], item.id, fl)
+            for item in pack.maps for fl in floors
+            if pack.identity_profiles.get(item.id) and item.layers.get(fl) is not None)
+        batch = source.prepare_batch(provider.batch_bindings(requests),
+                                     required_paths=declarations, cancelled=cancelled)
+    if batch is None:
+        reader.read_many(declarations, expected_root=root, cancelled=cancelled)
     entries, infos, reads = [], [], []
     for item in pack.maps:
         for fl in floors:
@@ -182,7 +199,9 @@ def build_structure_identity_resources(bundle, provider, *, floor=None, cancelle
             elif item.layers.get(fl) is None:
                 reason = "declared-native-layer-unavailable"
             else:
-                reference = provider(profile, item.id, fl)
+                reference = (provider.read_with_resource(profile, item.id, fl,
+                    read_resource=batch.read_resource) if batch is not None
+                    else provider(profile, item.id, fl))
                 if reference is None:
                     reason = "typed-footprint-reference-unavailable"
             metadata = reference.metadata if reference is not None else {}
@@ -208,21 +227,35 @@ def build_structure_identity_resources(bundle, provider, *, floor=None, cancelle
                         declared_reference, prepared_file = declaration
                         if declared_reference != ref_file:
                             raise ValueError("structure-identity-prepared-reference-mismatch")
-                    use = source.acquire_prepared_use(reference, cancelled=cancelled)
-                    if use.reference is not reference or use.source is not source:
-                        raise ValueError("structure-identity-preparation-owner-changed")
-                    payload = source.read(reference, cancelled=cancelled)
-                    if use.prepared is not None and (payload is None or payload[1] != use.identity):
-                        raise ValueError("structure-identity-preparation-changed")
+                    if batch is not None and not callable(getattr(batch, "acquire_prepared_use", None)):
+                        payload = batch.read(reference)
+                        prepared = None
+                        if payload is not None:
+                            try:
+                                # Keep all six original fields/CRC checks, then
+                                # release masks/distance after the small anchors.
+                                prepared = source.decode(payload[0], reference)
+                            except (OSError, ValueError):
+                                pass  # Optional semantic damage is still a gap.
+                    else:
+                        loader = batch if batch is not None else source
+                        use = loader.acquire_prepared_use(reference, cancelled=cancelled)
+                        if use.reference is not reference or use.source is not loader:
+                            raise ValueError("structure-identity-preparation-owner-changed")
+                        payload = loader.read(reference, cancelled=cancelled)
+                        if use.prepared is not None and (payload is None or payload[1] != use.identity):
+                            raise ValueError("structure-identity-preparation-changed")
+                        prepared = use.prepared
                     identity = payload[1][:3] if payload is not None else None
                     reads.append(_ResourceRead(ref_file, tuple(expected_binding.items()), identity, True))
-                    if use.prepared is None:
+                    if prepared is None:
                         reason = "saved-footprint-preparation-unavailable"
                     else:
                         try:
-                            anchors = footprint_anchors(use.prepared)
+                            anchors = footprint_anchors(prepared)
                         except ValueError:
                             reason = "saved-footprint-anchor-features-invalid"
+                    del prepared
             issues = ["footprint-source-equivalence-not-independently-qualified"]
             geometry = metadata.get("sourceGeometry") or {}
             if geometry.get("rendererVerified") is False:
@@ -247,5 +280,13 @@ def build_structure_identity_resources(bundle, provider, *, floor=None, cancelle
     result = StructureIdentityResources(StructureIdentityIndex(domain, entries, directory_complete=True),
         component, tuple(infos), bundle.rank_ready, _bundle=bundle, _source=source,
         _reader=reader, _root=root, _declarations=declarations, _reads=tuple(reads))
+    # The next proof reads the full compressed pool afresh. Do not retain the
+    # first operation's full compressed bytes while that second batch is live.
+    if batch is not None:
+        batch.release()
+    batch = loader = use = None
     result.check_current(cancelled=cancelled)
+    if batch_provider and any(getattr(provider, name, None) is not value for name, value in zip(
+            ("root", "resources", "versions", "_legacy_reference_loader", "_check_current"), provider_state)):
+        raise ValueError("structure-identity-resource-owner-changed")
     return result

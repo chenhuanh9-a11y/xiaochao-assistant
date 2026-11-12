@@ -85,6 +85,25 @@ class SharedReferenceProvider:
             self._check_current()
 
     def __call__(self, profile, map_id, floor):
+        return self._load(profile, map_id, floor)
+
+    def batch_bindings(self, requests):
+        """Real native lookup paths; legacy references keep their own loader."""
+        self._assert_current()
+        result = []
+        for profile, map_id, floor in requests:
+            keys = [key for key in self.versions if key[1] == str(map_id) and key[3] == str(floor)]
+            if len(keys) == 1 and not self.versions[keys[0]].get("sharedError"):
+                row = self.versions[keys[0]]
+                result.append((row["binding"], row["path"]))
+        self._assert_current()
+        return tuple(result)
+
+    def read_with_resource(self, profile, map_id, floor, *, read_resource):
+        """Use an operation reader with the original checks and cache behavior."""
+        return self._load(profile, map_id, floor, read_resource=read_resource)
+
+    def _load(self, profile, map_id, floor, *, read_resource=None):
         import numpy as np
         self._assert_current()
         if self._legacy_reference_loader is not None:
@@ -105,7 +124,11 @@ class SharedReferenceProvider:
                 self._assert_current()
                 self._cache.move_to_end(key)
                 return reference
-            reference = self.resources.load(key[0], key[1], key[3], variant=key[2])
+            if read_resource is None:
+                reference = self.resources.load(key[0], key[1], key[3], variant=key[2])
+            else:
+                reference = self.resources.load(key[0], key[1], key[3], variant=key[2],
+                                                read_resource=read_resource)
             if (reference is None or not np.any(reference.clean_mask)
                     or reference.path.resolve() != version["path"]
                     or reference.metadata.get("canvas") != version["canvas"]

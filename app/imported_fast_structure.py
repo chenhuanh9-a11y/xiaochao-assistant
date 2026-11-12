@@ -69,6 +69,97 @@ def decode_prepared(raw, reference):
         raise files.ImportRejected(code, code=code) from error
 
 
+class _PreparedReadBatch:
+    """One resource operation's verified compressed bytes, never an array cache."""
+    def __init__(self, source, payloads, cancelled, state):
+        self.source, self.payloads, self.cancelled = source, payloads, cancelled
+        self.state = state
+        self._current()
+
+    def _current(self):
+        files._check_cancelled(self.cancelled)
+        if self.source._read_state() != self.state:
+            _reject('component-root-changed')
+
+    def read_resource(self, path):
+        self._current()
+        return self.payloads[self.source.reader.relative_path(path)]
+
+    def read(self, reference):
+        return self.source._read(reference, self._read_many, self._current)
+
+    def _read_many(self, paths):
+        return tuple(self.read_resource(path) for path in paths)
+
+    def release(self):
+        self.payloads.clear()
+
+
+class _PreparedReadFailure:
+    """Deliver a pre-read's first real error to the original consumer once.
+
+    Actual successful payloads are consumed once, in consumer order. The
+    provider keeps its ordinary warm/cold behavior; the common prepared loader
+    owns optional fallback, retry ordering and its existing cache.
+    """
+    def __init__(self, source, error, prefix, cancelled, state):
+        self.source, self.error, self.cancelled, self.state = source, error, cancelled, state
+        self.prefix = prefix
+
+    def assert_current(self, cancelled=None):
+        files._check_cancelled(cancelled)
+        self.source.assert_current(self.cancelled)
+        if self.source._read_state() != self.state:
+            _reject('component-root-changed')
+        reader = self.source.reader
+        if reader.view is not self.source.view and reader.view.root != reader.root:
+            _reject('component-root-changed')
+
+    def _read_many(self, paths):
+        self.assert_current()
+        result = []
+        raw = error = None
+        try:
+            for path in paths:
+                relative = self.source.reader.relative_path(path)
+                if relative in self.prefix:
+                    raw = self.prefix.pop(relative)
+                elif self.error is not None and relative == self.error.resource_file_ref.path:
+                    error, self.error = self.error, None
+                    raise error
+                else:
+                    raw = self.source._read_paths((path,), cancelled=self.cancelled)[0]
+                result.append(raw)
+            self.assert_current()
+            return tuple(result)
+        finally:
+            # A caught optional error retains this frame through its traceback.
+            # Only the returned tuple may own successful payloads; abandoned
+            # reads and the replayed exception must not remain in frame locals.
+            result.clear()
+            raw = error = None
+
+    def read_resource(self, path):
+        return self._read_many((path,))[0]
+
+    def read(self, reference, *, cancelled=None, strict=False):
+        files._check_cancelled(cancelled)
+        return self.source._read(reference, self._read_many, self.assert_current, strict=strict)
+
+    def decode(self, raw, reference):
+        return self.source.decode(raw, reference)
+
+    def acquire_prepared_use(self, reference, *, cancelled=None):
+        from fast_structure_alignment import _acquire_imported_prepared
+        return _acquire_imported_prepared(reference, self, cancelled)
+
+    def release(self):
+        # Replayed exceptions can keep traceback cycles alive until GC. Their
+        # operation must still release staged bytes before the final full read.
+        self.prefix.clear()
+        self.error = None
+
+
 class ImportedFastStructureSource:
     """No array cache: the common fast solver owns its existing bounded cache."""
     def __init__(self, view, reader, *, interfaces, versions):
@@ -118,24 +209,34 @@ class ImportedFastStructureSource:
             _reject('component-root-changed')
         files._check_cancelled(cancelled)
 
-    def read(self, reference, *, cancelled=None, strict=False):
-        self.assert_current(cancelled)
+    def _read_state(self):
+        return (id(self.view), id(self.reader), self.root, id(self.reader.view),
+                self.index_path, id(self.entries), self.view.component_ref,
+                self.reader.view.component_ref, self.reader.root)
+
+    def _read_paths(self, paths, *, cancelled=None, on_payload=None):
         view, reader, root = self.view, self.reader, self.root
         reader_view = reader.view
+        options = dict(expected_root=root if reader_view is view else None, cancelled=cancelled)
+        if on_payload is not None:
+            options['on_payload'] = on_payload
+        payloads = reader.read_many(paths, **options)
+        if (self.view is not view or self.reader is not reader or self.root != root
+                or reader.view is not reader_view):
+            _reject('component-root-changed')
+        if reader_view is not view:
+            self.assert_current(cancelled)
+        files._check_cancelled(cancelled)
+        return payloads
 
-        def read_many(paths):
-            # A shared view can prove payload preflight and the source's root
-            # in its existing batch. A distinct view retains its own proof.
-            payloads = reader.read_many(paths, expected_root=root if reader_view is view else None,
-                                        cancelled=cancelled)
-            if (self.view is not view or self.reader is not reader or self.root != root
-                    or reader.view is not reader_view):
-                _reject('component-root-changed')
-            if reader_view is not view:
-                self.assert_current(cancelled)
-            files._check_cancelled(cancelled)
-            return payloads
+    def read(self, reference, *, cancelled=None, strict=False):
+        return self._read(reference,
+            lambda paths: self._read_paths(paths, cancelled=cancelled),
+            lambda: self.assert_current(cancelled), strict=strict)
 
+    def _read(self, reference, read_many, assert_current, *, strict=False):
+        assert_current()
+        reader, root = self.reader, self.root
         # Even an old package without preparations must not reuse a damaged
         # cached reference in the normal solver after this optional miss.
         required = ([root / self.index_path] if self.index_path is not None else [])
@@ -159,12 +260,102 @@ class ImportedFastStructureSource:
                 raise
             # Only the optional preparation may fail open. Recheck the view,
             # index and reference so obsolescence/cancellation never does.
-            self.assert_current(cancelled)
+            assert_current()
             read_many(required)
             if strict:
                 raise
             return None
         return raw, (str(root), reference_ref, prepared_ref, id(reference))
+
+    def prepare_batch(self, bindings, *, required_paths=(), cancelled=None):
+        """Read declared references/preparations once for a bounded static build.
+
+        Declaration failures propagate. A typed/prepared failure is delivered
+        once through operation-local callbacks to the original provider/loader,
+        preserving cold misses, warm required errors and optional read identity.
+        Context errors have no payload attribution and never take this fallback.
+        """
+        bindings = tuple(bindings)
+        required_paths = tuple(required_paths)
+        state = self._read_state()
+        prefix = {}
+        def stage(file_ref, raw):
+            prefix[file_ref.path] = raw
+        try:
+            return self._prepare_batch(bindings, required_paths=required_paths, cancelled=cancelled,
+                                       on_payload=stage)
+        except (OSError, ValueError) as error:
+            failed = getattr(error, 'resource_file_ref', None)
+            if failed is None:
+                raise
+            self.assert_current(cancelled)
+            declarations = {self.reader.relative_path(path) for path in required_paths}
+            if failed.path in declarations:
+                raise
+            # Retain the actual successful prefix once, then resume through
+            # each original consumer. No other map's cold typed read becomes
+            # an eager whole-pool required check on this failure path.
+            failure = _PreparedReadFailure(self, error.with_traceback(None), prefix, cancelled, state)
+            failure.assert_current()
+            return failure
+
+    def _prepare_batch(self, bindings, *, required_paths, cancelled, on_payload=None):
+        self.assert_current(cancelled)
+        bindings = tuple(bindings)
+        state = self._read_state()
+        paths = list(required_paths)
+        if bindings and self.index_path is not None:
+            paths.append(self.root / self.index_path)
+        for binding, path in bindings:
+            paths.append(path)
+            key = (binding['profile'], binding['mapId'], binding['variant'], binding['floor'])
+            entry = self.entries.get(key)
+            if entry is not None:
+                if self.reader.relative_path(path) != entry[0].path:
+                    return None  # Keep the ordinary source's mismatch handling.
+                paths.append(self.root / entry[1].path)
+        paths = tuple(dict.fromkeys(Path(path) for path in paths))
+        raw = self._read_paths(paths, cancelled=cancelled, on_payload=on_payload)
+        return _PreparedReadBatch(self,
+            dict(zip((self.reader.relative_path(path) for path in paths), raw)), cancelled, state)
+
+    def read_many(self, references, *, required_paths=(), cancelled=None):
+        """Batch actual-byte checks, preserving each ordinary read's identity."""
+        references = tuple(references)
+        required_paths = tuple(required_paths)
+        bindings = tuple((reference.metadata.get('binding', {}), reference.path)
+                         for reference in references)
+        # Invalid lookup bindings belong to the original single-read classifier.
+        if any(set(binding) != set(_BINDING) for binding, _ in bindings):
+            self._read_paths(required_paths, cancelled=cancelled)
+            return tuple(self.read(reference, cancelled=cancelled) for reference in references)
+        try:
+            batch = self._prepare_batch(bindings, required_paths=required_paths, cancelled=cancelled)
+        except (OSError, ValueError) as error:
+            failed = getattr(error, 'resource_file_ref', None)
+            required = {self.reader.relative_path(path) for path in required_paths}
+            required.update(self.reader.relative_path(reference.path) for reference in references)
+            if self.index_path is not None:
+                required.add(self.index_path)
+            optional = {self.entries[(binding['profile'], binding['mapId'],
+                binding['variant'], binding['floor'])][1] for binding, _ in bindings
+                if (binding['profile'], binding['mapId'], binding['variant'], binding['floor']) in self.entries}
+            if failed not in optional or failed.path in required:
+                raise
+            # Preserve the first optional miss, even if a one-shot I/O failure
+            # would succeed on retry. The ordinary classifier still rechecks
+            # each required input and owns currentness/cancellation handling.
+            self.assert_current(cancelled)
+            self._read_paths(required_paths, cancelled=cancelled)
+            def read_paths(paths):
+                if any(self.reader.relative_path(path) == failed.path for path in paths):
+                    raise error
+                return self._read_paths(paths, cancelled=cancelled)
+            return tuple(self._read(reference, read_paths, lambda: self.assert_current(cancelled))
+                         for reference in references)
+        if batch is None:
+            return tuple(self.read(reference, cancelled=cancelled) for reference in references)
+        return tuple(batch.read(reference) for reference in references)
 
     def decode(self, raw, reference):
         return decode_prepared(raw, reference)

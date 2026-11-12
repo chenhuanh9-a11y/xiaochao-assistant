@@ -87,7 +87,8 @@ class SharedStructureResourceStore:
             self.error = str(error)
             self.entries = {}
 
-    def load(self, profile: str, map_id: str, floor: str, *, variant: str = "variant-01") -> SharedStructureReference | None:
+    def load(self, profile: str, map_id: str, floor: str, *, variant: str = "variant-01",
+             read_resource: Callable[[Path], bytes] | None = None) -> SharedStructureReference | None:
         entry = self.entries.get((str(profile), str(map_id), str(variant), str(floor)))
         if entry is None:
             return None
@@ -102,7 +103,7 @@ class SharedStructureResourceStore:
             return None
         binding = dict(profile=str(profile), mapId=str(map_id), floor=str(floor), variant=str(variant))
         return load_shared_structure(path, expected_binding=binding, resource_root=self.resource_root,
-                                     read_resource=self.read_resource)
+                                     read_resource=self.read_resource if read_resource is None else read_resource)
 
 
 def _metadata_from_archive(archive) -> dict | None:

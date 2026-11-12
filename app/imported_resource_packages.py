@@ -443,7 +443,8 @@ class PackageView:
     def read(self, relative):
         return self.read_many((relative,))[0]
 
-    def read_many(self, relatives, *, expected_root=None, cancelled=None, validate_payloads=None):
+    def read_many(self, relatives, *, expected_root=None, cancelled=None, validate_payloads=None,
+                  on_payload=None):
         """Read selected payloads under one current component/manifest scope.
 
         Each payload retains its stable-file and declared byte checks. Nothing
@@ -452,6 +453,8 @@ class PackageView:
         consumers can distinguish required inputs from optional preparations.
         Content preflight runs inside this proof; an owning source may also
         pin its component root without reloading the manifest afterwards.
+        on_payload may stage each actual payload locally; the final proof has
+        not run yet. Its own exceptions are not attributed to a resource file.
         """
         files._check_cancelled(cancelled)
         expected_root = Path(expected_root) if expected_root is not None else None
@@ -463,10 +466,13 @@ class PackageView:
         for relative in relatives:
             file_ref = FileRef(ref, relative)
             try:
-                result.append(self._read_payload(package_root, inventory, ref.component_id, relative))
+                raw = self._read_payload(package_root, inventory, ref.component_id, relative)
             except (OSError, ValueError) as error:
                 error.resource_file_ref = file_ref
                 raise
+            result.append(raw)
+            if on_payload is not None:
+                on_payload(file_ref, raw)
         if validate_payloads is not None:
             validate_payloads(tuple(result))
         # Compare both contents and stable-file identity after all payloads.
