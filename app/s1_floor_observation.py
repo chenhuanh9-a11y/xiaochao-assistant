@@ -25,6 +25,53 @@ EXPANDED_SEARCH_BOUNDS = (.55, .04, .985, .93)
 SOURCE_REPLAY_FLOORS = (-1, -2, -3, -4)
 
 
+def _source_replay_parameter_gaps(parameters, *, season, mode):
+    """Compare the decoder's actual values with this observer's reviewed inputs.
+
+    Qualification belongs to this algorithm, not a package identity or a claim
+    in its payload. In particular, compare decoded endpoints without rounding
+    or tolerances: legal alternative search parameters remain unreviewed.
+    """
+    from s1_map_ui_geometry import SEARCH, SIZES, MIN_CORRELATION
+    context = parameters.context
+    contract = floor_contract(mode, season=season)
+    gaps = []
+    if (context is None or contract is None or season != 's1'
+            or context.key != f'{season}:{mode}' or context.contract != contract
+            or context.visual_order != ORDER or contract.observed_values != ORDER):
+        gaps.append('s1-controls-floor-contract-not-source-replay-equivalent')
+    def bounds(region):
+        x, y, width, height = region
+        return x, y, x + width, y + height
+    for actual, expected, name in (
+            (bounds(parameters.fixed_search_region), SEARCH_BOUNDS, 'fixed-search-region'),
+            (bounds(parameters.expanded_search_region), EXPANDED_SEARCH_BOUNDS, 'expanded-search-region'),
+            (dict(parameters.map_ui.search), SEARCH, 'map-ui-search'),
+            (parameters.map_ui.sizes, SIZES, 'map-ui-sizes'),
+            (dict(parameters.map_ui.minimum_correlation), MIN_CORRELATION, 'map-ui-correlation')):
+        if actual != expected:
+            gaps.append(f's1-controls-{name}-not-source-replay-equivalent')
+    return tuple(gaps)
+
+
+def _controls_parameters(controls, *, season, mode):
+    from imported_s1_controls_profile import S1ControlsProfile
+    if not isinstance(controls, S1ControlsProfile):
+        raise ValueError('s1-controls-profile-required')
+    parameters = controls.observation_parameters(season, mode)
+    if parameters.context is None:
+        raise ValueError('s1-controls-context-unsupported')
+    return parameters
+
+
+def controls_source_replay_gaps(controls, *, season, mode):
+    """Current-owner qualification shared by observation and native context."""
+    parameters = _controls_parameters(controls, season=season, mode=mode)
+    gaps = _source_replay_parameter_gaps(parameters, season=season, mode=mode)
+    controls.assert_current()
+    return gaps
+
+
 def _result(season, mode, reason, **extra):
     return dict(season=season, mode=mode, reason=reason, selectedFloor=None,
                 observedFloorValidated=False, automaticFloorEligible=False, capability=CAPABILITY,
@@ -112,25 +159,26 @@ def detect_s1_floor(frame, *, season, mode, frame_id=None, expected_frame_id=Non
                   expected_frame_id=expected_frame_id, frame_current=frame_current)
     if controls is None:
         return _detect_s1_floor(frame, **kwargs)
-    from imported_s1_controls_profile import S1ControlsProfile
-    if not isinstance(controls, S1ControlsProfile):
-        raise ValueError('s1-controls-profile-required')
-    parameters = controls.observation_parameters(season, mode)
+    parameters = _controls_parameters(controls, season=season, mode=mode)
     context = parameters.context
-    if context is None:
-        raise ValueError('s1-controls-context-unsupported')
+    gaps = _source_replay_parameter_gaps(parameters, season=season, mode=mode)
     def bounds(region):
         x, y, width, height = region
         return x, y, x + width, y + height
-    result = _detect_s1_floor(frame, **kwargs, floor_context=context,
-        fixed_search_bounds=bounds(parameters.fixed_search_region),
-        expanded_search_bounds=bounds(parameters.expanded_search_region), map_ui=parameters.map_ui)
+    if not gaps:
+        # Equal decoded inputs use the same coordinate/UI/scale policy as the
+        # reviewed native observer. Storage location cannot select an algorithm.
+        result = _detect_s1_floor(frame, **kwargs)
+    else:
+        result = _detect_s1_floor(frame, **kwargs, floor_context=context,
+            fixed_search_bounds=bounds(parameters.fixed_search_region),
+            expanded_search_bounds=bounds(parameters.expanded_search_region), map_ui=parameters.map_ui)
     controls.assert_current()
-    # The external parameter path has not had source-image replay, including
-    # profiles numerically equal to the defaults. Payload declarations cannot
-    # inherit the trusted default observer's static evidence qualification.
+    if not gaps:
+        return result
+    # Alternative parameters still supply pixel proposals, not replay authority.
     return dict(result, automaticFloorEligible=False, observedFloorValidated=False,
-                validationScope="external-controls-unreviewed")
+                validationScope="external-controls-unreviewed", qualificationGaps=list(gaps))
 
 
 def _detect_s1_floor(frame, *, season, mode, frame_id=None, expected_frame_id=None,

@@ -1,4 +1,4 @@
-"""Default S1D factory -> actual S1 scanner, with no automatic floor grant."""
+"""Default S1D factory -> recorded floor/scanner scope, without general live authority."""
 from pathlib import Path
 import tempfile
 import unittest
@@ -68,8 +68,9 @@ class ImportedS1ProviderTests(unittest.TestCase):
         self.assertEqual(report['floors'], ['-1', '-2', '-3', '-4'])
         self.assertEqual(report['inventory']['typedLayers'], 56)
         self.assertFalse(report['inventory']['semanticSideEntries'])
-        self.assertFalse(report['candidateObservation']['candidateReady'])
-        self.assertFalse(report['floorObservation']['manualMapObservation'])
+        self.assertTrue(report['candidateObservation']['candidateReady'])
+        self.assertTrue(report['floorObservation']['manualMapObservation'])
+        self.assertFalse(report['candidateObservation']['liveValidated'])
         self.assertFalse(engine.memory_store.sample_validator(np.zeros((8, 8, 3), np.uint8)))
         self.assertIsNone(engine.memory_store.portable_seed_path)
         self.assertFalse(engine.memory_store.root.exists())

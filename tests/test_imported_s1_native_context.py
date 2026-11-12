@@ -115,7 +115,7 @@ class ImportedS1NativeContextTests(unittest.TestCase):
         np.testing.assert_array_equal(display['matrixDisplayToReference'], np.eye(3))
         np.testing.assert_array_equal(display['pixels'][..., 3] != 0, reference.clean_mask != 0)
 
-    def test_operator_declared_data_does_not_enable_runtime_automatic_floor_paths(self):
+    def test_equivalent_controls_reuse_replay_scope_without_general_live_authority(self):
         from client_live_runtime import LiveRuntime
         native = self.context
         floor = native.floor_observation_capability
@@ -124,28 +124,53 @@ class ImportedS1NativeContextTests(unittest.TestCase):
         self.assertEqual(candidate['dataFloors'], list(self.fixture.floors))
         self.assertTrue(candidate['operatorDeclaredScanReady'])
         self.assertEqual(candidate['operatorDeclaredFloors'], [-1, -2, -3, -4])
-        self.assertEqual(floor['sourceReplayFloors'], [])
-        self.assertEqual(floor['automaticFloors'], [])
-        self.assertEqual(candidate['observedFloors'], [])
+        self.assertEqual(floor['sourceReplayFloors'], [-1, -2, -3, -4])
+        self.assertEqual(floor['automaticFloors'], [-1, -2, -3, -4])
+        self.assertEqual(candidate['observedFloors'], (-1, -2, -3, -4))
         for capability in (floor, candidate):
-            self.assertFalse(capability['observedFloorValidated'])
-            self.assertFalse(capability['automaticFloorEligible'])
             self.assertFalse(capability['liveValidated'])
-            self.assertEqual(capability['validationScope'], 'external-controls-unreviewed')
-        self.assertIn('s1-external-controls-floor-observation-unvalidated', native.live_gaps)
+            self.assertEqual(capability['validationScope'], 'source-image-replay')
+        self.assertIn('s1-floor-control-detector-unvalidated', native.live_gaps)
         engine = self.engine()
         # Invoke the real capability consumers without starting capture, a
         # session, a solver, or constructing a replacement runtime controller.
         for kind, preview in (('recorded', False), ('live-client-capture', True)):
             consumer = SimpleNamespace(_season='s1', _mode='difficult', _engine=engine,
                 _evidence_kind=kind, _native_s1_candidate_preview=preview)
-            self.assertFalse(LiveRuntime._s1_candidate_available(consumer, engine=engine))
-            self.assertFalse(LiveRuntime._s1_floor_observer_available(consumer, engine=engine))
+            self.assertTrue(LiveRuntime._s1_candidate_available(consumer, engine=engine))
+            self.assertTrue(LiveRuntime._s1_floor_observer_available(consumer, engine=engine))
         # Callers cannot persistently mutate the capability declaration.
-        candidate['candidateReady'] = True
-        floor['automaticFloors'].append(-1)
-        self.assertFalse(native.structure_candidate_capability['candidateReady'])
-        self.assertEqual(native.floor_observation_capability['automaticFloors'], [])
+        candidate['candidateReady'] = False
+        floor['automaticFloors'].clear()
+        self.assertTrue(native.structure_candidate_capability['candidateReady'])
+        self.assertEqual(native.floor_observation_capability['automaticFloors'], [-1, -2, -3, -4])
+
+    def test_changed_controls_keep_operator_declared_scope_and_specific_gap(self):
+        from client_live_runtime import LiveRuntime
+        value = document(('difficult',))
+        value['mapUi']['minimumCorrelation']['close'] = .63
+        package = ProfilePackage(self.root / 'changed-controls', value)
+        controls = S1ControlsProfile(package.view)
+        native = ImportedS1NativeContext(self.base, self.bundle, controls)
+        engine = self.engine()
+        engine.qt_native_context = native
+        floor, candidate = native.floor_observation_capability, native.structure_candidate_capability
+        self.assertTrue(candidate['operatorDeclaredScanReady'])
+        self.assertFalse(candidate['candidateReady'])
+        self.assertEqual(candidate['observedFloors'], [])
+        self.assertEqual(floor['sourceReplayFloors'], [])
+        self.assertEqual(floor['automaticFloors'], [])
+        for capability in (floor, candidate):
+            self.assertFalse(capability['observedFloorValidated'])
+            self.assertFalse(capability['automaticFloorEligible'])
+            self.assertFalse(capability['liveValidated'])
+            self.assertEqual(capability['qualificationGaps'],
+                ['s1-controls-map-ui-correlation-not-source-replay-equivalent'])
+        self.assertIn('s1-controls-map-ui-correlation-not-source-replay-equivalent', native.live_gaps)
+        consumer = SimpleNamespace(_season='s1', _mode='difficult', _engine=engine,
+            _evidence_kind='recorded', _native_s1_candidate_preview=False)
+        self.assertFalse(LiveRuntime._s1_candidate_available(consumer, engine=engine))
+        self.assertFalse(LiveRuntime._s1_floor_observer_available(consumer, engine=engine))
 
     def test_constructor_rejects_other_installation_and_incompatible_controls(self):
         other_root = self.root / 'other-installation'
