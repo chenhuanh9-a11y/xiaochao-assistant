@@ -14,7 +14,7 @@ INSTALL_ROOT = Path(sys.executable).resolve().parent
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from season_context import SeasonContext, SEASONS, MODES, modes_for_season
-from packaged_product_identity import PRODUCTION_APP_ID, PRODUCTION_PRODUCT, baked_identity
+from packaged_product_identity import PRODUCTION_APP_ID, PRODUCTION_PRODUCT, baked_identity, qt_isolated_instance_id
 
 
 def _production_profile():
@@ -26,6 +26,7 @@ def _production_profile():
 
 
 PRODUCTION = _production_profile()
+GRID_TEST = FROZEN and not PRODUCTION and qt_isolated_instance_id() == "grid-test"
 DEFAULT_SANDBOX = INSTALL_ROOT if PRODUCTION else WORK_ROOT / ("qt-client-runtime" if FROZEN else "qt-lab-installation")
 
 

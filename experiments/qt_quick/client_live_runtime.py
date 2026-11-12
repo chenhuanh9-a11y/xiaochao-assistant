@@ -6,6 +6,7 @@ All algorithm work is synchronous and belongs to SessionService's worker.
 from __future__ import annotations
 
 import copy
+from contextlib import nullcontext
 import hashlib
 import math
 from pathlib import Path
@@ -156,7 +157,7 @@ class _PreparationHost:
 class _AlignmentHost:
     """Only explicit resource/pose inputs needed by the unchanged shared solvers."""
     def __init__(self, engine, group=None, settings=None, *, steady=None, pose_priors=None,
-                 collect_fit_diagnostics=False):
+                 collect_fit_diagnostics=False, grid_runtime=None):
         self.engine, self.pack = engine, engine.pack
         self.author_coordinate_adapters = engine.qt_adapters
         self.group = group
@@ -166,6 +167,7 @@ class _AlignmentHost:
         self.steady = steady
         self.pose_priors = dict(pose_priors or {})
         self.collect_fit_diagnostics = collect_fit_diagnostics
+        self.grid_runtime = grid_runtime
         self.diagnostic_event_counts = {}
 
     def _log(self, event, **values):
@@ -353,6 +355,12 @@ class _AlignmentHost:
         return fit_one
 
     def fit(self, frame, map_id, floor, cancelled, entry_candidate=None, *, observation_bounds=None, _scan_observation=None):
+        scope = self.grid_runtime.fit_scope(cancelled) if self.grid_runtime is not None else nullcontext()
+        with scope:
+            return self._fit_owned(frame, map_id, floor, cancelled, entry_candidate,
+                observation_bounds=observation_bounds, _scan_observation=_scan_observation)
+
+    def _fit_owned(self, frame, map_id, floor, cancelled, entry_candidate=None, *, observation_bounds=None, _scan_observation=None):
         _test_evidence("solver-input", frame)
         if observation_bounds is None:
             fit = self._fit_observation(frame, map_id, floor, cancelled, entry_candidate)
@@ -668,8 +676,9 @@ class LiveRuntime:
                  allowed_read_root=None, evidence_kind="unverified", clock=None, diagnostics=None,
                  recorded_s1_provisional_display=False, recorded_s1_streaming=False,
                  recorded_s1_scan_order="natural", recorded_s1_scan_budget=S1_STRUCTURE_CANDIDATE_BUDGET_SECONDS,
-                 recorded_s1_priority_index=None, s1_candidate_purpose=None):
+                 recorded_s1_priority_index=None, s1_candidate_purpose=None, grid_runtime=None):
         self._diagnostics = diagnostics
+        self.grid_runtime = grid_runtime
         self.g_cycle_evidence = None  # Explicit process-only test mode; no normal writer.
         from s1_candidate_purpose import native_candidate_purpose_is_valid, private_native_candidate_purpose_is_valid, native_round_lock_purpose_is_valid, native_final_round_lock_purpose_is_valid
         self._native_s1_candidate_preview = bool(
@@ -981,7 +990,7 @@ class LiveRuntime:
             proposal["consumed"] = True
             engine, group, settings = self._engine, self._group, dict(self._settings)
         current = lambda context: not self._cancelled(cancelled) and self._steady_is_current(context, proposal["captured"])
-        remembered = self._steady.remember_committed(_AlignmentHost(engine, group, settings),
+        remembered = self._steady.remember_committed(_AlignmentHost(engine, group, settings, grid_runtime=self.grid_runtime),
             proposal["frame"], proposal["mapId"], proposal["floor"], proposal["fit"],
             context=proposal["context"], is_current=current, material_accepted=True,
             display_signature=self._steady_signature(proposal["captured"]),
@@ -4924,7 +4933,7 @@ class LiveRuntime:
                 self._revoke_render(reason)
             return None
         self._set_pose_phase("pending", "current-frame-refresh", map_id, floor, current_frame, self._frame_generation)
-        host = _AlignmentHost(engine, group, self._settings)
+        host = _AlignmentHost(engine, group, self._settings, grid_runtime=self.grid_runtime)
         basis = engine.qt_adapters.matrix_profile_to_canonical("shared-structure", map_id, floor)
         if basis is None:
             with self._lock:
@@ -5826,7 +5835,7 @@ class LiveRuntime:
             steady_context = self._steady_context()
         host = _AlignmentHost(engine, group, self._settings, steady=None if staged_observation is not None else (self._steady, steady_context,
             lambda context: not obsolete() and self._steady_is_current(context, captured),
-            self._steady_signature(captured)))
+            self._steady_signature(captured)), grid_runtime=self.grid_runtime)
         fit_started = time.monotonic()
         if provisional_operation:
             # Reuse only the current ticket's already verified fit. All residual,

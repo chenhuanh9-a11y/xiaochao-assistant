@@ -17,15 +17,22 @@ function Controller() {
     if (!portable && (!installer.fileExists(scope + "/.qtifw-trial-scope") ||
         installer.readFile(scope + "/.qtifw-trial-scope", "UTF-8").trim() !== __INSTANCE__))
         throw new Error("本地测试范围不匹配，未接管安装目录。");
+    var upgradeSupport = installer.environmentVariable("XINGTU_QTIFW_UPGRADE_SUPPORT");
+    var upgradeInvocation = !!upgradeSupport;
+    // The data component owns the installed support tree. Maintenance must
+    // read that current tree, not an old installer's additional QRC archive.
+    var installedSupport = portable && !installer.isInstaller() && !upgradeInvocation;
+    installer.setValue("TrialUpgradeActive", upgradeInvocation ? "true" : "false");
     var temporary = installer.environmentVariable("TEMP") || installer.environmentVariable("TMP");
     if (portable && !temporary) throw new Error("无法获取系统临时目录。");
-    var support = portable ? temporary +
+    var support = upgradeInvocation ? upgradeSupport : installedSupport ?
+        installer.value("TargetDir") + "/_installer-support" : portable ? temporary +
         "/xingtu-setup-" + __INSTANCE__ + "-" + String(Date.now()) + "-" + String(Math.random()).substring(2) :
         scope + "/session-tools/" + String(Date.now());
-    if (!installer.performOperation("Mkdir", [support])) throw new Error("无法准备测试工具目录");
+    if (!installedSupport && !installer.performOperation("Mkdir", [support])) throw new Error("无法准备测试工具目录");
     var helper = support + "/qtifw-trial-helper.exe";
     var supportFiles = __SUPPORT_FILES__;
-    for (var i = 0; i < supportFiles.length; ++i) {
+    for (var i = 0; !upgradeInvocation && !installedSupport && i < supportFiles.length; ++i) {
         var relative = supportFiles[i];
         var slash = relative.lastIndexOf("/");
         if (slash >= 0 && !installer.performOperation("Mkdir", [support + "/" + relative.substring(0, slash)]))
@@ -36,7 +43,7 @@ function Controller() {
     // QRC copies inherit read-only permissions on Windows. Normalize this
     // private staging tree before native Copy records permanent support files;
     // otherwise Copy UNDO cannot delete them during a failed installation.
-    if (portable) {
+    if (portable && !upgradeInvocation && !installedSupport) {
         var attrib = installer.environmentVariable("SystemRoot") + "/System32/attrib.exe";
         var writable = installer.execute(attrib, ["-R", installer.toNativeSeparators(support + "/*"), "/S"]);
         if (writable.length !== 2 || writable[1] !== 0)
@@ -44,6 +51,35 @@ function Controller() {
     }
     installer.setValue("TrialSupport", support);
     installer.setValue("TrialHelper", helper);
+    if (installedSupport && !installer.fileExists(helper))
+        throw new Error("安装维护文件不完整，请使用完整 Setup 修复。");
+    if (installer.environmentVariable("XINGTU_QTIFW_VERIFY_MAINTENANCE") === "1") {
+        // Read the actual persisted controller and its installed helper while the wrapper still owns
+        // the runtime lease. A stale maintenance controller cannot pass this.
+        trialRun("verify-program");
+        var maintenancePolicy = JSON.parse(installer.readFile(support + "/_internal/qtifw-trial-policy.json", "UTF-8"));
+        if (maintenancePolicy.upgradeCapable) {
+            var hive = installer.value("AllUsers", "false") === "true" ? "HKEY_LOCAL_MACHINE" : "HKEY_CURRENT_USER";
+            var registration = hive + "\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" + installer.value("ProductUUID");
+            if (installer.value(registration + "\\DisplayVersion", "", QSettings.NativeFormat) !== maintenancePolicy.targetVersion.version)
+                throw new Error("Windows 安装版本登记尚未完成，请重新运行同一个 Setup。");
+        }
+        console.log("XINGTU_MAINTENANCE_SOURCE_VERIFIED: " + __INSTANCE__);
+        return;
+    }
+    if (upgradeInvocation) {
+        var base = installer.environmentVariable("XINGTU_QTIFW_UPGRADE_BASE");
+        var replacement = installer.environmentVariable("XINGTU_QTIFW_UPGRADE_RCC");
+        if (!portable || !base || !replacement || !installer.fileExists(helper) ||
+                !installer.fileExists(base) || !installer.fileExists(replacement))
+            throw new Error("更新支持文件不完整，请重新运行完整 Setup。");
+        // CLI update mode is selected after construction. Do not use
+        // isUpdater() here. QtIFW consumes this disposable base on success.
+        installer.setInstallerBaseBinary(base);
+        installer.setValue("DefaultResourceReplacement", replacement);
+        var upgradePolicy = JSON.parse(installer.readFile(support + "/_internal/qtifw-trial-policy.json", "UTF-8"));
+        installer.setValue("ProductVersion", upgradePolicy.targetVersion.version);
+    }
     // The maintenance executable is an uninstaller, not a package manager UI.
     if (!installer.isInstaller() && !installer.isCommandLineInstance()) installer.setUninstaller();
     // The introduction owns QtIFW's metadata fetch. Keep its lifecycle, then
@@ -77,7 +113,7 @@ function Controller() {
         }
         installer.setDefaultPageVisible(QInstaller.TargetDirectory, false);
         installer.setDefaultPageVisible(QInstaller.StartMenuSelection, false);
-    } else {
+    } else if (!upgradeInvocation) {
         // A signal callback exception does not stop QtIFW. Constructor failure
         // happens before native operations, including for command-line purge.
         trialRun(installer.isUninstaller() ? "hold-uninstall" : "inspect-data");
@@ -95,6 +131,7 @@ function Controller() {
         }
     });
     installer.installationFinished.connect(function() {
+        if (upgradeInvocation) return; // Wrapper verifies native metadata before adopting the new owner.
         try { trialRun("verify"); }
         catch (error) {
             installer.setValue("TrialVerificationFailed", "true");

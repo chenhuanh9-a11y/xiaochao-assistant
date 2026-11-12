@@ -9,11 +9,13 @@ if not getattr(sys, "frozen", False):
     sys.path[:0] = [str(_root / "app"), str(_root / "experiments/qt_quick")]
 
 from qt_startup_diagnostics import report_startup_failure
-from qt_startup_splash import show_startup_splash, close_startup_splash, set_startup_stage
+from qt_startup_splash import (show_startup_splash, close_startup_splash,
+                               set_startup_stage, is_quiet_startup_args)
 
 
 def run():
     stage = "validate-profile"
+    show_failure_dialog = not is_quiet_startup_args(sys.argv[1:])
     try:
         show_startup_splash(sys.argv[1:])
         set_startup_stage(stage)
@@ -26,7 +28,7 @@ def run():
         return main()
     except Exception as error:
         close_startup_splash()
-        report_startup_failure(error, stage=stage)
+        report_startup_failure(error, stage=stage, show_dialog=show_failure_dialog)
         return 1
     finally:
         close_startup_splash()

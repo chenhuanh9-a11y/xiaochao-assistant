@@ -26,6 +26,9 @@
 #ifndef InstallerGroup
   #define InstallerGroup "Xingtu Qt Test Client"
 #endif
+#ifndef InstallerUsePreviousAppDir
+  #define InstallerUsePreviousAppDir "yes"
+#endif
 
 #ifndef InstallerExeName
   #define InstallerExeName "XingtuQtClientTest.exe"
@@ -78,6 +81,12 @@
     #endif
     #define FeatureTestInstaller 1
     #define PrivateS1Installer 1
+  #elif InstallerAppId == "{{2D739B42-E6AC-4C37-9498-95DC9CC9AA43}"
+    #if InstallerAppName != "Xingtu Grid Test" || InstallerFolder != "XingtuGridTest" || InstallerGroup != "Xingtu Grid Test"
+      #error Invalid grid test installer identity
+    #endif
+    #define GridTestInstaller 1
+    #define PrivateS1Installer 1
   #else
     #error Unknown private installer identity
   #endif
@@ -85,6 +94,8 @@
     #define InstallerModelId "Xingtu.S0S1PrivateTest"
   #elif defined(FeatureTestInstaller)
     #define InstallerModelId "Xingtu.FeatureTest"
+  #elif defined(GridTestInstaller)
+    #define InstallerModelId "Xingtu.GridTest"
   #elif defined(S1PlaytestInstaller)
     #define InstallerModelId "Xingtu.S1Playtest"
   #elif defined(S1AutoPrivateInstaller)
@@ -118,7 +129,7 @@ AllowNoIcons=yes
 #else
 AppPublisher=Xingtu project (private Qt test)
 DefaultDirName={autopf}\{#InstallerFolder}
-UsePreviousAppDir=yes
+UsePreviousAppDir={#InstallerUsePreviousAppDir}
 DisableDirPage=no
 DisableProgramGroupPage=yes
 UninstallDisplayName={#InstallerAppName}
@@ -145,9 +156,14 @@ UsePreviousLanguage=no
 [Languages]
 Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 
-#ifdef ProductionInstaller
+#if defined(ProductionInstaller) || defined(GridTestInstaller)
 [Tasks]
+#ifdef ProductionInstaller
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式："; Flags: unchecked
+#endif
+#ifdef GridTestInstaller
+Name: "griddesktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式："; Flags: unchecked
+#endif
 #endif
 
 [Files]
@@ -168,6 +184,9 @@ Name: "{group}\{#InstallerAppName}"; Filename: "{app}\{#InstallerExeName}"; Work
 #ifdef ProductionInstaller
 Name: "{group}\卸载星图"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#InstallerAppName}"; Filename: "{app}\{#InstallerExeName}"; WorkingDir: "{app}"; AppUserModelID: "{#InstallerModelId}"; Check: CreateDesktopShortcut
+#endif
+#ifdef GridTestInstaller
+Name: "{autodesktop}\{#InstallerAppName}"; Filename: "{app}\{#InstallerExeName}"; WorkingDir: "{app}"; AppUserModelID: "{#InstallerModelId}"; Check: IsGridDesktopShortcutSelected
 #endif
 
 ; No [Run], [UninstallDelete], portable archive, or public URL.
@@ -615,6 +634,12 @@ end;
 #else
 ; Private directory selection never converts a test product into production.
 [Code]
+#ifdef GridTestInstaller
+function IsGridDesktopShortcutSelected: Boolean;
+begin
+  Result := WizardIsTaskSelected('griddesktopicon');
+end;
+#endif
 const
   ProductionUninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{D04394A0-DACE-4FF9-874D-3DCB43EE53D1}_is1';
 function InstallerFileAttributes(lpFileName: String): LongWord;
@@ -660,7 +685,7 @@ begin
     'Software\Microsoft\Windows\CurrentVersion\Uninstall\{D4B8E562-EA62-4A43-AF1D-043A5646971E}_is1',
     'InstallLocation', Previous) and (Previous <> '') then
     Result := Pos(Lowercase(NormalizedDirectory(Previous) + '\'), Lowercase(Target + '\')) = 1;
-  #if defined(S1FloorPrivateInstaller) || defined(S1AutoPrivateInstaller) || defined(S1PlaytestInstaller) || defined(FeatureTestInstaller)
+  #if defined(S1FloorPrivateInstaller) || defined(S1AutoPrivateInstaller) || defined(S1PlaytestInstaller) || defined(FeatureTestInstaller) || defined(GridTestInstaller)
   { Protect the previous private channel's custom registration too. This block
     must not compile into that older channel's own legitimate upgrade path. }
   if Result then Exit;
@@ -669,21 +694,21 @@ begin
     'InstallLocation', Previous) and (Previous <> '') then
     Result := Pos(Lowercase(NormalizedDirectory(Previous) + '\'), Lowercase(Target + '\')) = 1;
   #endif
-  #if defined(S1AutoPrivateInstaller) || defined(S1PlaytestInstaller) || defined(FeatureTestInstaller)
+  #if defined(S1AutoPrivateInstaller) || defined(S1PlaytestInstaller) || defined(FeatureTestInstaller) || defined(GridTestInstaller)
   if Result then Exit;
   if RegQueryStringValue(RootKey,
     'Software\Microsoft\Windows\CurrentVersion\Uninstall\{3C271F5D-71FF-4EA8-9569-B8DAC30F3773}_is1',
     'InstallLocation', Previous) and (Previous <> '') then
     Result := Pos(Lowercase(NormalizedDirectory(Previous) + '\'), Lowercase(Target + '\')) = 1;
   #endif
-  #if defined(S1PlaytestInstaller) || defined(FeatureTestInstaller)
+  #if defined(S1PlaytestInstaller) || defined(FeatureTestInstaller) || defined(GridTestInstaller)
   if Result then Exit;
   if RegQueryStringValue(RootKey,
     'Software\Microsoft\Windows\CurrentVersion\Uninstall\{ED53B6E8-E9A0-4F21-AF75-7C8A62BE7347}_is1',
     'InstallLocation', Previous) and (Previous <> '') then
     Result := Pos(Lowercase(NormalizedDirectory(Previous) + '\'), Lowercase(Target + '\')) = 1;
   #endif
-  #ifdef FeatureTestInstaller
+  #if defined(FeatureTestInstaller) || defined(GridTestInstaller)
   if Result then Exit;
   if RegQueryStringValue(RootKey,
     'Software\Microsoft\Windows\CurrentVersion\Uninstall\{D9FE6D76-C31A-47AF-9281-B4614C245E92}_is1',
@@ -743,16 +768,16 @@ begin
     (Pos(Lowercase(Path + '\'), Lowercase(Target + '\')) = 1) or
     (CompareText(Target, Parent) = 0) or
     (Pos(Lowercase(Parent + '\'), Lowercase(Target + '\')) = 1) or
-    #if defined(S1FloorPrivateInstaller) || defined(S1AutoPrivateInstaller) || defined(S1PlaytestInstaller) || defined(FeatureTestInstaller)
+    #if defined(S1FloorPrivateInstaller) || defined(S1AutoPrivateInstaller) || defined(S1PlaytestInstaller) || defined(FeatureTestInstaller) || defined(GridTestInstaller)
     (Pos(Lowercase(NormalizedDirectory(ExpandConstant('{autopf}\XingtuS0S1PrivateTest')) + '\'), Lowercase(Target + '\')) = 1) or
     #endif
-    #if defined(S1AutoPrivateInstaller) || defined(S1PlaytestInstaller) || defined(FeatureTestInstaller)
+    #if defined(S1AutoPrivateInstaller) || defined(S1PlaytestInstaller) || defined(FeatureTestInstaller) || defined(GridTestInstaller)
     (Pos(Lowercase(NormalizedDirectory(ExpandConstant('{autopf}\XingtuS1FloorPrivateTest')) + '\'), Lowercase(Target + '\')) = 1) or
     #endif
-    #if defined(S1PlaytestInstaller) || defined(FeatureTestInstaller)
+    #if defined(S1PlaytestInstaller) || defined(FeatureTestInstaller) || defined(GridTestInstaller)
     (Pos(Lowercase(NormalizedDirectory(ExpandConstant('{autopf}\XingtuS1AutoPrivateTest')) + '\'), Lowercase(Target + '\')) = 1) or
     #endif
-    #ifdef FeatureTestInstaller
+    #if defined(FeatureTestInstaller) || defined(GridTestInstaller)
     (Pos(Lowercase(NormalizedDirectory(ExpandConstant('{autopf}\XingtuS1Playtest')) + '\'), Lowercase(Target + '\')) = 1) or
     #endif
     RegisteredOldPrivateDirectory(HKCU64, Target) or
@@ -776,6 +801,14 @@ begin
       Result := '请选择不含目录链接或联接点的安装位置。';
       Exit;
     end;
+    { QtIFW keeps the product EXE under program\. Check the selected target
+      and every ancestor to protect the outer installation directory too. }
+    if FileExists(Path + '\.qtifw-trial-owner.json') or
+      FileExists(Path + '\program\星图.exe') or
+      FileExists(Path + '\星图.exe') then begin
+      Result := '此路径属于 QtIFW 或正式版星图安装，请为私测选择全新空目录。';
+      Exit;
+    end;
     Parent := ExtractFileDir(Path);
     if Parent = Path then Break;
     Path := Parent;
@@ -795,8 +828,13 @@ begin
       Result := '目录包含链接、无法完整读取或超过安全检查上限，请选择新的空目录。';
       Exit;
     end;
+#ifdef GridTestInstaller
+    if Entries > 0 then
+      Result := 'Grid Test 需要新的空目录；不会复用任何已有测试实例或其中的数据。';
+#else
     if (Entries > 0) and not RegisteredPrivateDirectory(Target) then
       Result := '非空目录不是本测试渠道登记的安装位置。请选择新的空目录或本测试版原目录；不会自动迁移已有资料。';
+#endif
   end;
 end;
 function NextButtonClick(CurPageID: Integer): Boolean;

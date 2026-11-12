@@ -333,7 +333,7 @@ class TrialProbe:
         """Current fresh-install policy; retention/migration above is historical."""
         startup_test_enabled = False
         try:
-            target = self.target("complete-uninstall 中文")
+            target = self.target(self.output.name + " 中文")
             assert self.install("complete-new-install", target) == 0
             self.report["installed"] = verify(self.policy, target)
             if self.policy.get("mapPackages"):
@@ -341,19 +341,24 @@ class TrialProbe:
                 assert seeded["success"] and seeded["installed"] == len(self.policy["mapPackages"])
                 self.report["authorDisplays"] = verify_bundled_displays(target, self.policy["mapPackages"])
             if self.policy.get("portable"):
-                assert self.run("frozen-self-check", [target / "program/星图.exe", "--self-check", "--verify-resources"], timeout=300) == 0
-                checked = json.loads((target / "program/work/client-self-check.json").read_bytes())
-                assert checked["ready"] and checked["qml"] and not checked["nativeInputStarted"]
-                self.report["frozenSelfCheck"] = checked
+                # First launch materializes the managed resource candidate. A
+                # read-only self-check must run after that real startup path.
                 gui_output = self.output / "client-ui"
-                (target / "program/work/.qt-client-probe-owner").write_text("qt-quick-build-probe-v1\n", encoding="utf-8")
+                marker = target / "program/work/.qt-client-probe-owner"
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text("qt-quick-build-probe-v1\n", encoding="utf-8")
                 assert self.run("frozen-client-ui", [target / "program/星图.exe", "--sandbox", target / "program",
                                                        "--probe-output", gui_output], timeout=330) == 0
                 ui = json.loads((gui_output / "client-probe.json").read_bytes())
                 assert ui["all_assertions_pass"]
                 self.report["clientUi"] = ui
+                assert self.run("frozen-self-check", [target / "program/星图.exe", "--self-check", "--verify-resources"], timeout=300) == 0
+                checked = json.loads((target / "program/work/client-self-check.json").read_bytes())
+                assert checked["ready"] and checked["qml"] and not checked["nativeInputStarted"]
+                self.report["frozenSelfCheck"] = checked
+                self.report["productFirstLaunchBeforeReadonlyCheck"] = True
             self.seed(target)
-            outside = target.parent / "complete-uninstall-external.txt"
+            outside = target.with_name(target.name + "-external.txt")
             with outside.open("xb") as stream:
                 stream.write(b"External file must remain\n")
             self.report["nativeAdmission"] = self.native_guards(target)

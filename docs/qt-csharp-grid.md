@@ -1,0 +1,94 @@
+# Qt + Python 产品的 C# grid 局部优化
+
+## 当前交付任务：1.1.3 正式身份覆盖更新（2026-11-13）
+
+用户明确要求制作1.1.3正式包，覆盖已交付的1.1.2。数字版本升至1.0.0.25；保留Qt/Python/C#计算边界，正式production身份恢复原有完整功能，不把独立Grid Test包改名冒充正式版。原1.1.2实际由`build_qtifw_trial.py --release`生成，目录为T/program，外层有QtIFW维护器和owner；原Inno升级器不能仅凭payload AppId接管这个布局。
+
+本轮沿用QtIFW组件所有权。单一Setup用Inno提供目录选择、确认与进度，包内QtIFW处理新装；已验证的production 1.1.2通过原维护器读取包内本地仓库更新，同时替换维护器的controller/QRC。不是新离线Setup直接切换updater，也不让用户先卸载。原生机制依据[QtIFW CLI](https://doc.qt.io/qtinstallerframework/ifw-cli.html)、[更新组件](https://doc.qt.io/qtinstallerframework/ifw-updates.html)与[installer脚本API](https://doc.qt.io/qtinstallerframework/scripting-installer.html)。原生合成实验已证明外部script单独使用不会持久替换旧controller，必须同时更新rcc及一次性installerbase副本；不能把原工具路径交给会消费该输入的QtIFW。
+
+升级适配器在独占资源lease内核对旧owner、production来源、实际程序库存及组件记录，先复制旧程序与维护元数据到T/recovery-files，再执行原生组件更新；设置、作者包、自建路线及活动资源不列入替换或删除清单。未知新程序路径碰撞明确拒绝。复用旧1.1.2已经识别的`program/work/pending-installer-upgrade.json`阻止中断后的启动；QtIFW适配器以独立schema认领自己的记录，不绕过其他资源事务，原Inno协调器遇此记录仍失败关闭。普通资源检查保持原调用入口，适配器只在自身标记核验后复用资源事务部分。
+
+原生文件、组件版本及持久新维护器的controller和实际安装helper均通过后才切换owner、按原明确意图恢复watcher配置并清除本次pending。更新失败保留原程序备份和pending；可从已完成native阶段向前核验收尾，不能把QtIFW撤销称为自动恢复旧程序或断电原子性。新装、覆盖、失败后重试、数据保留和卸载需绑定最终同源Setup分别验证。
+
+QtIFW 的 updater 不会自动刷新 Windows 卸载项的 DisplayVersion。升级组件使用原生 GlobalConfig operation，仅更新 ProductUUID 和 InstallLocation 均与当前安装相符的既有登记；失败时沿用原生 UNDO。持久维护器的最终核验同时回读实际登记版本，不能只凭组件或程序版本认定更新完成。
+
+Windows静默加载失败须直接返回错误：实测同一坏PE在普通Python和Inno继承的线程错误模式不同，后者可卡在CreateProcess而无法受子进程wait超时约束。启动器仅在当前线程创建子进程时临时加入SEM_FAILCRITICALERRORS并恢复；创建失败保留原生错误，更新状态退回真实的创建前阶段。首次安装中断且同一Setup尚无维护器时仍走原prepare/quarantine恢复，其他实例不接管。
+
+当前工作区已合入origin/main的交付/发版约定；本轮按用户指定版本准备安装候选，不自动覆盖本机安装、不操作游戏、不发布公告或自动合并PR。完整实机和端到端性能仍未证明；新包就绪后由用户本机验收，后续发布沿用既有发版列车授权。历史独立测试包与证据保留。
+
+## 范围与起点
+
+当前工作区 `E:\codex\worktrees\qt-csharp-hybrid\星图`，分支 `codex/qt-csharp-grid-20261110`，起点为正式 Qt 基线 `cc5100c6e3cea425ac4dbed82df92623754f81fa`。本任务只优化 `_grid` 网格候选计算及必要通信、进程恢复、打包兼容和验证，不是框架迁移。原 Qt UI、捕获/输入/浮层、设置与资源操作继续使用，不为本任务迁移或重做。
+
+旧 WPF 工作保留在 `codex/wpf-python-hybrid-20261110` / `d836b00c18f806324f2a5489d3665ab755c02598`，其未提交文件原地保留。WPF 主页、原生显示/键盘及其后续参考窗/提示任务停止推进；该分支的 `hybrid/MIGRATION.md` 只作历史记录。纯 C# 路线独立，不纳入本分支。
+
+## 实现边界
+
+- Qt 仍负责原完整产品交互，Python 仍负责 rank/识别、refine、最终 pose、当前帧验证/接受拒绝、结构渲染与资源核心。C# 只返回数值候选，不授予地图身份、位姿或显示权限，两模式共享原 Python 核心。
+- 可复用旧成果的持久 protocol 2 C# 服务、数值修正、Python bridge 和定向测试。旧回放、模拟、WPF 或 CI 证据只说明原来对应提交和入口，不能当作本次 Qt 生产入口已通过。
+- 先核对真实同步/后台调用与唯一进程所有者，再接入 Qt。必须明确服务失败时本请求如何结束及下次如何恢复；没有实现并验证的自动 Python 回退不得声称存在。
+
+## 执行与验收
+
+1. 核对正式入口、两模式求解与后台线程、取消和退出写者；携入必要 C# 服务与 bridge，排除 WPF 依赖。
+2. 接入原 Qt 生产流程并保留原 Python 同输入对照方式。验证实际候选进入后续 refine/最终消费者，不只测一个更容易的替代入口。
+3. 针对性验证候选/最终结果等价，取消、超时、进程故障/重启、正常退出与整个自有进程树资源释放。按影响验证 Qt UI 与原产品链路，不扩大为无关模块重写。
+4. 同输入、资源、依赖及冷/热条件测量计算与端到端性能。首贴约500ms、后续开图约300ms是既有目标，不以放宽正确性达成；保存帧没有真实按键端点时不冒称完整延迟。
+5. 从同一最终远端 commit 干净构建 Qt+Python+C# Setup，记录资源/依赖/版本、精确字节数与 SHA256，检查安装兼容与进程收尾。未经授权不安装、发布、恢复采样或向游戏发键。
+
+当前布局证据仅用2026-11-05及之后有来源的帧，不注入地图/位姿答案；保存帧、合成、桌面、实机、安装分开。实际游戏链路与最终交付未验时不称优化交付完成。
+
+## 当前状态
+
+Qt 正式入口增加 `--grid-backend csharp|python`，默认 C#；直接构造测试用 `QtClient` 仍默认原 Python，便于既有隔离 fixture。比较必须明确记录从哪个入口选择了哪个后端，不把直接构造的 Python 测试称为 C# 生产入口验收。源码运行前先 Release 构建 `hybrid/StarMap.Grid`。现有打包链已接入自包含 win-x64 服务及其实际运行时许可证，冻结校验、发布报告和安装器清单包含组件；完整 Setup 仍待最终同一远端提交干净构建。
+
+QtClient 持唯一 `CSharpGridRuntime`，传给原 LiveRuntime 和其直接创建的 Host。实际 Session worker 的整个业务计算持一个 request scope，由该外层安装 ContextVar，只替换 `_grid`；fit 复用该作用域。S1 provider 会另建未注入 owner 的 Host，同步继承 worker 的绑定，因此不能只以 LiveRuntime 内三处 Host 注入证明接线完整。超时仅从实际 grid 搜索开始，Python 资源、rank、refine 和后处理不消耗组件预算。S1 scanner 会吞掉 preferred candidate 异常，因此 grid 首次失败须保留至整次请求并进入当前性取消。nested fit 不把派生取消回调重新加入外层。原 `shutdown_client` 在 Session 取消/排空后关闭服务，普通关图不关闭常驻进程。
+
+当前策略：取消/超时/计算或协议错误拒绝本请求；失败进程被明确收尾，下次显式请求可启动新进程。没有自动 Python 回退。Python对照只有明确选择 `--grid-backend python`。
+
+已有 .NET SDK10.0.403 Release构建0警告0错误。携入的三个C#源文件Git blob与d836b00一致；不是另写新算法。匹配Python3.13.3/OpenCV4.12/NumPy2.2.6下原服务/候选消费13项通过；owner的5项覆盖真实proposal、nested隔离、派生取消、sticky失败、等待取消、活跃关闭及显式重启。
+
+匹配Qt6.11.1环境的联合115项通过（`work/qt-grid-joint-final-20261110-01.txt`），含原Session/LiveRuntime/partial-cleanup96项。S1 scan/fit diagnostics与原Qt退出另36项通过（`work/qt-grid-s1-shutdown-20261110-01.txt`）。实际Qt worker集成回归使用明确合成捕获/地图身份/楼层与临时prepared资源，原Session→LiveRuntime→Host→C# grid→原Python后续验证均执行；两模式分别重复捕获复用同一PID，拒绝显示与live授权，最后从原shutdown_client排空并验证子进程exit0。该集成及owner末次6项见 `work/qt-grid-ingress-cleanup-final-20261110-01.txt`，不是游戏验收。
+
+初次接线测试先发现Event需转换为回调和nested取消递归，均已修复；随后fixture因缺fast prepared产品而在原入口跳过grid，现使用原prepare生成真实临时npz，没有替换solver或改观察范围/断言。原失败日志保留。系统Python有数值依赖漂移，子任务系统环境探查不作权威结果。
+
+独立复核发现协议异常可能绕过整请求失败：`rows=null` 的计数和字符串score的数值检查曾抛TypeError、未设sticky标记，preferred候选异常被吞后外层能正常退出。现先验证匹配ID、布尔终态和候选数值/平移，再记录计数；类型异常作为GridFailure进入原收尾。新反例只替换通信，真实proposal/owner继续执行，并检查吞掉错误后仍取消及整请求失败。修后服务/bridge/owner/Qt接线20项通过，日志 `work/qt-grid-protocol-final-20261110-01.txt`；没有放宽原生产断言。
+
+后续回归确实复现并修正了两个接缝：未调用 grid 的普通业务工作也被组件超时中止；S1 provider 创建的 Host 没有进入 C#。owner 现 11 项通过，另原 Session/LiveRuntime/partial cleanup 的 96 项通过（`work/qt-grid-owner-binding-qt-regression-20261110-01.log`）。冻结私有实例曾从沙盒查组件而失败，现使用程序 `RESOURCE_ROOT`；定向回归修前失败、修后私有冻结/生产冻结/源码三路均启动实际服务，未复制组件进沙盒。
+
+打包 31 项定向检查通过（`work/grid-packaging-probe-01/validation.log`），其中真实自包含子进程在系统 .NET 路径不可用时加载自己的 `coreclr.dll`，删去实际依赖 DLL 后拒绝通过冻结校验。正式资源输入按既有库存核对 855 文件、223823255 字节；这不是 Setup 安装验收。
+
+新增保存帧回放 `tests/test_qt_csharp_grid_replay.py`，只替换像素获取和窗口事实。使用 2026-11-09 的 S0/S1 困难/噩梦各一帧，原工厂、Session worker、LiveRuntime、地图与楼层传感器、求解和渲染消费者继续实际执行；不注入地图/位姿答案，也不授予保存帧 live 权限。两后端分别使用正式库存的独立资源/学习目录和新进程，交替先后顺序，各捕获三次。`work/qt-grid-recorded-replay-02.log` 的12对最终字段/receipt一致，共35次C#搜索、3对渲染像素逐元素相同。S0困难调用数为0/1/1，S0噩梦0/0/0且身份未决；S1困难3/3/3、噩梦8/8/8，均未生成最终渲染。
+
+装载已改为一次请求剩余字节并直接读取缓存的只读 ushort 视图，保留异步取消、完整读后提交及原单引用缓存；没有改变数值求解或全局 JIT 设置。真实35次 grid 输入各重放3轮，105次候选均逐项等于 Python。96次进程复用调用的 whole-grid p50/p95 从17.41/32.22ms降到11.86/26.56ms，但max由38.23升到63.89ms，后者未进一步归因；9次冷调用中位数131.64→116.22ms。单独在4.86MB真实引用加载时取消，3.73ms收到取消终态、kernel未启动，同进程下一次搜索正常。
+
+末次 `work/qt-grid-recorded-replay-03.log` 继续通过12对状态/receipt、35次C#搜索与3对渲染像素。新增整个组件调用计时，包含启动、引用导出、IPC和返回校验；两后端对齐排除各有 grid 样本的首次搜索后，32次whole-grid的 p50/p95/max 为 Python 6.07/63.95/66.04ms、C# 13.94/27.32/29.93ms。C#改善较大搜索的尾部，小搜索中位数更慢；不能称所有场景加速。
+
+以下是同一保存帧第二、第三次 Session 请求到结果的 p50/p95/max，百分位采用 NumPy 的 linear 插值。每格仅 n=2，不能外推稳定分位数。S0困难的第二次请求才首次启动C#，不是全热条件。
+
+| 保存帧 | Python（ms） | C#（ms） | 各后端三次未生成渲染数 |
+| --- | --- | --- | --- |
+| S0困难 | 249.00/249.23/249.25 | 316.67/373.46/379.77 | 0 |
+| S0噩梦 | 190.17/190.37/190.39 | 195.48/196.02/196.08 | 3 |
+| S1困难 | 907.40/907.62/907.64 | 936.52/943.87/944.68 | 3 |
+| S1噩梦 | 1066.69/1083.37/1085.23 | 994.52/997.96/998.34 | 3 |
+
+未渲染包含身份/候选未决，不合并解释为9次引擎故障。没有独立图像真值支持的错层计数，也没有游戏按键与正确可见像素端点，两者均未知；首贴500ms/后续300ms目标未据此达到。保存帧使用结构显示偏好，未验证默认作者完整GUI。末次服务/消费者/owner/Qt接线/三类运行路径26项以及真实打包3项均通过，日志 `work/qt-grid-final-joint-20261110-03.log`、`work/qt-grid-final-package-20261110-03.log`。源码53c8b38对应的五个GitHub工作流已全部成功，本轮差异待提交推送与最终构建。
+
+57ee8f4 已普通推送，其6个GitHub工作流全部成功，并从同一干净提交完整冻结/构建 QtIFW Setup。该测试候选303229987字节，SHA256为 `6bf1a7a66603886377712e3a99cc7024220122b767ff439e6fd67dec95f31f70`；交付记录在 `E:\codex\deliveries\xingtu-qt-csharp-grid-57EE8F45-20261110`，未合并、发布或覆盖用户安装。
+
+后续实际安装验证使用本轮新建目录和重定向的快捷方式。安装后的C#组件实际加载自己的coreclr、两次搜索复用PID并exit0。Windows平台/软件渲染的完整Qt界面探针56项通过，主页面、设置、资源和路线编辑器截图已检查，未使用游戏枚举/捕获/按键。首次正常启动经原 `production_resources` 完成受管资源初始化，随后只读自检四上下文可用；运行租约、非法资料选项和外部硬链接均阻止卸载，正常原生卸载后目录确实移除，外部哨兵保留、测试安装的Run项移除。完整结果见 `work/qtifw-qt-csharp-grid-57ee8f45-01/validation-hybrid-03/result.json`。这不是游戏窗口、全局快捷键或可见贴合验收。
+
+保留了两轮验收失败：第一轮把只读自检放在产品首次初始化之前，真实报S1尚未就绪，并在错误框阻塞；第二轮调整顺序时漏建探针标记目录，失败在测试准备阶段。现有验收脚本改为真实首次启动后再只读校验，并按证据名使用新目标/外部哨兵；第三轮同一Setup完整通过。本轮修正诊断模式的失败出口：入口与异步构造错误保留日志并非零退出，probe的单实例失败不弹框，资源错误不再进入交互恢复而由入口报告失败；普通交互保留原提示与恢复选择。入口/报告/启动与实际partial cleanup的70项回归通过（`work/qt-grid-diagnostic-final-02.log`），另现有安装探针14项通过。原资源校验和算法未修改，仍需绑定新的最终提交/Setup。
+
+只读专家建议后的单序列实验保留原Qt路径，仅在忽略目录试验便宜grid走Python、大grid走C#，没有改生产策略。S1噩梦原帧每次5次Python/3次C#，24次输入/候选及3次状态/receipt均一致；两个复用请求约950/963ms，首次冷请求1236ms，比先前全Python1108ms、全C#1162ms更慢。对照非同期、只有一次冷序列，不能定生产阈值或声称稳定提升，实验脚本与记录见 `work/grid-dispatch-experiment-01`。
+
+仍待：诊断修复的最终包验证、旧版→候选的替换/显式回装验证、真实游戏链路与性能目标。保存帧和UI探针不能证明游戏按键至正确可见像素、错层真值或整局体验；未恢复采样或操作游戏，goal保持进行中。
+
+## 独立试用包（2026-11-10当前授权）
+
+38A68F45的最终Setup、隔离安装/GUI、显式卸载后回装和组件进程树验证已完成，记录在 `E:\codex\deliveries\xingtu-qt-csharp-grid-38A68F45-20261110\HANDOFF.md`；这些不是正式覆盖迁移。只读核查确认本机正式安装实际为D盘7991DBBE，38包的owner、正式快捷方式和生产IPC不支持安全普通并行试用。
+
+用户选择先做独立测试包并愿意手动操作游戏。采用仓库已有私有Inno Setup路径，登记grid-test专用AppId `2D739B42-E6AC-4C37-9498-95DC9CC9AA43`、目录/快捷方式 `Xingtu Grid Test`，数据沿用带标记的私有work根，不复制正式设置/资源回执。S1继续同一候选/round生命周期，但不启用旧私测隐式诊断；关闭自动采样和正式更新入口，Watcher/正式资源修复辅助功能不可用并明确记录。启动诊断回退归私测命名空间。
+
+本次仅在自有新目标验证实际Setup安装、正常启动/退出、组件、数据写入和卸载；安装前后只读核对正式文件、快捷方式及注册信息，正式版不作为测试写入目标。提交前独立复核，再从同一最终远端干净提交完整构建，交付Setup及退出说明。QtIFW正式覆盖迁移、真实用户数据恢复仍未验证；游戏操作与采样不自动执行。

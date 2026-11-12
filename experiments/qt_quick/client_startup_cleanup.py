@@ -109,6 +109,7 @@ def shutdown_client(client):
             attempt("g_cycle_evidence.join", lambda: evidence.shutdown(wait=True))
             drain()
         call("problems")
+        call("grid_runtime", "close")
         for name in ("settings", "preview", "control_snap", "backend", "route_choices", "info", "tutorial",
                      "custom_galleries", "online_packages", "route_plaza", "manual_map_picker", "windows"):
             call(name)

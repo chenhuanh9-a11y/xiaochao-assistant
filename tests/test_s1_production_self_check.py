@@ -238,7 +238,7 @@ class ProductionSelfCheckTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIsNone(result)
         self.failure.assert_called_once()
-        self.assertEqual(self.failure.call_args.kwargs, dict(stage='run-client'))
+        self.assertEqual(self.failure.call_args.kwargs, dict(stage='run-client', show_dialog=False))
         self.assertFalse((self.root / 'work/client-self-check.json').exists())
 
 

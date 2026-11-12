@@ -15,6 +15,7 @@ import sys
 _NATIVE_S1_PREVIEW = object()
 _NATIVE_S1_PLAYTEST = object()
 _NATIVE_S1_PRODUCTION_CANDIDATE = object()
+_NATIVE_S1_GRID_TEST = object()
 
 # Exact Windows native inventory, guarded repair, author-display dependencies
 # and five-context self-check were verified for the formal 1.0.17 candidate.
@@ -29,6 +30,9 @@ def private_native_candidate_purpose():
     if baked_identity(require_qt=True) != "qt-isolated":
         return None
     profile = json.loads((Path(sys._MEIPASS) / "installation-profile.json").read_text("utf8"))
+    if profile["installerInstance"]["id"] == "grid-test":
+        # Exercise the same candidate/round lifetime without implicit private tracing.
+        return _NATIVE_S1_GRID_TEST
     if profile["installerInstance"]["id"] not in ("s1-auto-test", "s1-playtest", "feature-test"):
         return None
     return (_NATIVE_S1_PLAYTEST if profile["installerInstance"]["id"] in ("s1-playtest", "feature-test")
@@ -68,13 +72,13 @@ def native_final_round_lock_purpose_is_valid(value):
     The older auto-test token remains an isolated evidence experiment. Neither
     a profile feature field nor a setting may weaken a playtest round lock.
     """
-    return (value is _NATIVE_S1_PLAYTEST or
+    return (value is _NATIVE_S1_PLAYTEST or value is _NATIVE_S1_GRID_TEST or
             _PRODUCTION_S1_CANDIDATE_ROLLOUT_ENABLED is True
             and value is _NATIVE_S1_PRODUCTION_CANDIDATE)
 
 
 def native_candidate_purpose_is_valid(value):
-    return (private_native_candidate_purpose_is_valid(value)
+    return (private_native_candidate_purpose_is_valid(value) or value is _NATIVE_S1_GRID_TEST
             or (_PRODUCTION_S1_CANDIDATE_ROLLOUT_ENABLED is True
                 and value is _NATIVE_S1_PRODUCTION_CANDIDATE))
 

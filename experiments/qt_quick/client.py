@@ -53,7 +53,7 @@ def prepare_first_run(sandbox):
 
 class QtClient:
     def __init__(self, app, sandbox, *, probe_output=None, info_fetch=None, on_created=None,
-                 g_cycle_evidence=False, g_cycle_full_input=False):
+                 g_cycle_evidence=False, g_cycle_full_input=False, grid_backend="python"):
         if g_cycle_full_input and not g_cycle_evidence:
             raise ValueError("full solver evidence requires explicit test evidence")
         set_startup_stage("create-services")
@@ -124,10 +124,18 @@ class QtClient:
         self.input = NativeShortcutBackend()
         self.providers = build_engine_factories(self.paths.resource_root)
         self.providers.set_custom_display(self.custom_display.layer, base_provider=self.custom_display.base_layer)
+        if grid_backend not in {"python", "csharp"}:
+            raise ValueError("Unknown grid backend")
+        self.grid_runtime = None
+        if grid_backend == "csharp":
+            from csharp_grid_runtime import CSharpGridRuntime
+            executable = (RESOURCE_ROOT / "csharp-grid/StarMap.Grid.exe" if FROZEN else
+                APP_ROOT.parent / "hybrid/StarMap.Grid/bin/Release/net10.0/StarMap.Grid.exe")
+            self.grid_runtime = CSharpGridRuntime(executable, self.paths.work_root / "grid-cache")
         self.runtime = LiveRuntime(engine_factories=self.providers, capture_provider=self.capture,
                                    allowed_read_root=WORK_ROOT, evidence_kind="live-client-capture",
                                     diagnostics=self.lifecycle_trace,
-                                    s1_candidate_purpose=candidate_purpose)
+                                    s1_candidate_purpose=candidate_purpose, grid_runtime=self.grid_runtime)
         values = self.settings.persistedValues
         self.runtime.configure_settings(values)
         mode, profile, season = ClientCoordinator._settings_context(values)
@@ -599,6 +607,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sandbox", type=Path, default=DEFAULT_SANDBOX)
     parser.add_argument("--probe-output", type=Path)
+    parser.add_argument("--grid-backend", choices=("csharp", "python"), default="csharp",
+                        help="candidate grid implementation; Python keeps the rest of the production pipeline")
     parser.add_argument("--g-cycle-evidence", action="store_true",
                         help="this process only: bounded local G-attempt algorithm ROI evidence; may contain game text; no upload")
     parser.add_argument("--g-cycle-full-input", action="store_true",
@@ -706,7 +716,10 @@ def main():
         close_startup_splash()
         message = str(error) if isinstance(error, SingleInstanceError) else f"无法确认当前用户会话的启动锁，未启动第二个实例：{error}"
         print(message, file=sys.stderr)
-        if os.name == "nt":
+        if args.probe_output:
+            from qt_startup_diagnostics import report_startup_failure
+            report_startup_failure(error, stage="instance-check", show_dialog=False)
+        elif os.name == "nt":
             import ctypes
             ctypes.windll.user32.MessageBoxW(None, message, "星图启动提示", 0x10)
         if guard is not None:
@@ -720,6 +733,8 @@ def main():
     from client_resource_startup_recovery import offer_startup_recovery
     def recover_startup(error):
         close_startup_splash()
+        if args.probe_output:
+            return None
         return offer_startup_recovery(resource_root, error)
     try:
         resource_root = owned_sandbox(args.sandbox.resolve()) if PRODUCTION else args.sandbox.resolve()
@@ -768,7 +783,8 @@ def _run_primary_client(app, args, guard):
             client = holder["client"] = QtClient(app, sandbox, probe_output=args.probe_output, info_fetch=local_manifest,
                 on_created=lambda partial: holder.update(client=partial),
                 g_cycle_evidence=getattr(args, "g_cycle_evidence", False),
-                g_cycle_full_input=getattr(args, "g_cycle_full_input", False))
+                g_cycle_full_input=getattr(args, "g_cycle_full_input", False),
+                grid_backend=getattr(args, "grid_backend", "csharp"))
             client.resources.setStartupCompatibilityReport(getattr(args, 'resource_startup_report', {}))
             if holder.pop("activationPending", False):
                 restore_main_window(client.main)
@@ -829,7 +845,8 @@ def _run_primary_client(app, args, guard):
                 app.aboutToQuit.disconnect(holder["quit_journal"])
     if "startup_error" in holder:
         from qt_startup_diagnostics import report_startup_failure
-        report_startup_failure(holder["startup_error"], stage="create-client")
+        report_startup_failure(holder["startup_error"], stage="create-client",
+                               show_dialog=not bool(args.probe_output))
         return 1
     return exit_code
 

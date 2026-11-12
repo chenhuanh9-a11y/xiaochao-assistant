@@ -17,7 +17,7 @@ from backend import ROOT, Work
 from map_resource_context import load_browse_context
 from season_context import SEASONS, modes_for_season
 from season_map_resources import browse_modes
-from client_paths import PRODUCTION, WORK_ROOT, runtime_paths, bundled_author_root
+from client_paths import GRID_TEST, PRODUCTION, WORK_ROOT, runtime_paths, bundled_author_root
 from PySide6.QtCore import QThreadPool, Qt
 from update_service import UpdateService, DOWNLOAD_HOSTS, is_newer
 from diagnostic_export import export_safe_diagnostic_bundle, diagnostic_package_metadata
@@ -97,7 +97,8 @@ class ClientInfoService(QObject):
         self._startup_timer.setInterval(2500)
         self._startup_timer.timeout.connect(self._startup_check)
 
-    version = Property(str, lambda s: s._version + ("" if PRODUCTION else " · Qt 迁移测试"), constant=True)
+    version = Property(str, lambda s: s._version + (" · C# 网格独立测试" if GRID_TEST else
+                       "" if PRODUCTION else " · Qt 迁移测试"), constant=True)
     message = Property(str, lambda s: s._message, notify=changed)
     checking = Property(bool, lambda s: s._service.phase == "checking" or s._writing
                         or s._automatic_sampling_pending is not None, notify=changed)
@@ -122,7 +123,7 @@ class ClientInfoService(QObject):
         return dict(asdict(release), published_date=release.published_date,
                     announcementId=release.announcement_id,
                     updateAvailable=is_newer(release.version, self._version))
-    facts = Property("QVariantMap", lambda s: dict(version=s._version, entrypoint=str(Path(__file__).with_name("client.py")),
+    facts = Property("QVariantMap", lambda s: dict(version=s.version if GRID_TEST else s._version, entrypoint=str(Path(__file__).with_name("client.py")),
                     interpreter=sys.executable, platform=platform.platform(),
                     liveInput=bool(s._providers.get("input") and s._providers["input"].enabled),
                     displayEnvironment=s._display_environment_label(),
@@ -266,6 +267,8 @@ class ClientInfoService(QObject):
         self._sync_failure_sampling()
 
     def _automatic_sampling_enabled(self):
+        if GRID_TEST:
+            return False
         settings = self._providers.get('settings')
         return (settings is not None and not getattr(settings, 'loadFailed', False)
                 and settings.persistedValues.get('automaticFailureEvidence', False) is True)
@@ -298,6 +301,10 @@ class ClientInfoService(QObject):
         settings = self._providers.get('settings')
         if self._closed or self.checking or settings is None or settings.busy:
             return False
+        if GRID_TEST:
+            self._message = "此独立网格测试包关闭自动游戏采样。"
+            self.changed.emit()
+            return False
         if bool(enabled) == self._automatic_sampling_enabled():
             return True
         if not settings.setValue('automaticFailureEvidence', bool(enabled)):
@@ -322,7 +329,7 @@ class ClientInfoService(QObject):
     @Slot(bool, result=bool)
     def scheduleStartupCheck(self, enabled=True):
         """Owner explicitly disables this for probes; constructors never fetch."""
-        if not enabled or self._closed or self._startup_requested:
+        if GRID_TEST or not enabled or self._closed or self._startup_requested:
             return False
         self._startup_requested = True
         self._startup_timer.start()
@@ -355,6 +362,9 @@ class ClientInfoService(QObject):
         """
         if self._closed:
             return
+        if GRID_TEST:
+            self._test_update_message()
+            return
         release = self._service.latest
         if release is not None:
             self.announcementRequested.emit(self._remember_announcement(release))
@@ -376,6 +386,9 @@ class ClientInfoService(QObject):
 
     def _check_updates(self, *, manual):
         if self._closed or self.checking:
+            return
+        if GRID_TEST:
+            self._test_update_message()
             return
         if self._service.check(manual=manual):
             self._action_error = False
@@ -507,6 +520,9 @@ class ClientInfoService(QObject):
     def _open_release_download(self, release, provider):
         if self._closed or self.checking:
             return
+        if GRID_TEST:
+            self._test_update_message()
+            return
         url = release.pages.get(provider) if release else None
         try:
             parts = urlsplit(url or "")
@@ -521,6 +537,10 @@ class ClientInfoService(QObject):
             self._message, self._action_error = "已打开官方下载页，请在浏览器中继续", False
         except Exception as error:
             self._message, self._action_error = str(error) + "；请重试", True
+        self.changed.emit()
+
+    def _test_update_message(self):
+        self._message = "独立网格测试包不使用正式版更新入口，请按交接说明获取新测试包。"
         self.changed.emit()
 
     @Slot(result=bool)

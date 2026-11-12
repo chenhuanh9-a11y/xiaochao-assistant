@@ -273,7 +273,7 @@ class PrivatePackagingTests(unittest.TestCase):
         profile = self.root / 'installation-profile.json'
         models = {'s0-s1-test': 'Xingtu.S0S1PrivateTest', 's1-floor-test': 'Xingtu.S1FloorPrivateTest',
                   's1-auto-test': 'Xingtu.S1AutoPrivateTest', 's1-playtest': 'Xingtu.S1Playtest',
-                  'feature-test': 'Xingtu.FeatureTest'}
+                  'feature-test': 'Xingtu.FeatureTest', 'grid-test': 'Xingtu.GridTest'}
         self.assertEqual(identity.PRIVATE_S1_INSTANCES, frozenset(models))
         self.assertIs(build.PRIVATE_S1_INSTANCES, identity.PRIVATE_S1_INSTANCES)
         for name, model in models.items():
@@ -411,6 +411,8 @@ class PrivatePackagingTests(unittest.TestCase):
                 active.append(active[-1] and any(name in symbols for name in names))
             elif text == '#endif':
                 active.pop()
+            elif text == '#else':
+                active[-1] = active[-2] and not active[-1]
             elif active[-1]:
                 lines.append(line)
         return '\n'.join(lines)
