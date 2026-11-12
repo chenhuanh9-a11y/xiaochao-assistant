@@ -475,5 +475,63 @@ class ProgressiveDisplayContracts(unittest.TestCase):
                         self.assertFalse(runtime.dispatch("capture_now")["success"])
 
 
+import test_client_local_identity_commit as identity_fixtures
+
+
+class StreamPixelPreparationContracts(unittest.TestCase):
+    """Real imported map stream; only capture, turn measurements and fit supplied."""
+    setUpClass = identity_fixtures.LocalIdentityCommitTests.__dict__['setUpClass']
+    setUp = identity_fixtures.LocalIdentityCommitTests.setUp
+    opening = identity_fixtures.LocalIdentityCommitTests.opening
+    drain_race = identity_fixtures.LocalIdentityCommitTests.drain_race
+
+    def test_candidate_and_identity_material_share_pixels_only_within_this_frame(self):
+        frame = self.capture.frame
+        frame[200:470, 300:650] = 120
+        frame[330:336, 470:476] = (0, 220, 220)
+        for y in range(250, 290, 5):
+            frame[y:y + 2, 500:520] = 190
+        material_ready = threading.Event()
+        ready = []
+        tracking = []
+        stage = self.runtime._stage_round_group_commit
+
+        def record(event):
+            if event.get('event') == 'render-ready':
+                ready.append(dict(self.runtime._render))
+                material_ready.set()
+
+        def wait_for_preview(lane, row):
+            if lane == 'structure':
+                self.assertTrue(material_ready.wait(5), 'candidate must publish real material first')
+
+        def staged(*args, **kwargs):
+            group = stage(*args, **kwargs)
+            tracking.append(group.tracking_for_floor('1'))
+            return group
+
+        self.before_verify = wait_for_preview
+        self.runtime.set_event_callback(record)
+        with patch.object(group_commit, 'map_reuse_evidence', wraps=group_commit.map_reuse_evidence) as reuse, \
+             patch.object(group_commit, 'live_stair_screen_candidates', wraps=group_commit.live_stair_screen_candidates) as stairs, \
+             patch.object(group_commit, 'map_anchor_focus_point', wraps=group_commit.map_anchor_focus_point) as marker, \
+             patch.object(self.runtime, '_stage_round_group_commit', side_effect=staged), \
+             patch('client_live_runtime.INITIAL_IDENTITY_BUDGET_SECONDS', 8.):
+            result = self.opening()
+            self.assertTrue(result['success'], result)
+            self.assertTrue(self.runtime.snapshot()['identityLocked'])
+            self.assertGreaterEqual(len(ready), 2)
+            self.assertTrue(ready[0]['candidateDisplayOnly'])
+            self.assertFalse(ready[-1]['candidateDisplayOnly'])
+            self.assertEqual(ready[0]['frameId'], ready[-1]['frameId'])
+            self.assertEqual((reuse.call_count, stairs.call_count, marker.call_count), (1, 1, 1))
+            self.assertIsNot(tracking[0]['translationMask'][0], tracking[-1]['translationMask'][0])
+            np.testing.assert_array_equal(tracking[0]['translationMask'][0], tracking[-1]['translationMask'][0])
+            self.runtime.dispatch('close_map')
+            reopened = self.runtime.dispatch('map', dict(openIntent=True, inputSequence=2))
+            self.assertTrue(reopened['success'], reopened)
+            self.assertEqual((reuse.call_count, stairs.call_count, marker.call_count), (2, 2, 2))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -57,7 +57,7 @@ def prepare_round_pose_observation(frame, *, component_override=None, map_anchor
 
 
 class RoundPoseObservationScope:
-    """Reuse the last pixel observation within one solve of an owned read-only frame.
+    """Reuse pixel evidence within one observation of an owned read-only frame.
 
     The actual domain and component geometry participate in reuse. Matrices,
     resource checks, player projection and state commits remain per result.

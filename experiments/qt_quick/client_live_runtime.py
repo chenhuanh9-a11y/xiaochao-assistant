@@ -825,6 +825,15 @@ class LiveRuntime:
             self._private_observation_sequence += 1
             private_sequence = self._private_observation_sequence
         first_result = None
+        pixel_scope = None
+
+        def pixel_observation_scope():
+            nonlocal pixel_scope
+            if pixel_scope is None:
+                from round_layer_group_commit import RoundPoseObservationScope
+                pixel_scope = RoundPoseObservationScope(frame)
+            return pixel_scope
+
         entry_selection, entry_seed, entry_published, entry_preserved = None, None, False, False
         published_report = None
         coordinate_work = None
@@ -1036,6 +1045,7 @@ class LiveRuntime:
                     captured, frame, floor, digest, capture_generation, frame_generation, frame_id, cycle,
                     work.map_id, coordinate_observation=work,
                     coordinate_pool_revision=revision,
+                    pixel_observation_scope=pixel_observation_scope(),
                     structure_current=lambda: current() and self._s1_private_pool is pool
                         and pool.revision == revision and pool.remaining == (work.map_id,))
             except MemoryError:
@@ -1101,6 +1111,7 @@ class LiveRuntime:
                     result = self._solve_observation(action, payload, cancelled, engine, None, epoch,
                         captured, frame, floor, digest, capture_generation, frame_generation,
                         frame_id, cycle, mid, structure_ticket=(session, ticket),
+                        pixel_observation_scope=pixel_observation_scope(),
                         structure_current=lambda: not obsolete() and (not private_enabled
                             or self._s1_private_pool is pool and mid in pool.remaining
                             and pool.recovery_revision == recovery_revision))
@@ -1246,7 +1257,8 @@ class LiveRuntime:
                         captured, frame, floor, digest, capture_generation, frame_generation,
                         frame_id, cycle, entry_selection, entry_seed,
                         entry_observation=selected_entry_observation,
-                        structure_ticket=(session, ticket), structure_current=current)
+                        structure_ticket=(session, ticket), structure_current=current,
+                        pixel_observation_scope=pixel_observation_scope())
                 elif not entry_selection and first_result is None:
                     last_material_reason = 'identity-not-uniquely-verified'
             if first_result is not None and not first_result.get('success'):
@@ -5923,7 +5935,7 @@ class LiveRuntime:
                            map_id, entry_candidate=None, *, identity_stage=None, manual_choice=None,
                            staged_observation=None, structure_ticket=None, structure_current=None,
                            entry_observation=None, coordinate_observation=None,
-                           coordinate_pool_revision=None):
+                           coordinate_pool_revision=None, pixel_observation_scope=None):
         import numpy as np
         from alignment_core_v2 import AlignmentCandidate
         from alignment_observation import rendered_profile_residual_is_verified
@@ -6039,7 +6051,8 @@ class LiveRuntime:
             steady_context = self._steady_context()
         published_token = None
         review_core = None
-        observation_scope = RoundPoseObservationScope(frame)
+        observation_scope = (pixel_observation_scope if pixel_observation_scope is not None
+                             else RoundPoseObservationScope(frame))
 
         def revoke_published(reason):
             with self._lock:
