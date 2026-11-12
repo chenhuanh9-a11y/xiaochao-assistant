@@ -5724,8 +5724,12 @@ class LiveRuntime:
             or structure_current is not None and not structure_current()
             or provisional_operation and operation_settings_generation != self._settings_generation
             or staged_observation is not None and not self._staged_choice_current(staged_observation))
-        frame_current = lambda: (self._staged_choice_current(staged_observation)
-            if staged_observation is not None else frame_id == self._frame_id)
+        def frame_current():
+            if staged_observation is not None:
+                return bool(self._staged_choice_current(staged_observation)
+                    and (frame_id, frame_generation) ==
+                        (staged_observation["frame_id"], staged_observation["generation"]))
+            return (frame_id, frame_generation) == (self._frame_id, self._frame_generation)
         width, height = captured.context.full_client_size
         with self._lock:
             if obsolete() or not frame_current() or floor != self._floor:
@@ -5855,7 +5859,7 @@ class LiveRuntime:
                         or manual_choice is None and self._group_choice_inflight is not None):
                     return self._receipt(action, payload, success=False, reason="manual-group-intent-superseded-work", stale=True)
                 if (obsolete() or not frame_current() or cycle != self._cycle or floor != self._floor
-                        or frame_generation != self._frame_generation or engine is not self._engine):
+                        or engine is not self._engine):
                     return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
                 if not self._capture_is_current(captured.context, capture_generation):
                     self.invalidate("capture-context-changed")
