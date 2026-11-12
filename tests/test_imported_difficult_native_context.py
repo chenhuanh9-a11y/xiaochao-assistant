@@ -50,7 +50,7 @@ class ImportedDifficultNativeContextTests(unittest.TestCase):
         self.assertFalse(context.structure_candidate_capability['liveValidated'])
         self.assertTrue(context.live_gaps)
         provider = SharedReferenceProvider(context.root, context.resources, context.versions,
-            native=context, check_current=context.assert_current)
+            legacy_reference_loader=context.legacy_reference, check_current=context.assert_current)
         for mid, profile in ((difficult_fixture.IDS[0], 'shared-structure'),
                              (difficult_fixture.LEGACY, 'zhan10-speed')):
             for floor in ('1', '2'):
@@ -78,7 +78,7 @@ class ImportedDifficultNativeContextTests(unittest.TestCase):
     def test_actual_manifest_replacement_invalidates_metadata_and_cached_reference(self):
         context = ImportedDifficultNativeContext(*self.components())
         provider = SharedReferenceProvider(context.root, context.resources, context.versions,
-            native=context, check_current=context.assert_current)
+            legacy_reference_loader=context.legacy_reference, check_current=context.assert_current)
         self.assertIsNotNone(provider('zhan10-speed', difficult_fixture.LEGACY, '1'))
         manifest = context.root.parent.parent/'manifest.json'
         replacement = manifest.with_suffix('.replacement')

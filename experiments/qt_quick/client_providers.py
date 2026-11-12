@@ -69,10 +69,13 @@ def _build_memory_store(pack, memory_root, resource_root, *, production=PRODUCTI
 
 class SharedReferenceProvider:
     """Version-checked typed references; six-entry cache, no pose/UI state."""
-    def __init__(self, root, resources, versions, *, native=None, check_current=None):
+    def __init__(self, root, resources, versions, *, legacy_reference_loader=None, check_current=None):
         if check_current is not None and not callable(check_current):
             raise TypeError('reference lifetime guard must be callable')
-        self.root, self.resources, self.versions, self.native = root, resources, versions, native
+        if legacy_reference_loader is not None and not callable(legacy_reference_loader):
+            raise TypeError('legacy reference loader must be callable')
+        self.root, self.resources, self.versions = root, resources, versions
+        self._legacy_reference_loader = legacy_reference_loader
         self._check_current = check_current
         self._cache = OrderedDict()
         self._lock = threading.RLock()
@@ -84,8 +87,8 @@ class SharedReferenceProvider:
     def __call__(self, profile, map_id, floor):
         import numpy as np
         self._assert_current()
-        if self.native is not None:
-            legacy = self.native.legacy_reference(map_id, floor)
+        if self._legacy_reference_loader is not None:
+            legacy = self._legacy_reference_loader(map_id, floor)
             if legacy is not None:
                 self._assert_current()
                 return legacy
@@ -116,8 +119,8 @@ class SharedReferenceProvider:
 
     def binding_metadata(self, profile, map_id, floor):
         self._assert_current()
-        if self.native is not None:
-            legacy = self.native.legacy_reference(map_id, floor)
+        if self._legacy_reference_loader is not None:
+            legacy = self._legacy_reference_loader(map_id, floor)
             if legacy is not None:
                 self._assert_current()
                 return dict(path=legacy.path, shape=list(legacy.shape), metadata=legacy.metadata)
@@ -500,7 +503,8 @@ class EngineFactories(dict):
                        root / ".qt-saved-frame-memory" / mode if season == "s0" else
                        root / ".qt-saved-frame-memory" / season / mode)
         memory = _build_memory_store(pack, memory_root, root, season=season, controls=self.controls_profile)
-        provider = SharedReferenceProvider(root, resources, {}, native=native)
+        provider = SharedReferenceProvider(root, resources, {},
+            legacy_reference_loader=native.legacy_reference if native is not None else None)
         engine = engine_type(pack, identity_root=entry_root, identity_profile_id=profile,
             identity_floors=pack.floors, exit_icon_path=exit_icon,
             entry_structure_store=resources, entry_shared_reference_provider=provider,

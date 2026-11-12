@@ -72,9 +72,20 @@ class NativeBaseBundle:
         group_path = values['interfaces'].get(GROUP_INTERFACE)
         self._values['reviewed_front_groups'] = ImportedFrontGroups(self, group_path) if group_path else None
 
-    def assert_current(self):
-        if self._view.root != self._root:  # Actual bounded manifest/root load.
+    def _current_view_root(self):
+        view = self._view
+        root = view.root  # Actual bounded manifest/root load.
+        if view is not self._view or root != self._root:
             _reject('component-root-changed')
+        return view, root
+
+    def assert_current(self):
+        self._current_view_root()
+
+    def read_binding(self):
+        """Read one current view and its declared fields for context validation."""
+        view, root = self._current_view_root()
+        return view, root, self._values['component_ref'], self._values['reader']
 
     def _cached(self, name):
         self.assert_current()

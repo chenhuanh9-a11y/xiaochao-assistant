@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -49,7 +50,7 @@ class ImportedS1NativeContextTests(unittest.TestCase):
         from client_providers import SharedReferenceProvider
         native = self.context
         provider = SharedReferenceProvider(native.root, native.resources, native.versions,
-            native=native, check_current=native.assert_current)
+            legacy_reference_loader=native.legacy_reference, check_current=native.assert_current)
         return SimpleNamespace(pack=native.pack, qt_season='s1', qt_native_context=native,
             qt_shared_provider=provider, qt_adapters=native.adapters, qt_catalog=native.catalog,
             qt_optional_displays=None, identity_floors=native.pack.floors)
@@ -168,6 +169,109 @@ class ImportedS1NativeContextTests(unittest.TestCase):
             self.bundle.pack.floors = original_floors
         with self.assertRaisesRegex(ValueError, 'validated-components-required'):
             ImportedS1NativeContext(self.base, self.bundle, None)
+
+    def test_context_binding_brackets_controls_without_reloading_fields(self):
+        with patch.object(self.base, '_load', wraps=self.base._load) as base_load, \
+             patch.object(self.controls_view, '_load', wraps=self.controls_view._load) as controls_load:
+            self.context.assert_current()
+        self.assertEqual(base_load.call_count, 2)
+        self.assertEqual(controls_load.call_count, 1)
+
+    def test_independent_base_view_keeps_its_own_selection_check(self):
+        current = [True]
+        def guard():
+            if not current[0]:
+                raise ValueError('independent-base-superseded')
+        other = PackageView(self.root, self.refs['base'], assert_current=guard)
+        native = ImportedS1NativeContext(other, self.bundle, self.controls)
+        with patch.object(self.base, '_load', wraps=self.base._load) as bundle_load, \
+             patch.object(other, '_load', wraps=other._load) as context_load:
+            native.assert_current()
+        self.assertEqual(bundle_load.call_count, 3)
+        self.assertEqual(context_load.call_count, 1)
+        current[0] = False
+        with self.assertRaisesRegex(ValueError, 'independent-base-superseded'):
+            native.assert_current()
+        current[0], self.current['base'] = True, False
+        with self.assertRaisesRegex(ValueError, 'base-selection-superseded'):
+            native.assert_current()
+
+    def test_context_still_checks_current_bundle_reference_and_reader_root(self):
+        with patch.dict(self.bundle._values, component_ref=self.refs['controls']):
+            with self.assertRaisesRegex(ValueError, 'base-bundle-mismatch'):
+                self.context.assert_current()
+        reader = self.bundle.reader
+        foreign = self.root/'foreign-reader-root'
+        foreign.mkdir()
+        with patch.object(reader, 'root', foreign):
+            with self.assertRaisesRegex(ValueError, 'base-bundle-mismatch'):
+                self.context.assert_current()
+
+    def test_context_rechecks_base_after_controls_change_its_manifest(self):
+        manifest = self.base.root.parent.parent/'manifest.json'
+        current = self.controls.assert_current
+        def change_base():
+            current()
+            replacement = manifest.with_suffix('.replacement')
+            replacement.write_bytes(manifest.read_bytes())
+            replacement.replace(manifest)
+        with patch.object(self.controls, 'assert_current', side_effect=change_base):
+            with self.assertRaises(ValueError):
+                self.context.assert_current()
+
+    def test_independent_view_ref_change_after_root_read_is_rejected(self):
+        other = PackageView(self.root, self.refs['base'])
+        native = ImportedS1NativeContext(other, self.bundle, self.controls)
+        component_root = PackageView._component_root
+        base_reads = [0]
+        def change_ref(data_root, ref):
+            result = component_root(data_root, ref)
+            if ref == self.refs['base']:
+                base_reads[0] += 1
+                if base_reads[0] == 2:
+                    self.base.component_ref = self.refs['controls']
+            return result
+        with patch.object(self.base, 'component_ref', self.refs['base']), \
+             patch.object(PackageView, '_component_root', staticmethod(change_ref)):
+            with self.assertRaises(ValueError):
+                native.assert_current()
+
+    def test_independent_short_path_base_view_keeps_same_binding(self):
+        from test_imported_resource_reader import ComponentResourceReaderTests
+        alias = ComponentResourceReaderTests.short_path_alias(self, self.root)
+        other = PackageView(alias, self.refs['base'])
+        native = ImportedS1NativeContext(other, self.bundle, self.controls)
+        native.assert_current()
+        self.assertEqual(native.component_ref, self.base.component_ref)
+        self.assertTrue(native.root.samefile(self.base.root))
+
+    def test_independent_view_read_cannot_revoke_bundle_after_its_last_check(self):
+        armed = [False]
+        def guard():
+            if armed[0]:
+                self.current['base'] = False
+        other = PackageView(self.root, self.refs['base'], assert_current=guard)
+        native = ImportedS1NativeContext(other, self.bundle, self.controls)
+        armed[0] = True
+        with self.assertRaisesRegex(ValueError, 'base-selection-superseded'):
+            native.assert_current()
+
+    def test_independent_view_read_cannot_replace_the_bundle_reader(self):
+        from copy import copy
+        reader = self.bundle.reader
+        changed = copy(reader)
+        changed.root = self.root/'different-reader-root'
+        changed.root.mkdir()
+        armed = [False]
+        def guard():
+            if armed[0]:
+                self.bundle._values['reader'] = changed
+        other = PackageView(self.root, self.refs['base'], assert_current=guard)
+        native = ImportedS1NativeContext(other, self.bundle, self.controls)
+        with patch.dict(self.bundle._values, reader=reader):
+            armed[0] = True
+            with self.assertRaisesRegex(ValueError, 'base-bundle-mismatch'):
+                native.assert_current()
 
     def test_every_metadata_access_and_provider_cache_hit_checks_both_views(self):
         native = self.context

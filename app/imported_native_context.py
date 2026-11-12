@@ -32,12 +32,23 @@ class ImportedNativeContext:
         self.assert_current()
 
     def assert_current(self):
+        # Keep base checks around controls: a controls check can observe a
+        # concurrent base replacement. Binding fields share the final read.
         self._bundle.assert_current()
         self._controls.assert_current()
+        view, root, component_ref, reader = self._bundle.read_binding()
+        base_root = root
+        if view is not self._base_view:
+            base_root = self._base_view.root
+            # An independent view check can supersede the bundle or reader.
+            # Acquire their final binding after that check, as the old reader
+            # property did; the common same-view path needs no extra read.
+            view, _, component_ref, reader = self._bundle.read_binding()
         if (self._base_view.component_ref != self._component_ref
-                or self._bundle.component_ref != self._component_ref
-                or self._base_view.root != self._root
-                or self._bundle.reader.root.resolve() != self._root.resolve()):
+                or component_ref != self._component_ref
+                or view.component_ref != component_ref
+                or base_root != self._root
+                or reader.root.resolve() != self._root.resolve()):
             self._reject('base-bundle-mismatch')
 
     def _decoded(self, name):

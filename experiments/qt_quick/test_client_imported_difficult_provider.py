@@ -159,6 +159,37 @@ class ImportedDifficultProviderTests(unittest.TestCase):
                 engine.qt_structure_scan(self.capture.frame, floor='1')
             fit.assert_not_called()
 
+    def test_reference_lookup_owns_context_checks_and_rejects_mid_load_controls_change(self):
+        self.activate()
+        engine = self.factories.get_engine('difficult')
+        context, provider = engine.qt_native_context, engine.qt_shared_provider
+        for mid, expected_kind in ((source_fixture.IDS[0], 'game-rendered-shared-structure'),
+                                   (source_fixture.LEGACY, 'legacy-shared-binary')):
+            with self.subTest(map=mid), \
+                 patch.object(context, 'assert_current', wraps=context.assert_current) as current:
+                reference = provider('shared-structure', mid, '1')
+                self.assertIsNotNone(reference)
+                self.assertEqual(reference.metadata['sourceKind'], expected_kind)
+                self.assertEqual(current.call_count, 2)  # Provider entry and return.
+            with patch.object(context, 'assert_current', wraps=context.assert_current) as current:
+                self.assertEqual(provider.binding_metadata('shared-structure', mid, '1')['path'], reference.path)
+                self.assertEqual(current.call_count, 2)
+        manifest = engine.qt_controls_profile._view.root.parent.parent/'manifest.json'
+        load = provider.resources.load
+        def change_controls(*args, **kwargs):
+            reference = load(*args, **kwargs)
+            self.assertIsNotNone(reference)
+            replacement = manifest.with_suffix('.replacement')
+            replacement.write_bytes(manifest.read_bytes())
+            replacement.replace(manifest)
+            return reference
+        with patch.object(provider.resources, 'load', side_effect=change_controls):
+            with self.assertRaises(ValueError):
+                provider('shared-structure', source_fixture.IDS[1], '1')
+        self.assertFalse(any(key[1] == source_fixture.IDS[1] for key in provider._cache))
+        with self.assertRaises(ValueError):
+            provider('shared-structure', source_fixture.IDS[0], '1')
+
     def test_service_and_default_factory_preserve_complete_data_without_rank_or_learning(self):
         row = self.service.packageRows[0]
         self.assertEqual(row['activatableContexts'], ['s0:difficult'])

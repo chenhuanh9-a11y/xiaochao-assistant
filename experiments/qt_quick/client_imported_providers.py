@@ -66,8 +66,10 @@ def load_native_resources(base_view, controls_view, *, season='s0', mode='nightm
         bundle.assert_current()
         controls_view.root  # Check the controls manifest as well as its catalog.
 
+    legacy_references = bundle.legacy_references
     provider = SharedReferenceProvider(root, bundle.resources, bundle.versions,
-        native=native if bundle.legacy_references is not None else None, check_current=check_current)
+        legacy_reference_loader=legacy_references.reference if legacy_references is not None else None,
+        check_current=check_current)
     check_current()
     return bundle, controls, native, provider, check_current
 

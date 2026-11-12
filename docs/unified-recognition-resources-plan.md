@@ -337,6 +337,7 @@ python -m unittest test_generic_author_package test_author_resource_snapshots te
 - 默认导入工厂仍保留 `rankReady=False`、`liveReady=False` 和关闭的学习 validator；独立声明当前帧结构候选能力。runtime 的开始、捕获、命令快照与 coordinator 按同一用途准入，资源不可读仍拒绝；离线正式排名仍拒绝。困难二楼仅限制旧入口身份识别，不再挡在共享结构扫描之前。
 - 实际路径是默认 `start_round → capture_now → qt_structure_scan → StructureCandidateScanner / ObservationWorkScheduler → StructureEvidenceSession → 候选列表 → 显式 confirm_route → 重新捕获 → StructurePoseSolver → 当前帧复核与原显示提交`。使用同一 catalog 的完整 30 图、两层结构池；预算内未完成者仍是未扫描/未知。没有复制 S0 困难控制器，也不将动态候选设为登记相似组或自动确认。
 - 主入口 probe 保留源条目的 `proposalOnly`、`authorizesPose`、`authorizesIdentity`；入口复核通过不能升级资源用途。当前帧公共入口工作在不具正式排名资格的上下文中，也不给历史草稿、出口锚点或侧门恢复授予正式身份；几何提案和原复核结果保留，独立结构求解仍必须验证本帧。自动 provisional 全图显示继续沿原 S1 专用用途，不借此开放 S0 自动锁图。
+- 参考结构 provider 显式接收历史资源加载函数与生命周期检查函数；导入来源直接调用已解码的历史资源 owner，不绕经显示用 native context 再检查两遍。provider 保留调用前后上下文校验，加载器保留实际文件和内容检查。native context 的绑定读取保留“基础 → 控件 → 基础”顺序，再从同一次基础读取中核对实际 view、ref 与 reader 根；同对象复用该次 root，独立 view 仍检查各自选择与实际 root，并在其后重新核对 bundle 及 reader 绑定。没有新增跨帧有效性缓存，也不将这些逐项检查称为原子快照。
 - 定向回归从实际资源保存/激活/默认工厂进入，合成画面、楼层观测或候选 fit 的替换范围在测试中注明；显式确认后的负例重新捕获黑帧并运行真实共享 solver。它们不代表真实样本识别成功、可见像素或速度达标；四模式完整回放与性能阶段仍待完成。
 
 ### P5 旧格式退役验收清单
