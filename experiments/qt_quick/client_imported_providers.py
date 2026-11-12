@@ -161,9 +161,12 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
         engine.qt_pose_input_cache.max_bytes -= engine.qt_pose_common_models.retained_bytes
     if season == 's1':
         from s1_structure_selection import StructureCatalog
+        from client_s1_coordinate_recognition import attach_imported_s1_coordinate_recognition
         engine.qt_s1_index_resource_root = root
-        engine.qt_s1_private_coordinate_prepare = engine.qt_s1_pose_prior = None
-        attach_structure_scanner(engine, StructureCatalog.from_engine(engine))
+        catalog = StructureCatalog.from_engine(engine)
+        coordinate = attach_imported_s1_coordinate_recognition(engine, catalog)
+        attach_structure_scanner(engine, catalog,
+            private_fit=coordinate.fixed_fit if coordinate is not None else None)
     elif rank_ready or engine.qt_structure_scan_ready:
         from s1_structure_selection import StructureCatalog
         attach_structure_scanner(engine, StructureCatalog.from_engine(engine))

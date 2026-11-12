@@ -40,6 +40,10 @@ PROFILE = 'zhan10-speed'
 _INTERFACES = frozenset(('identityPack', 'typedIndex', 'coordinatePack', 'neutralDisplay',
                        'identityEntries', 'exitIcon', 'identityProfile'))
 _SEARCH_KEY = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z')
+S1_COORDINATE_INTERFACE = 's1CoordinateRecognition'
+S1_COORDINATE_DIRECTORY = 'references/s1-coordinate'
+S1_COORDINATE_FILES = ('s1_entrance_coordinate_index.json', 'template_manifest.json',
+                       'native_glyph_template.png')
 
 
 class NativeBaseUnavailable(ValueError):
@@ -199,6 +203,54 @@ def _reference(view, relative, extension=None):
         _reject('reference-type-invalid')
     view.path(relative)  # Inventory ownership, link checks and current manifest.
     return relative
+
+
+def read_s1_coordinate_assets(view, reader, directory, *, mode, map_ids, floors):
+    """Read an optional declared base resource through its ordinary owner."""
+    if not isinstance(directory, str) or files._relative(directory) != directory:
+        _reject('s1-coordinate-directory-invalid')
+    paths = [directory + '/' + name for name in S1_COORDINATE_FILES]
+    for path in paths:
+        _reference(view, path, Path(path).suffix)
+    root = reader.root
+    raw = reader.read_many(tuple(root / path for path in paths), expected_root=root)
+    payloads = dict(zip(S1_COORDINATE_FILES, raw))
+    index = decode_resource_json(payloads[S1_COORDINATE_FILES[0]])
+    manifest = decode_resource_json(payloads['template_manifest.json'])
+    from s1_native_resources import SOURCE_VERSION
+    if (index.get('schema') != 's1-common-entrance-coordinate-index-v1'
+            or index.get('sourceVersion') != SOURCE_VERSION
+            or manifest.get('template_file') != 'native_glyph_template.png'
+            or index.get('glyphTemplateSha256') != manifest.get('template_sha256')):
+        _reject('s1-coordinate-assets-invalid')
+    entries = index.get('maps', {}).get(mode)
+    if not isinstance(entries, dict) or set(entries) != set(map_ids):
+        _reject('s1-coordinate-map-inventory')
+    for mid in map_ids:
+        if not isinstance(entries[mid], dict) or set(entries[mid]) != set(floors):
+            _reject('s1-coordinate-floor-inventory')
+        for entry in entries[mid].values():
+            try:
+                matrix = np.asarray(entry['imageToEntranceXZ'], dtype=float)
+                shape = entry['shapeHW']
+                valid = (matrix.shape == (3, 3) and np.isfinite(matrix).all()
+                    and np.array_equal(matrix[:2, :2], [[1, 0], [0, -1]])
+                    and np.array_equal(matrix[2], [0, 0, 1])
+                    and np.array_equal(matrix[:2, 2], np.rint(matrix[:2, 2]))
+                    and isinstance(shape, list) and len(shape) == 2
+                    and all(type(value) is int and 0 < value <= MAX_CANVAS_AXIS for value in shape)
+                    and math.prod(shape) <= MAX_CANVAS_PIXELS
+                    and all(isinstance(entry[key], str) and re.fullmatch('[0-9a-f]{64}', entry[key])
+                        for key in ('sourceCatalogSha256', 'sourceRendererMetadataSha256')))
+            except (ValueError, TypeError, KeyError):
+                valid = False
+            if not valid:
+                _reject('s1-coordinate-entry-invalid')
+    # Reuse the original calibration decoder over the exact guarded batch.
+    from s1_gate_anchor import GateAnchorLocator
+    GateAnchorLocator(asset_dir=root / directory,
+        read_resource=lambda path: payloads[Path(path).name])
+    return payloads
 
 
 def _checked_reference_matches(view, relative, checked, extension=None):
@@ -385,7 +437,7 @@ def _typed_declarations(view, reader, paths, expected, profile, identity_rows):
     return typed, registry_path, neutral, canvases
 
 
-def _verify_typed_products(view, reader, resources, versions):
+def _verify_typed_products(view, reader, resources, versions, coordinate_index=None):
     for key, row in resources.entries.items():
         relative = row['resourcePath']
         raw = reader(view.path(relative))
@@ -412,6 +464,12 @@ def _verify_typed_products(view, reader, resources, versions):
                 or product.metadata.get('canvas') != versions[key]['canvas']
                 or any(product.metadata.get(name) != value for name, value in versions[key]['expected'].items())):
             _reject('typed-product-invalid')
+        if coordinate_index is not None:
+            coordinate_index.provider = lambda mid, floor: product if (mid, floor) == (key[1], key[3]) else None
+            try:
+                coordinate_index._native_to_common(key[1], key[3])
+            except (KeyError, TypeError, ValueError):
+                _reject('s1-coordinate-reference-binding-mismatch:' + key[1] + '/' + key[3])
         del product, raw
 
 
@@ -494,9 +552,12 @@ def _decode_component(view, live_view, season, mode):
         raise NativeBaseUnavailable('native-base-context-unsupported')
     interfaces = context.get('runtimeInterfaces')
     interface_fields = (_INTERFACES - {'exitIcon'}) | {'entryEvidenceRole'} if proposal_only else _INTERFACES
+    optional_interfaces = {'fastStructureIndex', 'reviewedFrontGroups'}
+    if proposal_only:
+        optional_interfaces.add(S1_COORDINATE_INTERFACE)
     if (set(context) != {'schema', 'season', 'mode', 'runtimeInterfaces'}
             or not isinstance(interfaces, dict)
-            or set(interfaces) - {'fastStructureIndex', 'reviewedFrontGroups'} != interface_fields
+            or set(interfaces) - optional_interfaces != interface_fields
             or interfaces.get('identityProfile') != profile
             or proposal_only and interfaces.get('entryEvidenceRole') != 'proposal-only'):
         _reject('interfaces-invalid')
@@ -650,7 +711,18 @@ def _decode_component(view, live_view, season, mode):
         neutral_relative=paths['neutralDisplay'], entry_root_relative=directory, read_resource=reader)
     if set(versions) != set(resources.entries) or any(row['sharedError'] for row in versions.values()):
         _reject('version-binding-invalid')
-    _verify_typed_products(view, reader, resources, versions)
+    coordinate_index = None
+    if proposal_only and S1_COORDINATE_INTERFACE in interfaces:
+        coordinate_directory = interfaces[S1_COORDINATE_INTERFACE]
+        coordinate_assets = read_s1_coordinate_assets(view, reader, coordinate_directory,
+            mode=mode, map_ids=pack.by_id, floors=floors)
+        from s1_pose_prior import CoordinatePriorIndex
+        coordinate_relative = coordinate_directory + '/' + S1_COORDINATE_FILES[0]
+        coordinate_index = CoordinatePriorIndex(reader.root / coordinate_relative,
+            expected_sha256=view.inventory[coordinate_relative]['sha256'], mode=mode,
+            resource_key='admission-only', provider=lambda mid, floor: None,
+            read_resource=lambda path: coordinate_assets[Path(path).name])
+    _verify_typed_products(view, reader, resources, versions, coordinate_index)
     exit_recognizer = None if proposal_only else SideDoorRecognizer(view.path(paths['exitIcon']), read_resource=reader)
     _bind_live_readers(live_reader, resources, adapters, main, local, exit_recognizer)
     result = NativeBaseBundle(live_view, pack=pack, resources=resources, adapters=adapters,

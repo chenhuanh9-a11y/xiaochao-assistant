@@ -914,7 +914,7 @@ def _publish_output(staged, output, digest, *, before_move=None):
 
 
 def export_package(source_root, output, *, package_id, resource_version, source_inventory=None,
-                   season='s0', mode='nightmare', group_registration=None):
+                   season='s0', mode='nightmare', group_registration=None, s1_coordinate_asset_dir=None):
     """Validate and exclusively create the requested ZIP; never alter source."""
     output = Path(output).absolute()
     files._no_links(output)
@@ -936,6 +936,17 @@ def export_package(source_root, output, *, package_id, resource_version, source_
     else:
         base, map_count = _s1_base_payloads(source, mode=mode)
         controls = _s1_controls_payloads(mode=mode)
+    if s1_coordinate_asset_dir is not None:
+        if season != 's1':
+            _reject('s1-coordinate-assets-context')
+        from imported_native_base import (S1_COORDINATE_INTERFACE, S1_COORDINATE_DIRECTORY,
+                                          S1_COORDINATE_FILES)
+        assets = _Source(s1_coordinate_asset_dir, None)
+        for name in S1_COORDINATE_FILES:
+            base[S1_COORDINATE_DIRECTORY + '/' + name] = assets.read(name)
+        declaration = decode_resource_json(base['resource-context.json'])
+        declaration['runtimeInterfaces'][S1_COORDINATE_INTERFACE] = S1_COORDINATE_DIRECTORY
+        base['resource-context.json'] = _encoded(declaration)
     _embed_front_groups(base, season=season, mode=mode, registration=group_registration)
     payloads = {'base': base, 'controls': controls}
     context = [dict(season=season, mode=mode)]
@@ -987,6 +998,8 @@ def main(argv=None):
     parser.add_argument('--source-inventory', type=Path)
     parser.add_argument('--group-registration', type=Path,
                         help='Explicit project-reviewed group data for this base context')
+    parser.add_argument('--s1-coordinate-asset-dir', type=Path,
+                        help='Explicit S1 base coordinate index and glyph calibration directory')
     parser.add_argument('--season', choices=('s0', 's1'), default='s0')
     parser.add_argument('--mode', choices=('nightmare', 'difficult'), default='nightmare')
     args = parser.parse_args(argv)
@@ -994,7 +1007,8 @@ def main(argv=None):
         parser.error(f'--output 必须以 {BASE_SUFFIX} 结尾；.zip 是内部 ZIP 容器名，不能作为结构包输出后缀。')
     print(json.dumps(export_package(args.source_root, args.output, package_id=args.package_id,
         resource_version=args.resource_version, source_inventory=args.source_inventory,
-        season=args.season, mode=args.mode, group_registration=args.group_registration),
+        season=args.season, mode=args.mode, group_registration=args.group_registration,
+        s1_coordinate_asset_dir=args.s1_coordinate_asset_dir),
         ensure_ascii=False, sort_keys=True))
 
 
