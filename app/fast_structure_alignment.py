@@ -32,7 +32,11 @@ class PreparedStructure:
 
 @dataclass(frozen=True)
 class ImportedPreparedUse:
-    """A loader-produced value bound to the actual immutable resource read."""
+    """An acquired input; its owner checks it before offers and final results.
+
+    Numerical work may reuse the value within that operation. This object is
+    not an independent array publication or a resource-currentness grant.
+    """
 
     reference: object
     prepared: PreparedStructure | None
@@ -151,7 +155,17 @@ def load_prepared(reference, *, source=None, cancelled=None):
 
 
 def _load_imported_prepared(reference, source, cancelled):
-    return _acquire_imported_prepared(reference, source, cancelled).prepared
+    use = _acquire_imported_prepared(reference, source, cancelled)
+    if use.prepared is None:
+        return None
+    # Independent consumers have no fit owner to check an acquired use.
+    # Keep their post-lookup proof and the optional-preparation fallback.
+    current = source.read(reference, cancelled=cancelled)
+    if current is None:
+        return None
+    if current[1] != use.identity:
+        raise ValueError('structure-fit-preparation-changed')
+    return use.prepared
 
 
 def _acquire_imported_prepared(reference, source, cancelled):
@@ -165,14 +179,18 @@ def _acquire_imported_prepared(reference, source, cancelled):
         if entry is not None:
             _prepared.move_to_end(key)
     result = entry[1] if entry is not None else None
-    if result is None:
-        try:
-            result = source.decode(raw, reference)
-        except (OSError, ValueError):
-            # Optional arrays can be unavailable, but their owner/reference
-            # must still be current before returning to the normal solver.
-            source.read(reference, cancelled=cancelled)
-            return ImportedPreparedUse(reference, None, source, None)
+    if result is not None:
+        # The actual payload was read above. A warm use needs no decode;
+        # the owning fit checks it again at its offer/return boundaries.
+        source.assert_current(cancelled)
+        return ImportedPreparedUse(reference, result, source, identity)
+    try:
+        result = source.decode(raw, reference)
+    except (OSError, ValueError):
+        # Optional arrays can be unavailable, but their owner/reference
+        # must still be current before returning to the normal solver.
+        source.read(reference, cancelled=cancelled)
+        return ImportedPreparedUse(reference, None, source, None)
     current = source.read(reference, cancelled=cancelled)
     if current is None:
         return ImportedPreparedUse(reference, None, source, None)

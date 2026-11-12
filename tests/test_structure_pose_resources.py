@@ -4,6 +4,7 @@ These tests exercise resource reuse, invalidation and offers, not recognition
 accuracy. The actual archive/decoder/provider/prepared loader remain in use.
 """
 from pathlib import Path
+from contextlib import contextmanager
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -72,6 +73,92 @@ class StructurePoseResourceTests(unittest.TestCase):
     def preparation_path(self):
         entry = self.engine.qt_fast_structure_source.entries[('zhan10-speed', self.map_id, 'variant-01', '1')]
         return self.view.path(entry[1].path)
+
+    def cache_lookup_window(self, action):
+        """Change actual inputs after their first read, inside the cache lookup."""
+        lock = fast._prepared_lock
+        @contextmanager
+        def window():
+            with lock:
+                action()
+                yield
+        return patch.object(fast, '_prepared_lock', window())
+
+    def test_warm_fit_reuses_acquired_bytes_until_its_return_boundary(self):
+        source = self.engine.qt_fast_structure_source
+        reference = self.provider('shared-structure', self.map_id, '1')
+        self.assertIsNotNone(fast.load_prepared(reference, source=source))
+        preparation = self.preparation_path()
+        with patch.object(resource_snapshot_io, 'read_stable_file',
+                          wraps=resource_snapshot_io.read_stable_file) as read:
+            self.assertFalse(self.regions()['success'])
+        # Region attempts share one acquired use. The owner still checks the
+        # real payload before returning, without a redundant warm-cache read.
+        self.assertEqual(sum(Path(call.args[0]).samefile(preparation)
+                             for call in read.call_args_list), 2)
+
+    def test_standalone_warm_load_rejects_damage_during_cache_lookup(self):
+        source = self.engine.qt_fast_structure_source
+        reference = self.provider('shared-structure', self.map_id, '1')
+        for path in (reference.path, self.preparation_path()):
+            with self.subTest(path=path):
+                self.assertIsNotNone(fast.load_prepared(reference, source=source))
+                original = path.read_bytes()
+                try:
+                    with self.cache_lookup_window(lambda: path.write_bytes(b'changed-after-read')):
+                        if path == reference.path:
+                            with self.assertRaisesRegex(ValueError, 'file-integrity-mismatch'):
+                                fast.load_prepared(reference, source=source)
+                        else:
+                            self.assertIsNone(fast.load_prepared(reference, source=source))
+                finally:
+                    path.write_bytes(original)
+
+    def test_warm_fit_rejects_damage_during_cache_lookup_before_offer(self):
+        source = self.engine.qt_fast_structure_source
+        reference = self.provider('shared-structure', self.map_id, '1')
+        offered = []
+        self.host.usable_fit_callback = offered.append
+        for path in (reference.path, self.preparation_path()):
+            with self.subTest(path=path):
+                self.assertIsNotNone(fast.load_prepared(reference, source=source))
+                original = path.read_bytes()
+                def numeric_fit(*args, **kwargs):
+                    ref = self.host._shared_structure_reference('shared-structure', self.map_id, '1')
+                    value = self.host._load_fast_structure_prepared(ref)
+                    residual = canonical_residual_evidence(dict(verified=True),
+                        basis='game-rendered-shared-structure', coordinate_pack_id='fixture')
+                    return dict(success=value is not None, matrixSourceToClient=np.eye(3),
+                                selectedRouteCurrentFrameResidual=residual)
+                try:
+                    with self.cache_lookup_window(lambda: path.write_bytes(b'changed-after-read')), \
+                         patch.object(self.host, '_fit_observation', side_effect=numeric_fit):
+                        try:
+                            result = self.host.fit(self.frame, self.map_id, '1', lambda: False)
+                        except ValueError as error:
+                            self.assertRegex(str(error),
+                                'file-integrity-mismatch|structure-fit-preparation-changed')
+                        else:
+                            self.assertFalse(result['success'])
+                    self.assertEqual(offered, [])
+                finally:
+                    path.write_bytes(original)
+
+    def test_warm_consumers_reject_selection_withdrawn_during_cache_lookup(self):
+        source = self.engine.qt_fast_structure_source
+        reference = self.provider('shared-structure', self.map_id, '1')
+        self.assertIsNotNone(fast.load_prepared(reference, source=source))
+        for load in (lambda: fast.load_prepared(reference, source=source),
+                     lambda: source.acquire_prepared_use(reference)):
+            withdrawn = []
+            def current():
+                if withdrawn:
+                    raise ValueError('selection-withdrawn')
+            with self.subTest(load=load), \
+                 patch.object(self.view, '_assert_current', side_effect=current), \
+                 self.cache_lookup_window(lambda: withdrawn.append(True)):
+                with self.assertRaisesRegex(ValueError, 'selection-withdrawn'):
+                    load()
 
     def test_source_reads_required_and_optional_bytes_in_one_component_scope(self):
         source = self.engine.qt_fast_structure_source
@@ -264,7 +351,9 @@ class StructurePoseResourceTests(unittest.TestCase):
             self.assertIsNone(self.host._fit_resources)
             self.frame = self.frame.copy()
             self.assertFalse(self.regions()['success'])
-            self.assertEqual(preparation_reads(), 6)
+            # A new frame still reads its actual inputs and checks the final
+            # result, but can reuse the already decoded preparation.
+            self.assertEqual(preparation_reads(), 5)
             self.assertEqual(provider.call_count, 4)
             self.assertIsNone(self.host._fit_resources)
 
@@ -286,7 +375,7 @@ class StructurePoseResourceTests(unittest.TestCase):
         self.assertTrue(all(prepared is self.observed[0][1] for _, prepared in self.observed))
         preparation = self.preparation_path()
         self.assertEqual(sum(Path(call.args[0]).samefile(preparation)
-                             for call in read.call_args_list), 3)
+                             for call in read.call_args_list), 2)
         self.assertIsNone(self.host._fit_resources)
 
     def test_damage_after_first_offer_is_rejected_at_final_result_boundary(self):
