@@ -34,6 +34,9 @@ class DirectStructureRecognitionProviderTests(unittest.TestCase):
         self.engine = self.source.factories.get_engine('nightmare')
         self.direct = self.engine.qt_direct_structure_recognition
         self.addCleanup(self.direct.close)
+        # This suite explicitly measures the diagnostic component. Production
+        # does not eagerly prepare its unqualified footprint resources.
+        self.direct.prepare()
         _, frame = pixel_fixture()
         self.snapshot = FrameSnapshot(frame)
 

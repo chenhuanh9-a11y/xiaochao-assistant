@@ -154,6 +154,11 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
         reviewedGroupReviewSource=(bundle.reviewed_front_groups.review_source if bundle.reviewed_front_groups is not None else None),
         reviewedGroupGaps=(dict(bundle.reviewed_front_groups.group_gaps) if bundle.reviewed_front_groups is not None else
                            {'registration': ('reviewed-front-groups-not-provided',)}))
+    from structure_pose_inputs import prepare_structure_pose_common_models
+    engine.qt_pose_common_models = prepare_structure_pose_common_models(engine)
+    if engine.qt_pose_common_models is not None:
+        engine.qt_resource_inventory['commonPoseModelBytes'] = engine.qt_pose_common_models.retained_bytes
+        engine.qt_pose_input_cache.max_bytes -= engine.qt_pose_common_models.retained_bytes
     if season == 's1':
         from s1_structure_selection import StructureCatalog
         engine.qt_s1_index_resource_root = root

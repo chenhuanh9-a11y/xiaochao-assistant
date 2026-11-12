@@ -209,6 +209,65 @@ class StructurePoseSolver:
                 entryReverification=dict(candidateCount=len(candidates), acceptedPoseCount=len(accepted), reason=checked["reason"]))
         return None
 
+    def _fit_fixed_entry_proposal(self, frame, map_id, floor, reference, observation, cancelled, context):
+        """Recheck one qualified H without rerunning its global pose search.
+
+        Only the completed work on these exact pixels supplies pose uniqueness.
+        A raw entry row never owns the shortcut, even if all its flags pass.
+        The original regional, all-fragment wall and canonical residual kernels
+        consume the current prepared reference; none can be supplied by a row.
+        """
+        from alignment_observation import rendered_profile_residual_is_verified
+        from entry_pose_proposals import completed_entry_pose_candidate, qualified_entry_pose_for_reference
+        from single_map_structure import (current_part, initial_wall_raster_validation,
+            projected_geometry, regional_validation, _static_validation_context)
+        if cancelled and cancelled():
+            return dict(success=False, reason="structure-work-obsolete")
+        candidate = completed_entry_pose_candidate(observation, frame, map_id, floor)
+        if candidate is None:
+            return None
+        side = candidate.get("locatorKind") == "side" or candidate.get("entryKind") == "side"
+        locator = getattr(self.engine, "side_entry_identity" if side else "entry_identity", None)
+        entries = getattr(locator, "entries", ()) or ()
+        matrix = qualified_entry_pose_for_reference(candidate, map_id, floor, reference,
+            self.author_coordinate_adapters, sources=(entry[0] for entry in entries))
+        if matrix is None or context is None:
+            return None
+        observed_locator = getattr(observation.engine,
+            "side_entry_identity" if side else "entry_identity", None)
+        observed_sources = getattr(observed_locator, "entries", ()) or ()
+        if qualified_entry_pose_for_reference(candidate, map_id, floor, reference,
+                self.author_coordinate_adapters, sources=(entry[0] for entry in observed_sources)) is None:
+            return None
+        projected = projected_geometry(frame, reference.clean_mask, matrix, context)["mask"]
+        regions = regional_validation(frame, context["query"], projected,
+            _context=_static_validation_context(frame, context, matrix, reference.unknown_mask))
+        if not regions.get("regionalEdgeVerified"):
+            return None
+        walls = initial_wall_raster_validation(current_part(frame, context, "lines"),
+            reference.clean_mask, (matrix[0, 0], matrix[0, 2], matrix[1, 2]),
+            source_unknown=reference.unknown_mask, source_wall_mask=reference.known_boundary)
+        if not walls.get("verified"):
+            return None
+        residual = self._rendered_profile_current_frame_residual(frame, reference.clean_mask,
+            matrix, profile_id="shared-structure", visible_override=context.get("visible"))
+        if cancelled and cancelled():
+            return dict(success=False, reason="structure-work-obsolete")
+        if not rendered_profile_residual_is_verified(residual):
+            return None
+        wall_evidence = dict(verified=True, variants=[dict(name="source-present", result=walls, basis=None)],
+            scope="all current observed fragments, not only fitted passport planes")
+        checked = dict(success=True, reason="qualified-entry-fixed-current-frame",
+            matrixSourceToClient=matrix, regions=regions, entryWalls=wall_evidence, residual=residual,
+            structureVariants=[dict(name="source-present", basis=None, regions=regions, walls=walls, verified=True)],
+            compatibleStructureVariants=["source-present"],
+            referenceChannel="typed-shared-structure-validation-mask",
+            validationPolicy="fixed-current-frame-shared-structure")
+        return dict(success=True, reason="qualified-entry-fixed-current-frame",
+            matrixSourceToClient=matrix, coordinateSpace="shared-structure-to-client",
+            routeProfileId="shared-structure", selectedRouteCurrentFrameResidual=residual,
+            difficultEntryValidation=checked, inliers=len(context.get("nodes", ())))
+
     def prepare_structure_scan(self, frame, observation_bounds, *, fit_callback=None):
         """One scan owns raw observations; no cache survives into another frame.
 
@@ -247,32 +306,38 @@ class StructurePoseSolver:
                 components = visible_map_components(frame, observation_bounds=bounds)
             return components
 
-        def fit_one(candidate_frame, map_id, floor, cancelled, *, observation_bounds=None, entry_candidate=None):
+        def fit_one(candidate_frame, map_id, floor, cancelled, *, observation_bounds=None,
+                    entry_candidate=None, entry_observation=None):
             if candidate_frame is not frame or tuple(observation_bounds or ()) != bounds:
                 raise ValueError("structure-scan-observation-context-mismatch")
             return fit(frame, map_id, floor, cancelled,
                             observation_bounds=bounds, _scan_observation=(geometry, islands),
-                            **(dict(entry_candidate=entry_candidate) if entry_candidate is not None else {}))
+                            **(dict(entry_candidate=entry_candidate) if entry_candidate is not None else {}),
+                            **(dict(entry_observation=entry_observation) if entry_observation is not None else {}))
         return fit_one
 
-    def fit(self, frame, map_id, floor, cancelled, entry_candidate=None, *, observation_bounds=None, _scan_observation=None):
+    def fit(self, frame, map_id, floor, cancelled, entry_candidate=None, *, entry_observation=None,
+            observation_bounds=None, _scan_observation=None):
         from structure_pose_resources import StructureFitResources
         preceding = self._fit_resources
         resources = StructureFitResources(self.engine)
         self._fit_resources = resources
         try:
             result = self._fit_regions(frame, map_id, floor, cancelled, entry_candidate,
-                observation_bounds=observation_bounds, _scan_observation=_scan_observation)
+                entry_observation=entry_observation, observation_bounds=observation_bounds,
+                _scan_observation=_scan_observation)
             if not any(word in str(result.get('reason', '')) for word in ('obsolete', 'cancelled')):
                 resources.check_current()
             return result
         finally:
             self._fit_resources = preceding
 
-    def _fit_regions(self, frame, map_id, floor, cancelled, entry_candidate=None, *, observation_bounds=None, _scan_observation=None):
+    def _fit_regions(self, frame, map_id, floor, cancelled, entry_candidate=None, *, entry_observation=None,
+            observation_bounds=None, _scan_observation=None):
         _test_evidence("solver-input", frame)
+        entry_options = dict(entry_observation=entry_observation) if entry_observation is not None else {}
         if observation_bounds is None:
-            fit = self._fit_observation(frame, map_id, floor, cancelled, entry_candidate)
+            fit = self._fit_observation(frame, map_id, floor, cancelled, entry_candidate, **entry_options)
             self._offer_usable_fit(fit)
             if fit.get("success") and (fit.get("markerOccludedWallProposal") or fit.get("markerOccludedWallObservation")):
                 rejected = self._marker_recovery_peer_rejection(frame, map_id, floor, fit,
@@ -289,7 +354,7 @@ class StructurePoseSolver:
         original = (_scan_observation[0]() if _scan_observation is not None else
                     current_geometry(frame, observation_bounds=observation_bounds))
         initial = (self._fit_observation(frame, map_id, floor, cancelled, entry_candidate,
-            observation_bounds=observation_bounds, _context=original) if original is not None
+            observation_bounds=observation_bounds, _context=original, **entry_options) if original is not None
             else dict(success=False, reason="manual-current-geometry-unavailable"))
         initial_reason = str(initial.get("reason", ""))
         if initial.get("success") and cancelled and cancelled():
@@ -336,7 +401,7 @@ class StructurePoseSolver:
             elif marker_occluded_corner_proposals(frame, context, measured_chains):
                 marker_peer_evidence = True
             fit = self._fit_observation(frame, map_id, floor, cancelled, entry_candidate,
-                observation_bounds=observation_bounds, _context=context)
+                observation_bounds=observation_bounds, _context=context, **entry_options)
             reason = str(fit.get("reason", ""))
             diagnostics.append(dict(bounds=list(island[1]), area=island[2]["area"],
                                     success=bool(fit.get("success")), reason=reason))
@@ -467,16 +532,18 @@ class StructurePoseSolver:
             profile_id="shared-structure", visible_override=context.get("visible"))
         return rendered_profile_residual_is_verified(residual)
 
-    def _fit_observation(self, frame, map_id, floor, cancelled, entry_candidate=None, *, observation_bounds=None, _context=None):
+    def _fit_observation(self, frame, map_id, floor, cancelled, entry_candidate=None, *, entry_observation=None,
+            observation_bounds=None, _context=None):
         previous = getattr(self, "_observation_residual_cache", None)
         self._observation_residual_cache = {}
         try:
             return self._fit_observation_uncached(frame, map_id, floor, cancelled, entry_candidate,
-                observation_bounds=observation_bounds, _context=_context)
+                entry_observation=entry_observation, observation_bounds=observation_bounds, _context=_context)
         finally:
             self._observation_residual_cache = previous
 
-    def _fit_observation_uncached(self, frame, map_id, floor, cancelled, entry_candidate=None, *, observation_bounds=None, _context=None):
+    def _fit_observation_uncached(self, frame, map_id, floor, cancelled, entry_candidate=None, *, entry_observation=None,
+            observation_bounds=None, _context=None):
         from alignment_observation import rendered_profile_residual_is_verified
         from fast_structure_alignment import try_alignment
         from single_map_structure import current_geometry, solve, solve_initial_structure
@@ -493,14 +560,18 @@ class StructurePoseSolver:
             steady = self._try_steady_alignment(frame, map_id, floor, cancelled)
             if steady is not None:
                 return steady
-        # Original caller order: current fast proposal, established relation
-        # recovery (including an unverified target), bounded entry, then initial.
+        # Recheck a complete entry proposal at fixed H before searching again.
+        # Rejection retains the original fast/recovery/entry/initial order.
         context = context if explicit_domain else current_geometry(frame)
         hint = self.pose_priors.get((str(map_id), str(floor)))
         options = {"pose_prior": hint} if hint is not None else {}
-        fit = try_alignment(self, frame, map_id, floor, cancelled=cancelled,
-                            context=context, **options)
-        strategy = "shared-fast-alignment"
+        fit = self._fit_fixed_entry_proposal(frame, map_id, floor, reference,
+            entry_observation, cancelled, context)
+        strategy = "qualified-entry-fixed-current-frame"
+        if fit is None:
+            fit = try_alignment(self, frame, map_id, floor, cancelled=cancelled,
+                                context=context, **options)
+            strategy = "shared-fast-alignment"
         identity_profile = (self.engine.identity_profile_for_map(map_id)
             if callable(getattr(self.engine, "identity_profile_for_map", None))
             else getattr(self.engine, "identity_profile_id", None))
@@ -563,7 +634,8 @@ class StructurePoseSolver:
             return record_fit(dict(success=False, reason="canonical-current-frame-residual-unverified", residual=residual))
         from single_map_structure import observed_corner_chains, marker_occluded_corner_proposals
         marker_wall_observation = False
-        if context is not None and (explicit_domain or strategy == "shared-fast-alignment"):
+        if context is not None and (explicit_domain or strategy in (
+                "shared-fast-alignment", "qualified-entry-fixed-current-frame")):
             if fit.get("markerOccludedWallProposal"):
                 marker_wall_observation = not (fit.get("diagnostics") or {}).get("queryChains")
             elif (fit.get("diagnostics") or {}).get("queryChains") is None:
@@ -606,12 +678,13 @@ class PreparedStructurePoseSolver(StructurePoseSolver):
         return self.inputs.prepared(reference, cancelled=cancelled)
 
     def fit(self, frame, map_id, floor, cancelled, entry_candidate=None, *,
-            observation_bounds=None, _scan_observation=None):
+            entry_observation=None, observation_bounds=None, _scan_observation=None):
         self.inputs.require_scope(map_id, floor)
         if cancelled is not None and cancelled():
             return dict(success=False, reason="structure-work-obsolete")
         return self._fit_regions(frame, map_id, floor, cancelled, entry_candidate,
-            observation_bounds=observation_bounds, _scan_observation=_scan_observation)
+            entry_observation=entry_observation, observation_bounds=observation_bounds,
+            _scan_observation=_scan_observation)
 
 
 def validate_fixed_structure_identity_pose(inputs, snapshot, proposal, *, frame_key,

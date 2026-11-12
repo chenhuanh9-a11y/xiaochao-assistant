@@ -3,6 +3,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 import tempfile
+import threading
 from unittest.mock import Mock
 
 import numpy as np
@@ -65,6 +66,38 @@ class LocalStructureRecognitionTests(unittest.TestCase):
         engine.side_entry_identity.entries = list(engine.side_entry_identity.entries)
         self.assertFalse(direct.current())
         self.assertEqual(direct.run(snapshot, '1')['status'], 'cancelled')
+
+    def test_worker_uses_owner_context_snapshot_without_calling_live_runtime(self):
+        engine, direct, _ = self.prepared()
+        owner = threading.get_ident()
+        values = dict(priority=['before'], context={'members': ['before']})
+        calls = []
+        def capture(name):
+            self.assertEqual(threading.get_ident(), owner)
+            calls.append(name)
+            return values[name]
+        engine.native_similarity_priority_provider = lambda: capture('priority')
+        engine.native_similarity_context_provider = lambda: capture('context')
+        context = direct.capture_identity_context()
+        values['priority'].append('after')
+        values['context']['members'].append('after')
+        query = direct._new_query_engine()
+        direct.bind_query_context(query, context)
+        results = []
+        def run():
+            results.append((query.native_similarity_priority_provider(),
+                            query.native_similarity_context_provider()))
+            results.append(direct.run(FrameSnapshot(np.zeros((720,1280,3), np.uint8)),
+                                      direct.catalog.floors[0], identity_context=context))
+        worker = threading.Thread(target=run)
+        worker.start()
+        worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(calls, ['priority', 'context'])
+        self.assertEqual(results[0], (['before'], {'members': ['before']}))
+        self.assertEqual(results[1]['status'], 'complete')
+        results[0][0].append('consumer-change')
+        self.assertEqual(query.native_similarity_priority_provider(), ['before'])
 
     def test_catalog_cannot_relabel_the_actual_resource_context(self):
         engine, direct, _ = self.prepared()

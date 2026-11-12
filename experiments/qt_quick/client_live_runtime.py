@@ -85,12 +85,14 @@ def _engine_resource_current(engine):
 
 
 def _fit_alignment_host(host, frame, map_id, floor, cancelled, entry_candidate=None, *,
-                        observation_bounds=None, on_usable_fit=None, timing=None):
+                        entry_observation=None, observation_bounds=None, on_usable_fit=None, timing=None):
     """Consume numerical progress on the runtime worker, outside the solver."""
     from structure_pose_solver import PreparedStructurePoseSolver
     options = {}
     if entry_candidate is not None:
         options['entry_candidate'] = entry_candidate
+    if entry_observation is not None:
+        options['entry_observation'] = entry_observation
     if observation_bounds is not None:
         options['observation_bounds'] = observation_bounds
     def compute(stop):
@@ -821,6 +823,7 @@ class LiveRuntime:
             private_sequence = self._private_observation_sequence
         first_result = None
         entry_selection, entry_seed, entry_published, entry_preserved = None, None, False, False
+        published_report = None
         attempted = set()
         last_material_reason = "no-current-supported-candidates"
         started = time.monotonic()
@@ -876,12 +879,14 @@ class LiveRuntime:
                 if revoke_pixels and not self._display_current(row):
                     self._revoke_render(reason)  # Last mutation; notification may reenter.
 
-        def publish_entry(evidence):
+        def publish_entry(evidence, *, channel='candidate'):
             nonlocal entry_selection, entry_seed, entry_published, entry_preserved, intent_generation, first_result
             with self._lock:
                 if (not current() or evidence.get('frameKey') != digest
-                        or not session.commit_entry_evidence(evidence, ticket)):
+                        or not session.commit_entry_evidence(evidence, ticket, channel=channel)):
                     return False
+                if entry_preserved and not any(row.get('identityHardGatePassed') is True for row in evidence['rows']):
+                    return True  # UNKNOWN in the other lane does not undo current positive evidence.
                 entry_selection, entry_seed, stale = self._commit_identity_rows(
                     engine, evidence['rows'], frame, floor, epoch, frame_id, cancelled,
                     identity_snapshot=identity_snapshot)
@@ -902,8 +907,34 @@ class LiveRuntime:
                     or any(row.get('identityKind') == 'group' for row in self._automatic_candidate_rows))
                 return entry_preserved
 
+        def publish_observed_entry(evidence, *, entry_observation=None, channel='candidate'):
+            # The completed work stays private. Public JSON rows cannot carry a
+            # frame/engine owner or turn self-reported pose flags into authority.
+            nonlocal selected_entry_observation
+            result = publish_entry(evidence, channel=channel)
+            with self._lock:
+                if result and current():
+                    if entry_selection:
+                        selected_entry_observation = entry_observation
+                    source = getattr(entry_observation, 'engine', None)
+                    diagnostics = getattr(source, 'last_difficult_evidence', None)
+                    if diagnostics is not None:
+                        engine.last_difficult_evidence = diagnostics
+            return result
+
+        selected_entry_observation = None
+
+        def identity_committed():
+            with self._lock:
+                return bool(current() and entry_selection and self._map_id == entry_selection
+                    and self._gate.confirmed_id == entry_selection and self._durable_map_id == entry_selection)
+
         def publish(report):
-            nonlocal first_result, last_material_reason, private_material_ms
+            nonlocal first_result, last_material_reason, private_material_ms, published_report
+            # A race terminal is consumed promptly while the other lane keeps
+            # working. The caller later finalizes that same object once.
+            if report is published_report:
+                return not obsolete()
             rows = StructureCandidateScanner.rank_rows(report, engine.pack)
             with self._lock:
                 if private_enabled:
@@ -920,6 +951,7 @@ class LiveRuntime:
                 if (not current() or report.get("frameKey") != digest
                         or not session.commit(report, ticket)):
                     return False
+                published_report = report
                 if entry_preserved:
                     return True
                 self._identity_rank_rows = rows
@@ -1071,6 +1103,9 @@ class LiveRuntime:
                         privateExperimentalLocked=bool(private_enabled and pool.locked_id),
                         privateRecoveryPending=recovery_scan)
                 scan = getattr(engine, 'qt_structure_scan', None) or getattr(engine, 'qt_s1_structure_scan', None)
+                if getattr(engine, 'qt_recognition_race', None) is not None:
+                    options.update(on_entry_observation=publish_observed_entry,
+                        identity_committed=identity_committed)
                 report = scan(frame, floor=str(floor), floor_source="current-frame-verified",
                     cancelled=obsolete, budget_seconds=scan_budget,
                     on_progress=publish, candidate_order=order, preferred_map_id=preferred,
@@ -1090,6 +1125,7 @@ class LiveRuntime:
                     first_result = self._solve_observation(action, payload, cancelled, engine, self._group, epoch,
                         captured, frame, floor, digest, capture_generation, frame_generation,
                         frame_id, cycle, entry_selection, entry_seed,
+                        entry_observation=selected_entry_observation,
                         structure_ticket=(session, ticket), structure_current=current)
                 elif not entry_selection and first_result is None:
                     last_material_reason = 'identity-not-uniquely-verified'
@@ -1543,12 +1579,10 @@ class LiveRuntime:
                 front_provisional = bool(top.get("frontDoorGroupState") == "GROUP_LOCKED"
                     and top.get("frontDoorProvisionalMemberId") == selected)
                 if not front_provisional:
-                    retired_preview_token = self._retire_candidate_preview(reason="candidate-identity-committed")
                     self._durable_map_id = selected
                     self._identity_source = "automatic-hard-gate"
             if selected:
-                if not retired_preview_token:
-                    retired_preview_token = self._retire_candidate_preview(reason="candidate-identity-committed")
+                retired_preview_token = self._retire_candidate_preview(reason="candidate-identity-committed", map_id=selected)
                 if grouped and len(state.member_ids)>1:
                     self._group_member_preference=(*group_key,selected)
                 elif self._group_member_preference and selected not in self._group_member_preference[2]:
@@ -3230,15 +3264,20 @@ class LiveRuntime:
             for row in self._candidate_rows:
                 row["structureSupported"] = False
 
-    def _retire_candidate_preview(self, *, reason):
-        """Retire preview pixels/proposals before an identity writer commits.
+    def _retire_candidate_preview(self, *, reason, map_id=None):
+        """Retire preview proposals before an identity writer commits.
 
         The caller holds ``_lock`` and sends render-revoked after completing its
         atomic identity update. Preserve the ticket so the lock's pose consumer
         can independently validate/reuse the same current map/floor/frame fit.
+        Completed pixels for that exact choice survive until atomic replacement.
         """
         row, reference = self._render, self._reference_sheet or {}
         owns_pixels = bool(row is not None and row.get("candidateDisplayOnly"))
+        keep_pixels = bool(owns_pixels and map_id and row.get('mapId') == map_id
+            and row.get('frameId') == self._frame_id and row.get('floor') == self._floor
+            and row.get('poseFinalVerified') is True and self._display_current(row)
+            and _engine_resource_current(self._engine))
         owns_context = owns_pixels or row is None and bool(self._provisional_display_map_id)
         owns_reference = bool(reference.get("candidateReference") or reference.get("s1CandidateReference"))
         # A new acquisition may already have revoked pixels. Candidate-only
@@ -3252,7 +3291,7 @@ class LiveRuntime:
         self._provisional_display_map_id = ""
         if owns_context:
             self._transient_drag = self._transient_cycle = None
-        if not owns_pixels:
+        if not owns_pixels or keep_pixels:
             return ""
         self._core.revoke_display(reason=reason)
         self._render = self._render_capture_context = None
@@ -5736,7 +5775,8 @@ class LiveRuntime:
     def _solve_observation(self, action, payload, cancelled, engine, group, epoch, captured, frame,
                            floor, digest, capture_generation, frame_generation, frame_id, cycle,
                            map_id, entry_candidate=None, *, identity_stage=None, manual_choice=None,
-                           staged_observation=None, structure_ticket=None, structure_current=None):
+                           staged_observation=None, structure_ticket=None, structure_current=None,
+                           entry_observation=None):
         import numpy as np
         from alignment_core_v2 import AlignmentCandidate
         from alignment_observation import rendered_profile_residual_is_verified
@@ -6087,6 +6127,7 @@ class LiveRuntime:
                     fit = choice["pose"]
                 else:
                     fit = _fit_alignment_host(host, frame, map_id, floor, obsolete, entry_candidate,
+                        entry_observation=entry_observation,
                         on_usable_fit=offer_usable_fit, timing=fit_timing)
             elif self._season == "s1":
                 fit = _fit_alignment_host(host, frame, map_id, floor, obsolete,
@@ -6094,6 +6135,7 @@ class LiveRuntime:
                     observation_bounds=(0, 0, frame.shape[1], frame.shape[0]))
             else:
                 fit = _fit_alignment_host(host, frame, map_id, floor, obsolete, entry_candidate,
+                    entry_observation=entry_observation,
                     on_usable_fit=offer_usable_fit, timing=fit_timing)
         except BaseException:
             revoke_published("pose-review-error")

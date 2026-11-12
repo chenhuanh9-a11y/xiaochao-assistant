@@ -172,6 +172,28 @@ class StructureCandidateScanner:
         self.catalog, self.fit, self.clock = catalog, fit, clock
         self.prepare_fit = prepare_fit
 
+    def unresolved_report(self, snapshot, floor, floor_source, *, previous=None, elapsed_seconds=0.):
+        """The completed race may stop a candidate before its next callback.
+
+        Preserve only already offered canonical poses; unscanned members remain
+        unknown. Entry identity has its independent owner and ledger.
+        """
+        report = copy.deepcopy(previous) if previous is not None else dict(
+            schemaVersion=1, season=self.catalog.season, mode=self.catalog.mode,
+            resourceKey=self.catalog.resource_key, floor=floor, floorSource=floor_source,
+            observedFloor=floor if floor_source == 'current-frame-verified' else '',
+            frameKey=snapshot.frame_key, updateSeq=0, expectedMapIds=list(self.catalog.map_ids),
+            checkedMapIds=[], unscannedMapIds=list(self.catalog.map_ids), supportedMapIds=[],
+            unknownMapIds=list(self.catalog.map_ids), firstVerifiedPoseElapsedSeconds=None,
+            excludedMapIds=[], poses={}, outcomes=[], competitionComplete=False,
+            uniqueIdentityVerified=False, identityHardGatePassed=False,
+            automaticSelectionAuthorized=False, liveAuthorization=False,
+            reason='supported-geometry-is-not-complete-identity-competition')
+        report.update(status='subset-unresolved', scanComplete=False,
+            updateSeq=report['updateSeq']+1, elapsedSeconds=elapsed_seconds,
+            candidateReuse='none', scanSkipped=False)
+        return report
+
     def scan(self, frame, *, floor, floor_source, cancelled=None, budget_seconds=None,
              on_progress=None, candidate_order=None, preferred_map_id=None,
              preferred_material_committed=None, planned_map_ids=None, first_material_committed=None,
@@ -347,21 +369,26 @@ class StructureEvidenceSession:
         self._priority_history = OrderedDict()
         self._committed_generation = None
         self._session_id, self._ticket = uuid.uuid4().hex, None
-        self._entry_evidence = None
+        self._entry_evidence = {}
 
     def begin_observation(self, floor):
         if self._ended or floor not in self.catalog.floors:
             raise ValueError("s1-structure-session-unavailable")
         self.generation += 1
         self._current, self._floor = None, floor
-        self._entry_evidence = None
+        self._entry_evidence = {}
         self._ticket = ObservationTicket(self._session_id, self.round_key, self.generation, floor)
         return self._ticket
 
-    def commit_entry_evidence(self, report, ticket):
-        """Separate entry channel; it never changes the canonical pose ledger."""
-        if (self._ended or ticket != self._ticket or self._committed_generation == self.generation
-                or self.catalog.season != 's0' or self._entry_evidence is not None
+    def commit_entry_evidence(self, report, ticket, *, channel='candidate'):
+        """Independent entry channel; a canonical terminal does not retire it.
+
+        Only observation retirement invalidates its ticket. Storing source rows
+        never revives canonical candidates or adjudicates their identity.
+        """
+        if (self._ended or ticket != self._ticket
+                or self.catalog.season != 's0' or channel not in ('candidate', 'structure')
+                or channel in self._entry_evidence
                 or not isinstance(report, dict) or report.get('role') != 'identity-entry'
                 or report.get('resourceKey') != self.catalog.resource_key
                 or report.get('floor') != self._floor
@@ -369,9 +396,10 @@ class StructureEvidenceSession:
                 or not isinstance(report.get('rows'), list)
                 or any(not isinstance(row, dict) or row.get('mapId') not in self.catalog.map_ids
                        for row in report['rows'])
-                or self._current is not None and self._current['frameKey'] != report['frameKey']):
+                or self._current is not None and self._current['frameKey'] != report['frameKey']
+                or any(row['frameKey'] != report['frameKey'] for row in self._entry_evidence.values())):
             return False
-        self._entry_evidence = copy.deepcopy(report)
+        self._entry_evidence[channel] = copy.deepcopy(report)
         return True
 
     def commit(self, report, ticket):
@@ -424,7 +452,7 @@ class StructureEvidenceSession:
                 or any(not verified_pose(report.get("poses", {}).get(mid)) for mid in supported)):
             return False
         previous = self._current
-        if self._entry_evidence is not None and self._entry_evidence['frameKey'] != report['frameKey']:
+        if any(row['frameKey'] != report['frameKey'] for row in self._entry_evidence.values()):
             return False
         if previous is not None:
             if (seq <= previous.get("updateSeq", 1) or report["frameKey"] != previous["frameKey"]
@@ -530,12 +558,12 @@ class StructureEvidenceSession:
         """Withdraw current-frame choices without inventing negative evidence."""
         self.generation += 1
         self._current, self._floor, self._ticket = None, None, None
-        self._entry_evidence = None
+        self._entry_evidence = {}
 
     def end_round(self):
         self.generation += 1
         self._history.clear()
         self._priority_history.clear()
         self._ticket = None
-        self._entry_evidence = None
+        self._entry_evidence = {}
         self._current, self._floor, self._ended = None, None, True

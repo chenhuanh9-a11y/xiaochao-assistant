@@ -182,6 +182,7 @@ class SharedReferenceProvider:
         self._lock = threading.RLock()
         from native_structure_display_material import NativeStructureDisplayMaterials
         self._display_materials = NativeStructureDisplayMaterials()
+        self._managed_display_context = None
 
     def _assert_current(self):
         if self._check_current is not None:
@@ -295,14 +296,56 @@ class SharedReferenceProvider:
         scope = (self._read_owner_state(), owners.read_state(), source._read_state(), reader._owner_state())
         return self._display_materials.layer(reference, self, scope, variant_id, structure_display_layer)
 
+    def _display_ram_state(self, engine, owners, source, reader):
+        return (tuple(id(getattr(engine, name, None)) for name in (
+            'qt_native_base', 'qt_shared_provider', 'qt_fast_structure_source', 'qt_controls_profile',
+            'qt_native_context', 'qt_assert_resource_current', 'qt_resource_root')),
+            engine.qt_context_key, engine.qt_season, self._read_owner_state(),
+            owners.read_state(), source._read_state(), reader._owner_state())
+
+    def _bind_managed_display(self, factory, engine, key, revision):
+        """Reuse the real factory publication/current predicate, never a caller flag."""
+        import weakref
+        if (not isinstance(factory, EngineFactories) or factory._revision != revision
+                or factory._engines.get(key) is not engine):
+            return
+        bundle = getattr(engine, 'qt_native_base', None)
+        owners = self._read_operation_owners(bundle)
+        if (owners is None or getattr(engine, 'qt_shared_provider', None) is not self
+                or getattr(engine, 'qt_controls_profile', None) is not owners.controls
+                or getattr(engine, 'qt_native_context', None) is not owners.native
+                or getattr(engine, 'qt_assert_resource_current', None) is not self._check_current):
+            return
+        source, reader = bundle._values['fast_structure_source'], bundle._values['reader']
+        current = engine.qt_resource_context_current
+        self._managed_display_context = (weakref.ref(engine), current, revision, owners, source, reader,
+            self._display_ram_state(engine, owners, source, reader))
+
+    def _assert_managed_display_current(self, engine):
+        binding = self._managed_display_context
+        if binding is None or binding[0]() is not engine:
+            return False
+        _, current, revision, owners, source, reader, state = binding
+        try:
+            valid = (getattr(engine, 'qt_resource_context_current', None) is current
+                and getattr(engine, 'qt_resource_revision', None) == revision and current()
+                and self._display_ram_state(engine, owners, source, reader) == state)
+        except (AttributeError, KeyError, TypeError):
+            valid = False  # A once-admitted RAM owner/model has been replaced.
+        if not valid:
+            raise DisplayResourceChanged('display-resource-owner-changed')
+        return True
+
     def _consume_display_reference(self, engine, map_id, floor, consume):
-        """Consume one native display inside the original live pre/post guards.
+        """Consume admitted native RAM, or prepare it with the original guards.
 
         This does not use or grant byte-batch/fresh-read permission. Unknown
         readers, independent guards and real legacy lookups keep their caller.
         """
         from imported_resource_reader import ComponentResourceReader
+        from native_structure_display_material import owns_native_arrays
         from shared_structure_display import structure_display_identity
+        self._assert_managed_display_current(engine)
         bundle = getattr(engine, 'qt_native_base', None)
         owners = self._read_operation_owners(bundle)
         check, source = getattr(engine, 'qt_assert_resource_current', None), getattr(engine, 'qt_fast_structure_source', None)
@@ -345,9 +388,28 @@ class SharedReferenceProvider:
             # Keep this bounded read/consumer/post-guard and its cache proof
             # together: ordinary readers may evict this key as soon as we leave.
             current_owners()
-            value = self._load('shared-structure', map_id, floor, consume=consuming)
+            managed = self._assert_managed_display_current(engine)
+            cached = self._cache.get(key) if managed else None
+            if cached is not None and owns_native_arrays(cached, self):
+                # _load publishes these arrays only after its complete actual
+                # decode/pre/post checks. Managed replacement invalidates the
+                # factory predicate; consuming the held RAM needs no file IO.
+                try:
+                    value = consuming(cached)
+                finally:
+                    self._assert_managed_display_current(engine)
+                    current_owners()
+                self._cache.move_to_end(key)
+            else:
+                if managed and cached is not None:
+                    # Engine construction may have cached an ordinary mutable
+                    # decode. Prepare its real bytes once; never bless that RAM.
+                    self._cache.pop(key)
+                    self._display_materials.discard(cached)
+                value = self._load('shared-structure', map_id, floor, consume=consuming)
             if reference is None:
                 raise ValueError('display-reference-unavailable')
+            self._assert_managed_display_current(engine)
             current_owners()
             if structure_display_identity(reference) != identity or self._cache.get(key) is not reference:
                 raise DisplayResourceChanged('display-resource-changed')
@@ -498,12 +560,18 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
     from s1_structure_selection import StructureCandidateScanner
     from entry_evidence_work import FrameSnapshot
     from client_structure_recognition import DirectStructureRecognition
+    from client_local_structure_recognition import PreparedLocalStructureRecognition
+    from recognition_race import RecognitionObservation, RecognitionRace
 
     # Engine assembly already runs on the preparation worker. Read the complete
     # static domain here, before any current-frame numerical recognition begins.
     direct = DirectStructureRecognition(engine, catalog)
-    direct.prepare()
     engine.qt_direct_structure_recognition = direct
+    local = (PreparedLocalStructureRecognition(engine, catalog)
+        if getattr(engine, 'qt_native_base', None) is not None else None)
+    engine.qt_local_structure_recognition = local
+    race = RecognitionRace(clock=time.perf_counter) if local is not None else None
+    engine.qt_recognition_race = race
 
     def check_current():
         if getattr(engine, 'qt_native_base', None) is not None:
@@ -519,7 +587,8 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
                        preferred_material_committed=None, private_coordinate_report=None, planned_map_ids=None,
                        first_material_committed=None, pose_priors=None, collect_fit_diagnostics=False,
                        on_entry_evidence=None, deadline=None, frame_snapshot=None,
-                       on_direct_recognition=None):
+                       on_direct_recognition=None, on_entry_observation=None,
+                       identity_committed=None):
         check_current()
         if not getattr(engine, 'qt_rank_ready', True) and not getattr(engine, 'qt_structure_scan_ready', False):
             raise ProviderUnavailable(';'.join(getattr(engine, 'qt_rank_gaps', ())) or 'recognition-rank-unavailable')
@@ -527,6 +596,7 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
         host = StructurePoseSolver(engine, pose_priors=pose_priors,
             collect_fit_diagnostics=collect_fit_diagnostics)
         preparation_rows = []
+        entry_work = None
         fixed = private_coordinate_report is not None and private_coordinate_report.get("coordinateVerified") is True
         if fixed and private_fit is None:
             raise ProviderUnavailable('private-coordinate-provider-unavailable')
@@ -554,6 +624,8 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
                     return dict(success=False, reason='structure-work-obsolete')
                 began = time.perf_counter()
                 try:
+                    if entry_work is not None:
+                        kw['entry_observation'] = entry_work
                     result = prepared.fit(f, mid, fl, cancel, **kw)
                 finally:
                     row['fitMs'] = (time.perf_counter()-began)*1000
@@ -571,14 +643,22 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
                 or frame_snapshot.pixels is not frame):
             raise ValueError('structure-scan-frame-snapshot-mismatch')
         snapshot = frame_snapshot if frame_snapshot is not None else FrameSnapshot(frame)
+        identity_context = local.capture_identity_context() if local is not None else None
         began = time.perf_counter()
         direct_deadline = min(deadline if deadline is not None else float('inf'),
             began+budget_seconds if budget_seconds is not None else float('inf'))
-        direct_run = direct.start(snapshot, floor, cancelled=cancelled, deadline=direct_deadline)
+        # The footprint algorithm remains an explicit diagnostic. Its unqualified
+        # proposals do not run in the production identity race or delay startup.
+        if on_direct_recognition is not None and direct.resources is None:
+            direct.prepare()
+        direct_run = (direct.start(snapshot, floor, cancelled=cancelled, deadline=direct_deadline)
+            if on_direct_recognition is not None else None)
         direct_published = False
 
         def collect_direct():
             nonlocal direct_published
+            if direct_run is None:
+                return dict(status='not-requested', authorizesIdentity=False, lock=False)
             value = direct_run.collect()
             if not direct_published and value['status'] != 'pending':
                 if not (cancelled is not None and cancelled()):
@@ -588,23 +668,104 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
                 direct_published = True
             return value
 
-        def progress(value):
+        def scan_candidate(stop, progress, entry):
+            nonlocal entry_work
+            def prepare_entry(snap, fl, **options):
+                nonlocal entry_work
+                # Each worker owns its caches. Source qualification and the
+                # mature candidate plan are unchanged.
+                query = local._new_query_engine() if local is not None else engine
+                if local is not None:
+                    local.bind_query_context(query, identity_context)
+                entry_work = query.prepare_entry_observation(snap, fl, **options)
+                return entry_work
+            def publish_entry(value):
+                return entry(value, entry_observation=entry_work)
+            return scanner.scan(snapshot.pixels, floor=floor, floor_source=floor_source,
+                cancelled=stop, budget_seconds=budget_seconds,
+                on_progress=progress, candidate_order=candidate_order,
+                preferred_map_id=preferred_map_id,
+                preferred_material_committed=(lambda mid: progress(None, material='preferred', map_id=mid))
+                    if preferred_material_committed is not None else None,
+                planned_map_ids=planned_map_ids,
+                first_material_committed=(lambda mid: progress(None, material='first', map_id=mid))
+                    if first_material_committed is not None else None,
+                prepare_entry=prepare_entry if catalog.season == 's0' and native else None,
+                on_entry_evidence=publish_entry, deadline=deadline, frame_snapshot=snapshot)
+
+        def consume_entry(value, *, entry_observation=None, channel='candidate'):
             check_current()
+            if cancelled is not None and cancelled():
+                return False
+            if on_entry_observation is not None:
+                return on_entry_observation(value, entry_observation=entry_observation, channel=channel)
+            return on_entry_evidence(value) if on_entry_evidence is not None else False
+
+        def consume_progress(value=None, *, material=None, map_id=None):
+            check_current()
+            if cancelled is not None and cancelled():
+                return False
+            if material is not None:
+                callback = preferred_material_committed if material == 'preferred' else first_material_committed
+                return callback(map_id) if callback is not None else False
             value['directStructureRecognition'] = collect_direct()
-            on_progress(value)
+            return on_progress(value) if on_progress is not None else None
+
         try:
-            report = scanner.scan(snapshot.pixels, floor=floor, floor_source=floor_source,
-                cancelled=cancelled, budget_seconds=budget_seconds,
-                on_progress=progress if on_progress is not None else None, candidate_order=candidate_order,
-                preferred_map_id=preferred_map_id, preferred_material_committed=preferred_material_committed,
-                planned_map_ids=planned_map_ids, first_material_committed=first_material_committed,
-                prepare_entry=(engine.prepare_entry_observation if catalog.season == 's0' and native else None),
-                on_entry_evidence=on_entry_evidence, deadline=deadline, frame_snapshot=snapshot)
+            # Only the runtime's actual commit predicate enables competition.
+            # Legacy/custom callers keep the original synchronous candidate API.
+            if race is not None and identity_committed is not None:
+                last_report = None
+                candidate_terminal = None
+                local_report = None
+                errors = []
+                def candidate_lane(observation, stop, progress, entry):
+                    return scan_candidate(stop, progress, entry)
+                def structure_lane(observation, stop, progress, entry):
+                    return local.run(snapshot, floor, cancelled=stop,
+                        deadline=direct_deadline, on_entry=entry, identity_context=identity_context)
+                def progress(lane, value=None, **options):
+                    nonlocal last_report
+                    result = consume_progress(value, **options)
+                    if value is not None:
+                        last_report = value
+                    return result
+                def terminal(lane, value):
+                    nonlocal candidate_terminal, local_report
+                    if lane == 'candidate':
+                        candidate_terminal = value
+                        consume_progress(value)
+                    else:
+                        local_report = value
+                outcome = race.run(RecognitionObservation(snapshot, floor, catalog.resource_key),
+                    candidate_lane, structure_lane, identity_committed=identity_committed,
+                    on_progress=progress,
+                    on_entry=lambda lane, value, **kw: consume_entry(value, channel=lane, **kw),
+                    on_terminal=terminal, on_error=lambda lane, error: errors.append((lane, error)),
+                    cancelled=cancelled, deadline=direct_deadline)
+                report = candidate_terminal if candidate_terminal is not None else scanner.unresolved_report(
+                    snapshot, floor, floor_source, previous=last_report,
+                    elapsed_seconds=time.perf_counter()-began)
+                if (candidate_terminal is None and outcome['status'] == 'unresolved'
+                        and time.perf_counter() >= direct_deadline):
+                    report['status'] = 'budget-unresolved'
+                if outcome['status'] in ('cancelled', 'closed', 'superseded'):
+                    # Preserve the ordinary scanner cancellation protocol.
+                    report = scanner.unresolved_report(snapshot, floor, floor_source,
+                        elapsed_seconds=time.perf_counter()-began)
+                    report.update(status='cancelled')
+                if errors and candidate_terminal is None and outcome['status'] != 'identity-committed':
+                    raise errors[0][1]
+                report['recognitionRace'] = outcome
+                report['localStructureRecognition'] = local_report
+            else:
+                report = scan_candidate(cancelled, consume_progress, consume_entry)
             report['directStructureRecognition'] = collect_direct()
         finally:
             # A winning candidate/entry must not wait for the other kernel. The
             # single bounded worker cooperatively drains without late callbacks.
-            direct_run.cancel()
+            if direct_run is not None:
+                direct_run.cancel()
         check_current()
         report['posePreparation'] = preparation_rows
         report["posePriorOutcomes"] = [{key: event[key] for key in
@@ -736,6 +897,12 @@ class EngineFactories(dict):
         with self._lock:
             self._revision += 1
             for engine in self._engines.values():
+                race = getattr(engine, 'qt_recognition_race', None)
+                if race is not None:
+                    race.close()
+                direct = getattr(engine, 'qt_direct_structure_recognition', None)
+                if direct is not None:
+                    direct.close()
                 cache = getattr(engine, 'qt_pose_input_cache', None)
                 if cache is not None:
                     cache.invalidate()
@@ -832,6 +999,9 @@ class EngineFactories(dict):
                         return self._revision == revision and self._engines.get(key) is engine
                 engine.qt_resource_context_current = context_current
                 self._engines[key] = engine
+                provider = getattr(engine, 'qt_shared_provider', None)
+                if type(provider) is SharedReferenceProvider:
+                    provider._bind_managed_display(self, engine, key, revision)
                 self._attach_custom_display(engine, mode, season)
                 self._reports[key] = dict(prepared=True,
                                        season=season, mode=mode, contextKey=key,

@@ -2,8 +2,9 @@
 
 Only preparation reads resources. Returned inputs contain no disk reader,
 catalog guard or publication permission. The runtime owns resource revisions,
-cancellation and result submission. A later preparation rechecks source bytes;
-an existing snapshot deliberately keeps the bytes it was prepared from.
+cancellation and result submission. New layer preparation reads its actual
+bytes; factory-prepared common models deliberately retain their admitted RAM.
+Explicit resource preparation/integrity checks can discover later disk damage.
 """
 from __future__ import annotations
 
@@ -246,6 +247,8 @@ class _LocatorTemplates:
         main, side = copy(self.main), copy(self.side)
         main._observation, main._wall_lines = None, {}
         side.geometry_provider, side.author_visible_provider = main.geometry, main.author_visible
+        if side._exit_recognizer is not None:
+            side._exit_recognizer = copy(side._exit_recognizer)
         return main, side
 
 
@@ -424,16 +427,17 @@ def _prepare_locators(values, pack, references, read, interfaces, root, map_id, 
     # Finish the existing lazy icon decoder in the preparation stage.
     if side.semantic_side_entries:
         side._exit_recognizer = SideDoorRecognizer(side.exit_icon_path, read_resource=read)
-    wanted = lambda item: item.get("mapId") == map_id and str(item.get("floor")) in floors
+    wanted = lambda item: (map_id is None or item.get("mapId") == map_id) and str(item.get("floor")) in floors
     main.entries = _freeze([row for row in main.entries if wanted(row[0])])
     side.entries = _freeze([row for row in side.entries if wanted(row[0])])
     side.registered_floors = frozenset((row[0]["mapId"], str(row[0]["floor"])) for row in side.entries)
     side.passports = _freeze([row for row in side.passports if wanted(row)])
     side.entry_coverage = _freeze([row for row in side.entry_coverage if wanted(row)])
     side.semantic_gaps = _freeze(side.semantic_gaps)
-    side.side_doors = _freeze({key: value for key, value in side.side_doors.items() if key == map_id})
+    side.side_doors = _freeze({key: value for key, value in side.side_doors.items()
+                               if map_id is None or key == map_id})
     side.side_search = _freeze({key: value for key, value in side.side_search.items()
-                                if key[0] == map_id and key[1] in floors})
+                                if (map_id is None or key[0] == map_id) and key[1] in floors})
     if side._exit_recognizer is not None:
         side._exit_recognizer.exit_icon = _array(side._exit_recognizer.exit_icon)
         for reference in side._exit_recognizer.references:
@@ -442,6 +446,243 @@ def _prepare_locators(values, pack, references, read, interfaces, root, map_id, 
         side._exit_recognizer.references = tuple(side._exit_recognizer.references)
         side._exit_recognizer.taxonomy_by_map = _freeze(side._exit_recognizer.taxonomy_by_map)
     return main, side
+
+
+def _scope_locators(templates, pack, references, map_id, floors):
+    """Select immutable rows; only query state and the target table are new."""
+    main, side = templates.new_queries()
+    table = _ReferenceTable(MappingProxyType(dict(references)))
+    for locator in (main, side):
+        locator.structures = locator.shared_reference_provider = table
+        locator.profile_for_map = pack.identity_profiles.__getitem__
+    wanted = lambda item: item.get('mapId') == map_id and str(item.get('floor')) in floors
+    main.entries = tuple(row for row in main.entries if wanted(row[0]))
+    side.entries = tuple(row for row in side.entries if wanted(row[0]))
+    side.registered_floors = frozenset((row[0]['mapId'], str(row[0]['floor'])) for row in side.entries)
+    side.passports = tuple(row for row in side.passports if wanted(row))
+    side.entry_coverage = tuple(row for row in side.entry_coverage if wanted(row))
+    side.side_doors = _FrozenDict({key: row for key, row in side.side_doors.items() if key == map_id})
+    side.side_search = _FrozenDict({key: row for key, row in side.side_search.items()
+                                   if key[0] == map_id and key[1] in floors})
+    return _LocatorTemplates(main, side)
+
+
+@dataclass(frozen=True)
+class PreparedStructureCommonModels:
+    """One admitted context's static RAM, shared by cold target preparations.
+
+    Only the production factory installs this snapshot. Managed context changes
+    use the existing engine revision/current callback. Target bytes still enter
+    the original component reader; unknown/independent/legacy paths stay guarded.
+    """
+    pack: _Pack
+    coordinates: PreparedCoordinates
+    locators: _LocatorTemplates
+    capabilities: Mapping
+    layers: Mapping
+    retained_bytes: int
+    _engine: object = field(repr=False, compare=False)
+    _bundle: object = field(repr=False, compare=False)
+    _provider: object = field(repr=False, compare=False)
+    _source: object = field(repr=False, compare=False)
+    _owners: object = field(repr=False, compare=False)
+    _owner_state: tuple = field(repr=False, compare=False)
+    _provider_state: tuple = field(repr=False, compare=False)
+    _source_state: tuple = field(repr=False, compare=False)
+    _entry_state: tuple = field(repr=False, compare=False)
+    _check: object = field(repr=False, compare=False)
+    _root: Path = field(repr=False, compare=False)
+    _component: object = field(repr=False, compare=False)
+    _reader: object = field(repr=False, compare=False)
+    _season: str = field(repr=False, compare=False)
+
+    @staticmethod
+    def entry_state(engine):
+        main, side = engine.entry_identity, engine.side_entry_identity
+        return id(main), id(main.entries), id(side), id(side.entries), id(side.passports), id(side.entry_coverage)
+
+    def assert_current(self, engine, revision, cancelled):
+        files._check_cancelled(cancelled)
+        current = getattr(engine, 'qt_resource_context_current', None)
+        if (engine is not self._engine or getattr(engine, 'qt_native_base', None) is not self._bundle
+                or getattr(engine, 'qt_shared_provider', None) is not self._provider
+                or getattr(engine, 'qt_fast_structure_source', None) is not self._source
+                or getattr(engine, 'qt_assert_resource_current', None) is not self._check
+                or getattr(engine, 'qt_resource_revision', revision) != revision
+                or current is not None and not current()
+                or self._owners.read_state() != self._owner_state
+                or self._provider._read_owner_state() != self._provider_state
+                or self._source._read_state() != self._source_state
+                or self.entry_state(engine) != self._entry_state):
+            raise PoseInputsUnavailable('pose-input-resource-binding-changed')
+        files._check_cancelled(cancelled)
+
+
+def prepare_structure_pose_common_models(engine, *, cancelled=None):
+    """Factory-only static preparation; no mask/distance atlas is retained."""
+    from client_providers import SharedReferenceProvider
+    from imported_fast_structure import ImportedFastStructureSource
+    from imported_resource_reader import ComponentResourceReader
+    bundle = getattr(engine, 'qt_native_base', None)
+    provider, source = getattr(engine, 'qt_shared_provider', None), getattr(engine, 'qt_fast_structure_source', None)
+    if not isinstance(bundle, NativeBaseBundle) or type(provider) is not SharedReferenceProvider:
+        return None
+    owners = provider._read_operation_owners(bundle)
+    values = bundle._values
+    reader = values['reader']
+    check = getattr(engine, 'qt_assert_resource_current', None)
+    if (owners is None or check is not provider._check_current
+            or type(reader) is not ComponentResourceReader or type(source) is not ImportedFastStructureSource
+            or source is not values['fast_structure_source'] or source.reader is not reader
+            or source.view is not bundle._view or reader.view is not bundle._view
+            or values['adapters'].native_static_context is not None):
+        return None
+    files._check_cancelled(cancelled)
+    check()
+    owner_state, provider_state, source_state = owners.read_state(), provider._read_owner_state(), source._read_state()
+    entry_state = PreparedStructureCommonModels.entry_state(engine)
+    root, component = bundle._root, values['component_ref']
+    read = _RecordingReader(reader)
+    interfaces, pack = values['interfaces'], values['pack']
+    read.record_admitted((root / bundle._view.component['entrypoint'], root / interfaces['identityPack'],
+        root / interfaces['typedIndex'], root / interfaces['coordinatePack'],
+        *((root / source.index_path,) if source.index_path is not None else ())), cancelled=cancelled)
+    profiles = MappingProxyType(dict(pack.identity_profiles))
+    info = tuple(_MapInfo(str(item.id), str(item.name)) for item in pack.maps)
+    ram_pack = _Pack(pack.pack_id, pack.mode, tuple(pack.floors), info,
+                    MappingProxyType({item.id: item for item in info}), profiles)
+    matrices = {(profile, mid, floor): _array(values['adapters'].matrix_profile_to_canonical(profile, mid, floor))
+        for mid in profiles for floor in pack.floors for profile in dict.fromkeys(('shared-structure', profiles[mid]))}
+    coordinates = PreparedCoordinates(values['adapters'].canonical_pack_id, MappingProxyType(matrices))
+    models = dict(values, entry_identity=engine.entry_identity, side_entry_identity=engine.side_entry_identity)
+    main, side = _prepare_locators(models, ram_pack, {}, read, interfaces, root, None, pack.floors,
+                                  cancelled=cancelled)
+    ram_reader = _RamReader(MappingProxyType({key: raw for key, (_, raw) in read.payloads.items()}))
+    main.read_resource = side.read_resource = ram_reader
+    if side._exit_recognizer is not None:
+        side._exit_recognizer.read_resource = ram_reader
+    locators = _LocatorTemplates(main, side)
+    capabilities = _freeze(dict(rankReady=values['rank_ready'], semanticSideEntries=values['semantic_side_entries'],
+        passportSourceAvailable=values['passport_source_available'], mainError=main.error,
+        sideDoorError=side.side_door_error, sideSearchError=side.side_search_error, passportError=side.passport_error))
+    legacy = owners.legacy_keys()
+    layers = {}
+    for key, row in provider.versions.items():
+        target = key[1], key[3]
+        if target not in legacy and not row.get('sharedError'):
+            layers[target] = (_freeze(row), source.entries.get(key))
+    read.recheck(cancelled=cancelled)
+    check()
+    common = PreparedStructureCommonModels(ram_pack, coordinates, locators, capabilities,
+        MappingProxyType(layers), _bytes_used((ram_pack, coordinates, locators, capabilities, layers)),
+        engine, bundle, provider, source, owners, owner_state, provider_state, source_state, entry_state,
+        check, root, component, reader, values['season'])
+    common.assert_current(engine, getattr(engine, 'qt_resource_revision', 0), cancelled)
+    return common if common.retained_bytes < DEFAULT_CACHE_BYTES else None
+
+
+def _original_native_loaders(common):
+    """Only omit readers whose real work this RAM preparation implements."""
+    from client_providers import SharedReferenceProvider
+    from imported_fast_structure import ImportedFastStructureSource
+    from shared_structure_reference import SharedStructureResourceStore
+    resources = common._provider.resources
+    return (getattr(common._provider._load, '__func__', None) is SharedReferenceProvider._load
+        and common._owners.base_view._assert_current == common._owners.controls_view._assert_current
+        and type(resources) is SharedStructureResourceStore
+        and getattr(resources.load, '__func__', None) is SharedStructureResourceStore.load
+        and getattr(common._source.read, '__func__', None) is ImportedFastStructureSource.read
+        and getattr(common._source.decode, '__func__', None) is ImportedFastStructureSource.decode)
+
+
+def _prepare_from_common(engine, common, map_id, floor, floors, revision, indexed, cancelled, started):
+    from imported_fast_structure import decode_prepared
+    common.assert_current(engine, revision, cancelled)
+    references, preparations, resources, gaps, matrices = {}, {}, {}, [], {}
+    for target_floor in floors:
+        common.assert_current(engine, revision, cancelled)
+        key = map_id, target_floor
+        row, declaration = common.layers[key]
+        path = row['path']
+        try:
+            raw = common._reader.read_many((path,), expected_root=common._root, cancelled=cancelled)[0]
+        except (OSError, ValueError) as error:
+            required_ref = FileRef(common._component, common._reader.relative_path(path))
+            if getattr(error, 'resource_file_ref', None) != required_ref:
+                raise  # Selection/manifest/cancellation failures are not cold misses.
+            common.assert_current(engine, revision, cancelled)
+            from imported_fast_structure import _PreparedReadFailure
+            failure = _PreparedReadFailure(common._source, error.with_traceback(None), {},
+                                           cancelled, common._source_state)
+            try:
+                failure.assert_current()
+                # Deliver the first actual error through the original provider
+                # and decoder, without another file read. Cold decoding yields
+                # a gap; a warm required reference still must decode successfully.
+                current = common._provider.read_with_resource('shared-structure', map_id, target_floor,
+                                                              read_resource=failure.read_resource)
+                reference = (None if current is None else load_shared_structure(path,
+                    expected_binding=row['binding'], resource_root=common._root,
+                    read_resource=failure.read_resource))
+                # Decoder failure is a cold miss only while its selection and
+                # owners remain current, including after it consumed the error.
+                failure.assert_current()
+                common.assert_current(engine, revision, cancelled)
+                if current is not None and reference is None:
+                    raise PoseInputsUnavailable('pose-input-reference-decode-unavailable')
+            finally:
+                failure.release()
+        else:
+            reference = load_shared_structure(path, expected_binding=row['binding'], resource_root=common._root,
+                read_resource=_RamReader({_path_key(path): raw}))
+        resources[key], preparations[key] = None, None
+        if (reference is None or not np.any(reference.clean_mask) or _freeze(reference.metadata.get('canvas')) != row['canvas']
+                or any(_freeze(reference.metadata.get(name)) != value for name, value in row['expected'].items())):
+            references[key] = None
+            gaps.append('shared-reference-unavailable:' + target_floor)
+            continue
+        references[key] = _freeze_reference(reference)
+        fast_allowed = reference.metadata.get('authorizesStructureValidation') is not False
+        if fast_allowed and declaration is not None:
+            reference_ref, prepared_ref = declaration
+            if common._reader.relative_path(path) != reference_ref.path:
+                raise PoseInputsUnavailable('pose-input-reference-binding-mismatch')
+            try:
+                raw = common._reader.read_many((common._root / prepared_ref.path,), expected_root=common._root,
+                                              cancelled=cancelled)[0]
+            except (OSError, ValueError) as error:
+                if getattr(error, 'resource_file_ref', None) != prepared_ref:
+                    raise
+                # A payload exception precedes read_many's final selection
+                # check. Preserve it on this optional-failure boundary too.
+                common._reader.view._assert_current()
+                common.assert_current(engine, revision, cancelled)
+            else:
+                resources[key] = prepared_ref
+                try:
+                    decoded = decode_prepared(raw, reference)
+                    preparations[key] = PreparedStructure(_array(decoded.distance), _array(decoded.chains),
+                        _array(decoded.rays), decoded.pitch, tuple(decoded.shape))
+                except (OSError, ValueError):
+                    pass
+        if preparations[key] is None:
+            gaps.append(('fast-prepared-unavailable:' if fast_allowed else
+                         'fast-structure-validation-unavailable:') + target_floor)
+        for profile in dict.fromkeys(('shared-structure', common.pack.identity_profiles[map_id])):
+            matrix = common.coordinates.matrix_profile_to_canonical(profile, map_id, target_floor)
+            matrices[(profile, map_id, target_floor)] = matrix
+            if matrix is None:
+                gaps.append('coordinate-bridge-unavailable:' + profile + '/' + target_floor)
+    locators = _scope_locators(common.locators, common.pack, references, map_id, floors)
+    adapters = PreparedCoordinates(common.coordinates.canonical_pack_id, MappingProxyType(matrices))
+    binding = PoseInputBinding(common._season, common.pack.mode, common._component, revision,
+        id(engine), id(common._bundle), id(common._provider), id(common._source))
+    references, preparations, resources = map(MappingProxyType, (references, preparations, resources))
+    retained = _bytes_used((references, preparations, resources, adapters, locators))
+    common.assert_current(engine, revision, cancelled)
+    return PreparedStructurePoseInputs(binding, map_id, floor, floors, references, preparations, resources,
+        adapters, common.pack, common.capabilities, tuple(gaps), started, time.perf_counter(), retained,
+        indexed, None, None, locators, None)
 
 
 def _prepare_grid(engine, map_id, floors, read, enabled):
@@ -502,8 +743,9 @@ def prepare_structure_pose_inputs(engine, map_id, floor, *, resource_revision,
 
     The measured interval starts before any resource read and ends after the
     final source/binding checks. It belongs to preparation and end-to-end time,
-    never to a pure numerical fit. This function always performs new checks;
-    the separate bounded cache can reuse its immutable result in RAM.
+    never to a pure numerical fit. Production factories share their admitted
+    common RAM and read only missing layer payloads. Compatibility paths retain
+    their complete live checks; the bounded target cache may reuse RAM inputs.
     """
     started = time.perf_counter()
     if type(resource_revision) is not int or type(pose_index_enabled) is not bool:
@@ -511,6 +753,23 @@ def prepare_structure_pose_inputs(engine, map_id, floor, *, resource_revision,
     bundle = getattr(engine, "qt_native_base", None)
     if not isinstance(bundle, NativeBaseBundle):
         raise PoseInputsUnavailable("pose-input-validated-native-base-required")
+    common = getattr(engine, 'qt_pose_common_models', None)
+    if isinstance(common, PreparedStructureCommonModels) and pose_index_source is None:
+        map_id, floor = str(map_id), str(floor)
+        floors = tuple(dict.fromkeys((floor, *(str(value) for value in recovery_floors))))
+        if map_id not in common.pack.by_id or not set(floors) <= set(common.pack.floors):
+            raise PoseInputsUnavailable('pose-input-map-or-floor-not-declared')
+        # Independent guards and real legacy resources retain their complete
+        # original preparation. Native target reads need only admitted models.
+        from map_identity_engine import MapIdentityEngine
+        native_index = (not pose_index_enabled or getattr(getattr(engine, 'pose_index_candidates', None),
+                                                        '__func__', None) is MapIdentityEngine.pose_index_candidates)
+        if (getattr(engine, 'qt_assert_resource_current', None) is common._check and native_index
+                and callable(getattr(engine, 'qt_resource_context_current', None))
+                and _original_native_loaders(common)
+                and all((map_id, target) in common.layers for target in floors)):
+            return _prepare_from_common(engine, common, map_id, floor, floors, resource_revision,
+                                        pose_index_enabled, cancelled, started)
     provider, source = engine.qt_shared_provider, engine.qt_fast_structure_source
     check = engine.qt_assert_resource_current
     # This operation checks the actual live context before exposing its small

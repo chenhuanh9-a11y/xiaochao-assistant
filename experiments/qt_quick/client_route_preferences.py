@@ -151,7 +151,8 @@ def shared_structure_display_current(engine, map_id, floor, prepared):
     """Recheck the actual source without rebuilding its already owned pixels.
 
     binding_metadata describes the expected versions table. The actual guarded
-    provider read is still required: its cached reference metadata can differ.
+    provider source is required: its cached metadata can differ. A formally
+    managed, prepared native source is consumed from RAM in its current context.
     """
     from shared_structure_display import structure_display_identity
     identity = _consume_owned_shared_display(engine, map_id, floor, structure_display_identity)

@@ -304,7 +304,7 @@ class SharedStructureRuntimeTests(unittest.TestCase):
         self.assertTrue(results[0]['stale'], results)
         self.assertIsNotNone(self.runtime.render_payload(first['token']))
 
-    def test_current_ticket_preview_is_retired_before_entry_identity_and_fit_is_reused(self):
+    def test_current_ticket_preview_stays_visible_until_identity_material_replaces_it(self):
         payload = self.capture_choice_payload()
         old = self.runtime._render
         observation = self.runtime._last_observation
@@ -322,13 +322,16 @@ class SharedStructureRuntimeTests(unittest.TestCase):
         self.assertFalse(stale)
         self.assertEqual(selected, payload['mapId'])
         self.assertEqual(self.runtime._durable_map_id, selected)
-        self.assertIsNone(self.runtime.render_payload(old['token']))
+        retained = self.runtime.render_payload(old['token'])
+        self.assertIsNotNone(retained)
+        self.assertIs(retained['pixels'], old['pixels'])
+        self.assertEqual(retained['authorizationId'], old['authorizationId'])
         self.assertFalse(self.runtime.acknowledge_render_material(old['token'])['success'])
         self.assertNotIn(old['token'], self.runtime._remember_proposals)
         self.assertIsNone(self.runtime._reference_sheet)
         self.assertEqual(self.runtime._s1_structure_ticket, ticket)
         revoked = [event for event in events if event[0] == 'render-revoked']
-        self.assertEqual(revoked, [('render-revoked', selected, '', None)])
+        self.assertEqual(revoked, [])
         with patch.object(_AlignmentHost, 'fit', side_effect=AssertionError('same-ticket fit repeated')):
             result = self.runtime._solve_observation('capture_now', {}, None, self.engine, None,
                 self.runtime._epoch, observation['captured'], observation['frame'], observation['floor'],
@@ -389,6 +392,16 @@ class SharedStructureRuntimeTests(unittest.TestCase):
         self.assertIs(self.runtime._remember_proposals[current['token']], proposal)
         self.assertIs(self.runtime._core.display_authorization, authorization)
         self.assertIsNotNone(self.runtime.render_payload(current['token']))
+
+    def test_different_identity_still_retires_current_candidate_pixels(self):
+        self.capture_choice_payload()
+        old = self.runtime._render
+        with self.runtime._lock:
+            token = self.runtime._retire_candidate_preview(
+                reason='candidate-identity-committed', map_id='different-map')
+        self.assertEqual(token, old['token'])
+        self.assertIsNone(self.runtime.render_payload(old['token']))
+        self.assertFalse(self.runtime._core.display_authorization.active)
 
     def drag_current_preview(self):
         self.runtime._monotonic = lambda: 1.

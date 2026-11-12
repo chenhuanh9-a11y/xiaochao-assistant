@@ -76,7 +76,7 @@
 
 直接结构路径另增加成熟局部拐角/射线算法的预处理索引，保留原精确搜索、竞争 band 和最终验证。距离下界只剔除不可能支持原四拐角门槛的 seed；显式完整目录缺成员时保持未决，不可靠数值范围放弃筛选。实际四模式 source/样本的原新局部搜索逐值对照保持一致，event97 精确评估从 2234 次降到 778 次，仍保留全部 30 图及 legacy 竞争者。这不是处理毫秒或整链准确率结论。
 
-上述 local 工作已独立于辅助 source/advisory 扫描，继续共用原 passport、main、local、recovery 和登记条件；prepared adapter 复制静态模型，每帧使用独立查询缓存，并保持 S1 entry 的既有用途拒绝。event97 组件功能回放由真实像素观察楼层，在完整 30 图中输出原 map23 的同一已验证位姿；尚未提交 runtime 身份。两 lane 组件也已改为有界工作与 owner 线程同步收取，只有明确身份提交才能停止另一 lane。**组件尚未接入生产竞争锁图，同帧合格位姿复用、关图预热及最终四模式配对耗时仍待实施与测量**。
+上述 local 工作已接入 S0 生产竞争锁图，继续共用原 passport、main、local、recovery 和登记条件；prepared adapter 复用已准备的静态模型，每帧使用独立查询缓存，并保持 S1 entry 的既有用途拒绝。runtime 在发起两 lane 前取得 priority/context 快照，后台不回读其加锁状态；结果仍由 owner 校验当前票据后提交。三种实际工作次序及原关闭/设置/结束/资源更新的 20 个细分场景通过，定向联合共 14 项。当前帧完整 work 的位姿已沿生产调用传入首贴；event97 生产配置模拟功能回放完成真实锁图和重开，替换边界仅为采集/currentness 与产品身份，不能作为正式性能。**S1 公共坐标资源接线、关图准备与最终四模式配对耗时仍待完成**。
 
 ## 1. 范围与基线
 
@@ -866,7 +866,11 @@ python -m unittest test_client_progressive_display test_client_progressive_pixel
 
 0059 的现有状态先在外层捕获为只含参考、尺度、覆盖和坐标信息的数据；generation 收据留在 runtime。纯计算保留原 0059 → fast → 原入口/恢复与残差复核顺序。runtime 的求解、刷新残差和 material ACK 记忆三处使用准备输入；早期数值结果只排入有界队列，由调用线程检查和发布，退出时取消并收取该次数值任务。日志分别记录准备、数值调用及完整调用耗时，候选 ticket 复用已有贴合时不补造一次计算耗时。
 
-识别与贴合同时开发。导入引擎准备时建立完整地图域的直接结构索引，逐帧以真实楼层和同一 `FrameSnapshot` 并行运行直接检索与原候选 scanner；保留未扫描竞争者、缺层和 legacy 缺口。直接分支当前提供诊断，`authorizesIdentity` 与 `lock` 始终为 false：source-observation 等价、fog 分类、当前帧 canonical 残差及身份资格尚未补齐。候选路径不等待该诊断分支收尾；这不等于两路有效锁图竞争已经完成。四模式同样本正式计时、可见像素及游戏验收仍待执行。
+导入 S0 的生产识别通过 `RecognitionRace` 同时调度候选 scanner 与 `PreparedLocalStructureRecognition`。后者复用原角点/方向射线完整竞争、门与入口矛盾检查、局部位姿恢复和条件归约，静态索引只筛除可证明不匹配的种子；legacy 与资源缺口仍保留为竞争者。两路各有独立查询缓存，共用同一个只读 `FrameSnapshot`。回调回到调用线程后，由 runtime 校验当前票据和资源再提交；只有实际地图身份提交才停止另一路，预览、组状态或单路终结均不算锁图。canonical 终结不关闭另一来源通道，观察关闭、换层及资源更新仍撤销整张票据。原 footprint 检索继续只作显式请求的诊断，`authorizesIdentity` 与 `lock` 保持 false，默认不为它提前构造全目录。S1 的 proposal-only 入口不因复用数值模块而取得身份资格；其公共坐标路径与真实资源声明单独补齐。四模式同样本正式计时、可见像素及游戏验收仍待执行。
+
+同帧首贴只从实际完成的 `MapObservationWork` 私下取得入口位姿：整个作业及入口阶段均完成、没有失败/歧义、其 `FrameSnapshot.pixels` 必须就是当前求解帧，且源与 prepared 参考及坐标桥一致。矩阵从该作业的唯一结果取得，再以固定矩阵检查当前像素；原始 row 的标志或矩阵不能开启捷径。失败回到原 fast/recovery/initial 顺序。当前票据已有 canonical pose 时仍直接消费该 pose。身份确认与候选是同一地图/楼层/帧时，完整候选像素保持原显示凭据直到新合格材料原子替换；不同地图和过期观察继续撤销。
+
+静态 common pose models 在资源准备时生成一次，目标首次准备只解码其 typed/fast 文件，原 reader/decoder 与首次失败语义保留。common 与两个目标输入共同受原 512 MiB 上限约束。正式 factory 发布的结构显示来源可在其 provider 锁内复用自有只读 BGRA/RGBA 与实际元数据；普通 LRU 淘汰只触发重建，真实资源更新使当前发布失效。未知 provider、作者显示或独立 guard 仍走原检查。本片的功能回放不等于正式性能复测，最终数据须绑定干净远端提交。
 
 本地真实临时 archive/export/decode/provider/prepared loader 的六项资源回归控制数值 fit，仅验证生命周期；坏参考、坏准备、首显前损坏、取消与下一帧不会沿用旧输入均覆盖，其中“未使用 fast 时参考损坏”的新负例先失败后修复。三片相关回归分别为 34、89、71 项通过，生产 S1 两模式实际导入 fast 入口一项通过，最后资源/渐进显示/区域仲裁 35 项通过；并不据此证明实帧速度、位姿或游戏验收。新的资源回归加入原联合 workflow，保留原模块、分组和时限。
 
