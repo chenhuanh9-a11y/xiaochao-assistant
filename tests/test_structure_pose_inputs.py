@@ -276,6 +276,90 @@ class StructurePoseInputTests(unittest.TestCase):
                     self.assertFalse(np.shares_memory(array, source_array))
                     self.assertFalse(array.flags.writeable)
 
+    def test_admitted_static_inputs_are_reread_without_repeating_semantic_preflight(self):
+        from collections import Counter
+        engine, mid, _ = self.engine()
+        bundle = engine.qt_native_base
+        view, root, _, reader = bundle.read_binding()
+        directory = root / bundle.interfaces['identityEntries']
+        paths = (root / view.component['entrypoint'], directory / 'entries.json', directory / 'side-entries.json',
+                 *(root / bundle.interfaces[name] for name in
+                   ('identityPack', 'typedIndex', 'coordinatePack')))
+        admitted = {path.read_bytes() for path in paths}
+        relatives = {reader.relative_path(path) for path in paths}
+        preflight = reader._check_payload
+        reads = Counter()
+        original_read = view._read_payload
+
+        def check(raw, extension):
+            self.assertTrue(raw not in admitted, 'already admitted static model was parsed again')
+            return preflight(raw, extension)
+
+        def counted(package_root, inventory, component_id, relative):
+            reads[relative] += 1
+            return original_read(package_root, inventory, component_id, relative)
+
+        with patch.object(reader, '_check_payload', side_effect=check), \
+             patch.object(view, '_read_payload', side_effect=counted):
+            inputs = self.prepare(engine, mid)
+        self.assertTrue(inputs.new_geometry_engine().entry_identity.entries)
+        for relative in relatives:
+            self.assertGreaterEqual(reads[relative], 2, 'initial and final actual byte proofs required')
+
+    def test_admitted_static_bytes_still_reject_corruption_in_all_four_modes(self):
+        for season, mode, role in (('s0', 'nightmare', 'main'), ('s0', 'difficult', 'legacy'),
+                                   ('s1', 'difficult', 'coordinates'), ('s1', 'nightmare', 'side')):
+            with self.subTest(season=season, mode=mode, role=role):
+                engine, mid, _ = self.engine(season, mode)
+                bundle = engine.qt_native_base
+                view, root, component, reader = bundle.read_binding()
+                interfaces = bundle.interfaces
+                if role == 'legacy':
+                    relative = interfaces['legacyClean']['passports']
+                elif role == 'coordinates':
+                    relative = interfaces['coordinatePack']
+                else:
+                    relative = interfaces['identityEntries'] + ('/entries.json' if role == 'main' else '/side-entries.json')
+                path = root / relative
+                original = path.read_bytes()
+                path.write_bytes(bytes((original[0] ^ 1,)) + original[1:])
+                with self.assertRaisesRegex(ValueError, 'file-integrity-mismatch') as rejected:
+                    self.prepare(engine, mid, floor=engine.pack.floors[0])
+                self.assertEqual(rejected.exception.resource_file_ref.component, component)
+                self.assertEqual(rejected.exception.resource_file_ref.path, relative)
+
+    def test_admitted_static_batch_retains_cancel_manifest_and_selection_checks(self):
+        for mutation, expected in (('cancel', 'import-cancelled'), ('manifest', 'manifest-replaced'),
+                                   ('base', 'base-selection-superseded'),
+                                   ('controls', 'controls-selection-superseded')):
+            with self.subTest(mutation=mutation):
+                engine, mid, current = self.engine()
+                bundle = engine.qt_native_base
+                view, root, _, reader = bundle.read_binding()
+                target = bundle.interfaces['identityEntries'] + '/side-entries.json'
+                original_read, changed = view._read_payload, []
+                cancelled = [False]
+
+                def read(package_root, inventory, component_id, relative):
+                    raw = original_read(package_root, inventory, component_id, relative)
+                    if relative == target and not changed:
+                        changed.append(True)
+                        if mutation == 'cancel':
+                            cancelled[0] = True
+                        elif mutation == 'manifest':
+                            manifest = package_root / 'manifest.json'
+                            replacement = package_root / 'replacement.json'
+                            replacement.write_bytes(manifest.read_bytes())
+                            replacement.replace(manifest)
+                        else:
+                            current[mutation] = False
+                    return raw
+
+                with patch.object(view, '_read_payload', side_effect=read):
+                    with self.assertRaisesRegex(ValueError, expected):
+                        self.prepare(engine, mid, cancelled=lambda: cancelled[0])
+                self.assertTrue(changed)
+
     def test_reused_difficult_model_keeps_legacy_passports_once(self):
         engine, mid, _ = self.engine('s0', 'difficult')
         original = engine.qt_native_base.side_entry_identity

@@ -108,14 +108,27 @@ class _RecordingReader:
         self.payloads[key] = (Path(path), bytes(raw))
         return raw
 
+    def record_admitted(self, paths, *, cancelled=None):
+        """Recheck backing bytes for models admitted under this exact manifest.
+
+        This is only for static declarations already decoded by the bundle.
+        Optional/unadmitted inputs retain __call__ and its semantic preflight.
+        """
+        paths = tuple(Path(path) for path in paths if _path_key(path) not in self.payloads)
+        relatives = tuple(self.reader.relative_path(path) for path in paths)
+        payloads = self.reader.view.read_many(relatives, expected_root=self._root,
+                                              cancelled=cancelled)
+        for path, raw in zip(paths, payloads):
+            self.payloads[_path_key(path)] = (path, raw)
+
     def recheck(self, *, cancelled=None):
         if self.reader.root != self._root:
             raise PoseInputsUnavailable("pose-input-resource-binding-changed")
         recorded = tuple(self.payloads.values())
         relatives = tuple(self.reader.relative_path(path) for path, _ in recorded)
-        # The first read already checked payload semantics. Re-read every
-        # actual file under the original component's byte/manifest/selection
-        # checks; exact byte equality needs no second JSON/NPZ decode.
+        # Admission or the first preparation read already checked semantics.
+        # Re-read every actual file under the original byte/manifest/selection
+        # checks; exact byte equality needs no further JSON/NPZ decode.
         current = self.reader.view.read_many(relatives, expected_root=self._root,
                                              cancelled=cancelled)
         for (_, raw), actual in zip(recorded, current):
@@ -343,7 +356,7 @@ def _new_reference(provider_reference, bundle, read, root):
         resource_root=root, read_resource=read)
 
 
-def _prepare_locators(bundle, pack, references, read, interfaces, root, map_id, floors):
+def _prepare_locators(bundle, pack, references, read, interfaces, root, map_id, floors, *, cancelled=None):
     from difficult_entry_identity import MapEntryGeometryIdentity
     from difficult_side_entry_identity import MapLocalEntryIdentity
     from side_door_recognition import SideDoorRecognizer
@@ -363,8 +376,7 @@ def _prepare_locators(bundle, pack, references, read, interfaces, root, map_id, 
             paths.extend((directory / 'side-door-anchors.json', directory / 'side-entry-search.npz'))
         if admitted_side.passport_source_available:
             paths.append(directory / 'entry-passports.json')
-        for path in paths:
-            read(path)
+        read.record_admitted(paths, cancelled=cancelled)
         main, side = copy(admitted_main), copy(admitted_side)
         main._observation, main._wall_lines = None, {}
         main.route_loader = side.route_loader = None
@@ -393,10 +405,12 @@ def _prepare_locators(bundle, pack, references, read, interfaces, root, map_id, 
         raise PoseInputsUnavailable("pose-input-side-locator-capability-changed")
     passports = bundle.legacy_passports
     if passports is not None:
-        from imported_resource_reader import decode_resource_json
         declaration = interfaces.get("legacyClean") or {}
-        passports = decode_resource_json(read(root / declaration["passports"]))
-        if not reusable:
+        if reusable:
+            read.record_admitted((root / declaration["passports"],), cancelled=cancelled)
+        else:
+            from imported_resource_reader import decode_resource_json
+            passports = decode_resource_json(read(root / declaration["passports"]))
             side.passports.extend(passports["entries"])
             side.entry_coverage.extend(passports["coverage"])
     # Finish the existing lazy icon decoder in the preparation stage.
@@ -509,9 +523,9 @@ def prepare_structure_pose_inputs(engine, map_id, floor, *, resource_revision,
     read = _RecordingReader(reader)
     # The admission decoder already validated these semantics. Read actual
     # declarations again for this preparation, then decode coordinates afresh.
-    read(root / view.component["entrypoint"])
-    read(root / interfaces["identityPack"])
-    read(root / interfaces["typedIndex"])
+    read.record_admitted((root / view.component["entrypoint"], root / interfaces["identityPack"],
+                         root / interfaces["typedIndex"], root / interfaces["coordinatePack"]),
+                        cancelled=cancelled)
     from nightmare_author_coordinate_adapter import AuthorCoordinateAdapters
     coordinates = AuthorCoordinateAdapters(root / interfaces["coordinatePack"], read_resource=read)
     profiles = dict(pack.identity_profiles)
@@ -555,7 +569,8 @@ def prepare_structure_pose_inputs(engine, map_id, floor, *, resource_revision,
             matrices[(profile, map_id, target_floor)] = _array(matrix)
             if matrix is None:
                 gaps.append("coordinate-bridge-unavailable:" + profile + "/" + target_floor)
-    main, side = _prepare_locators(bundle, ram_pack, references, read, interfaces, root, map_id, floors)
+    main, side = _prepare_locators(bundle, ram_pack, references, read, interfaces, root, map_id, floors,
+                                  cancelled=cancelled)
     grid = _prepare_grid(engine, map_id, floors, read, pose_index_enabled)
     if grid is not None:
         gaps.extend(grid.gaps)
