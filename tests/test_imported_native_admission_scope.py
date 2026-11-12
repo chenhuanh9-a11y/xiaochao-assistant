@@ -3,6 +3,7 @@
 Source pixels are synthetic. Producer ZIPs, PackageView, every content decoder,
 the native model constructors and the final file reads are real.
 """
+from collections import Counter
 from collections.abc import Mapping
 from copy import copy
 from dataclasses import replace
@@ -19,7 +20,9 @@ import imported_difficult_native_base as difficult
 import imported_native_base as native
 from imported_resource_catalog import CatalogSnapshot, SCHEMA as CATALOG_SCHEMA
 import imported_resource_packages as packages
+import imported_resource_reader as resource_reader
 from imported_resource_reader import ComponentResourceReader
+import imported_structure_declarations as declarations
 import star_map_import as files
 import test_export_s0_difficult_native_base_package as difficult_fixtures
 import test_export_s1_native_base_package as s1_fixtures
@@ -164,6 +167,125 @@ class ImportedNativeAdmissionScopeTests(unittest.TestCase):
                          list(dict.fromkeys(original_payloads)))
         self.assertEqual(self.model(result), self.model(expected))
         self.assert_live_readers(result, view)
+
+    def test_typed_products_reuse_only_the_duplicate_generic_preflight(self):
+        verify = native._verify_typed_products
+        load = native.SharedStructureResourceStore.load
+        preflight = resource_reader.validate_npz_bytes
+        observations = []
+
+        def verify_with_count(view, reader, resources, versions):
+            by_raw = {view.path(row['resourcePath']).read_bytes(): row['resourcePath']
+                      for row in resources.entries.values()}
+            counts = Counter()
+
+            def actual_preflight(raw):
+                counts[by_raw[raw]] += 1
+                return preflight(raw)
+
+            with patch.object(resource_reader, 'validate_npz_bytes', actual_preflight), \
+                    patch.object(declarations, 'validate_npz_bytes', actual_preflight):
+                verify(view, reader, resources, versions)
+            observations.append(counts)
+
+        def load_with_full_reader(store, *args, **kwargs):
+            kwargs.pop('read_resource', None)
+            return load(store, *args, **kwargs)
+
+        with patch.object(native, '_verify_typed_products', verify_with_count):
+            with patch.object(native.SharedStructureResourceStore, 'load', load_with_full_reader):
+                expected, original_payloads, _ = self.trace(native.decode_native_base, self.view())
+            view = self.view()
+            result, actual_payloads, _ = self.trace(native.decode_native_base, view)
+        relatives = {row['resourcePath'] for row in result.resources.entries.values()}
+        self.assertEqual(observations, [Counter({relative: 4 for relative in relatives}),
+                                        Counter({relative: 3 for relative in relatives})])
+        self.assertEqual(actual_payloads, original_payloads)
+        self.assertEqual(self.model(result), self.model(expected))
+        self.assert_live_readers(result, view)
+
+    def test_second_typed_read_still_rejects_actual_file_and_owner_changes(self):
+        validate = native.validate_structure_declarations
+        read = packages.PackageView._read_payload
+        for damage in ('permission', 'bytes', 'missing', 'directory', 'manifest', 'owner', 'link'):
+            with self.subTest(damage=damage):
+                view = self.view()
+                index = json.loads(view.read(fixture_module.producer.INDEX))
+                relative = index['entries'][0]['resourcePath']
+                path = view.path(relative)
+                raw = path.read_bytes()
+                changed = []
+                if damage == 'link':
+                    target = self.root / 'outside-typed-product.npz'
+                    target.write_bytes(raw)
+                    probe = self.root / 'typed-link-probe'
+                    try:
+                        probe.symlink_to(target)
+                    except (OSError, NotImplementedError) as error:
+                        self.skipTest(f'file symlink creation is unavailable: {error}')
+                    probe.unlink()
+
+                def change_after_first_declarations(raw, **kwargs):
+                    result = validate(raw, **kwargs)
+                    if not changed:
+                        changed.append(relative)
+                        if damage == 'bytes':
+                            path.write_bytes(raw[:-1] + bytes([raw[-1] ^ 1]))
+                        elif damage in ('missing', 'directory', 'link'):
+                            path.unlink()
+                            if damage == 'directory':
+                                path.mkdir()
+                            elif damage == 'link':
+                                path.symlink_to(target)
+                        elif damage == 'manifest':
+                            manifest = view.root.parent.parent / 'manifest.json'
+                            manifest.write_bytes(manifest.read_bytes() + b' ')
+                        elif damage == 'owner':
+                            view.component_ref = replace(view.component_ref, component_id='controls')
+                    return result
+
+                def actual_read(package_root, inventory, component, selected):
+                    if damage == 'permission' and changed and selected == relative:
+                        raise PermissionError('second typed read is unavailable')
+                    return read(package_root, inventory, component, selected)
+
+                reason = ('manifest-changed' if damage == 'manifest'
+                          else '^imported-native-base-typed-product-invalid$')
+                with patch.object(native, 'validate_structure_declarations', change_after_first_declarations), \
+                        patch.object(packages.PackageView, '_read_payload', staticmethod(actual_read)):
+                    with self.assertRaisesRegex(files.ImportRejected, reason):
+                        native.decode_native_base(view)
+                self.assertEqual(changed, [relative])
+
+    def test_typed_preflight_callback_rejects_a_different_actual_resource(self):
+        view = self.view()
+        index = json.loads(view.read(fixture_module.producer.INDEX))
+        paths = [view.path(row['resourcePath']) for row in index['entries']]
+        load = native.SharedStructureResourceStore.load
+        read = packages.PackageView._read_payload
+        payloads, checked = [], []
+
+        def actual_read(package_root, inventory, component, relative):
+            payloads.append(relative)
+            return read(package_root, inventory, component, relative)
+
+        def load_with_wrong_request(store, *args, **kwargs):
+            callback = kwargs.get('read_resource')
+            if callback is not None:
+                current = store.entries[args[0], args[1], kwargs['variant'], args[2]]['resourcePath']
+                other = next(path for path in paths if path != view.root / current)
+                before = list(payloads)
+                with self.assertRaises(files.ImportRejected):
+                    callback(other)
+                self.assertEqual(payloads, before)
+                checked.append(current)
+            return load(store, *args, **kwargs)
+
+        with patch.object(native.SharedStructureResourceStore, 'load', load_with_wrong_request), \
+                patch.object(packages.PackageView, '_read_payload', staticmethod(actual_read)):
+            bundle = native.decode_native_base(view)
+        self.assertEqual(checked, [row['resourcePath'] for row in bundle.resources.entries.values()])
+        self.assert_live_readers(bundle, view)
 
     def at_replay(self, view, change, *, mode='nightmare'):
         """Mutate real state after the first final reread, not a mocked proof."""

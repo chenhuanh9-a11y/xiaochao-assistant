@@ -387,7 +387,8 @@ def _typed_declarations(view, reader, paths, expected, profile, identity_rows):
 
 def _verify_typed_products(view, reader, resources, versions):
     for key, row in resources.entries.items():
-        raw = reader(view.path(row['resourcePath']))
+        relative = row['resourcePath']
+        raw = reader(view.path(relative))
         metadata = validate_structure_declarations(raw,
             expected_binding=versions[key]['binding'], expected_shape=versions[key]['canvas']['shapeHW'])
         if metadata.get('sourceKind') != 'game-rendered-shared-structure':
@@ -395,7 +396,17 @@ def _verify_typed_products(view, reader, resources, versions):
         calibration = metadata.get('calibration')
         if calibration is not None:
             _identity_matrix(calibration.get('matrixCurrentReferenceToNative'))
-        product = resources.load(key[0], key[1], key[3], variant=key[2])
+
+        def read_preflighted(path):
+            if reader.relative_path(path) != relative:
+                _reject('typed-product-invalid')
+            # Repeat the actual file proof at the loader's original read point.
+            # Only the generic NPZ preflight above is reusable; the loader
+            # still validates typed declarations and decodes the complete arrays.
+            return reader.view.read(relative)
+
+        product = resources.load(key[0], key[1], key[3], variant=key[2],
+                                 read_resource=read_preflighted)
         if (product is None or not np.any(product.clean_mask)
                 or list(product.shape) != versions[key]['canvas']['shapeHW']
                 or product.metadata.get('canvas') != versions[key]['canvas']
