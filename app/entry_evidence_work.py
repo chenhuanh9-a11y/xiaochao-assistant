@@ -212,6 +212,9 @@ class ObservationWorkScheduler:
                 if terminal is not None:
                     status = terminal
                     break
+                if cancelled():
+                    status = 'cancelled'
+                    break
                 job = work.next_job()
             if cancelled():
                 status = 'cancelled'

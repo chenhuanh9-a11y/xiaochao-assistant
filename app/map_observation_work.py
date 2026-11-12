@@ -3,6 +3,7 @@
 The plan produces qualified source evidence. It never writes runtime identity,
 selects a display or treats an unfinished competitor as a rejection.
 """
+import copy
 import time
 
 import cv2
@@ -18,6 +19,7 @@ class MapObservationWork(EntryEvidenceWork):
         self.allowed = None
         self.prior, self.established, self.scope_invalid = prior, prior is not None, False
         self.entry_complete, self.rows, self.proposal = False, None, None
+        self.pose_proposal_rows = []
         self.advisory = dict(candidates=[], entryKind='unknown')
         self.gate_report = None
         self.passport_rows, self.passport_diagnostics = [], None
@@ -154,6 +156,15 @@ class MapObservationWork(EntryEvidenceWork):
         members.update(row['mapId'] for row in self.original_group_recovery)
         return tuple(sorted(members))
 
+    def _pose_checkpoint(self, rows):
+        # This is only a seed snapshot. The entry plan is still running; its
+        # identity reducer and completed-work pose shortcut are not available.
+        def snapshot():
+            self.pose_proposal_rows = copy.deepcopy([
+                dict(mapId=row['mapId'], difficultEntry=dict(row, floor=self.floor))
+                for row in rows])
+        yield self._job(None, 'entry-pose-proposals', snapshot)
+
     def _entry_jobs(self):
         from map_identity_engine import entry_passport_fallback_allowed, verified_entry_candidate
         if self.floor not in self.engine.identity_floors:
@@ -184,11 +195,13 @@ class MapObservationWork(EntryEvidenceWork):
             self.side_rows, self.side_diagnostics = self.passport_rows, self.passport_diagnostics
             self.side_winner = verified_entry_candidate(self.side_rows, self.side_diagnostics,
                 self.floor, profile_id=self.engine.identity_profile_for_map) if self.identity_authorized else None
+        yield from self._pose_checkpoint(self.passport_rows if self.passport_selected else self.entry_rows)
         if (not self.passport_selected and self.fallback_allowed
                 and not any(row['identityVerified'] for row in self.entry_rows) and side is not None):
             self.side_producer = 'local-structure'
             yield from self._delegate('side', self._prepare_local_rank(side, options), self._side)
             if 'side' not in self.errors:
+                yield from self._pose_checkpoint(self.side_rows)
                 yield from self._delegate('recovery', self.engine.prepare_side_recovery(
                     self.frame_snapshot, self.floor, self.side_rows, self.side_diagnostics,
                     entry_rows=self.entry_rows, passport_diagnostics=self.passport_diagnostics,

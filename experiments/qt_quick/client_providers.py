@@ -627,7 +627,7 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
                     return dict(success=False, reason='structure-work-obsolete')
                 began = time.perf_counter()
                 try:
-                    if entry_work is not None:
+                    if entry_work is not None and 'entry_observation' not in kw:
                         kw['entry_observation'] = entry_work
                     result = prepared.fit(f, mid, fl, cancel, **kw)
                 finally:

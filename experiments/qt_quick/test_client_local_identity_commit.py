@@ -362,15 +362,17 @@ class LocalIdentityCommitTests(unittest.TestCase):
         self.assertFalse(self.runtime.snapshot()['displayAuthorized'])
 
     def test_resource_owner_expiring_at_identity_reducer_rejects_entry_commit(self):
-        current = [True]
         commit = self.runtime._commit_identity_rows
         def supersede(*args, **kwargs):
-            current[0] = False
+            # Preserve the admitted current callback until this exact boundary.
+            # Replacing that callback invalidates native display ownership
+            # before the early preview and never reaches the identity writer.
+            self.factories.invalidate()
             return commit(*args, **kwargs)
-        with patch.object(self.engine, 'qt_resource_context_current', side_effect=lambda: current[0]), \
-             patch.object(self.runtime, '_commit_identity_rows', side_effect=supersede) as reducer:
+        with patch.object(self.runtime, '_commit_identity_rows', side_effect=supersede) as reducer:
             result = self.opening()
-        self.assertEqual(reducer.call_count, 1)
+        self.assertEqual(reducer.call_count, 1, dict(result=result, reports=self.scan_reports))
+        self.assertFalse(self.engine.qt_resource_context_current())
         self.assertFalse(result['success'], result)
         self.assert_unlocked()
         self.assertFalse(self.runtime.snapshot()['displayAuthorized'])

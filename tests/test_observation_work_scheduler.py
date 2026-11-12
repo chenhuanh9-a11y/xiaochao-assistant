@@ -293,6 +293,160 @@ class EntryObservationTests(unittest.TestCase):
                 floor_source='operator-declared', prepare_entry=prepare)
         fit.assert_not_called()
 
+    def test_early_preview_keeps_candidate_identity_work_running(self):
+        engine = self.engine(unique=True)
+        engine.entry_identity.verify.return_value = dict(success=True, matrixSourceToClient=np.eye(3))
+        events, calls = [], []
+        original = engine.prepare_source_structure_candidates
+        def source(*args, **kwargs):
+            events.append('source')
+            return original(*args, **kwargs)
+        def fit(frame, mid, floor, cancelled, **kwargs):
+            events.append('fit')
+            calls.append((mid, kwargs))
+            return pose()
+        def publish(evidence):
+            events.append('identity')
+            self.assertTrue(any(row['identityHardGatePassed'] for row in evidence['rows']))
+            return True
+        c = StructureCatalog('s0', 'nightmare', 'real-fixture-base', ('map-a', 'map-b'), ('2',))
+        with patch.object(engine, 'prepare_source_structure_candidates', side_effect=source):
+            report = StructureCandidateScanner(c, fit).scan(self.fixture.frame, floor='2',
+                floor_source='operator-declared', prepare_entry=engine.prepare_entry_observation,
+                on_progress=lambda report: events.append('preview'),
+                first_material_committed=lambda mid: True, on_entry_evidence=publish)
+        self.assertEqual(events, ['fit', 'preview', 'source', 'identity'])
+        self.assertEqual([mid for mid, _ in calls], ['map-a'])
+        self.assertIn('entry_observation', calls[0][1])
+        self.assertIsNone(calls[0][1]['entry_observation'])
+        self.assertTrue(calls[0][1]['entry_candidate']['verification']['success'])
+        self.assertEqual(report['checkedMapIds'], ['map-a'])
+        self.assertEqual(report['supportedMapIds'], ['map-a'])
+        self.assertEqual(report['unscannedMapIds'], ['map-b'])
+        self.assertFalse(report['identityHardGatePassed'])
+
+    def test_early_proposal_is_not_a_fit_or_identity_authority(self):
+        engine = self.engine(unique=True)
+        engine.qt_rank_ready = False
+        engine.entry_identity.verify.return_value = dict(success=True, matrixSourceToClient=np.eye(3))
+        events, calls = [], []
+        original = engine.prepare_source_structure_candidates
+        def source(*args, **kwargs):
+            events.append('source')
+            return original(*args, **kwargs)
+        def fit(frame, mid, floor, cancelled, **kwargs):
+            events.append('fit:' + mid)
+            calls.append(mid)
+            return dict(success=False, reason='actual-canonical-rejected')
+        c = StructureCatalog('s0', 'nightmare', 'real-fixture-base', ('map-a', 'map-b'), ('2',))
+        with patch.object(engine, 'prepare_source_structure_candidates', side_effect=source):
+            report = StructureCandidateScanner(c, fit).scan(self.fixture.frame, floor='2',
+                floor_source='operator-declared', prepare_entry=engine.prepare_entry_observation,
+                on_progress=lambda report: self.fail('rejected geometry cannot preview'))
+        self.assertEqual(events, ['fit:map-a', 'source', 'fit:map-a', 'fit:map-b'])
+        self.assertEqual(calls, ['map-a', 'map-a', 'map-b'])
+        self.assertEqual(report['checkedMapIds'], ['map-a', 'map-b'])
+        self.assertEqual(report['supportedMapIds'], [])
+        self.assertFalse(any(row['identityHardGatePassed'] for row in report['entryEvidence']['rows']))
+
+    def test_cancelling_early_preview_cannot_publish_later_identity(self):
+        engine = self.engine(unique=True)
+        engine.entry_identity.verify.return_value = dict(success=True, matrixSourceToClient=np.eye(3))
+        cancelled = [False]
+        c = StructureCatalog('s0', 'nightmare', 'real-fixture-base', ('map-a', 'map-b'), ('2',))
+        def preview(report):
+            cancelled[0] = True
+        publish = Mock(return_value=True)
+        with patch.object(engine, 'prepare_source_structure_candidates',
+                side_effect=AssertionError('cancelled remainder')):
+            report = StructureCandidateScanner(c, lambda *a, **kw: pose()).scan(
+                self.fixture.frame, floor='2', floor_source='operator-declared',
+                prepare_entry=engine.prepare_entry_observation, on_progress=preview,
+                on_entry_evidence=publish, cancelled=lambda: cancelled[0])
+        publish.assert_not_called()
+        self.assertEqual(report['status'], 'cancelled')
+        self.assertEqual(report['poses'], {})
+
+    def test_preview_error_does_not_abort_candidate_identity(self):
+        engine = self.engine(unique=True)
+        engine.entry_identity.verify.return_value = dict(success=True, matrixSourceToClient=np.eye(3))
+        evidence = []
+        def publish(report):
+            evidence.append(report)
+            return True
+        c = StructureCatalog('s0', 'nightmare', 'real-fixture-base', ('map-a', 'map-b'), ('2',))
+        fit = Mock(side_effect=OSError('temporary preview failure'))
+        report = StructureCandidateScanner(c, fit).scan(self.fixture.frame, floor='2',
+            floor_source='operator-declared', prepare_entry=engine.prepare_entry_observation,
+            on_progress=lambda report: self.fail('error cannot produce material'), on_entry_evidence=publish)
+        fit.assert_called_once()
+        self.assertEqual(len(evidence), 1)
+        self.assertTrue(any(row['identityHardGatePassed'] for row in evidence[0]['rows']))
+        self.assertEqual(report['outcomes'][0]['reason'], 'entry-preview-fit-unresolved')
+        self.assertEqual(report['supportedMapIds'], [])
+
+    def test_preview_memory_error_is_not_hidden(self):
+        engine = self.engine(unique=True)
+        engine.entry_identity.verify.return_value = dict(success=True, matrixSourceToClient=np.eye(3))
+        c = StructureCatalog('s0', 'nightmare', 'real-fixture-base', ('map-a', 'map-b'), ('2',))
+        with self.assertRaises(MemoryError), patch.object(engine, 'prepare_source_structure_candidates',
+                side_effect=AssertionError('failed preview cannot advance')):
+            StructureCandidateScanner(c, Mock(side_effect=MemoryError())).scan(self.fixture.frame,
+                floor='2', floor_source='operator-declared', prepare_entry=engine.prepare_entry_observation,
+                on_progress=lambda report: self.fail('failed preview'))
+
+    def test_prefix_unknown_can_use_completed_work_without_duplicate_checked_ids(self):
+        engine = self.engine(unique=True)
+        engine.qt_rank_ready = False
+        engine.entry_identity.verify.return_value = dict(success=True, matrixSourceToClient=np.eye(3))
+        c = StructureCatalog('s0', 'nightmare', 'real-fixture-base', ('map-a', 'map-b'), ('2',))
+        session = StructureEvidenceSession(c, 'round')
+        ticket = session.begin_observation('2')
+        calls = []
+        def fit(frame, mid, floor, cancelled, **kwargs):
+            calls.append((mid, 'entry_observation' in kwargs))
+            if mid == 'map-a' and 'entry_observation' not in kwargs:
+                return pose()
+            return dict(success=False, reason='prefix-unknown')
+        def preview(report):
+            self.assertTrue(session.commit(report, ticket))
+        report = StructureCandidateScanner(c, fit).scan(self.fixture.frame, floor='2',
+            floor_source='operator-declared', prepare_entry=engine.prepare_entry_observation,
+            on_progress=preview)
+        self.assertEqual(calls, [('map-a', True), ('map-a', False), ('map-b', False)])
+        self.assertEqual(report['checkedMapIds'], ['map-a', 'map-b'])
+        self.assertEqual(report['supportedMapIds'], ['map-a'])
+        self.assertEqual([row['mapId'] for row in report['outcomes']], ['map-a', 'map-b'])
+        self.assertEqual(report['outcomes'][0]['outcome'], 'supported')
+        self.assertTrue(session.commit(report, ticket))
+
+    def test_changed_prefix_seed_retries_but_identical_seed_does_not(self):
+        class Seeds(EntryEvidenceWork):
+            pose_proposal_rows = []
+            def _jobs(self):
+                for x in (0., 0., 40.):
+                    def snapshot(x=x):
+                        matrix = np.eye(3)
+                        matrix[0, 2] = x
+                        self.pose_proposal_rows = [dict(mapId='map-a', difficultEntry=dict(
+                            mapId='map-a', verification=dict(success=True, matrixSourceToClient=matrix)))]
+                    yield self._job(None, 'entry-pose-proposals', snapshot)
+            def finish(self):
+                self.close()
+                return self.pose_proposal_rows
+        c = StructureCatalog('s0', 'nightmare', 'real-fixture-base', ('map-a',), ('2',))
+        translations = []
+        def fit(frame, mid, floor, cancelled, **kwargs):
+            x = kwargs['entry_candidate']['verification']['matrixSourceToClient'][0, 2]
+            translations.append(x)
+            return pose() if x == 40. else dict(success=False, reason='initial-seed-unresolved')
+        report = StructureCandidateScanner(c, fit).scan(self.fixture.frame, floor='2',
+            floor_source='operator-declared', prepare_entry=lambda snapshot, *a, **kw: Seeds(snapshot),
+            on_progress=lambda report: None)
+        self.assertEqual(translations, [0., 40.])
+        self.assertEqual(report['checkedMapIds'], ['map-a'])
+        self.assertEqual(report['supportedMapIds'], ['map-a'])
+
     def test_entry_hint_keeps_preferred_and_planned_scope_and_cannot_revive_cancel(self):
         engine = self.engine(unique=True)
         engine.qt_rank_ready = False

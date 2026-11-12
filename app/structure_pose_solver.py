@@ -306,14 +306,15 @@ class StructurePoseSolver:
                 components = visible_map_components(frame, observation_bounds=bounds)
             return components
 
+        entry_unspecified = object()
         def fit_one(candidate_frame, map_id, floor, cancelled, *, observation_bounds=None,
-                    entry_candidate=None, entry_observation=None):
+                    entry_candidate=None, entry_observation=entry_unspecified):
             if candidate_frame is not frame or tuple(observation_bounds or ()) != bounds:
                 raise ValueError("structure-scan-observation-context-mismatch")
             return fit(frame, map_id, floor, cancelled,
                             observation_bounds=bounds, _scan_observation=(geometry, islands),
                             **(dict(entry_candidate=entry_candidate) if entry_candidate is not None else {}),
-                            **(dict(entry_observation=entry_observation) if entry_observation is not None else {}))
+                            **(dict(entry_observation=entry_observation) if entry_observation is not entry_unspecified else {}))
         return fit_one
 
     def fit(self, frame, map_id, floor, cancelled, entry_candidate=None, *, entry_observation=None,

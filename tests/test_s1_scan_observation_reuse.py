@@ -59,6 +59,23 @@ class ScanObservationReuseTests(unittest.TestCase):
         self.assertEqual(observed_corner_chains(self.frame, dict(context, observed=observed.copy())), [])
         self.assertEqual(observed_corner_chains(self.frame, dict(context, nodes=[])), [])
 
+    def test_scan_preserves_explicitly_disabled_completed_entry_work(self):
+        calls = []
+        def fit(*args, **kwargs):
+            calls.append(kwargs)
+            return dict(success=False, reason='controlled-fit')
+        prepared = self.host.prepare_structure_scan(self.frame, self.bounds, fit_callback=fit)
+        prepared(self.frame, 'a', '-1', lambda: False, observation_bounds=self.bounds,
+                 entry_observation=None)
+        prepared(self.frame, 'a', '-1', lambda: False, observation_bounds=self.bounds)
+        owner = object()
+        prepared(self.frame, 'a', '-1', lambda: False, observation_bounds=self.bounds,
+                 entry_observation=owner)
+        self.assertIn('entry_observation', calls[0])
+        self.assertIsNone(calls[0]['entry_observation'])
+        self.assertNotIn('entry_observation', calls[1])
+        self.assertIs(calls[2]['entry_observation'], owner)
+
     def test_component_arbitration_and_cancel_remain_fail_closed(self):
         query = np.zeros((60, 80), np.uint8)
         islands = [(None, (5, 5, 20, 20), dict(area=200)),

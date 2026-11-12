@@ -872,7 +872,9 @@ python -m unittest test_client_progressive_display test_client_progressive_pixel
 
 导入 S0 的生产识别通过 `RecognitionRace` 同时调度候选 scanner 与 `PreparedLocalStructureRecognition`。后者复用原角点/方向射线完整竞争、门与入口矛盾检查、局部位姿恢复和条件归约，静态索引只筛除可证明不匹配的种子；legacy 与资源缺口仍保留为竞争者。两路各有独立查询缓存，共用同一个只读 `FrameSnapshot`。回调回到调用线程后，由 runtime 校验当前票据和资源再提交；只有实际地图身份提交才停止另一路，预览、组状态或单路终结均不算锁图。canonical 终结不关闭另一来源通道，观察关闭、换层及资源更新仍撤销整张票据。原 footprint 检索继续只作显式请求的诊断，`authorizesIdentity` 与 `lock` 保持 false，默认不为它提前构造全目录。S1 的 proposal-only 入口不因复用数值模块而取得身份资格；其公共坐标路径与真实资源声明单独补齐。四模式同样本正式计时、可见像素及游戏验收仍待执行。
 
-同帧首贴只从实际完成的 `MapObservationWork` 私下取得入口位姿：整个作业及入口阶段均完成、没有失败/歧义、其 `FrameSnapshot.pixels` 必须就是当前求解帧，且源与 prepared 参考及坐标桥一致。矩阵从该作业的唯一结果取得，再以固定矩阵检查当前像素；原始 row 的标志或矩阵不能开启捷径。失败回到原 fast/recovery/initial 顺序。当前票据已有 canonical pose 时仍直接消费该 pose。身份确认与候选是同一地图/楼层/帧时，完整候选像素保持原显示凭据直到新合格材料原子替换；不同地图和过期观察继续撤销。
+同帧入口固定H捷径只从实际完成的 `MapObservationWork` 私下取得入口位姿：整个作业及入口阶段均完成、没有失败/歧义、其 `FrameSnapshot.pixels` 必须就是当前求解帧，且源与 prepared 参考及坐标桥一致。矩阵从该作业的唯一结果取得，再以固定矩阵检查当前像素；原始 row 的标志或矩阵不能开启捷径。失败回到原 fast/recovery/initial 顺序。当前票据已有 canonical pose 时仍直接消费该 pose。身份确认与候选是同一地图/楼层/帧时，完整候选像素保持原显示凭据直到新合格材料原子替换；不同地图和过期观察继续撤销。
+
+S0 候选计划在已完成的主入口/出口交叉检查或局部侧门阶段提供提案快照，scanner 可先运行普通全客户区 canonical 求解。此时显式传 `entry_observation=None`，包括中间 scan wrapper；提案只提供搜索 seed，仍执行原结构、尺度和当前像素残差验证，不发布部分入口身份。runtime 确认预览材料后仅停止后续候选贴合，继续候选自己的 recovery/source/condition 和最终身份归约，另一结构通道也继续；实际合格身份提交才取消输家。早期 UNKNOWN 或普通贴合异常不阻断身份计划，变化的 seed 或完整作业仍可重试，已成功的 canonical pose 保持复用；checked 前缀与已支持位姿保持单调。共享截止时间不延长，预贴合占用预算后未完成的身份仍为未决。取消回调后在推进下一作业前再次检查取消。
 
 S0 两条识别通道在单次 scan 内通过 `SharedObservationDependencies` 共享同帧几何、相同来源的单项 probe、相同数值输入的验证与恢复核。缓存只保存本次只读帧的纯计算结果，消费者取得独立副本；候选域、完整竞争域、目录缺口、竞争带、资格与身份归约各自保留。完整 source 结果可共享，不完整 source 只属于本次尝试；取消等待者不取消另一通道的在途核，迟到结果仍由原 ticket/race/runtime 校验。完成值保留上限为64MiB/256项，不代表整次扫描峰值内存。生产结构通道只准备 points/rays/pairs/deltas/denoms，采用原 exact seed 搜索；可选 raster bound 在实帧诊断中比普通搜索更慢，故默认不生成该距离场，不删候选或放宽阈值。功能回放恢复缺失材料不等于正式性能验收，须绑定干净提交复测。
 

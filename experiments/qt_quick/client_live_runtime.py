@@ -1184,10 +1184,11 @@ class LiveRuntime:
                     # owes one full catalogue pass, regardless of that ledger.
                     scan_plan, scan_revision = ((tuple(catalog.map_ids) if recovery_scan else tuple(pool.remaining)),
                         pool.revision) if private_enabled else ((), None)
-                    options = dict(planned_map_ids=scan_plan,
-                        first_material_committed=(first_material_committed
-                            if not recovery_scan and payload.get("forceCatalogue") is not True
-                            and action not in ("reselect_map", "map_reselection") else None)) if private_enabled else {}
+                    options = dict(first_material_committed=(first_material_committed
+                        if not recovery_scan and payload.get("forceCatalogue") is not True
+                        and action not in ("reselect_map", "map_reselection") else None))
+                    if private_enabled:
+                        options['planned_map_ids'] = scan_plan
                     if pose_priors:
                         options["pose_priors"] = dict(pose_priors)
                     if (private_enabled and pool.retain_locked_identity and pool.locked_id
