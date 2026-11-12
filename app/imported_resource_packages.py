@@ -416,25 +416,34 @@ class PackageView:
 
     def path(self, relative):
         package_root, _, _, _, inventory, _, _ = self._load()
+        target = self._selected_path(package_root, inventory, self.component_ref, relative)
+        self._assert_current()
+        return target
+
+    @staticmethod
+    def _selected_path(package_root, inventory, ref, relative):
         try:
             normalized = files._relative(relative)
         except (TypeError, ValueError) as error:
             raise files.ImportRejected('resource-package-invalid-file-path') from error
         if normalized != relative:
             _reject('invalid-file-path')
-        key = (self.component_ref.component_id, relative)
+        key = (ref.component_id, relative)
         if key not in inventory:
             _reject('file-not-declared')
         target = files._target(package_root,
-                               'data/' + self.component_ref.component_id + '/' + relative)
+                               'data/' + ref.component_id + '/' + relative)
         try:
             info = target.lstat()
         except OSError as error:
             raise files.ImportRejected('resource-package-file-unavailable') from error
         if not stat.S_ISREG(info.st_mode):
             _reject('non-regular-package-file')
-        self._assert_current()
         return target
+
+    def admission_read_scope(self):
+        """Create a private construction scope; it cannot authorize live reads."""
+        return _AdmissionReadScope(self)
 
     def file_ref(self, relative):
         self.path(relative)
@@ -510,3 +519,141 @@ class PackageView:
         if len(raw) != row['bytes'] or hashlib.sha256(raw).hexdigest() != row['sha256']:
             _reject('file-integrity-mismatch')
         return raw
+
+
+class _AdmissionReadScope:
+    """Reuse declarations only while an unpublished native model is built.
+
+    Every payload still enters the original stable-file/integrity reader. A
+    successful construction rereads every consumed FileRef before one final
+    actual manifest/root/catalog proof. No filesystem verdict survives exit.
+    """
+    def __init__(self, view):
+        self.owner_view = view
+        self._active = False
+        self._owners = []
+        self._consumed = {}
+
+    def _view_state(self):
+        view = self.owner_view
+        return id(view), view.resource_root, view.component_ref, id(view._assert_current)
+
+    def __enter__(self):
+        self._state = self._view_state()
+        loaded = self.owner_view._load()
+        (self._package_root, self._data_root, _, self._components,
+         self._inventory, self._stamp, self._digest) = loaded
+        self._ref = self._state[2]
+        # Component semantics precede the first root access in the original
+        # decoder. Do not turn a later missing root into an earlier error.
+        self._root = None
+        self._active = True
+        try:
+            self._assert_owners()
+        except BaseException:
+            self._active = False
+            raise
+        return self
+
+    def _assert_owners(self):
+        if not self._active:
+            _reject('read-scope-closed')
+        state = self._view_state()
+        if state[2] != self._ref:
+            _reject('component-reference-changed')
+        if state != self._state or any(read_state() != initial for read_state, initial in self._owners):
+            _reject('component-root-changed')
+
+    def register_owner(self, read_state):
+        self._assert_owners()
+        self._owners.append((read_state, read_state()))
+
+    def record_consumed(self, file_ref):
+        """Include a successful ordinary live read in the final byte proof."""
+        self._assert_owners()
+        if file_ref.component != self._ref:
+            _reject('component-reference-changed')
+        self._consumed[file_ref] = None
+
+    @property
+    def component_ref(self):
+        self._assert_owners()
+        return self._ref
+
+    @property
+    def root(self):
+        self._assert_owners()
+        if self._root is None:
+            self._root = self.owner_view._component_root(self._data_root, self._ref)
+        return self._root
+
+    @property
+    def component(self):
+        self._assert_owners()
+        return deepcopy(self._components[self._ref.component_id])
+
+    @property
+    def inventory(self):
+        self._assert_owners()
+        return {path: dict(row) for (owner, path), row in self._inventory.items()
+                if owner == self._ref.component_id}
+
+    def path(self, relative):
+        self._assert_owners()
+        return self.owner_view._selected_path(self._package_root, self._inventory, self._ref, relative)
+
+    def read(self, relative):
+        return self.read_many((relative,))[0]
+
+    def _read_payload(self, file_ref):
+        try:
+            return self.owner_view._read_payload(
+                self._package_root, self._inventory, file_ref.component.component_id, file_ref.path)
+        except (OSError, ValueError) as error:
+            error.resource_file_ref = file_ref
+            raise
+
+    def read_many(self, relatives, *, expected_root=None, cancelled=None, validate_payloads=None,
+                  on_payload=None):
+        self._assert_owners()
+        files._check_cancelled(cancelled)
+        if expected_root is not None and Path(expected_root) != self.root:
+            _reject('component-root-changed')
+        result = []
+        for relative in relatives:
+            file_ref = FileRef(self._ref, relative)
+            raw = self._read_payload(file_ref)
+            self._consumed[file_ref] = None
+            result.append(raw)
+            if on_payload is not None:
+                on_payload(file_ref, raw)
+        if validate_payloads is not None:
+            validate_payloads(tuple(result))
+        self._assert_owners()
+        files._check_cancelled(cancelled)
+        return tuple(result)
+
+    def _finish(self):
+        self._assert_owners()
+        for file_ref in self._consumed:
+            self._read_payload(file_ref)
+        self._assert_owners()
+        loaded = self.owner_view._load()
+        package_root, data_root, _, _, _, stamp, digest = loaded
+        if stamp['identity'] != self._stamp['identity'] or digest != self._digest:
+            _reject('manifest-replaced')
+        if (package_root != self._package_root
+                or self.owner_view._component_root(data_root, self._ref) != self.root):
+            _reject('component-root-changed')
+        self._assert_owners()
+
+    def __exit__(self, kind, error, traceback):
+        try:
+            # Preserve the decoder's original first error and classification.
+            if kind is None:
+                self._finish()
+        finally:
+            self._active = False
+            self._owners.clear()
+            self._consumed.clear()
+        return False

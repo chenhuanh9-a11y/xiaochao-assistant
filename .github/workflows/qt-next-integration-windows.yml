@@ -233,7 +233,7 @@ jobs:
                 'test_export_native_base_package',
                 'test_export_s0_difficult_native_base_package',
                 'test_export_s1_native_base_package', 'test_export_s1_nightmare_base_package',
-                'test_imported_native_base',
+                'test_imported_native_base', 'test_imported_native_admission_scope',
                 'test_imported_group_registry',
                 'test_imported_s1_native_base', 'test_imported_s1_controls_profile',
                 'test_entry_semantic_capability', 'test_imported_s1_native_context',

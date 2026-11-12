@@ -817,6 +817,8 @@ python -m unittest test_client_progressive_display test_client_progressive_pixel
 
 基础资源准入中的 neutral、version 和 native 坐标引用，若与同一次解码已检查的精确 typed/interface 路径相同，复用该引用证明；不同路径仍走原路径/类型校验及原错误分类。后续实际 payload 读取和解码不变；历史二值坐标引用与 entry 的文档相对锚点仍保留原检查。这里减少重复清单/路径访问，不能替代实际文件完整性、数值、组件归属或当前选择检查。
 
+基础包的未发布模型构造使用显式 `admission_read_scope` 复用本次清单与目录声明；逐文件仍执行原路径、常规文件、稳定读取、字节完整性及语义检查。成功退出前逐个实际重读已消费文件，再验证清单文件身份、组件根、当前选择和持有者；失败退出保留原首错。结构 store、坐标适配器、入口和出口的持久回调在发布前绑定普通 live reader；bundle、fast source 与历史引用继续持有原 live view，短寿命 scope 不进入运行时。此片未减少 typed 解码或 fast source 原有检查。
+
 首次贴合准备复用已准入的静态模型时，其入口、身份/typed 索引、坐标与已成功解码的入口 backing 文件，通过原组件批读检查实际字节及既有清单声明，保留本次读取和最终重读记录，不重复 JSON/NPZ 内容遍历。坐标矩阵仍由原适配器解析，求解所用数组仍冻结为独立只读值；未准入或可选输入、模型能力缺失时的加载器继续原语义预检与错误分类。历史 passports 的成功模型不重复解析或追加，实际文件仍须通过完整性和当前选择检查。
 
 完整域索引的成功批读使用显式短寿命 reference operation：开始及最终字节复核后实际检查基础、控件与选择上下文，逐层只核对本次 provider、bundle、控件、native、legacy、source/reader 的内存归属。读取仍复用原 provider 解码和有界 LRU；只有已准入 legacy 集合之外的 native 请求省去无用 legacy 尝试。失败前缀、普通 callable、自定义 guard/legacy loader 保留原读取与首错分类。operation 不持有批次或其 reader 回调跨越最终复核，不进入逐帧数学求解，也不增加身份或楼层资格。

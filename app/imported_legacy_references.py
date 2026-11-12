@@ -112,8 +112,11 @@ class ImportedLegacyReferences:
 
     def read_owner_state(self):
         """RAM owner description; actual legacy reads retain their own checks."""
+        store = self._store
         return (id(self), id(self._view), self._root, id(self._reader),
-                id(self._reader.view), self._reader.root, id(self._store),
+                id(self._reader.view), self._reader.root, id(store),
+                None if store is None else (id(store.read_resource), id(store.check_current),
+                    store.resource_root, store.index_path, id(store.entries)),
                 self._maps, id(self._canvases), self._profile)
 
     def reference(self, map_id, floor):

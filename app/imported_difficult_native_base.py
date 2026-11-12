@@ -16,6 +16,7 @@ from imported_native_base import (
     SCHEMA, NativeBaseBundle, NativeBaseUnavailable, _canvas, _checked_reference_matches, _entry_rows,
     _identity_matrix, _number, _points, _reference, _reject, _rows, _text,
     _typed_declarations, _verify_typed_products,
+    _admission_owner_state, _bind_bundle_live_reader, _bind_live_readers,
 )
 from imported_resource_packages import PackageView
 from imported_resource_reader import ComponentResourceReader
@@ -155,6 +156,11 @@ def _entry_policy(legacy_keys):
 def decode_s0_difficult(view):
     if not isinstance(view, PackageView):
         _reject('package-view-required')
+    with view.admission_read_scope() as scope:
+        return _decode_s0_difficult(scope, view)
+
+
+def _decode_s0_difficult(view, live_view):
     component = view.component
     if component.get('type') != 'recognition-base' or component.get('schemaVersion') != 1:
         _reject('component-type-invalid')
@@ -162,7 +168,9 @@ def decode_s0_difficult(view):
         raise NativeBaseUnavailable('native-base-context-unsupported')
     if component['dependencies']:
         raise NativeBaseUnavailable('native-base-dependencies-unsupported')
-    reader = ComponentResourceReader(view)
+    live_reader = ComponentResourceReader(live_view)
+    reader = live_reader if view is live_view else live_reader.for_admission(view)
+    admission_live_reader = live_reader if view is live_view else live_reader.recording_for_admission(view)
     context = reader.json(component['entrypoint'])
     if (set(context) != {'schema', 'season', 'mode', 'runtimeInterfaces'}
             or context.get('schema') != SCHEMA or (context.get('season'), context.get('mode')) != ('s0', 'difficult')):
@@ -202,7 +210,8 @@ def decode_s0_difficult(view):
     if legacy_ids:
         if not isinstance(declaration, dict) or declaration.get('profileId') != LEGACY_PROFILE:
             _reject('legacy-declaration-invalid')
-        legacy = ImportedLegacyReferences(view, declaration, expected_maps=legacy_ids, floors=FLOORS, reader=reader)
+        legacy = ImportedLegacyReferences(live_view, declaration, expected_maps=legacy_ids,
+                                          floors=FLOORS, reader=admission_live_reader)
         legacy_bindings = legacy.bindings
     else:
         if declaration is not None:
@@ -316,11 +325,15 @@ def decode_s0_difficult(view):
     if set(versions) != set(resources.entries) or any(row['sharedError'] is not None for row in versions.values()):
         _reject('version-binding-invalid')
     _verify_typed_products(view, reader, resources, versions)
-    result = NativeBaseBundle(view, pack=pack, resources=resources, adapters=adapters,
-        versions=MappingProxyType(versions), interfaces=MappingProxyType(deepcopy(interfaces)), reader=reader,
+    _bind_live_readers(live_reader, resources, adapters, main, local)
+    result = NativeBaseBundle(live_view, pack=pack, resources=resources, adapters=adapters,
+        versions=MappingProxyType(versions), interfaces=MappingProxyType(deepcopy(interfaces)), reader=admission_live_reader,
         season='s0', mode='difficult', component_ref=view.component_ref, entry_identity=main,
         side_entry_identity=local, exit_recognizer=None, legacy_references=legacy,
         legacy_passports=deepcopy(passports), native_source=version_pack,
         semantic_side_entries=False, passport_source_available=False, rank_ready=False, gaps=tuple(gaps))
+    _bind_bundle_live_reader(result, live_reader)
+    if view is not live_view:
+        view.register_owner(lambda: _admission_owner_state(result))
     result.assert_current()
     return result

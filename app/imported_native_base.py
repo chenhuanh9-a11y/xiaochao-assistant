@@ -410,11 +410,62 @@ def _decode(view, season, mode):
         return decode_s0_difficult(view)
     if (season, mode) not in {('s0', 'nightmare'), ('s1', 'difficult'), ('s1', 'nightmare')}:
         raise NativeBaseUnavailable('native-base-context-unsupported')
+    if not isinstance(view, PackageView):
+        _reject('package-view-required')
+    with view.admission_read_scope() as scope:
+        return _decode_component(scope, view, season, mode)
+
+
+def _bind_live_readers(reader, resources, adapters, main, local, exit_recognizer=None):
+    # These objects are still private. Published consumers must perform their
+    # ordinary actual view reads, including lazily constructed exit readers.
+    resources.read_resource = reader
+    adapters._read_resource = reader
+    main.read_resource = local.read_resource = reader
+    if local._exit_recognizer is not None:
+        local._exit_recognizer.read_resource = reader
+    if exit_recognizer is not None:
+        exit_recognizer.read_resource = reader
+
+
+def _admission_owner_state(bundle):
+    """RAM ownership of the unpublished result, including all retained readers."""
+    values = bundle._values
+    resources, adapters = values['resources'], values['adapters']
+    main, local, exit_recognizer = (values[name] for name in
+                                  ('entry_identity', 'side_entry_identity', 'exit_recognizer'))
+    fast = values['fast_structure_source']
+    legacy = values['legacy_references']
+    groups = values['reviewed_front_groups']
+    return (id(bundle._view), bundle._root, values['component_ref'],
+        tuple(id(values[name]) for name in ('reader', 'pack', 'resources', 'adapters', 'versions',
+            'entry_identity', 'side_entry_identity', 'exit_recognizer', 'legacy_references', 'fast_structure_source')),
+        (id(resources.read_resource), resources.resource_root, resources.index_path, id(resources.entries)),
+        id(adapters._read_resource),
+        (main.root, id(main.read_resource), id(main.structures), id(main.shared_reference_provider)),
+        (local.root, id(local.read_resource), id(local.structures), id(local.shared_reference_provider)),
+        None if local._exit_recognizer is None else id(local._exit_recognizer.read_resource),
+        None if exit_recognizer is None else id(exit_recognizer.read_resource),
+        fast._read_state(),
+        None if groups is None else (id(groups), id(groups._base), id(groups._view), groups._path, groups.file_ref),
+        None if legacy is None else legacy.read_owner_state())
+
+
+def _bind_bundle_live_reader(bundle, reader):
+    # Fast/groups and legacy use actual live reads even during construction.
+    # Their temporary observer must not remain in a published model.
+    values = bundle._values
+    values['reader'] = reader
+    values['fast_structure_source'].reader = reader
+    legacy = values['legacy_references']
+    if legacy is not None:
+        legacy._reader = legacy._store.read_resource = reader
+
+
+def _decode_component(view, live_view, season, mode):
     proposal_only = season == 's1'
     floors = frozenset(('-1', '-2', '-3', '-4')) if proposal_only else FLOORS
     profile = 'shared-structure' if proposal_only else PROFILE
-    if not isinstance(view, PackageView):
-        _reject('package-view-required')
     component = view.component
     if component.get('type') != 'recognition-base' or component.get('schemaVersion') != 1:
         _reject('component-type-invalid')
@@ -422,7 +473,9 @@ def _decode(view, season, mode):
         raise NativeBaseUnavailable('native-base-context-unsupported')
     if component['dependencies']:
         raise NativeBaseUnavailable('native-base-dependencies-unsupported')
-    reader = ComponentResourceReader(view)
+    live_reader = ComponentResourceReader(live_view)
+    reader = live_reader if view is live_view else live_reader.for_admission(view)
+    admission_live_reader = live_reader if view is live_view else live_reader.recording_for_admission(view)
     context = reader.json(component['entrypoint'])
     if context.get('schema') != SCHEMA:
         raise NativeBaseUnavailable('native-base-schema-unsupported')
@@ -587,14 +640,19 @@ def _decode(view, season, mode):
     if set(versions) != set(resources.entries) or any(row['sharedError'] for row in versions.values()):
         _reject('version-binding-invalid')
     _verify_typed_products(view, reader, resources, versions)
-    result = NativeBaseBundle(view, pack=pack, resources=resources, adapters=adapters,
-        versions=MappingProxyType(versions), interfaces=MappingProxyType(dict(interfaces)), reader=reader,
+    exit_recognizer = None if proposal_only else SideDoorRecognizer(view.path(paths['exitIcon']), read_resource=reader)
+    _bind_live_readers(live_reader, resources, adapters, main, local, exit_recognizer)
+    result = NativeBaseBundle(live_view, pack=pack, resources=resources, adapters=adapters,
+        versions=MappingProxyType(versions), interfaces=MappingProxyType(dict(interfaces)), reader=admission_live_reader,
         season=season, mode=mode, component_ref=view.component_ref,
         entry_identity=main, side_entry_identity=local,
-        exit_recognizer=None if proposal_only else SideDoorRecognizer(view.path(paths['exitIcon']), read_resource=reader),
+        exit_recognizer=exit_recognizer,
         legacy_references=None, legacy_passports=None, native_source=pack,
         semantic_side_entries=not proposal_only, passport_source_available=True, rank_ready=True,
         gaps=tuple(gaps))
+    _bind_bundle_live_reader(result, live_reader)
+    if view is not live_view:
+        view.register_owner(lambda: _admission_owner_state(result))
     result.assert_current()
     return result
 
