@@ -10,7 +10,8 @@ from PySide6.QtCore import QCoreApplication, QUrl
 
 from client_imported_providers import SUPPORTED_CAPABILITIES, build_imported_engine_factories
 from client_imported_resources import ImportedResourceService
-from client_live_runtime import LiveRuntime, _AlignmentHost
+from client_live_runtime import LiveRuntime
+from structure_pose_solver import PreparedStructurePoseSolver as _AlignmentHost
 from client_paths import RuntimePaths
 from client_route_preferences import prepare_display_layer
 from client_session import SessionService

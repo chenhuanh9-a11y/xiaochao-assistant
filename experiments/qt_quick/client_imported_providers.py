@@ -6,6 +6,7 @@ Presence is reported separately from algorithm readiness.
 """
 from copy import deepcopy
 import re
+import threading
 
 from season_context import SeasonContext, context_key, is_retired_mode
 from client_providers import EngineFactories, ProviderResourceBinding, ProviderUnavailable
@@ -128,6 +129,9 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
         local.passports.extend(deepcopy(bundle.legacy_passports['entries']))
         local.entry_coverage.extend(deepcopy(bundle.legacy_passports['coverage']))
     engine.qt_native_base = bundle
+    from structure_pose_inputs import StructurePoseInputCache
+    engine.qt_pose_input_cache = StructurePoseInputCache()
+    engine.qt_pose_prepare_lock = threading.RLock()
     engine.qt_assert_resource_current = check_current
     engine.qt_shared_provider = provider
     engine.qt_fast_structure_source = bundle.fast_structure_source

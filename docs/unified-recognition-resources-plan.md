@@ -807,7 +807,13 @@ python -m unittest test_client_progressive_display test_client_progressive_pixel
 
 实际算法职责保持：`fast_structure_alignment` 用距离场和稀疏轮廓提出尺度/平移，`single_map_structure` 做拐角链对应、墙线细化和区域验证，既有 0059 尺度先验及登记楼层恢复仍由原顺序调用，最终通过当前帧 canonical 结构残差复核。首可用贴合回调与后续 peer 复核保留；runtime 仍唯一持有身份、持久位姿、组态、显示撤销与 material ACK。
 
-`StructureFitResources` 只属于一次同步 fit：区域重试复用同图的实际参考和准备结果，包括可选准备缺失；下一次 fit 重新取证。首次显示回调和返回前，经原 provider/reader/fast source 重新检查当前组件和实际字节；准备未使用的通道也检查 typed payload。异常或取消清除本次缓存，既有正确输入不能被坏准备缓存冒充。没有跨帧保存结果或缩短候选预算。
+兼容公开入口 `StructurePoseSolver.fit` 保留一次同步 fit 的 `StructureFitResources`：区域重试复用实际参考和准备结果，回调及返回前仍检查组件和实际字节。实际导入资源的生产入口已改走下面的提前准备路径；不能将兼容入口包含资源操作的耗时称为纯数学耗时。
+
+导入资源先由 `prepare_structure_pose_inputs` 验证实际资源、解码并冻结参考、预制数组、坐标和入口数据，`PreparedStructurePoseSolver` 随后直接复用原求解编排。准备缓存受条目数及字节数约束；同一资源绑定的参考通过弱引用共享，scope 变化或普通缓存淘汰不改变仍被历史先验持有的 reference 身份，入口查询也使用同一参考表。显式资源更新使缓存和所属运行上下文失效；已准备的 RAM 不因磁盘后来改变而被偷偷替换，下次准备仍验证实际文件。
+
+0059 的现有状态先在外层捕获为只含参考、尺度、覆盖和坐标信息的数据；generation 收据留在 runtime。纯计算保留原 0059 → fast → 原入口/恢复与残差复核顺序。runtime 的求解、刷新残差和 material ACK 记忆三处使用准备输入；早期数值结果只排入有界队列，由调用线程检查和发布，退出时取消并收取该次数值任务。日志分别记录准备、数值调用及完整调用耗时，候选 ticket 复用已有贴合时不补造一次计算耗时。
+
+识别与贴合同时开发。导入引擎准备时建立完整地图域的直接结构索引，逐帧以真实楼层和同一 `FrameSnapshot` 并行运行直接检索与原候选 scanner；保留未扫描竞争者、缺层和 legacy 缺口。直接分支当前提供诊断，`authorizesIdentity` 与 `lock` 始终为 false：source-observation 等价、fog 分类、当前帧 canonical 残差及身份资格尚未补齐。候选路径不等待该诊断分支收尾；这不等于两路有效锁图竞争已经完成。四模式同样本正式计时、可见像素及游戏验收仍待执行。
 
 本地真实临时 archive/export/decode/provider/prepared loader 的六项资源回归控制数值 fit，仅验证生命周期；坏参考、坏准备、首显前损坏、取消与下一帧不会沿用旧输入均覆盖，其中“未使用 fast 时参考损坏”的新负例先失败后修复。三片相关回归分别为 34、89、71 项通过，生产 S1 两模式实际导入 fast 入口一项通过，最后资源/渐进显示/区域仲裁 35 项通过；并不据此证明实帧速度、位姿或游戏验收。新的资源回归加入原联合 workflow，保留原模块、分组和时限。
 

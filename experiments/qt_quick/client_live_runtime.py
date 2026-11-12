@@ -41,6 +41,89 @@ CANDIDATE_CONTROL_ACTIONS = ("next_candidate", "previous_candidate", "select_can
     "reselect_map", "map_reselection", "confirm_route")
 
 
+def _prepare_alignment_host(engine, group, settings, map_id, floor, *, frame=None,
+                            steady=None, cancelled=None, usable_fit_callback=None):
+    """Keep resource and temporal-state preparation outside numerical fitting."""
+    if getattr(engine, 'qt_native_base', None) is None:
+        return (_AlignmentHost(engine, group, settings, steady=steady,
+                    usable_fit_callback=usable_fit_callback),
+                dict(kind='legacy-provider'), None)
+    from client_providers import prepare_pose_solver
+    host, preparation = prepare_pose_solver(engine, map_id, floor, group=group,
+        settings=settings, cancelled=cancelled, usable_fit_callback=usable_fit_callback)
+    receipt = None
+    if steady is not None:
+        adapter, context, current, signature = steady
+        host.steady_input, generation = adapter.capture_prepared_input(
+            host, frame, map_id, floor, context=context, is_current=current,
+            cancelled=cancelled, display_signature=signature,
+            enabled=bool(settings.get('idvb0059Enabled', True)))
+        receipt = adapter, generation
+    return host, preparation, receipt
+
+
+def _alignment_host_current(engine, host, steady_receipt=None):
+    from client_providers import pose_inputs_current
+    return bool((not hasattr(host, 'inputs') or pose_inputs_current(engine, host.inputs))
+        and (steady_receipt is None or steady_receipt[0].generation_current(steady_receipt[1])))
+
+
+def _fit_alignment_host(host, frame, map_id, floor, cancelled, entry_candidate=None, *,
+                        observation_bounds=None, on_usable_fit=None, timing=None):
+    """Consume numerical progress on the runtime worker, outside the solver."""
+    from structure_pose_solver import PreparedStructurePoseSolver
+    options = {}
+    if entry_candidate is not None:
+        options['entry_candidate'] = entry_candidate
+    if observation_bounds is not None:
+        options['observation_bounds'] = observation_bounds
+    def compute(stop):
+        started = time.perf_counter()
+        try:
+            return host.fit(frame, map_id, floor, stop, **options)
+        finally:
+            if timing is not None:
+                timing.update(elapsedMs=(time.perf_counter()-started)*1000,
+                    kind='prepared-ram' if isinstance(host, PreparedStructurePoseSolver) else 'legacy-combined')
+    if not isinstance(host, PreparedStructurePoseSolver) or on_usable_fit is None:
+        return compute(cancelled)
+    from concurrent.futures import ThreadPoolExecutor
+    from queue import Empty, Full, Queue
+    offers, ready, stopped = Queue(maxsize=1), threading.Event(), threading.Event()
+    previous = host.usable_fit_callback
+    def offer(fit):
+        if not stopped.is_set():
+            try:
+                offers.put_nowait(copy.deepcopy(fit))
+            except Full:
+                return
+            ready.set()
+    host.usable_fit_callback = offer
+    try:
+        # One synchronous runtime operation owns this worker and joins it on
+        # every exit. Cancellation cannot accumulate detached fit tasks.
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix='structure-pose') as pool:
+            future = pool.submit(compute, lambda: stopped.is_set() or cancelled())
+            future.add_done_callback(lambda _: ready.set())
+            try:
+                while True:
+                    ready.wait(.05)
+                    ready.clear()
+                    while True:
+                        try:
+                            first = offers.get_nowait()
+                        except Empty:
+                            break
+                        if not cancelled():
+                            on_usable_fit(first)
+                    if future.done() and offers.empty():
+                        return future.result()
+            finally:
+                stopped.set()
+    finally:
+        host.usable_fit_callback = previous
+
+
 class _Cancellation:
     def __init__(self, predicate):
         self._predicate = predicate
@@ -508,8 +591,12 @@ class LiveRuntime:
                 return self._receipt("remember_render_material", payload, success=False, reason="material-context-expired")
             proposal["consumed"] = True
             engine, group, settings = self._engine, self._group, dict(self._settings)
-        current = lambda context: not self._cancelled(cancelled) and self._steady_is_current(context, proposal["captured"])
-        remembered = self._steady.remember_committed(_AlignmentHost(engine, group, settings),
+        host, _, _ = _prepare_alignment_host(engine, group, settings,
+            proposal["mapId"], proposal["floor"], cancelled=lambda: self._cancelled(cancelled))
+        current = lambda context: (not self._cancelled(cancelled)
+            and _alignment_host_current(engine, host)
+            and self._steady_is_current(context, proposal["captured"]))
+        remembered = self._steady.remember_committed(host,
             proposal["frame"], proposal["mapId"], proposal["floor"], proposal["fit"],
             context=proposal["context"], is_current=current, material_accepted=True,
             display_signature=self._steady_signature(proposal["captured"]),
@@ -1050,11 +1137,21 @@ class LiveRuntime:
                 privateScanMs=report["elapsedSeconds"] * 1000, privateMaterialMs=private_material_ms,
                 elapsedSeconds=report["elapsedSeconds"], totalSeconds=time.monotonic()-started,
                 firstVerifiedPoseElapsedSeconds=report.get("firstVerifiedPoseElapsedSeconds"))
+            direct = report.get('directStructureRecognition', {})
+            preparation = report.get('posePreparation', [])
             self._recognition_diagnostic("s1-scan-result", report["status"],
                 inputs=self._failure_diagnostic(payload), checkedCount=len(report["checkedMapIds"]),
                 supportedCount=len(report["supportedMapIds"]),
                 elapsedMs=report["elapsedSeconds"] * 1000,
-                posePriorOutcomes=report.get("posePriorOutcomes", []))
+                posePriorOutcomes=report.get("posePriorOutcomes", []),
+                candidatePreparationCount=len(preparation),
+                candidatePreparationMs=sum(row.get('elapsedMs', 0) for row in preparation),
+                candidateFitMs=sum(row.get('fitMs', 0) for row in preparation),
+                directStructureRecognition={key: direct[key] for key in (
+                    'status', 'floor', 'authorizesIdentity', 'lock', 'measuredChainCount',
+                    'aCount', 'bCount', 'fingerprintUnique', 'retrievalComplete',
+                    'qualificationGaps', 'extractionMs', 'retrievalMs', 'heldOutMs',
+                    'computationMs', 'elapsedMs') if key in direct})
             return result
         except (MemoryError, KeyboardInterrupt, SystemExit):
             withdraw("stream-scan-exception")
@@ -4683,7 +4780,8 @@ class LiveRuntime:
                 self._revoke_render(reason)
             return None
         self._set_pose_phase("pending", "current-frame-refresh", map_id, floor, current_frame, self._frame_generation)
-        host = _AlignmentHost(engine, group, self._settings)
+        host, _, _ = _prepare_alignment_host(engine, group, self._settings, map_id, floor,
+            cancelled=obsolete)
         basis = engine.qt_adapters.matrix_profile_to_canonical("shared-structure", map_id, floor)
         if basis is None:
             with self._lock:
@@ -4708,7 +4806,7 @@ class LiveRuntime:
         with self._lock:
             # The cancellation check and any rejection below are one owner
             # transaction. A first drag delta must not land between them.
-            if obsolete():
+            if obsolete() or not _alignment_host_current(engine, host):
                 return self._receipt("refresh_map", payload, success=False, reason="cancelled-or-stale", stale=True)
             if self._transient_drag is not None or self._transient_cycle_current():
                 return self._receipt("refresh_map", payload, success=True, reason="refresh-coalesced", coalesced=True)
@@ -5509,7 +5607,8 @@ class LiveRuntime:
             provisional_operation = self._candidate_provisional_enabled(engine)
             operation_settings_generation = self._settings_generation
             registered_state = clone_similarity_state(identity_stage or self._identity_native)
-        obsolete = lambda: (self._cancelled(cancelled) or epoch != self._epoch
+        alignment_current = lambda: True
+        obsolete = lambda: (self._cancelled(cancelled) or epoch != self._epoch or not alignment_current()
             or structure_current is not None and not structure_current()
             or provisional_operation and operation_settings_generation != self._settings_generation
             or staged_observation is not None and not self._staged_choice_current(staged_observation))
@@ -5766,10 +5865,16 @@ class LiveRuntime:
             if published_token is None and identity_stage is None and not provisional_operation:
                 publish_fit(first, review_pending=True)
 
-        host = _AlignmentHost(engine, group, self._settings, steady=None if staged_observation is not None else (self._steady, steady_context,
+        host, preparation, steady_receipt = _prepare_alignment_host(engine, group, self._settings,
+            map_id, floor, frame=frame, cancelled=obsolete,
+            steady=None if staged_observation is not None else (self._steady, steady_context,
             lambda context: not obsolete() and self._steady_is_current(context, captured),
             self._steady_signature(captured)), usable_fit_callback=offer_usable_fit)
+        alignment_current = lambda: _alignment_host_current(engine, host, steady_receipt)
+        if obsolete():
+            return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
         fit_started = time.monotonic()
+        fit_timing = {}
         try:
             if provisional_operation or structure_ticket is not None:
                 # Reuse only the current ticket's already verified fit. All residual,
@@ -5788,17 +5893,21 @@ class LiveRuntime:
                 if choice is not None:
                     fit = choice["pose"]
                 else:
-                    fit = host.fit(frame, map_id, floor, obsolete, entry_candidate) if entry_candidate is not None else host.fit(frame, map_id, floor, obsolete)
+                    fit = _fit_alignment_host(host, frame, map_id, floor, obsolete, entry_candidate,
+                        on_usable_fit=offer_usable_fit, timing=fit_timing)
             elif self._season == "s1":
-                fit = host.fit(frame, map_id, floor, obsolete,
+                fit = _fit_alignment_host(host, frame, map_id, floor, obsolete,
+                    on_usable_fit=offer_usable_fit, timing=fit_timing,
                     observation_bounds=(0, 0, frame.shape[1], frame.shape[0]))
             else:
-                fit = host.fit(frame, map_id, floor, obsolete, entry_candidate) if entry_candidate is not None else host.fit(frame, map_id, floor, obsolete)
+                fit = _fit_alignment_host(host, frame, map_id, floor, obsolete, entry_candidate,
+                    on_usable_fit=offer_usable_fit, timing=fit_timing)
         except BaseException:
             revoke_published("pose-review-error")
             raise
         self._recognition_diagnostic('pose-fit', fit.get('reason', 'reason-not-provided'),
             success=fit.get('success'), fit=fit, solverEvents=host.events,
+            preparation=preparation, calculation=fit_timing,
             elapsedMs=(time.monotonic()-fit_started)*1000,
             inputs=dict(mapId=map_id, floor=floor, frameId=frame_id,
                 cycleId=cycle, captureGeneration=capture_generation, sourceFrameGeneration=frame_generation))

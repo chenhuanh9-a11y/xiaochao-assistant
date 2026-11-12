@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from client_live_runtime import LiveRuntime, _AlignmentHost
+from client_live_runtime import LiveRuntime
+from structure_pose_solver import PreparedStructurePoseSolver as _AlignmentHost
 from client_engine import INITIAL_IDENTITY_BUDGET_SECONDS
 from client_providers import ProviderUnavailable, attach_structure_scanner
 from s1_structure_selection import StructureCatalog, StructureCandidateScanner
@@ -569,7 +570,9 @@ class SharedStructureRuntimeTests(unittest.TestCase):
             StructureCatalog.from_engine(self.engine)
 
     def test_actual_shared_solver_keeps_black_frame_unknown(self):
-        result = self.runtime.dispatch('capture_now')
+        with patch.object(self.runtime, '_recognition_diagnostic',
+                          wraps=self.runtime._recognition_diagnostic) as diagnostic:
+            result = self.runtime.dispatch('capture_now')
         self.assertEqual(result['reason'], 'identity-not-uniquely-verified', result)
         evidence = self.runtime.snapshot()['structureEvidence']
         self.assertEqual(evidence['currentStatus'], 'complete')
@@ -577,6 +580,13 @@ class SharedStructureRuntimeTests(unittest.TestCase):
         self.assertEqual(evidence['possibleMapIds'], ['fixture-map'])
         self.assertEqual(evidence['excludedMapIds'], [])
         self.assertFalse(self.runtime.snapshot()['displayAuthorized'])
+        scan = [call.kwargs for call in diagnostic.call_args_list if call.args[0] == 's1-scan-result']
+        self.assertEqual(len(scan), 1)
+        self.assertEqual(scan[0]['candidatePreparationCount'], 1)
+        self.assertGreater(scan[0]['candidatePreparationMs'], 0)
+        self.assertGreater(scan[0]['candidateFitMs'], 0)
+        self.assertFalse(scan[0]['directStructureRecognition']['authorizesIdentity'])
+        self.assertFalse(scan[0]['directStructureRecognition']['lock'])
 
     def test_attaching_scanner_does_not_bypass_rank_qualification(self):
         attach_structure_scanner(self.engine, StructureCatalog.from_engine(self.engine))

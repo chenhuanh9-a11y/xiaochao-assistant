@@ -58,6 +58,14 @@ class StructurePoseSolver:
     def _open_cycle_transient_motion_active(self, map_id):
         return False
 
+    def _try_steady_alignment(self, frame, map_id, floor, cancelled):
+        if self.steady is None:
+            return None
+        adapter, context, current, signature = self.steady
+        return adapter.try_alignment(self, frame, map_id, floor, context=context,
+            is_current=current, cancelled=cancelled, display_signature=signature,
+            enabled=bool(self.settings.get("idvb0059Enabled", True)))
+
     def _shared_structure_reference(self, profile, map_id, floor):
         if self._fit_resources is not None:
             return self._fit_resources.reference(profile, map_id, floor)
@@ -196,7 +204,7 @@ class StructurePoseSolver:
                 entryReverification=dict(candidateCount=len(candidates), acceptedPoseCount=len(accepted), reason=checked["reason"]))
         return None
 
-    def prepare_structure_scan(self, frame, observation_bounds):
+    def prepare_structure_scan(self, frame, observation_bounds, *, fit_callback=None):
         """One scan owns raw observations; no cache survives into another frame.
 
         Each candidate gets a fresh context containing only source-independent
@@ -208,6 +216,7 @@ class StructurePoseSolver:
         from single_map_structure import current_geometry, current_part, observed_corner_chains, marker_occluded_corner_proposals
         from fast_structure_alignment import sample_edges
         bounds = tuple(observation_bounds)
+        fit = self.fit if fit_callback is None else fit_callback
         observations, components = {}, None
 
         def geometry(visible=None):
@@ -236,7 +245,7 @@ class StructurePoseSolver:
         def fit_one(candidate_frame, map_id, floor, cancelled, *, observation_bounds=None, entry_candidate=None):
             if candidate_frame is not frame or tuple(observation_bounds or ()) != bounds:
                 raise ValueError("structure-scan-observation-context-mismatch")
-            return self.fit(frame, map_id, floor, cancelled,
+            return fit(frame, map_id, floor, cancelled,
                             observation_bounds=bounds, _scan_observation=(geometry, islands),
                             **(dict(entry_candidate=entry_candidate) if entry_candidate is not None else {}))
         return fit_one
@@ -475,11 +484,8 @@ class StructurePoseSolver:
         if explicit_domain and context is None:
             return dict(success=False, reason="manual-current-geometry-unavailable")
         # Original structure-fit order: default 0059 prior before entry/fast.
-        if self.steady is not None and not explicit_domain:
-            adapter, context, current, signature = self.steady
-            steady = adapter.try_alignment(self, frame, map_id, floor, context=context,
-                is_current=current, cancelled=cancelled, display_signature=signature,
-                enabled=bool(self.settings.get("idvb0059Enabled", True)))
+        if not explicit_domain:
+            steady = self._try_steady_alignment(frame, map_id, floor, cancelled)
             if steady is not None:
                 return steady
         # Original caller order: current fast proposal, established relation
@@ -565,3 +571,39 @@ class StructurePoseSolver:
                     observationComponent=dict(context["visible"][2], bounds=context["visible"][1]) if explicit_domain else None,
                     coordinateSpace="shared-structure-to-client", routeProfileId="shared-structure",
                     strategy=strategy))
+
+
+class PreparedStructurePoseSolver(StructurePoseSolver):
+    """The same numerical orchestration over previously prepared RAM inputs.
+
+    Resource preparation and runtime result ownership are external. Progress
+    callbacks receive numerical evidence; they do not prepare resources or
+    confer identity, persistent pose or display authority.
+    """
+
+    def __init__(self, inputs, group=None, settings=None, *, steady_input=None,
+                 pose_priors=None, collect_fit_diagnostics=False, usable_fit_callback=None):
+        self.inputs = inputs
+        self.steady_input = steady_input
+        super().__init__(inputs.new_geometry_engine(), group, settings,
+            pose_priors=pose_priors, collect_fit_diagnostics=collect_fit_diagnostics,
+            usable_fit_callback=usable_fit_callback)
+
+    def _try_steady_alignment(self, frame, map_id, floor, cancelled):
+        if self.steady_input is None or not self.settings.get("idvb0059Enabled", True):
+            return None
+        return self.steady_input.try_alignment(self, frame, map_id, floor, cancelled=cancelled)
+
+    def _shared_structure_reference(self, profile, map_id, floor):
+        return self.inputs.reference(profile, map_id, floor)
+
+    def _load_fast_structure_prepared(self, reference, *, cancelled=None):
+        return self.inputs.prepared(reference, cancelled=cancelled)
+
+    def fit(self, frame, map_id, floor, cancelled, entry_candidate=None, *,
+            observation_bounds=None, _scan_observation=None):
+        self.inputs.require_scope(map_id, floor)
+        if cancelled is not None and cancelled():
+            return dict(success=False, reason="structure-work-obsolete")
+        return self._fit_regions(frame, map_id, floor, cancelled, entry_candidate,
+            observation_bounds=observation_bounds, _scan_observation=_scan_observation)

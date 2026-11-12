@@ -135,6 +135,76 @@ class SharedReferenceProvider:
                     metadata=dict(row["expected"], binding=row["binding"]))
 
 
+def pose_inputs_current(engine, inputs):
+    """Only RAM ownership checks; resource validation belongs to preparation."""
+    binding = inputs.binding
+    current = getattr(engine, 'qt_resource_context_current', None)
+    return bool((current is None or current())
+        and binding.engine_identity == id(engine)
+        and binding.resource_revision == getattr(engine, 'qt_resource_revision', 0)
+        and binding.base_identity == id(getattr(engine, 'qt_native_base', None))
+        and binding.provider_identity == id(getattr(engine, 'qt_shared_provider', None))
+        and binding.source_identity == id(getattr(engine, 'qt_fast_structure_source', None)))
+
+
+def prepare_pose_solver(engine, map_id, floor, *, group=None, settings=None, steady=None,
+                        steady_input=None, pose_priors=None, collect_fit_diagnostics=False,
+                        usable_fit_callback=None, cancelled=None):
+    """Prepare/reuse static data, then construct the unchanged numerical solver.
+
+    The caller owns cancellation and result publication. Its returned preparation
+    metadata is separate from numerical fit timing. Historical non-imported
+    providers retain their public compatibility solver.
+    """
+    from structure_pose_solver import StructurePoseSolver, PreparedStructurePoseSolver
+    options = dict(pose_priors=pose_priors,
+        collect_fit_diagnostics=collect_fit_diagnostics, usable_fit_callback=usable_fit_callback)
+    if getattr(engine, 'qt_native_base', None) is None:
+        return StructurePoseSolver(engine, group, settings, steady=steady, **options), dict(kind='legacy-provider')
+    if steady is not None:
+        raise TypeError('native steady input must be prepared outside numerical fit')
+    from structure_pose_inputs import prepare_structure_pose_inputs
+    current = getattr(engine, 'qt_resource_context_current', None)
+    if current is not None and not current():
+        raise ProviderUnavailable('resource-context-superseded')
+    if cancelled is not None and cancelled():
+        raise ProviderUnavailable('pose-preparation-cancelled')
+    settings = dict(settings or {})
+    cache = engine.qt_pose_input_cache
+    revision = getattr(engine, 'qt_resource_revision', 0)
+    recovery = tuple(sorted(str(value) for value in getattr(group, 'verified_floors', ())))
+    indexed = bool(settings.get('poseIndexCandidatesEnabled', settings.get('difficultGridEnabled', False)))
+    started = time.perf_counter()
+    with engine.qt_pose_prepare_lock:
+        inputs = cache.get(engine, map_id, floor, resource_revision=revision,
+            recovery_floors=recovery, pose_index_enabled=indexed)
+        hit = inputs is not None
+        if inputs is None:
+            def obsolete():
+                return (current is not None and not current()) or (cancelled is not None and cancelled())
+            try:
+                inputs = prepare_structure_pose_inputs(engine, map_id, floor,
+                    resource_revision=revision, recovery_floors=recovery,
+                    pose_index_enabled=indexed, cancelled=obsolete)
+            except (OSError, ValueError):
+                if current is not None and not current():
+                    raise ProviderUnavailable('resource-context-superseded') from None
+                if cancelled is not None and cancelled():
+                    raise ProviderUnavailable('pose-preparation-cancelled') from None
+                raise
+        if not pose_inputs_current(engine, inputs):
+            raise ProviderUnavailable('resource-context-superseded')
+        if cancelled is not None and cancelled():
+            raise ProviderUnavailable('pose-preparation-cancelled')
+        if not hit:
+            inputs = cache.share_references(inputs)
+        retained = cache.put(engine, inputs) if not hit else True
+    host = PreparedStructurePoseSolver(inputs, group, settings, steady_input=steady_input, **options)
+    return host, dict(kind='prepared-ram', cacheHit=hit, cacheRetained=retained,
+        elapsedMs=(time.perf_counter()-started)*1000, retainedBytes=inputs.retained_bytes,
+        resourceRevision=revision)
+
+
 def attach_structure_scanner(engine, catalog, *, private_fit=None):
     """Attach the shared scanner without choosing any resource fallback.
 
@@ -142,8 +212,20 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
     bases can use the same scanner with only their checked shared references.
     """
     from s1_structure_selection import StructureCandidateScanner
+    from entry_evidence_work import FrameSnapshot
+    from client_structure_recognition import DirectStructureRecognition
+
+    # Engine assembly already runs on the preparation worker. Read the complete
+    # static domain here, before any current-frame numerical recognition begins.
+    direct = DirectStructureRecognition(engine, catalog)
+    direct.prepare()
+    engine.qt_direct_structure_recognition = direct
 
     def check_current():
+        if getattr(engine, 'qt_native_base', None) is not None:
+            if not direct.current():
+                raise ProviderUnavailable('resource-context-superseded')
+            return
         check = getattr(engine, 'qt_assert_resource_current', None)
         if check is not None:
             check()
@@ -152,32 +234,95 @@ def attach_structure_scanner(engine, catalog, *, private_fit=None):
                        on_progress=None, candidate_order=None, preferred_map_id=None,
                        preferred_material_committed=None, private_coordinate_report=None, planned_map_ids=None,
                        first_material_committed=None, pose_priors=None, collect_fit_diagnostics=False,
-                       on_entry_evidence=None, deadline=None, frame_snapshot=None):
+                       on_entry_evidence=None, deadline=None, frame_snapshot=None,
+                       on_direct_recognition=None):
         check_current()
         if not getattr(engine, 'qt_rank_ready', True) and not getattr(engine, 'qt_structure_scan_ready', False):
             raise ProviderUnavailable(';'.join(getattr(engine, 'qt_rank_gaps', ())) or 'recognition-rank-unavailable')
         from structure_pose_solver import StructurePoseSolver
         host = StructurePoseSolver(engine, pose_priors=pose_priors,
             collect_fit_diagnostics=collect_fit_diagnostics)
+        preparation_rows = []
         fixed = private_coordinate_report is not None and private_coordinate_report.get("coordinateVerified") is True
         if fixed and private_fit is None:
             raise ProviderUnavailable('private-coordinate-provider-unavailable')
         fit = (lambda f, mid, fl, cancel, **kw: private_fit(
             f, mid, fl, cancel, report=private_coordinate_report, **kw)) if fixed else host.fit
+        native = getattr(engine, 'qt_native_base', None) is not None
+        if native and not fixed:
+            def fit(f, mid, fl, cancel, **kw):
+                # Preparation owns resource reads; the unchanged numerical fit
+                # consumes immutable RAM inputs and the scan's shared observation.
+                from structure_pose_inputs import PoseInputsUnavailable
+                started = time.perf_counter()
+                try:
+                    prepared, metadata = prepare_pose_solver(engine, mid, fl,
+                        pose_priors=pose_priors, collect_fit_diagnostics=collect_fit_diagnostics,
+                        cancelled=cancel)
+                except (PoseInputsUnavailable, ProviderUnavailable) as error:
+                    preparation_rows.append(dict(mapId=mid, floor=fl, kind='preparation-unavailable',
+                        reason=str(error), elapsedMs=(time.perf_counter()-started)*1000))
+                    return dict(success=False, reason=('structure-work-obsolete'
+                        if not direct.current() or (cancel is not None and cancel()) else str(error)))
+                row = dict(metadata, mapId=mid, floor=fl)
+                preparation_rows.append(row)
+                if not pose_inputs_current(engine, prepared.inputs) or (cancel is not None and cancel()):
+                    return dict(success=False, reason='structure-work-obsolete')
+                began = time.perf_counter()
+                try:
+                    result = prepared.fit(f, mid, fl, cancel, **kw)
+                finally:
+                    row['fitMs'] = (time.perf_counter()-began)*1000
+                    host.events.extend(prepared.events)
+                    for name, count in prepared.diagnostic_event_counts.items():
+                        host.diagnostic_event_counts[name] = host.diagnostic_event_counts.get(name, 0)+count
+                if not pose_inputs_current(engine, prepared.inputs) or (cancel is not None and cancel()):
+                    return dict(success=False, reason='structure-work-obsolete')
+                return result
+        prepare_fit = (None if fixed else
+            lambda f, bounds: host.prepare_structure_scan(f, bounds, fit_callback=fit))
         scanner = StructureCandidateScanner(catalog, fit, clock=time.perf_counter,
-            prepare_fit=None if fixed else host.prepare_structure_scan)
+            prepare_fit=prepare_fit)
+        if frame_snapshot is not None and (not isinstance(frame_snapshot, FrameSnapshot)
+                or frame_snapshot.pixels is not frame):
+            raise ValueError('structure-scan-frame-snapshot-mismatch')
+        snapshot = frame_snapshot if frame_snapshot is not None else FrameSnapshot(frame)
+        began = time.perf_counter()
+        direct_deadline = min(deadline if deadline is not None else float('inf'),
+            began+budget_seconds if budget_seconds is not None else float('inf'))
+        direct_run = direct.start(snapshot, floor, cancelled=cancelled, deadline=direct_deadline)
+        direct_published = False
+
+        def collect_direct():
+            nonlocal direct_published
+            value = direct_run.collect()
+            if not direct_published and value['status'] != 'pending':
+                if not (cancelled is not None and cancelled()):
+                    check_current()
+                    if on_direct_recognition is not None:
+                        on_direct_recognition(copy.deepcopy(value))
+                direct_published = True
+            return value
+
         def progress(value):
             check_current()
+            value['directStructureRecognition'] = collect_direct()
             on_progress(value)
-        report = scanner.scan(frame, floor=floor, floor_source=floor_source,
-            cancelled=cancelled, budget_seconds=budget_seconds,
-            on_progress=progress if on_progress is not None else None, candidate_order=candidate_order,
-            preferred_map_id=preferred_map_id, preferred_material_committed=preferred_material_committed,
-            planned_map_ids=planned_map_ids, first_material_committed=first_material_committed,
-            prepare_entry=(engine.prepare_entry_observation if catalog.season == 's0'
-                and getattr(engine, 'qt_native_base', None) is not None else None),
-            on_entry_evidence=on_entry_evidence, deadline=deadline, frame_snapshot=frame_snapshot)
+        try:
+            report = scanner.scan(snapshot.pixels, floor=floor, floor_source=floor_source,
+                cancelled=cancelled, budget_seconds=budget_seconds,
+                on_progress=progress if on_progress is not None else None, candidate_order=candidate_order,
+                preferred_map_id=preferred_map_id, preferred_material_committed=preferred_material_committed,
+                planned_map_ids=planned_map_ids, first_material_committed=first_material_committed,
+                prepare_entry=(engine.prepare_entry_observation if catalog.season == 's0' and native else None),
+                on_entry_evidence=on_entry_evidence, deadline=deadline, frame_snapshot=snapshot)
+            report['directStructureRecognition'] = collect_direct()
+        finally:
+            # A winning candidate/entry must not wait for the other kernel. The
+            # single bounded worker cooperatively drains without late callbacks.
+            direct_run.cancel()
         check_current()
+        report['posePreparation'] = preparation_rows
         report["posePriorOutcomes"] = [{key: event[key] for key in
             ("mapId", "floor", "accepted", "fallback", "elapsedMs") if key in event}
             for event in host.events if event.get("event") == "experimental-pose-prior"][:6]
@@ -306,6 +451,10 @@ class EngineFactories(dict):
         """Nonblocking resource-lifetime boundary; old worker builds cannot publish."""
         with self._lock:
             self._revision += 1
+            for engine in self._engines.values():
+                cache = getattr(engine, 'qt_pose_input_cache', None)
+                if cache is not None:
+                    cache.invalidate()
             self._engines.clear()
             self._reports = self._initial_reports()
 
@@ -393,6 +542,11 @@ class EngineFactories(dict):
                     raise ProviderUnavailable("resource-context-superseded")
                 engine.qt_season = season
                 engine.qt_context_key = key
+                engine.qt_resource_revision = revision
+                def context_current(engine=engine, key=key, revision=revision):
+                    with self._lock:
+                        return self._revision == revision and self._engines.get(key) is engine
+                engine.qt_resource_context_current = context_current
                 self._engines[key] = engine
                 self._attach_custom_display(engine, mode, season)
                 self._reports[key] = dict(prepared=True,

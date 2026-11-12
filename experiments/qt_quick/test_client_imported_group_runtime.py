@@ -17,7 +17,8 @@ from PySide6.QtCore import QCoreApplication
 
 import client_imported_activation as activation
 from client_imported_providers import SUPPORTED_CAPABILITIES, build_imported_engine_factories
-from client_live_runtime import LiveRuntime, _AlignmentHost
+from client_live_runtime import LiveRuntime
+from structure_pose_solver import PreparedStructurePoseSolver as _AlignmentHost
 from client_paths import RuntimePaths
 from client_session import SessionService
 from imported_resource_archive import save_archive
