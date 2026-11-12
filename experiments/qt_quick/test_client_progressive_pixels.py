@@ -162,8 +162,9 @@ def _probe(verdict, *, scheduler_control=False):
         runtime = LiveRuntime(engine_factories={"nightmare": lambda: fixture.engine,
             "difficult": lambda: fixture_engine_difficult(fixture.engine)},
             capture_provider=capture, evidence_kind="live-client-capture", clock=time.monotonic)
+        from shared_structure_display import structure_display_identity
         display = dict(pixels=pixels_bgra, matrixDisplayToReference=np.eye(3),
-            resourceIdentity="progressive-rgba-fixture", displayKind="shared-structure",
+            resourceIdentity=structure_display_identity(reference), displayKind="shared-structure",
             displayLabel="synthetic pixels", routeProfileId="shared-structure",
             effectiveProfileId="shared-structure", fallback=False, authorStatus="none")
         runtime._display_layer = lambda *args, **kwargs: display
@@ -363,7 +364,8 @@ def _probe(verdict, *, scheduler_control=False):
         if not pump_until(has_pending_pixels):
             raise AssertionError("pending QML material was not visible/ready: " + repr({
                 "render": runtime.snapshot().get("render"), "aligned": coordinator.alignedData,
-                "traces": aligned_surfaces(), "provider": images.requests, "warnings": warnings}))
+                "traces": aligned_surfaces(), "provider": images.requests, "warnings": warnings,
+                "solverTimes": solver_times, "runtimeEvents": runtime_events[-12:]}))
         hidden_at_pending_visibility = sum(name == "aligned" for name in hidden)
 
         pixel_points = ((11, 11), (35, 26), (51, 11), (75, 26),

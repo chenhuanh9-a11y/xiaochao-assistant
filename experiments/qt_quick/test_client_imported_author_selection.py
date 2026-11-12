@@ -11,7 +11,7 @@ import numpy as np
 from PIL import Image
 
 import client_imported_activation as activation
-from client_providers import SharedReferenceProvider
+from client_providers import SharedReferenceProvider, DisplayResourceChanged
 from client_imported_providers import SUPPORTED_CAPABILITIES, build_imported_engine_factories
 from client_paths import RuntimePaths
 from client_route_preferences import prepare_display_layer
@@ -89,8 +89,9 @@ class ClientImportedAuthorSelectionTests(_AuthorSelectionFixture):
         selected = resolver.snapshot()
         self.assertEqual(selected.displays, (dormant, next_view.component_ref, other.component_ref))
         self.assertEqual(dict(selected.contexts), initial_contexts)
-        with self.assertRaises(ResourceCatalogError):
+        with self.assertRaisesRegex(DisplayResourceChanged, 'resource-catalog-superseded') as rejected:
             prepare_display_layer(old_engine, self.source.ids[0], '-4', 'author-fixture')
+        self.assertIsInstance(rejected.exception.__cause__, ResourceCatalogError)
         engine = factory.get_engine('difficult', season='s1')
         layer = prepare_display_layer(engine, self.source.ids[0], '-4', 'author-fixture')
         self.assertEqual(layer['displayKind'], 'author-route')

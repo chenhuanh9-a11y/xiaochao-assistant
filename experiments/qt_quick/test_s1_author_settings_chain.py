@@ -163,11 +163,14 @@ class S1AuthorSettingsChainTests(unittest.TestCase):
         self.app.processEvents()
 
     def synthetic_display_layer(self, engine, map_id, floor, profile, **kwargs):
+        from shared_structure_display import structure_display_identity
         author = profile == "s1-jiaye-handnotes"
+        identity = ("synthetic-display:" + profile if author else
+                    structure_display_identity(engine.qt_shared_provider("shared-structure", map_id, floor)))
         bridge = np.array([[1., 0., 3. if author else 0.],
                            [0., 1., -2. if author else 0.], [0., 0., 1.]])
         return dict(pixels=np.full((20, 24, 4), 123 if author else 255, np.uint8),
-                    resourceIdentity="synthetic-display:" + profile,
+                    resourceIdentity=identity,
                     displayKind="author" if author else "shared-structure", displayLabel=profile,
                     routeProfileId=profile, effectiveProfileId=profile,
                     authorStatus="bound" if author else "none", matrixDisplayToReference=bridge)
@@ -225,8 +228,10 @@ class S1AuthorSettingsChainTests(unittest.TestCase):
                 self.assertEqual(current["mapId"], "a")
                 for field in ("canonicalMatrix", "frameId", "cycleId", "roundId", "generation"):
                     self.assertEqual(current[field], initial[field], field)
-                np.testing.assert_allclose(current["matrix"], np.asarray(initial["canonicalMatrix"]) @
-                    self.synthetic_display_layer(None, "a", "-3", profile)["matrixDisplayToReference"])
+                expected_bridge = (np.array([[1., 0., 3.], [0., 1., -2.], [0., 0., 1.]])
+                    if profile == "s1-jiaye-handnotes" else np.eye(3))
+                np.testing.assert_allclose(current["matrix"],
+                    np.asarray(initial["canonicalMatrix"]) @ expected_bridge)
                 self.assertTrue(np.all(current["pixels"] == (123 if profile == "s1-jiaye-handnotes" else 255)))
                 self.assertNotEqual(current["token"], previous["token"])
                 self.assertIsNone(self.runtime.render_payload(previous["token"]))
