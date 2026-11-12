@@ -89,6 +89,17 @@ class _SharedReferenceReadOperation:
             raise ValueError('structure-identity-resource-owner-changed')
 
     def read_reference(self, profile, map_id, floor, *, read_resource):
+        return self._read_reference(profile, map_id, floor, read_resource=read_resource, fresh=False)[0]
+
+    def read_fresh_reference(self, profile, map_id, floor, *, read_resource):
+        """Return a fresh native decode and whether this operation proved it.
+
+        Legacy/unknown lookups still use the original guarded provider path;
+        their returned objects do not qualify for direct RAM preparation.
+        """
+        return self._read_reference(profile, map_id, floor, read_resource=read_resource, fresh=True)
+
+    def _read_reference(self, profile, map_id, floor, *, read_resource, fresh):
         from imported_fast_structure import _PreparedReadBatch
         self.assert_owned()
         batch = getattr(read_resource, '__self__', None)
@@ -101,11 +112,12 @@ class _SharedReferenceReadOperation:
         # Actual legacy and unknown lookups retain the original guarded loader.
         keys = [key for key in provider.versions if key[1] == str(map_id) and key[3] == str(floor)]
         if (str(map_id), str(floor)) in self.legacy_keys or len(keys) != 1:
-            return provider.read_with_resource(profile, map_id, floor, read_resource=read_resource)
+            return provider.read_with_resource(profile, map_id, floor, read_resource=read_resource), False
         relative = self.source.reader.relative_path(provider.versions[keys[0]]['path'])
         if relative not in self.paths:
             raise ValueError('structure-identity-resource-owner-changed')
-        return provider._load(profile, map_id, floor, read_resource=read_resource, operation=self)
+        return provider._load(profile, map_id, floor, read_resource=read_resource, operation=self,
+                              force_fresh=fresh), fresh
 
     def finish(self):
         try:
@@ -189,8 +201,10 @@ class SharedReferenceProvider:
                 raise ValueError('structure-identity-resource-owner-changed')
             operation.assert_owned()
 
-    def _load(self, profile, map_id, floor, *, read_resource=None, operation=None):
+    def _load(self, profile, map_id, floor, *, read_resource=None, operation=None, force_fresh=False):
         import numpy as np
+        if force_fresh and operation is None:
+            raise ValueError('structure-identity-resource-owner-changed')
         self._assert_read_current(operation)
         if operation is None and self._legacy_reference_loader is not None:
             legacy = self._legacy_reference_loader(map_id, floor)
@@ -205,7 +219,9 @@ class SharedReferenceProvider:
         if version.get("sharedError"):
             return None
         with self._lock:
-            reference = self._cache.get(key)
+            # Prepared RAM must originate in this operation's actual bytes,
+            # since the ordinary provider cache has writable arrays/metadata.
+            reference = None if force_fresh else self._cache.get(key)
             if reference is not None:
                 self._assert_read_current(operation)
                 self._cache.move_to_end(key)
@@ -221,6 +237,10 @@ class SharedReferenceProvider:
                     or any(reference.metadata.get(name) != value for name, value in version["expected"].items())):
                 return None
             self._assert_read_current(operation)
+            if force_fresh:
+                # Keep this mutable decode private until its caller freezes
+                # it; ordinary cache readers must not acquire it in between.
+                return reference
             self._cache[key] = reference
             while len(self._cache) > 6:
                 self._cache.popitem(last=False)

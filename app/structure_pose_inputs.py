@@ -25,6 +25,7 @@ import numpy as np
 
 from fast_structure_alignment import PreparedStructure
 from imported_native_base import NativeBaseBundle
+from imported_resource_packages import FileRef
 from shared_structure_reference import SharedStructureReference, load_shared_structure
 import star_map_import as files
 
@@ -97,14 +98,19 @@ class _RecordingReader:
         self._root = reader.root
 
     def __call__(self, path):
+        # Keep semantic preflight inside the component read scope. In
+        # particular, the existing batch reader attaches the actual FileRef to
+        # NPZ-header failures; optional consumers must not guess their origin.
+        return self.read_from(path, read_resource=lambda candidate:
+            self.reader.read_many((candidate,), expected_root=self.reader.root)[0])
+
+    def read_from(self, path, *, read_resource):
+        """Record a batch/failure reader's original preflighted result once."""
         key = _path_key(path)
         previous = self.payloads.get(key)
         if previous is not None:
             return previous[1]
-        # Keep semantic preflight inside the component read scope. In
-        # particular, the existing batch reader attaches the actual FileRef to
-        # NPZ-header failures; optional consumers must not guess their origin.
-        raw = self.reader.read_many((path,), expected_root=self.reader.root)[0]
+        raw = read_resource(path)
         self.payloads[key] = (Path(path), bytes(raw))
         return raw
 
@@ -265,6 +271,8 @@ class PreparedStructurePoseInputs:
     floors: tuple
     references: Mapping
     preparations: Mapping
+    # Actual successful optional payload reads; a FileRef alone grants no fit.
+    preparation_resources: Mapping
     adapters: PreparedCoordinates
     pack: _Pack
     capabilities: Mapping
@@ -532,43 +540,89 @@ def prepare_structure_pose_inputs(engine, map_id, floor, *, resource_revision,
     info = tuple(_MapInfo(str(item.id), str(item.name)) for item in pack.maps)
     ram_pack = _Pack(pack.pack_id, pack.mode, tuple(pack.floors), info,
                      MappingProxyType({item.id: item for item in info}), MappingProxyType(profiles))
-    references, prepared, preparations, matrices, gaps = {}, {}, {}, {}, []
-    for target_floor in floors:
-        files._check_cancelled(cancelled)
-        key = (map_id, target_floor)
-        current = provider("shared-structure", map_id, target_floor)
-        if current is None:
-            references[key], prepared[key] = None, None
-            gaps.append("shared-reference-unavailable:" + target_floor)
-            continue
-        if (current.metadata.get("binding", {}).get("mapId"),
-                str(current.metadata.get("binding", {}).get("floor"))) != key:
-            raise PoseInputsUnavailable("pose-input-reference-binding-mismatch")
-        reference = _new_reference(current, bundle, read, root)
-        if reference is None:
-            raise PoseInputsUnavailable("pose-input-reference-decode-unavailable")
-        references[key] = _freeze_reference(reference)
-        fast_available = reference.metadata.get("authorizesStructureValidation") is not False
-        payload = source.read(current, cancelled=cancelled) if fast_available else None
-        value = None
-        if payload is not None:
-            try:
-                decoded = source.decode(payload[0], current)
-                value = PreparedStructure(_array(decoded.distance), _array(decoded.chains),
-                    _array(decoded.rays), decoded.pitch, tuple(decoded.shape))
-            except (OSError, ValueError):
-                pass  # An optional preparation never invents a usable value.
-        prepared[key] = value
-        if fast_available:
-            preparations[key] = (current, payload[1] if payload is not None else None, value)
-        if value is None:
-            gaps.append(("fast-prepared-unavailable:" if fast_available else
-                         "fast-structure-validation-unavailable:") + target_floor)
-        for profile in dict.fromkeys(("shared-structure", profiles[map_id])):
-            matrix = coordinates.matrix_profile_to_canonical(profile, map_id, target_floor)
-            matrices[(profile, map_id, target_floor)] = _array(matrix)
-            if matrix is None:
-                gaps.append("coordinate-bridge-unavailable:" + profile + "/" + target_floor)
+    batch = operation = None
+    if (callable(getattr(provider, "batch_bindings", None))
+            and callable(getattr(provider, "read_with_resource", None))
+            and callable(getattr(source, "prepare_batch", None))
+            and getattr(provider, "resources", None) is bundle.resources
+            and getattr(provider, "versions", None) is bundle.versions):
+        requests = tuple(("shared-structure", map_id, target_floor) for target_floor in floors)
+        # The typed metadata owns fast-validation use. Do not pre-read its
+        # optional payload or index before the fresh reference establishes it.
+        batch = source.prepare_batch(provider.batch_bindings(requests), cancelled=cancelled,
+                                     include_prepared=False)
+        begin = getattr(provider, "begin_read_operation", None)
+        if callable(begin):
+            operation = begin(bundle, batch, cancelled=cancelled)
+    from imported_fast_structure import _PreparedReadFailure
+    # Preserve the first required failure at the original reference decoder,
+    # rather than retrying into success and delivering it to a later consumer.
+    reference_read = read
+    if type(batch) is _PreparedReadFailure:
+        def reference_read(path):
+            return read.read_from(path, read_resource=batch.read_resource)
+    references, prepared, preparations, preparation_resources, matrices, gaps = {}, {}, {}, {}, {}, []
+    try:
+        for target_floor in floors:
+            files._check_cancelled(cancelled)
+            key = (map_id, target_floor)
+            preparation_resources[key] = None
+            fresh_native = False
+            if operation is not None:
+                current, fresh_native = operation.read_fresh_reference("shared-structure", map_id,
+                    target_floor, read_resource=batch.read_resource)
+            else:
+                current = (provider.read_with_resource("shared-structure", map_id, target_floor,
+                    read_resource=batch.read_resource) if batch is not None
+                    else provider("shared-structure", map_id, target_floor))
+            if current is None:
+                references[key], prepared[key] = None, None
+                gaps.append("shared-reference-unavailable:" + target_floor)
+                continue
+            if (current.metadata.get("binding", {}).get("mapId"),
+                    str(current.metadata.get("binding", {}).get("floor"))) != key:
+                raise PoseInputsUnavailable("pose-input-reference-binding-mismatch")
+            if fresh_native:
+                # Only this successful native operation decoded the actual
+                # batch bytes with the provider's full original checks. Keep
+                # those bytes for the final proof instead of decoding again.
+                reference = current
+                read.payloads[_path_key(current.path)] = (Path(current.path), batch.read_resource(current.path))
+            else:
+                reference = _new_reference(current, bundle, reference_read, root)
+            if reference is None:
+                raise PoseInputsUnavailable("pose-input-reference-decode-unavailable")
+            references[key] = _freeze_reference(reference)
+            fast_available = reference.metadata.get("authorizesStructureValidation") is not False
+            payload = source.read(current, cancelled=cancelled) if fast_available else None
+            if payload is not None:
+                identity = payload[1]
+                resource = identity[2] if isinstance(identity, tuple) and len(identity) > 2 else None
+                if isinstance(resource, FileRef):
+                    preparation_resources[key] = resource
+            value = None
+            if payload is not None:
+                try:
+                    decoded = source.decode(payload[0], current)
+                    value = PreparedStructure(_array(decoded.distance), _array(decoded.chains),
+                        _array(decoded.rays), decoded.pitch, tuple(decoded.shape))
+                except (OSError, ValueError):
+                    pass  # An optional preparation never invents a usable value.
+            prepared[key] = value
+            if fast_available:
+                preparations[key] = (current, payload[1] if payload is not None else None, value)
+            if value is None:
+                gaps.append(("fast-prepared-unavailable:" if fast_available else
+                             "fast-structure-validation-unavailable:") + target_floor)
+            for profile in dict.fromkeys(("shared-structure", profiles[map_id])):
+                matrix = coordinates.matrix_profile_to_canonical(profile, map_id, target_floor)
+                matrices[(profile, map_id, target_floor)] = _array(matrix)
+                if matrix is None:
+                    gaps.append("coordinate-bridge-unavailable:" + profile + "/" + target_floor)
+    finally:
+        if batch is not None:
+            batch.release()
+    batch = payload = decoded = None
     main, side = _prepare_locators(bundle, ram_pack, references, read, interfaces, root, map_id, floors,
                                   cancelled=cancelled)
     grid = _prepare_grid(engine, map_id, floors, read, pose_index_enabled)
@@ -611,6 +665,8 @@ def prepare_structure_pose_inputs(engine, map_id, floor, *, resource_revision,
         payload = source.read(current, cancelled=cancelled)
         if value is not None and (payload is None or payload[1] != identity):
             raise PoseInputsUnavailable("pose-input-preparation-changed")
+    if operation is not None:
+        operation.finish()
     check()
     final_view, final_root, final_component, final_reader = bundle.read_binding()
     if (getattr(engine, "qt_native_base", None) is not bundle or engine.qt_shared_provider is not provider
@@ -624,10 +680,11 @@ def prepare_structure_pose_inputs(engine, map_id, floor, *, resource_revision,
         id(engine), id(bundle), id(provider), id(source))
     locators = _LocatorTemplates(main, side)
     immutable_refs, immutable_prepared = MappingProxyType(references), MappingProxyType(prepared)
+    immutable_resources = MappingProxyType(preparation_resources)
     adapters = PreparedCoordinates(coordinates.canonical_pack_id, MappingProxyType(matrices))
-    retained = _bytes_used((immutable_refs, immutable_prepared, adapters, locators, grid, prior))
+    retained = _bytes_used((immutable_refs, immutable_prepared, immutable_resources, adapters, locators, grid, prior))
     return PreparedStructurePoseInputs(binding, map_id, floor, floors, immutable_refs, immutable_prepared,
-        adapters, ram_pack, capabilities, tuple(gaps), started, time.perf_counter(), retained,
+        immutable_resources, adapters, ram_pack, capabilities, tuple(gaps), started, time.perf_counter(), retained,
         pose_index_enabled, prior, pose_index_source, locators, grid)
 
 
@@ -665,7 +722,7 @@ class StructurePoseInputCache:
             locator.structures = table
             locator.shared_reference_provider = table
         locators = _LocatorTemplates(main, side)
-        retained = _bytes_used((references, inputs.preparations, inputs.adapters,
+        retained = _bytes_used((references, inputs.preparations, inputs.preparation_resources, inputs.adapters,
                                locators, inputs._grid, inputs.coordinate_prior))
         return replace(inputs, references=references, _locators=locators, retained_bytes=retained)
 

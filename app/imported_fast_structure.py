@@ -272,13 +272,15 @@ class ImportedFastStructureSource:
             return None
         return raw, (str(root), reference_ref, prepared_ref, id(reference))
 
-    def prepare_batch(self, bindings, *, required_paths=(), cancelled=None):
+    def prepare_batch(self, bindings, *, required_paths=(), cancelled=None, include_prepared=True):
         """Read declared references/preparations once for a bounded static build.
 
         Declaration failures propagate. A typed/prepared failure is delivered
         once through operation-local callbacks to the original provider/loader,
         preserving cold misses, warm required errors and optional read identity.
         Context errors have no payload attribution and never take this fallback.
+        A typed-only consumer sets include_prepared=False; fast declarations and
+        payloads then remain unread until its original purpose-qualified read.
         """
         bindings = tuple(bindings)
         required_paths = tuple(required_paths)
@@ -288,7 +290,7 @@ class ImportedFastStructureSource:
             prefix[file_ref.path] = raw
         try:
             return self._prepare_batch(bindings, required_paths=required_paths, cancelled=cancelled,
-                                       on_payload=stage)
+                                       on_payload=stage, include_prepared=include_prepared)
         except (OSError, ValueError) as error:
             failed = getattr(error, 'resource_file_ref', None)
             if failed is None:
@@ -304,17 +306,17 @@ class ImportedFastStructureSource:
             failure.assert_current()
             return failure
 
-    def _prepare_batch(self, bindings, *, required_paths, cancelled, on_payload=None):
+    def _prepare_batch(self, bindings, *, required_paths, cancelled, on_payload=None, include_prepared=True):
         self.assert_current(cancelled)
         bindings = tuple(bindings)
         state = self._read_state()
         paths = list(required_paths)
-        if bindings and self.index_path is not None:
+        if include_prepared and bindings and self.index_path is not None:
             paths.append(self.root / self.index_path)
         for binding, path in bindings:
             paths.append(path)
             key = (binding['profile'], binding['mapId'], binding['variant'], binding['floor'])
-            entry = self.entries.get(key)
+            entry = self.entries.get(key) if include_prepared else None
             if entry is not None:
                 if self.reader.relative_path(path) != entry[0].path:
                     return None  # Keep the ordinary source's mismatch handling.

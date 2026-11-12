@@ -10,11 +10,13 @@ import struct
 import tempfile
 from types import MethodType, SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+import weakref
 import zipfile
 import zlib
 
 import numpy as np
+import resource_snapshot_io
 
 from client_imported_providers import load_native_resources
 from client_providers import SharedReferenceProvider
@@ -128,7 +130,8 @@ class StructurePoseInputTests(unittest.TestCase):
             cls.archives[key] = (source.output.read_bytes(), mid)
         return cls.archives[key]
 
-    def engine(self, season="s0", mode="nightmare", *, map_id=None, extra_files=None):
+    def engine(self, season="s0", mode="nightmare", *, map_id=None, extra_files=None,
+               separate_controls=False):
         raw, default_mid = self.archive(season, mode)
         temporary = tempfile.TemporaryDirectory(prefix="pose-input-view-")
         self.addCleanup(temporary.cleanup)
@@ -158,6 +161,10 @@ class StructurePoseInputTests(unittest.TestCase):
             return check
         views = {ref.component_id: PackageView(root / "resources", ref,
                     assert_current=guard(ref.component_id)) for ref in refs}
+        if separate_controls:
+            controls = save_archive(archive, root / 'controls-resources')
+            ref = next(ref for ref in controls.component_refs if ref.component_id == 'controls')
+            views['controls'] = PackageView(root / 'controls-resources', ref, assert_current=guard('controls'))
         bundle, controls, native, provider, check = load_native_resources(
             views["base"], views["controls"], season=season, mode=mode, require_rank=False)
         engine = SimpleNamespace(pack=bundle.pack, qt_native_base=bundle,
@@ -224,6 +231,9 @@ class StructurePoseInputTests(unittest.TestCase):
 
     def test_later_disk_damage_keeps_ram_but_new_preparation_rejects_it(self):
         engine, mid, _ = self.engine()
+        # This is the ordinary provider's warm required-error case; private
+        # preparation deliberately does not populate that writable cache.
+        self.assertIsNotNone(engine.qt_shared_provider('shared-structure', mid, '1'))
         inputs = self.prepare(engine, mid)
         reference = inputs.reference("shared-structure", mid, "1")
         pixels = reference.clean_mask.copy()
@@ -232,6 +242,363 @@ class StructurePoseInputTests(unittest.TestCase):
         self.assertIsNotNone(inputs.prepared(reference))
         with self.assertRaises(ValueError):
             self.prepare(engine, mid)
+
+    def test_prepared_resource_binding_comes_from_actual_initial_payload_read(self):
+        from imported_resource_packages import FileRef
+        engine, mid, _ = self.engine()
+        source, payloads = engine.qt_fast_structure_source, []
+        read = source.read
+
+        def record(*args, **kwargs):
+            payload = read(*args, **kwargs)
+            payloads.append(payload)
+            return payload
+
+        with patch.object(source, 'read', side_effect=record):
+            inputs = self.prepare(engine, mid)
+        resource = inputs.preparation_resources[mid, '1']
+        self.assertIsInstance(resource, FileRef)
+        self.assertIs(resource, payloads[0][1][2])
+        self.assertEqual(resource, payloads[-1][1][2])
+        self.assertEqual(set(inputs.preparation_resources), set(inputs.references))
+        with self.assertRaises(TypeError):
+            inputs.preparation_resources[mid, '1'] = None
+
+    def test_cold_native_reference_decodes_once_and_rechecks_actual_bytes(self):
+        from collections import Counter
+        import shared_structure_reference as shared
+        import structure_pose_inputs as pose
+        engine, mid, _ = self.engine()
+        provider, bundle = engine.qt_shared_provider, engine.qt_native_base
+        row = next(row for key, row in provider.versions.items() if key[1] == mid and key[3] == '1')
+        path, reader = row['path'], bundle.reader
+        relative, view = reader.relative_path(path), reader.view
+        reads, decodes = Counter(), []
+        load, read = shared.load_shared_structure, view._read_payload
+
+        def decode(candidate, **kwargs):
+            if Path(candidate) == path:
+                decodes.append(candidate)
+            return load(candidate, **kwargs)
+
+        def counted(package_root, inventory, component_id, candidate):
+            reads[candidate] += 1
+            return read(package_root, inventory, component_id, candidate)
+
+        self.assertFalse(provider._cache, 'the regression must start at the cold production provider')
+        with patch.object(shared, 'load_shared_structure', side_effect=decode), \
+             patch.object(pose, 'load_shared_structure', side_effect=decode), \
+             patch.object(view, '_read_payload', side_effect=counted):
+            inputs = self.prepare(engine, mid)
+        self.assertIsNotNone(inputs.prepared(inputs.reference('shared-structure', mid, '1')))
+        self.assertEqual(len(decodes), 1, 'one native layer must have only one complete typed decode')
+        self.assertGreaterEqual(reads[relative], 2, 'the final actual-byte proof must remain')
+
+    def test_preparation_ignores_mutable_warm_native_arrays_and_metadata(self):
+        engine, mid, _ = self.engine()
+        warm = engine.qt_shared_provider('shared-structure', mid, '1')
+        clean, validation = warm.clean_mask.copy(), warm.validation_mask.copy()
+        metadata = json.dumps(warm.metadata, sort_keys=True)
+        warm.clean_mask.fill(0)
+        warm.validation_mask.fill(0)
+        warm.metadata['binding'] = dict(warm.metadata['binding'], floor='2')
+        warm.metadata['roles'] = dict(warm.metadata['roles'], clean='missing-role')
+        inputs = self.prepare(engine, mid)
+        reference = inputs.reference('shared-structure', mid, '1')
+        np.testing.assert_array_equal(reference.clean_mask, clean)
+        np.testing.assert_array_equal(reference.validation_mask, validation)
+        self.assertEqual(json.dumps(reference.metadata, sort_keys=True), metadata)
+        self.assertIsNot(reference, warm)
+        self.assertIsNotNone(inputs.prepared(reference))
+
+    def test_native_decode_stays_private_until_immutable_snapshot_exists(self):
+        import structure_pose_inputs as pose
+        engine, mid, _ = self.engine()
+        provider = engine.qt_shared_provider
+        warm = provider('shared-structure', mid, '1')
+        clean, metadata = warm.clean_mask.copy(), json.dumps(warm.metadata, sort_keys=True)
+        freeze, consumers = pose._freeze_reference, []
+
+        def ordinary_consumer_before_freeze(reference):
+            cached = provider('shared-structure', mid, '1')
+            consumers.append(cached)
+            cached.clean_mask.fill(0)
+            cached.metadata['ordinaryConsumerMutation'] = True
+            return freeze(reference)
+
+        with patch.object(pose, '_freeze_reference', side_effect=ordinary_consumer_before_freeze):
+            inputs = self.prepare(engine, mid)
+        reference = inputs.reference('shared-structure', mid, '1')
+        np.testing.assert_array_equal(reference.clean_mask, clean)
+        self.assertEqual(json.dumps(reference.metadata, sort_keys=True), metadata)
+        self.assertIsNotNone(inputs.prepared(reference))
+        self.assertEqual(len(consumers), 1)
+        self.assertIs(consumers[0], warm, 'fresh preparation must preserve the existing ordinary cache')
+
+    def test_first_optional_batch_failure_cannot_be_replaced_by_a_later_good_read(self):
+        engine, mid, _ = self.engine()
+        source, reader = engine.qt_fast_structure_source, engine.qt_native_base.reader
+        key = next(key for key in source.entries if key[1] == mid and key[3] == '1')
+        optional = source.root / source.entries[key][1].path
+        payload, check = optional.read_bytes(), reader._check_payload
+        rejected = []
+
+        def fail_once(raw, extension):
+            if raw == payload and not rejected:
+                rejected.append(True)
+                raise ValueError('first-optional-read-failed')
+            return check(raw, extension)
+
+        with patch.object(reader, '_check_payload', side_effect=fail_once), \
+             patch.object(source, 'decode', wraps=source.decode) as decode:
+            inputs = self.prepare(engine, mid)
+        self.assertTrue(rejected)
+        self.assertEqual(decode.call_count, 0, 'a later good read cannot repair the first optional gap')
+        self.assertIsNone(inputs.prepared(inputs.reference('shared-structure', mid, '1')))
+        self.assertIn('fast-prepared-unavailable:1', inputs.gaps)
+        self.assertIsNone(inputs.preparation_resources[mid, '1'], 'a later read cannot invent initial provenance')
+
+    def test_native_without_validation_authority_never_reads_its_optional_preparation(self):
+        source_fixture = native_fixture.NativeBaseExporterTests('runTest')
+        source_fixture.setUp()
+        self.addCleanup(source_fixture.doCleanups)
+        row = next(row for row in source_fixture.rows if row['floor'] == '1')
+        path = source_fixture.source / row['resourcePath']
+        with np.load(path, allow_pickle=False) as archive:
+            arrays = {name: archive[name] for name in archive.files}
+        metadata = json.loads(str(arrays['metadata'].item()))
+        metadata['authorizesStructureValidation'] = False
+        arrays['metadata'] = np.asarray(json.dumps(metadata))
+        np.savez_compressed(path, **arrays)
+        source_fixture.export()
+        for kind in ('optional-bytes', 'index-bytes', 'one-shot-read'):
+            with self.subTest(kind=kind):
+                with patch.dict(self.archives, {('s0', 'nightmare'):
+                                (source_fixture.output.read_bytes(), source_fixture.mid)}):
+                    engine, mid, _ = self.engine()
+                source = engine.qt_fast_structure_source
+                key = next(key for key in source.entries if key[1] == mid and key[3] == '1')
+                optional = source.entries[key][1].path
+                unused = {optional, source.index_path}
+                if kind != 'one-shot-read':
+                    target = optional if kind == 'optional-bytes' else source.index_path
+                    (source.root / target).write_bytes(b'this unused fast resource must not be read')
+                read, attempts = source.view._read_payload, []
+
+                def counted(package_root, inventory, component_id, relative):
+                    if relative in unused:
+                        attempts.append(relative)
+                        if kind == 'one-shot-read' and len(attempts) == 1:
+                            raise OSError('one-shot-unused-fast-resource-failure')
+                    return read(package_root, inventory, component_id, relative)
+
+                with patch.object(source.view, '_read_payload', side_effect=counted), \
+                     patch.object(source, 'read', wraps=source.read) as fast_read:
+                    inputs = self.prepare(engine, mid)
+                reference = inputs.reference('shared-structure', mid, '1')
+                self.assertIs(reference.metadata['authorizesStructureValidation'], False)
+                self.assertIsNone(inputs.prepared(reference))
+                self.assertIn('fast-structure-validation-unavailable:1', inputs.gaps)
+                self.assertIsNone(inputs.preparation_resources[mid, '1'])
+                self.assertEqual(attempts, [], 'use must be known before any fast resource read')
+                self.assertEqual(fast_read.call_count, 0)
+
+    def test_first_typed_batch_failure_keeps_cold_gap_and_warm_required_error(self):
+        for warm in (False, True):
+            outcomes = []
+            for batched in (False, True):
+                with self.subTest(warm=warm, batched=batched):
+                    engine, mid, _ = self.engine()
+                    provider, source = engine.qt_shared_provider, engine.qt_fast_structure_source
+                    key = next(key for key in source.entries if key[1] == mid and key[3] == '1')
+                    if warm:
+                        self.assertIsNotNone(provider('shared-structure', mid, '1'))
+                    if not batched:
+                        engine.qt_shared_provider = lambda *args: provider(*args)
+                    target = source.root / source.entries[key][0].path
+                    read, attempts, operations = resource_snapshot_io.read_stable_file, [], []
+                    begin = provider.begin_read_operation
+
+                    def fail_once(path, *args, **kwargs):
+                        if Path(path) == target:
+                            attempts.append(True)
+                            if len(attempts) == 1:
+                                raise OSError('first-typed-payload-failure')
+                        return read(path, *args, **kwargs)
+
+                    def capture(*args, **kwargs):
+                        operation = begin(*args, **kwargs)
+                        operations.append(operation)
+                        return operation
+
+                    with patch.object(resource_snapshot_io, 'read_stable_file', side_effect=fail_once), \
+                         patch.object(provider, 'begin_read_operation', side_effect=capture):
+                        if warm:
+                            with self.assertRaisesRegex(PoseInputsUnavailable, 'reference-decode-unavailable') as error:
+                                self.prepare(engine, mid)
+                            outcomes.append(str(error.exception))
+                        else:
+                            inputs = self.prepare(engine, mid)
+                            self.assertIsNone(inputs.reference('shared-structure', mid, '1'))
+                            self.assertIn('shared-reference-unavailable:1', inputs.gaps)
+                            outcomes.append(inputs.gaps)
+                    if batched:
+                        self.assertEqual(operations, [None], 'a failed batch grants no fresh-native operation')
+                    self.assertEqual(len(attempts), 1, 'the first required failure must not be retried')
+            self.assertEqual(outcomes[0], outcomes[1], 'the original guarded prepare owns failure classification')
+
+    def test_native_operation_closes_and_releases_batch_before_final_source_read(self):
+        engine, mid, _ = self.engine()
+        source, provider = engine.qt_fast_structure_source, engine.qt_shared_provider
+        prepare, begin, read = source.prepare_batch, provider.begin_read_operation, source.read
+        batches, operations, final_reads = [], [], []
+
+        def capture_batch(*args, **kwargs):
+            batch = prepare(*args, **kwargs)
+            batches.append(weakref.ref(batch))
+            return batch
+
+        def capture_operation(*args, **kwargs):
+            operation = begin(*args, **kwargs)
+            operations.append(operation)
+            return operation
+
+        def final_read(*args, **kwargs):
+            self.assertEqual(len(batches), 1)
+            if final_reads:
+                self.assertIsNone(batches[0](), 'the first compressed batch must be released')
+            else:
+                self.assertIsNotNone(batches[0](), 'the initial fast read follows the typed-only batch')
+            final_reads.append(True)
+            return read(*args, **kwargs)
+
+        with patch.object(source, 'prepare_batch', side_effect=capture_batch), \
+             patch.object(provider, 'begin_read_operation', new=capture_operation), \
+             patch.object(source, 'read', side_effect=final_read):
+            self.prepare(engine, mid)
+        self.assertEqual(len(final_reads), 2, 'purpose-qualified initial and final actual reads remain')
+        self.assertEqual(len(operations), 1)
+        self.assertTrue(operations[0].closed)
+        for method in (operations[0].read_reference, operations[0].read_fresh_reference):
+            with self.assertRaisesRegex(ValueError, 'resource-owner-changed'):
+                method('shared-structure', mid, '1', read_resource=lambda path: b'')
+
+    def test_final_actual_reread_still_rejects_cancel_controls_reader_and_owner_changes(self):
+        for mutation, expected in (('cancel', 'import-cancelled'), ('controls', 'controls-selection-superseded'),
+                                   ('reader', 'resource-owner-changed'), ('legacy-loader', 'resource-owner-changed'),
+                                   ('controls-owner', 'resource-owner-changed')):
+            with self.subTest(mutation=mutation):
+                engine, mid, current = self.engine()
+                provider, source = engine.qt_shared_provider, engine.qt_fast_structure_source
+                view, decoded, changed, cancelled = source.view, [], [], [False]
+                read, decode = view._read_payload, source.decode
+
+                def record_decode(*args):
+                    value = decode(*args)
+                    decoded.append(True)
+                    return value
+
+                def change_after_actual_read(*args):
+                    raw = read(*args)
+                    if decoded and not changed:
+                        changed.append(True)
+                        if mutation == 'cancel':
+                            cancelled[0] = True
+                        elif mutation == 'controls':
+                            current['controls'] = False
+                        elif mutation == 'reader':
+                            source.reader = copy(source.reader)
+                        elif mutation == 'legacy-loader':
+                            provider._legacy_reference_loader = lambda *args: None
+                        else:
+                            provider._operation_owners.controls._view = copy(provider._operation_owners.controls._view)
+                    return raw
+
+                with patch.object(source, 'decode', side_effect=record_decode), \
+                     patch.object(view, '_read_payload', side_effect=change_after_actual_read):
+                    with self.assertRaisesRegex(ValueError, expected):
+                        self.prepare(engine, mid, cancelled=lambda: cancelled[0])
+                self.assertTrue(changed, 'the mutation must happen inside a final actual payload reread')
+
+    def test_unknown_legacy_loader_keeps_guarded_reference_reconstruction(self):
+        import structure_pose_inputs as pose
+        engine, mid, _ = self.engine()
+        provider = engine.qt_shared_provider
+        provider._legacy_reference_loader = Mock(return_value=None)
+        with patch.object(pose, '_new_reference', wraps=pose._new_reference) as rebuild:
+            inputs = self.prepare(engine, mid)
+        self.assertIsNotNone(inputs.prepared(inputs.reference('shared-structure', mid, '1')))
+        self.assertEqual(provider._legacy_reference_loader.call_count, 1)
+        self.assertEqual(rebuild.call_count, 1)
+
+    def test_source_without_batch_keeps_original_guarded_preparation(self):
+        import structure_pose_inputs as pose
+        engine, mid, _ = self.engine()
+        engine.qt_fast_structure_source.prepare_batch = None
+        with patch.object(pose, '_new_reference', wraps=pose._new_reference) as rebuild:
+            inputs = self.prepare(engine, mid)
+        self.assertIsNotNone(inputs.prepared(inputs.reference('shared-structure', mid, '1')))
+        self.assertEqual(rebuild.call_count, 1)
+
+    def test_catalog_change_inside_final_actual_read_rejects_publication(self):
+        from imported_resource_catalog import ResourceResolver
+        from uuid import uuid4
+        engine, mid, _ = self.engine()
+        source, provider = engine.qt_fast_structure_source, engine.qt_shared_provider
+        view, owners = source.view, provider._operation_owners
+        catalog = view.resource_root / 'catalog.json'
+        document = dict(schema='xingtu-resource-catalog-v1', generation=str(uuid4()), contexts={}, displays=[])
+        catalog.write_text(json.dumps(document), encoding='utf-8')
+        snapshot = ResourceResolver(view.resource_root).snapshot()
+        view._assert_current = owners.controls_view._assert_current = snapshot.assert_current
+        read, decode, decoded, changed = view._read_payload, source.decode, [], []
+
+        def record_decode(*args):
+            value = decode(*args)
+            decoded.append(True)
+            return value
+
+        def change_after_actual_read(*args):
+            raw = read(*args)
+            if decoded and not changed:
+                changed.append(True)
+                document['generation'] = str(uuid4())
+                catalog.write_text(json.dumps(document), encoding='utf-8')
+            return raw
+
+        with patch.object(source, 'decode', side_effect=record_decode), \
+             patch.object(view, '_read_payload', side_effect=change_after_actual_read):
+            with self.assertRaisesRegex(ValueError, 'catalog-superseded'):
+                self.prepare(engine, mid)
+        self.assertTrue(changed)
+
+    def test_controls_manifest_change_inside_final_base_read_rejects_publication(self):
+        engine, mid, _ = self.engine(separate_controls=True)
+        source, owners = engine.qt_fast_structure_source, engine.qt_shared_provider._operation_owners
+        view, decoded, changed = source.view, [], []
+        self.assertNotEqual(view.resource_root, owners.controls_view.resource_root)
+        read, decode = view._read_payload, source.decode
+
+        def record_decode(*args):
+            value = decode(*args)
+            decoded.append(True)
+            return value
+
+        def change_after_actual_read(*args):
+            raw = read(*args)
+            if decoded and not changed:
+                changed.append(True)
+                manifest = owners.controls_view.root.parent.parent / 'manifest.json'
+                replacement = manifest.with_suffix('.replacement')
+                replacement.write_bytes(manifest.read_bytes())
+                replacement.replace(manifest)
+            return raw
+
+        with patch.object(source, 'decode', side_effect=record_decode), \
+             patch.object(view, '_read_payload', side_effect=change_after_actual_read):
+            with self.assertRaisesRegex(ValueError, 'manifest-replaced'):
+                self.prepare(engine, mid)
+        self.assertTrue(changed)
 
     def test_repeated_preparation_read_decodes_once_but_rechecks_actual_bytes(self):
         from structure_pose_inputs import _RecordingReader
@@ -707,8 +1074,17 @@ class StructurePoseInputTests(unittest.TestCase):
                     self.assertIs(reference.metadata["authorizesMapIdentity"], False)
                     self.assertIs(reference.metadata["authorizesStructureValidation"], False)
                     self.assertIsNone(inputs.prepared(reference))
+                    self.assertIsNone(inputs.preparation_resources[mid, floor])
                 if season == "s1":
                     self.assertFalse(inputs.capabilities["semanticSideEntries"])
+                native_mid = next(key[1] for key in engine.qt_shared_provider.versions)
+                with patch('structure_pose_inputs._new_reference',
+                           side_effect=AssertionError('native-reference-decoded-again')):
+                    native_inputs = self.prepare(engine, native_mid, floor)
+                native_reference = native_inputs.reference('shared-structure', native_mid, floor)
+                self.assertEqual(native_reference.metadata['sourceKind'], 'game-rendered-shared-structure')
+                self.assertIsNotNone(native_inputs.prepared(native_reference))
+                self.assertEqual(native_inputs.capabilities['rankReady'], inputs.capabilities['rankReady'])
 
 
 if __name__ == "__main__":
