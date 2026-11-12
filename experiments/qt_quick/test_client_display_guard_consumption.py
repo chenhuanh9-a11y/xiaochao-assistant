@@ -1,6 +1,8 @@
 """Real imported references through the shared display consumption boundary."""
 from copy import copy, deepcopy
 from dataclasses import replace
+import ctypes
+import os
 from pathlib import Path
 import json
 import unittest
@@ -25,6 +27,23 @@ class DisplayGuardConsumptionTests(unittest.TestCase):
         engine, _, current = self.engine('s0', mode)
         mid = next(key[1] for key in engine.qt_shared_provider.versions)
         return engine, mid, current
+
+    def short_alias(self, path):
+        path = Path(path)
+        if os.name != 'nt':
+            return path
+        get_short_path = ctypes.windll.kernel32.GetShortPathNameW
+        get_short_path.argtypes = (ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32)
+        get_short_path.restype = ctypes.c_uint32
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = get_short_path(str(path), buffer, len(buffer))
+        if not 0 < length < len(buffer):
+            self.skipTest('GetShortPathNameW could not obtain a real alias for the resource file')
+        alias = Path(buffer.value)
+        if os.path.normcase(str(alias)) == os.path.normcase(str(path)):
+            self.skipTest('8.3 aliases are unavailable for the resource file on this volume')
+        self.assertTrue(alias.samefile(path))
+        return alias
 
     def test_actual_runtime_display_entry_reuses_native_bgra_and_rgba(self):
         from client_live_runtime import LiveRuntime
@@ -381,12 +400,14 @@ class DisplayGuardConsumptionTests(unittest.TestCase):
     def test_first_cold_file_failure_is_not_retried_into_a_display(self):
         engine, mid, _ = self.native()
         provider = engine.qt_shared_provider
-        target = next(row['path'] for key, row in provider.versions.items() if key[1] == mid and key[3] == '1')
+        target = self.short_alias(next(row['path'] for key, row in provider.versions.items()
+                                       if key[1] == mid and key[3] == '1'))
         read, attempts = resource_snapshot_io.read_stable_file, []
 
         def fail_once(path, *args, **kwargs):
-            if Path(path) == target:
-                attempts.append(True)
+            candidate = Path(path)
+            if candidate.samefile(target):
+                attempts.append(candidate)
                 if len(attempts) == 1:
                     raise OSError('first-real-typed-read-failure')
             return read(path, *args, **kwargs)
@@ -395,6 +416,9 @@ class DisplayGuardConsumptionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'display-reference-unavailable'):
                 prepare_display_layer(engine, mid, '1', 'shared-structure')
         self.assertEqual(len(attempts), 1)
+        self.assertTrue(attempts[0].samefile(target))
+        if os.name == 'nt':
+            self.assertNotEqual(os.path.normcase(str(attempts[0])), os.path.normcase(str(target)))
         self.assertFalse(provider._cache)
         self.assertIsNotNone(prepare_display_layer(engine, mid, '1', 'shared-structure'))
 

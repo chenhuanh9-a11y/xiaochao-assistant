@@ -216,7 +216,7 @@ class StructurePoseStaticPayloadTests(unittest.TestCase):
     def test_four_modes_keep_original_decoded_arrays_sources_and_geometry(self):
         for season, mode in (('s0', 'difficult'), ('s0', 'nightmare'), ('s1', 'difficult'), ('s1', 'nightmare')):
             with self.subTest(season=season, mode=mode):
-                _, get_engine, _ = self.factory(season, mode)
+                _, get_engine, _ = self.factory(season, mode, short_root=os.name == 'nt')
                 engine = get_engine()
                 static = engine.qt_pose_static_payloads
                 self.assertIsNotNone(static)
@@ -237,7 +237,7 @@ class StructurePoseStaticPayloadTests(unittest.TestCase):
                 left, right = first.references[key], second.references[key]
                 self.assertEqual(left.metadata, right.metadata)
                 self.assertEqual(left.path, right.path)
-                self.assertEqual(left.resource_root, right.resource_root)
+                self.assertTrue(left.resource_root.samefile(right.resource_root))
                 for field in ('clean_mask', 'validation_mask', 'known_boundary', 'unknown_mask'):
                     np.testing.assert_array_equal(getattr(left, field), getattr(right, field))
                 for field in ('distance', 'chains', 'rays', 'pitch', 'shape'):
