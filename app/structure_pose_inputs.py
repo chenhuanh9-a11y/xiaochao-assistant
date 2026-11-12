@@ -349,16 +349,44 @@ def _prepare_locators(bundle, pack, references, read, interfaces, root, map_id, 
     from side_door_recognition import SideDoorRecognizer
     table = _ReferenceTable(MappingProxyType(dict(references)))
     directory = root / interfaces["identityEntries"]
-    main = MapEntryGeometryIdentity(directory, structure_store=table,
-        shared_reference_provider=table, profile_id=interfaces["identityProfile"],
-        profile_for_map=pack.identity_profiles.__getitem__, read_resource=read)
-    side = MapLocalEntryIdentity(directory, mode=pack.mode, floors=pack.floors,
-        structure_store=table, shared_reference_provider=table,
-        profile_id=interfaces["identityProfile"], profile_for_map=pack.identity_profiles.__getitem__,
-        read_resource=read, typed_index_path=root / interfaces["typedIndex"],
-        exit_icon_path=root / interfaces["exitIcon"] if bundle.semantic_side_entries else None,
-        semantic_side_entries=bundle.semantic_side_entries,
-        passport_source_available=bundle.passport_source_available)
+    admitted_main, admitted_side = bundle.entry_identity, bundle.side_entry_identity
+    reusable = (admitted_main.error is None
+        and (not admitted_side.semantic_side_entries
+             or admitted_side.side_door_error is None and admitted_side.side_search_error is None)
+        and (not admitted_side.passport_source_available or admitted_side.passport_error is None))
+    if reusable:
+        # These exact static models were decoded at base admission. Verify their
+        # actual backing files again, then copy query state instead of parsing
+        # and reconstructing the entire catalogue for every requested map.
+        paths = [directory / 'entries.json', directory / 'side-entries.json']
+        if admitted_side.semantic_side_entries:
+            paths.extend((directory / 'side-door-anchors.json', directory / 'side-entry-search.npz'))
+        if admitted_side.passport_source_available:
+            paths.append(directory / 'entry-passports.json')
+        for path in paths:
+            read(path)
+        main, side = copy(admitted_main), copy(admitted_side)
+        main._observation, main._wall_lines = None, {}
+        main.route_loader = side.route_loader = None
+        main.structures = side.structures = table
+        main.shared_reference_provider = side.shared_reference_provider = table
+        main.profile_for_map = side.profile_for_map = pack.identity_profiles.__getitem__
+        side.geometry_provider = side.author_visible_provider = None
+        side.passports, side.entry_coverage = list(side.passports), list(side.entry_coverage)
+        side._exit_recognizer = None
+    else:
+        # An admitted capability miss retains the original loaders' failure and
+        # recovery classification; it is not a reusable successful model.
+        main = MapEntryGeometryIdentity(directory, structure_store=table,
+            shared_reference_provider=table, profile_id=interfaces["identityProfile"],
+            profile_for_map=pack.identity_profiles.__getitem__, read_resource=read)
+        side = MapLocalEntryIdentity(directory, mode=pack.mode, floors=pack.floors,
+            structure_store=table, shared_reference_provider=table,
+            profile_id=interfaces["identityProfile"], profile_for_map=pack.identity_profiles.__getitem__,
+            read_resource=read, typed_index_path=root / interfaces["typedIndex"],
+            exit_icon_path=root / interfaces["exitIcon"] if bundle.semantic_side_entries else None,
+            semantic_side_entries=bundle.semantic_side_entries,
+            passport_source_available=bundle.passport_source_available)
     if main.error is not None:
         raise PoseInputsUnavailable("pose-input-main-locator:" + main.error)
     if side.side_door_error != bundle.side_entry_identity.side_door_error or side.side_search_error != bundle.side_entry_identity.side_search_error:
@@ -368,8 +396,9 @@ def _prepare_locators(bundle, pack, references, read, interfaces, root, map_id, 
         from imported_resource_reader import decode_resource_json
         declaration = interfaces.get("legacyClean") or {}
         passports = decode_resource_json(read(root / declaration["passports"]))
-        side.passports.extend(passports["entries"])
-        side.entry_coverage.extend(passports["coverage"])
+        if not reusable:
+            side.passports.extend(passports["entries"])
+            side.entry_coverage.extend(passports["coverage"])
     # Finish the existing lazy icon decoder in the preparation stage.
     if side.semantic_side_entries:
         side._exit_recognizer = SideDoorRecognizer(side.exit_icon_path, read_resource=read)

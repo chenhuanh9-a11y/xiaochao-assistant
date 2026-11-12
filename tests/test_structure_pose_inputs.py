@@ -249,6 +249,47 @@ class StructurePoseInputTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             recorded.recheck()
 
+    def test_preparation_reuses_admitted_entry_models_without_reconstructing_catalog(self):
+        from difficult_entry_identity import MapEntryGeometryIdentity
+        from difficult_side_entry_identity import MapLocalEntryIdentity
+        engine, mid, _ = self.engine()
+        original_main = engine.qt_native_base.entry_identity
+        original_side = engine.qt_native_base.side_entry_identity
+        wanted = lambda row: row[0]['mapId'] == mid and str(row[0]['floor']) == '1'
+        expected_main = [row for row in original_main.entries if wanted(row)]
+        expected_side = [row for row in original_side.entries if wanted(row)]
+        with patch.object(MapEntryGeometryIdentity, '__init__',
+                          side_effect=AssertionError('reconstructed-admitted-main-catalog')), \
+             patch.object(MapLocalEntryIdentity, '__init__',
+                          side_effect=AssertionError('reconstructed-admitted-side-catalog')):
+            inputs = self.prepare(engine, mid)
+        geometry = inputs.new_geometry_engine()
+        for actual, original, expected in ((geometry.entry_identity, original_main, expected_main),
+                                          (geometry.side_entry_identity, original_side, expected_side)):
+            self.assertIsNot(actual, original)
+            self.assertEqual(len(actual.entries), len(expected))
+            for row, source_row in zip(actual.entries, expected):
+                self.assertEqual((row[0]['mapId'], str(row[0]['floor'])),
+                                 (source_row[0]['mapId'], str(source_row[0]['floor'])))
+                for array, source_array in zip(row[1:], source_row[1:]):
+                    np.testing.assert_array_equal(array, source_array)
+                    self.assertFalse(np.shares_memory(array, source_array))
+                    self.assertFalse(array.flags.writeable)
+
+    def test_reused_difficult_model_keeps_legacy_passports_once(self):
+        engine, mid, _ = self.engine('s0', 'difficult')
+        original = engine.qt_native_base.side_entry_identity
+        wanted = lambda row: row['mapId'] == mid and str(row['floor']) == '1'
+        passports = [row for row in original.passports if wanted(row)]
+        coverage = [row for row in original.entry_coverage if wanted(row)]
+        self.assertTrue(passports)
+        self.assertTrue(coverage)
+        inputs = self.prepare(engine, mid)
+        actual = inputs.new_geometry_engine().side_entry_identity
+        self.assertEqual(len(actual.passports), len(passports))
+        self.assertEqual(len(actual.entry_coverage), len(coverage))
+        self.assertEqual(len([row for row in original.passports if wanted(row)]), len(passports))
+
     def test_preparation_rejects_byte_manifest_reader_root_and_selection_changes(self):
         for mutation in ("bytes", "manifest", "reader", "source-root", "base-selection", "controls-selection"):
             with self.subTest(mutation=mutation):
