@@ -201,6 +201,15 @@ def _reference(view, relative, extension=None):
     return relative
 
 
+def _checked_reference_matches(view, relative, checked, extension=None):
+    """Compare an alias with an exact reference checked earlier in this decode.
+
+    Payload consumers still read through the owning view. Different aliases
+    retain the original path/type checks and their original rejection reason.
+    """
+    return relative == checked or _reference(view, relative, extension) == checked
+
+
 def _entry_reference(view, directory, relative):
     # The old entry schema has an explicit document-directory anchor. Its
     # sourceIndex '../index.json' is resolved to a canonical component FileRef,
@@ -363,7 +372,7 @@ def _typed_declarations(view, reader, paths, expected, profile, identity_rows):
     canvases = {key: row.get('canvas') for key, row in neutral_rows.items()}
     for key, row in neutral_rows.items():
         _canvas(canvases[key])
-        if _reference(view, row.get('referenceResource'), '.npz') != typed[key]['resourcePath']:
+        if not _checked_reference_matches(view, row.get('referenceResource'), typed[key]['resourcePath'], '.npz'):
             _reject('neutral-reference-invalid')
         version = versions_rows[key]
         for value, wanted in ((version.get('typedReference'), typed[key]['resourcePath']),
@@ -371,7 +380,7 @@ def _typed_declarations(view, reader, paths, expected, profile, identity_rows):
                               (version.get('adapterReference'), paths['coordinatePack']),
                               (version.get('neutralDisplay', {}).get('index'), paths['neutralDisplay']),
                               (version.get('sharedLookup', {}).get('resourcePath'), typed[key]['resourcePath'])):
-            if _reference(view, value) != wanted:
+            if not _checked_reference_matches(view, value, wanted):
                 _reject('version-reference-invalid')
     return typed, registry_path, neutral, canvases
 
@@ -502,7 +511,7 @@ def _decode(view, season, mode):
         for floor in floors:
             row, bridge = maps[mid]['floors'][floor], shared[mid]['floors'][floor]
             width, height = _canvas(canvases[mid, floor])
-            if (_reference(view, row.get('referenceResource'), '.npz') != typed[mid, floor]['resourcePath']
+            if (not _checked_reference_matches(view, row.get('referenceResource'), typed[mid, floor]['resourcePath'], '.npz')
                     or row.get('coordinateWidth', width) != width or row.get('coordinateHeight', height) != height):
                 _reject('coordinate-canvas-invalid')
             if 'matrixCanonicalToLegacyRecognition' in row:

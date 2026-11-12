@@ -13,7 +13,7 @@ from difficult_native_identity import NativeDifficultPack, _validate_imported_id
 from difficult_side_entry_identity import MapLocalEntryIdentity
 from imported_legacy_references import ImportedLegacyReferences
 from imported_native_base import (
-    SCHEMA, NativeBaseBundle, NativeBaseUnavailable, _canvas, _entry_rows,
+    SCHEMA, NativeBaseBundle, NativeBaseUnavailable, _canvas, _checked_reference_matches, _entry_rows,
     _identity_matrix, _number, _points, _reference, _reject, _rows, _text,
     _typed_declarations, _verify_typed_products,
 )
@@ -61,13 +61,13 @@ def _coordinates(view, reader, paths, typed, canvases, profiles, legacy_bindings
             or document.get('canonicalCrossFloorSearchCandidates') not in (None, {})):
         _reject('difficult-coordinate-contract-invalid')
     provider = document.get('referenceProvider', {})
-    if (_reference(view, provider.get('indexPath'), '.json') != paths['typedIndex']
+    if (not _checked_reference_matches(view, provider.get('indexPath'), paths['typedIndex'], '.json')
             or provider.get('resourceRoot', '.') != '.'):
         _reject('coordinate-index-invalid')
     lookups = _rows(provider.get('lookupBindings'), set(typed), 'coordinate-lookup')
     for key, row in lookups.items():
         if (row.get('profile') != PROFILE or row.get('variant') != 'variant-01'
-                or _reference(view, row.get('resourcePath'), '.npz') != typed[key]['resourcePath']):
+                or not _checked_reference_matches(view, row.get('resourcePath'), typed[key]['resourcePath'], '.npz')):
             _reject('coordinate-lookup-invalid')
     maps = document.get('maps', {})
     shared = document['profiles'][PROFILE].get('maps', {})
@@ -85,7 +85,10 @@ def _coordinates(view, reader, paths, typed, canvases, profiles, legacy_bindings
             legacy = legacy_by_floor.get(key)
             width, height = _canvas(canvases[key], shape_only=legacy is not None)
             product = legacy if legacy is not None else typed[key]
-            if (_reference(view, row.get('referenceResource'), '.npz') != product['resourcePath']
+            reference_matches = (_reference(view, row.get('referenceResource'), '.npz') == product['resourcePath']
+                if legacy is not None else
+                _checked_reference_matches(view, row.get('referenceResource'), product['resourcePath'], '.npz'))
+            if (not reference_matches
                     or row.get('coordinateWidth') != width or row.get('coordinateHeight') != height):
                 _reject('coordinate-canvas-invalid')
             if legacy is None:
