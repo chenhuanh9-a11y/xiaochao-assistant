@@ -726,6 +726,7 @@ class ImportedResourceService(QObject):
                          '文件后缀与包内类型不一致，请核对结构包和作者路线包。' if code == 'resource-package-extension-mismatch' else
                          '此文件的资源类型不能作为结构包或作者路线包导入。' if code == 'resource-package-kind-unsupported' else
                          '请先导入并启用对应模式的基础结构包，再导入作者图。' if code == 'resource-display-base-context-not-active' else
+                         '此结构包适用于旧整合算法，请导入适配原算法的新结构包；现有文件和作者包已保留。' if code == 'original-qt-base-required' else
                          '此作者图依赖的基础结构版本尚未启用，请先导入对应基础包。' if code == 'resource-display-base-version-mismatch' else
                          '基础结构包须包含同一模式的楼层控件，请获取完整基础包。' if code == 'resource-import-base-controls-pair-required' else
                          '作者显示依赖其他基础版本，请先核对配套资源；当前选择已保留。' if code == 'resource-dependency-not-selected' else

@@ -105,9 +105,9 @@ def seed_lifecycle_bases(root):
     from imported_resource_archive import save_archive
     from imported_resource_selection import inspect_selection
     from resource_transaction import resource_write_lock
-    import test_imported_native_base as s0_fixture
-    from test_export_s0_difficult_native_base_package import S0DifficultSourceFixture
-    from test_export_s1_native_base_package import S1NativeBaseSourceFixture
+    from original_qt_resource_fixtures import (OriginalNightmareBaseFixture,
+        OriginalS0DifficultSourceFixture as S0DifficultSourceFixture,
+        OriginalS1SourceFixture as S1NativeBaseSourceFixture)
 
     resource_root = RuntimePaths(root, False).imported_resource_root
     contexts = {}
@@ -119,11 +119,11 @@ def seed_lifecycle_bases(root):
                         componentId=ref.component_id, manifestSha256=ref.manifest_sha256)
         contexts[f'{season}:{mode}'] = dict(recognitionBase=wire(refs['base']),
                                            controls=wire(refs['controls']), reviewedGroups=None)
-    s0_fixture.ImportedNativeBaseTests.setUpClass()
+    OriginalNightmareBaseFixture.setUpClass()
     try:
-        add(s0_fixture.ImportedNativeBaseTests.archive, 's0', 'nightmare')
+        add(OriginalNightmareBaseFixture.archive, 's0', 'nightmare')
     finally:
-        s0_fixture.ImportedNativeBaseTests.doClassCleanups()
+        OriginalNightmareBaseFixture.doClassCleanups()
     difficult = S0DifficultSourceFixture(root / 'fixture-inputs' / 's0-difficult')
     difficult.export()
     add(difficult.output, 's0', 'difficult')
@@ -343,7 +343,7 @@ def scenario(name, root):
                         observation, floor, reading = client.runtime._observe(engine, frame)
                         assert locate.call_count == 1, locate.call_args_list
                         args, kwargs = locate.call_args
-                        assert args[0] is frame and args[1] == mode and kwargs == {"season": "s0", "controls": None}
+                        assert args[0] is frame and args[1] == mode and kwargs == {"season": "s0"}
                         assert floor == "1", (mode, reading)
                         assert reading["floorSource"] == "fixed", (mode, reading)
                         assert reading["season"] == "s0" and reading["mode"] == mode

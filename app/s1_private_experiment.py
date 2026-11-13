@@ -108,16 +108,15 @@ class PrivateRoundPool:
 
 class PrivateCoordinateObserver:
     """Fresh-frame gate and common structure, immutable packaged resources."""
-    def __init__(self, engine, catalog, asset_dir, *, locator=None, coordinate_index=None,
-                 max_pool_cache_bytes=512 * 1024 * 1024):
+    def __init__(self, engine, catalog, asset_dir, *, read_resource=None):
         from s1_gate_anchor import GateAnchorLocator
         from s1_common_coordinate_filter import CommonCoordinateFilter
         self.engine = engine
-        self.locator = GateAnchorLocator(asset_dir=asset_dir) if locator is None else locator
+        self.locator = GateAnchorLocator(asset_dir=asset_dir, read_resource=read_resource)
         self.filter = CommonCoordinateFilter(
             lambda mid, floor: engine.qt_shared_provider("shared-structure", mid, floor),
-            asset_dir / "s1_entrance_coordinate_index.json" if coordinate_index is None else coordinate_index,
-            mode=catalog.mode, resource_key=catalog.resource_key, max_cache_bytes=max_pool_cache_bytes)
+            asset_dir / "s1_entrance_coordinate_index.json",
+            mode=catalog.mode, resource_key=catalog.resource_key, read_resource=read_resource)
 
     def prepare(self, frame, pool_ids, floor, *, cancelled, stage=None):
         from nightmare_candidate import visible_map_components
@@ -171,8 +170,7 @@ class PrivateCoordinateObserver:
         if resources is None or cancelled():
             return stopped()
         report = run_stage("compare", lambda: self.filter.evaluate(
-            frame, contexts, pool_ids, str(floor), anchor=gate, cancelled=cancelled,
-            prepared_pool=resources))
+            frame, contexts, pool_ids, str(floor), anchor=gate, cancelled=cancelled))
         if report is None or cancelled():
             return stopped()
         selected = report.get("selectedContextIndex")
@@ -217,14 +215,13 @@ class PrivateCoordinateObserver:
 
 class LatestEvidenceQueue:
     """One running immutable-frame task plus one replaceable latest task."""
-    def __init__(self, *, thread_name='s1-private-evidence'):
+    def __init__(self):
         import threading
         self._lock = threading.Lock()
         self._pending = None
         self._thread = None
         self._closed = False
         self._latest_sequence = 0
-        self._thread_name = thread_name
 
     @property
     def busy(self):
@@ -243,7 +240,7 @@ class LatestEvidenceQueue:
                 self._latest_sequence = sequence
                 old, self._pending = self._pending, (run, discarded)
                 if self._thread is None:
-                    self._thread = threading.Thread(target=self._drain, name=self._thread_name, daemon=True)
+                    self._thread = threading.Thread(target=self._drain, name='s1-private-evidence', daemon=True)
                     self._thread.start()
         if old is not None:
             old[1]()

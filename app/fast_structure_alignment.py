@@ -12,6 +12,8 @@ import threading
 import time
 from collections import OrderedDict
 from collections import Counter
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,30 +32,23 @@ class PreparedStructure:
     shape: tuple
 
 
-@dataclass(frozen=True)
-class ImportedPreparedUse:
-    """An acquired input; its owner checks it before offers and final results.
-
-    Numerical work may reuse the value within that operation. This object is
-    not an independent array publication or a resource-currentness grant.
-    """
-
-    reference: object
-    prepared: PreparedStructure | None
-    source: object
-    identity: tuple | None
-
-    def check_current(self):
-        # Revalidate actual index/reference/prepared bytes without retrieving
-        # arrays or depending on the lifetime of the global prepared cache.
-        current = self.source.read(self.reference)
-        if self.prepared is not None and (current is None or current[1] != self.identity):
-            raise ValueError('structure-fit-preparation-changed')
-
-
 _prepared = OrderedDict()
 _prepared_lock = threading.Lock()
 PREPARED_CACHE_MAX_BYTES = 512 * 1024 * 1024
+
+# Only the candidate search changes inside this caller's computation scope.
+_grid_backend = ContextVar("structure_grid_backend", default=None)
+
+
+@contextmanager
+def using_grid_backend(backend):
+    if not callable(backend):
+        raise TypeError("grid backend must be callable")
+    token = _grid_backend.set(backend)
+    try:
+        yield
+    finally:
+        _grid_backend.reset(token)
 
 
 def _prepared_arrays(entry):
@@ -116,9 +111,9 @@ def prepared_path_for(reference):
     return directory / (path.stem + '-fast.npz')
 
 
-def load_prepared(reference, *, source=None, cancelled=None):
+def load_prepared(reference, *, source=None):
     if source is not None:
-        return _load_imported_prepared(reference, source, cancelled)
+        return source.read(reference)
     prepared_path = prepared_path_for(reference)
     if not prepared_path.is_file():
         return None
@@ -152,67 +147,6 @@ def load_prepared(reference, *, source=None, cancelled=None):
         return result
     except (OSError, ValueError, KeyError):
         return None
-
-
-def _load_imported_prepared(reference, source, cancelled):
-    use = _acquire_imported_prepared(reference, source, cancelled)
-    if use.prepared is None:
-        return None
-    # Independent consumers have no fit owner to check an acquired use.
-    # Keep their post-lookup proof and the optional-preparation fallback.
-    current = source.read(reference, cancelled=cancelled)
-    if current is None:
-        return None
-    if current[1] != use.identity:
-        raise ValueError('structure-fit-preparation-changed')
-    return use.prepared
-
-
-def _acquire_imported_prepared(reference, source, cancelled):
-    payload = source.read(reference, cancelled=cancelled)
-    if payload is None:
-        return ImportedPreparedUse(reference, None, source, None)
-    raw, identity = payload
-    key = ('imported', identity)
-    with _prepared_lock:
-        entry = _prepared.get(key)
-        if entry is not None:
-            _prepared.move_to_end(key)
-    result = entry[1] if entry is not None else None
-    if result is not None:
-        # The actual payload was read above. A warm use needs no decode;
-        # the owning fit checks it again at its offer/return boundaries.
-        source.assert_current(cancelled)
-        return ImportedPreparedUse(reference, result, source, identity)
-    try:
-        result = source.decode(raw, reference)
-    except (OSError, ValueError):
-        # Optional arrays can be unavailable, but their owner/reference
-        # must still be current before returning to the normal solver.
-        source.read(reference, cancelled=cancelled)
-        return ImportedPreparedUse(reference, None, source, None)
-    current = source.read(reference, cancelled=cancelled)
-    if current is None:
-        return ImportedPreparedUse(reference, None, source, None)
-    if current[1] != identity:
-        raise ValueError('structure-fit-preparation-changed')
-    published = None
-    if entry is None:
-        with _prepared_lock:
-            published = (reference, result)
-            _prepared[key] = published
-            _prepared.move_to_end(key)
-            trim_prepared_cache(_prepared, max_entries=4,
-                max_bytes=PREPARED_CACHE_MAX_BYTES, arrays_for=_prepared_arrays)
-    try:
-        source.assert_current(cancelled)
-    except (OSError, ValueError):
-        if published is not None:
-            with _prepared_lock:
-                if _prepared.get(key) is published:
-                    _prepared.pop(key)
-        raise
-    return ImportedPreparedUse(reference, result, source, identity)
 
 
 def sample_edges(edge, limit):
@@ -419,7 +353,8 @@ def propose(frame, reference, prepared, *, prior=None, cancelled=None, context=N
     searches = []
     def grid(scale, seed):
         began = time.perf_counter()
-        found = _grid(coarse, prepared, scale, seed, cancelled)
+        backend = _grid_backend.get()
+        found = (backend if backend is not None else _grid)(coarse, prepared, scale, seed, cancelled)
         searches.append(dict(scope='local' if seed is not None else 'global',
             elapsedMs=(time.perf_counter()-began)*1000,
             bestScore=found[0][0] if found else None))
@@ -546,16 +481,7 @@ def _try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_see
     reference = assistant._shared_structure_reference('shared-structure', map_id, floor)
     if reference is None:
         return None
-    if getattr(reference, 'metadata', {}).get('authorizesStructureValidation') is False:
-        if getattr(assistant, 'collect_fit_diagnostics', False):
-            assistant._log('experimental-fast-alignment', mapId=map_id, floor=floor,
-                           reason='fast-structure-validation-unavailable', accepted=False)
-        return None
-    source = getattr(getattr(assistant, 'engine', None), 'qt_fast_structure_source', None)
-    loader = getattr(assistant, '_load_fast_structure_prepared', None)
-    prepared = (loader(reference, cancelled=cancelled) if loader is not None else
-                load_prepared(reference) if source is None else
-                load_prepared(reference, source=source, cancelled=cancelled))
+    prepared = load_prepared(reference, source=getattr(getattr(assistant, 'engine', None), 'qt_fast_structure_source', None))
     if prepared is None:
         if getattr(assistant, 'collect_fit_diagnostics', False):
             assistant._log('experimental-fast-alignment', mapId=map_id, floor=floor,
@@ -637,8 +563,6 @@ def _try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_see
                 proposal_details['residual'] = residual
             from alignment_observation import rendered_profile_residual_is_verified
             if rendered_profile_residual_is_verified(residual) and not (cancelled and cancelled()):
-                if source is not None and source.read(reference, cancelled=cancelled) is None:
-                    return None
                 diagnostics.update(totalMs=(time.perf_counter()-started)*1000, accepted=True)
                 assistant._log('experimental-fast-alignment', mapId=map_id, floor=floor,
                     searchKind='local-prior' if _external_prior is not None else 'global-search',

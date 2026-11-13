@@ -73,7 +73,7 @@ def prepare_first_run(sandbox):
 
 class QtClient:
     def __init__(self, app, sandbox, *, probe_output=None, info_fetch=None, on_created=None,
-                 g_cycle_evidence=False, g_cycle_full_input=False):
+                 g_cycle_evidence=False, g_cycle_full_input=False, grid_backend="python"):
         if g_cycle_full_input and not g_cycle_evidence:
             raise ValueError("full solver evidence requires explicit test evidence")
         set_startup_stage("create-services")
@@ -143,10 +143,18 @@ class QtClient:
         self.input = NativeShortcutBackend()
         self.providers = build_imported_engine_factories(self.resource_resolver, self.paths)
         self.providers.set_custom_display(self.custom_display.layer, base_provider=self.custom_display.base_layer)
+        if grid_backend not in {"python", "csharp"}:
+            raise ValueError("Unknown grid backend")
+        self.grid_runtime = None
+        if grid_backend == "csharp":
+            from csharp_grid_runtime import CSharpGridRuntime
+            executable = (RESOURCE_ROOT / "csharp-grid/StarMap.Grid.exe" if FROZEN else
+                APP_ROOT.parent / "hybrid/StarMap.Grid/bin/Release/net10.0/StarMap.Grid.exe")
+            self.grid_runtime = CSharpGridRuntime(executable, self.paths.work_root / "grid-cache")
         self.runtime = LiveRuntime(engine_factories=self.providers, capture_provider=self.capture,
                                    allowed_read_root=WORK_ROOT, evidence_kind="live-client-capture",
                                     diagnostics=self.lifecycle_trace,
-                                    s1_candidate_purpose=candidate_purpose)
+                                    s1_candidate_purpose=candidate_purpose, grid_runtime=self.grid_runtime)
         values = self.settings.persistedValues
         self.runtime.configure_settings(values)
         mode, profile, season = ClientCoordinator._settings_context(values)
@@ -611,6 +619,8 @@ def main():
     from qt_startup_splash import close_startup_splash
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sandbox", type=Path, default=DEFAULT_SANDBOX)
+    parser.add_argument("--grid-backend", choices=("csharp", "python"), default="csharp",
+                        help="candidate grid implementation; the original Python pipeline owns decisions")
     parser.add_argument("--probe-output", type=Path)
     parser.add_argument("--g-cycle-evidence", action="store_true",
                         help="this process only: bounded local G-attempt algorithm ROI evidence; may contain game text; no upload")
@@ -749,7 +759,8 @@ def _run_primary_client(app, args, guard):
             client = holder["client"] = QtClient(app, sandbox, probe_output=args.probe_output, info_fetch=local_manifest,
                 on_created=lambda partial: holder.update(client=partial),
                 g_cycle_evidence=getattr(args, "g_cycle_evidence", False),
-                g_cycle_full_input=getattr(args, "g_cycle_full_input", False))
+                g_cycle_full_input=getattr(args, "g_cycle_full_input", False),
+                grid_backend=getattr(args, "grid_backend", "csharp"))
             client.resources.setStartupCompatibilityReport(getattr(args, 'resource_startup_report', {}))
             if holder.pop("activationPending", False):
                 restore_main_window(client.main)

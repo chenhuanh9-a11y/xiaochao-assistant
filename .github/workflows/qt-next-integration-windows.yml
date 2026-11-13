@@ -2,7 +2,7 @@ name: Qt next candidate joint Windows regression
 
 on:
   push:
-    branches: [integration/qt-next-20261102, integration/qt-pr84-88-20261103, codex/pr133-p3-p4-p5-integration-20261111, codex/pr133-shared-observation-stream-20261111]
+    branches: [integration/qt-next-20261102, integration/qt-pr84-88-20261103, codex/pr133-p3-p4-p5-integration-20261111, codex/pr133-shared-observation-stream-20261111, codex/python-csharp-resource-integration-20261113]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [features, core, diagnostics, packaging, packaging-imported-data, packaging-imported-runtime, packaging-imported-activation, packaging-imported-display-data, packaging-imported-display, packaging-imported-display-integration, tutorials, map-defaults, season-ui, next-version-contracts, author-snapshots, installer-reset, fit-simulation, main-baseline, released-baseline]
+        group: [features, core, diagnostics, packaging, packaging-imported-data, packaging-imported-runtime, packaging-imported-activation, packaging-imported-display-data, packaging-imported-display, packaging-imported-display-integration, tutorials, map-defaults, season-ui, next-version-contracts, author-snapshots, installer-reset, fit-simulation, original-csharp, main-baseline, released-baseline]
     env:
       PYTHONPATH: 'app;tests;tools;experiments/qt_quick'
       QT_QPA_PLATFORM: offscreen
@@ -46,6 +46,21 @@ jobs:
           architecture: x64
       - name: Pinned dependencies (tests only, no Setup or publication)
         run: python -m pip install --disable-pip-version-check -r experiments/qt_quick/requirements-client.txt
+      - name: Original grid SDK
+        if: matrix.group == 'original-csharp'
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '10.0.403'
+      - name: Build the real self-contained grid service
+        if: matrix.group == 'original-csharp'
+        shell: pwsh
+        run: |
+          $gridOutput = Join-Path $env:RUNNER_TEMP 'xingtu-grid-service'
+          $gridArtifacts = Join-Path $env:RUNNER_TEMP 'xingtu-grid-build'
+          dotnet publish hybrid/StarMap.Grid/StarMap.Grid.csproj -c Release -r win-x64 --self-contained true --artifacts-path $gridArtifacts --output $gridOutput --nologo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ('STARMAP_DOTNET=' + (Get-Command dotnet).Source) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          ('STARMAP_GRID_EXE=' + (Join-Path $gridOutput 'StarMap.Grid.exe')) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       # Read-only eligibility evidence, not a Setup test or automatic approval.
       # A green step can report blocked; no subsequent step executes Setup.
       - name: Read-only native installer minimum prerequisites
@@ -219,30 +234,47 @@ jobs:
                 'test_resource_snapshot_io_allocation',
                 'test_imported_resource_packages', 'test_imported_resource_catalog',
                 'test_imported_resource_selection', 'test_imported_resource_activation',
-                'test_imported_resource_inventory', 'test_owned_directory_publication',
+                'test_imported_resource_inventory', 'test_imported_resource_removal', 'test_owned_directory_publication',
                 'test_imported_array_archive', 'test_imported_resource_reader',
                 'test_imported_structure_declarations', 'test_imported_legacy_structure_reader',
                 'test_imported_legacy_references',
-                'test_imported_controls_profile',
-                'test_imported_s0_observation', 'test_identity_metadata_package_io',
+                # The original observer owns algorithm parameters. Preserve
+                # package decoding/currentness checks, without P3 parameter injection.
+                'test_imported_controls_profile.ImportedControlsProfileTests.test_reads_real_declared_package_and_exposes_immutable_s0_contexts',
+                'test_imported_controls_profile.ImportedControlsProfileTests.test_entrypoint_must_match_component_s0_contexts_and_contracts',
+                'test_imported_controls_profile.ImportedControlsProfileTests.test_package_floor_ids_are_external_metadata_for_supported_observations',
+                'test_imported_controls_profile.ImportedControlsProfileTests.test_component_declaring_any_s1_context_is_rejected_explicitly',
+                'test_imported_controls_profile.ImportedControlsProfileTests.test_regions_detector_family_and_all_competitor_labels_are_required',
+                'test_imported_controls_profile.ImportedControlsProfileTests.test_npy_shape_dtype_length_nan_and_row_labels_are_checked',
+                'test_imported_controls_profile.ImportedControlsProfileTests.test_cached_context_checks_catalog_and_actual_manifest_identity',
+                'test_imported_controls_profile.ImportedControlsProfileTests.test_undeclared_npy_and_stale_catalog_guard_fail_without_fallback',
+                'test_imported_s0_observation.OriginalS0ControlsLifecycleTests', 'test_identity_metadata_package_io',
                 'test_shared_structure_package_io', 'test_shared_version_package_io',
-                'test_entry_resource_io', 'test_main_entry_jobs', 'test_passport_entry_jobs', 'test_side_entry_jobs',
-                'test_local_structure_index', 'test_shared_observation_dependencies',
+                # Guarded readers remain; the restored low-level algorithm's
+                # old constructor shape is no longer the admission boundary.
+                # Entry complexity is checked by current original-base import.
+                'test_entry_resource_io.EntryResourceIOTests.test_constructors_read_all_declared_children_and_match_original_arrays',
+                'test_entry_resource_io.EntryResourceIOTests.test_declared_typed_index_and_door_rejection_never_use_default_disk_index',
+                'test_entry_resource_io.EntryResourceIOTests.test_expired_view_rejects_constructor_and_lazy_exit_without_disk_fallback',
+                'test_entry_resource_io.EntryResourceIOTests.test_identity_engine_threads_reader_into_both_entries_and_lazy_exit',
+                'test_entry_resource_io.EntryResourceIOTests.test_lazy_exit_uses_same_reader_on_first_actual_observation',
+                'test_entry_resource_io.EntryResourceIOTests.test_optional_npz_and_passports_cannot_fall_back_to_valid_undeclared_files',
+                'test_entry_resource_io.EntryResourceIOTests.test_taxonomy_and_audited_reference_image_use_reader_and_match_disk_decode',
+                'test_entry_resource_io.EntryResourceIOTests.test_undeclared_and_changed_main_file_fail_even_when_disk_decoder_works',
                 'test_s1_common_wall_evidence',
-                'test_side_pose_recovery_jobs',
-                'test_observation_work_scheduler', 'test_map_local_structure_work',
-                'test_source_structure_jobs', 'test_native_condition_jobs',
-                'test_export_native_base_package',
-                'test_export_s0_difficult_native_base_package',
-                'test_export_s1_native_base_package', 'test_export_s1_nightmare_base_package',
-                'test_imported_native_base', 'test_imported_native_admission_scope',
-                'test_imported_group_registry',
-                'test_imported_s1_native_base', 'test_imported_s1_controls_profile',
-                'test_s1_imported_controls_equivalence',
-                'test_entry_semantic_capability', 'test_imported_s1_native_context',
-                'test_imported_difficult_native_context',
-                # 6da runtime reached 25m; these complete modules used 6m31s.
-                'test_client_imported_s1_nightmare_provider', 'test_client_imported_package_activation'
+                # Normalized P3 base/solver contracts are retired. Current
+                # producer -> import -> consumers run in original-csharp.
+                'test_export_native_base_package.NativeBaseExporterTests.test_existing_output_is_preserved_and_output_inside_source_is_rejected',
+                'test_export_native_base_package.NativeBaseExporterTests.test_partial_output_copy_failure_allows_a_complete_retry',
+                'test_export_native_base_package.NativeBaseExporterTests.test_flush_and_fsync_failures_leave_no_final_output_and_allow_retry',
+                'test_export_native_base_package.NativeBaseExporterTests.test_replaced_temporary_is_preserved_and_does_not_block_final_retry',
+                'test_export_native_base_package.NativeBaseExporterTests.test_final_output_created_by_another_writer_is_never_replaced_or_removed',
+                'test_imported_s1_controls_profile.ImportedS1Controls.test_real_package_decodes_immutable_exact_contexts',
+                'test_imported_s1_controls_profile.ImportedS1Controls.test_missing_fields_wrong_schema_and_exact_floor_contracts_rejected',
+                'test_imported_s1_controls_profile.ImportedS1Controls.test_nonfinite_and_bounded_shape_parameters_rejected',
+                'test_imported_s1_controls_profile.ImportedS1Controls.test_current_view_guard_blocks_cached_parameters_before_and_after_pixels',
+                'test_imported_s1_controls_profile.ImportedS1Controls.test_package_manifest_and_payload_integrity_are_not_bypassed',
+                'test_entry_semantic_capability', 'test_client_imported_package_activation'
               )
             }
             # Provider/startup/activation tests retain the independent-process
@@ -250,10 +282,18 @@ jobs:
             'packaging-imported-runtime' {
               $modules = @(
                 'test_s1_floor_observation', 'test_s1_map_ui_geometry',
-                'test_client_shared_reference_context', 'test_client_structure_unification', 'test_client_local_identity_commit', 'test_group_review_lifecycle',
+                'test_client_shared_reference_context',
                 'test_client_imported_providers', 'test_client_native_base_provider',
-                'test_client_direct_structure_recognition', 'test_client_local_structure_recognition', 'test_client_prepared_alignment', 'test_client_known_floor_recovery',
-                'test_client_imported_s1_provider', 'test_client_s1_coordinate_recognition', 'test_client_common_coordinate_race', 'test_client_recognition_shutdown'
+                # P3 proposal-only eligibility/scoped cohort orchestration is
+                # retired; keep donor fixed-map geometry and cancellation.
+                'test_client_known_floor_recovery.KnownFloorRecoveryTests.test_main_fixed_map_pose_without_floor_supplies_geometry_only',
+                'test_client_known_floor_recovery.KnownFloorRecoveryTests.test_real_side_adjudicator_accepts_complete_unique_fixed_map_pose',
+                'test_client_known_floor_recovery.KnownFloorRecoveryTests.test_incomplete_or_same_map_ambiguous_pose_never_becomes_a_fit',
+                'test_client_known_floor_recovery.KnownFloorRecoveryTests.test_single_regional_candidate_uses_original_refinement_and_verifier',
+                'test_client_known_floor_recovery.KnownFloorRecoveryTests.test_foreign_candidate_or_refinement_cannot_change_selected_map',
+                'test_client_known_floor_recovery.KnownFloorRecoveryTests.test_no_recovery_for_verified_target_unregistered_or_non_entry_first',
+                'test_client_known_floor_recovery.KnownFloorRecoveryTests.test_cancellation_before_and_after_each_producer_is_terminal',
+                'test_client_known_floor_recovery.KnownFloorRecoveryTests.test_resource_error_semantics_do_not_turn_missing_main_into_broad_search'
               )
             }
             # 7ef reached the unchanged 25m cap during the final S1 activation
@@ -261,10 +301,8 @@ jobs:
             # provider/fit and activation/lifecycle work in separate jobs.
             'packaging-imported-activation' {
               $modules = @(
-                'test_client_imported_difficult_provider', 'test_client_imported_difficult_activation_ui',
-                'test_client_imported_group_registry', 'test_client_imported_group_runtime',
+                'test_client_imported_difficult_activation_ui',
                 'test_client_imported_admission',
-                'test_client_imported_controls',
                 'test_client_imported_activation', 'test_client_imported_activation_ui',
                 'test_client_imported_s1_activation', 'test_client_imported_s1_activation_ui'
               )
@@ -275,8 +313,6 @@ jobs:
               $modules = @(
                 'test_imported_author_display', 'test_export_author_display_component',
                 'test_export_author_display_component_modes',
-                # e116: this shard took 6m54s; Fast used 4m34s in runtime.
-                'test_client_imported_fast_structure',
                 # 8165 runtime reached the 25m cap during service tests.
                 'test_client_imported_resources', 'test_client_imported_resource_startup',
                 'test_client_imported_file_dialog'
@@ -285,7 +321,7 @@ jobs:
             'packaging-imported-display' {
               $modules = @(
                 'test_client_progressive_display', 'test_client_progressive_pixels',
-                'test_client_display_guard_consumption', 'test_client_formal_material_retention', 'test_client_s1_display_ram',
+                'test_client_display_guard_consumption', 'test_client_s1_display_ram',
                 'test_client_similarity_protocol',
                 'test_imported_author_displays',
                 'test_client_imported_author_activation', 'test_client_imported_author_selection'
@@ -308,23 +344,25 @@ jobs:
             'fit-simulation' { $modules = @(
                 'test_observation_residual_reuse', 'test_structure_cache_memory',
                 'test_idvb0059_runtime', 'test_idvb0059_retained_display', 'test_client_idvb0059_adapter',
-                'test_prepared_idvb0059_input', 'test_structure_pose_inputs', 'test_structure_pose_common_models', 'test_structure_pose_static_payloads', 'test_structure_pose_preparation_context', 'test_prepared_structure_pose_solver',
-                'test_entry_evidence_after_scan', 'test_qualified_entry_pose_reuse', 'test_common_coordinate_observation',
-                'test_recognition_race', 'test_structure_identity_index', 'test_structure_identity_floor_partition', 'test_structure_identity_resources',
-                'test_structure_identity_resource_batch', 'test_structure_identity_read_operation',
-                'test_structure_identity_observation', 'test_structure_identity_recognition',
-                'test_structure_identity_corner_centre',
-                'test_structure_identity_fixed_pose',
+                'test_entry_evidence_after_scan',
                 'test_client_providers', 'test_feature_test_round_lock', 'test_s1_playtest_round_lock',
                 'test_s1_playtest_round_lock_qml', 'test_s1_formal_round_lock', 'test_s1_resources_changed_chain',
                 'test_s1_native_candidate_preview', 'test_wall_raster_local_distances', 'test_marker_implicit_domain',
-                'test_marker_occluded_structure', 'test_explicit_component_alignment', 'test_structure_pose_resources',
-                'test_s1_scan_observation_reuse', 'test_s1_fit_diagnostics', 'test_s1_manual_alignment',
+                'test_marker_occluded_structure', 'test_explicit_component_alignment',
+                'test_s1_scan_observation_reuse.ScanObservationReuseTests.test_binary_membership_matches_old_kernel_for_every_uint8_value',
+                'test_s1_scan_observation_reuse.ScanObservationReuseTests.test_observation_is_lazy_and_candidate_contexts_do_not_share_projections',
+                'test_s1_scan_observation_reuse.ScanObservationReuseTests.test_chain_cache_is_rejected_after_candidate_specific_filtering',
+                'test_s1_scan_observation_reuse.ScanObservationReuseTests.test_component_arbitration_and_cancel_remain_fail_closed',
+                'test_s1_scan_observation_reuse.ScanObservationReuseTests.test_pre_cancelled_scan_does_not_extract_pixels',
+                'test_s1_fit_diagnostics', 'test_s1_manual_alignment',
                 'test_s1_structure_selection', 'test_pose_prior_contract', 'test_s1_runtime_pose_prior',
                 'test_shared_recovery_residual_contract', 'test_diagnostic_redaction', 'test_diagnostic_evidence',
                 'test_g_cycle_replay', 'test_client_live_runtime'
               )
             }
+            # The user retired the integrated direct/local/race/prepared solver
+            # contracts. Exercise the restored pipeline and real C# ownership.
+            'original-csharp' { $modules = @('test_hybrid_grid_backend', 'test_qt_csharp_grid_runtime', 'test_qt_csharp_grid_package', 'test_original_qt_resource_flow', 'test_qtifw_upgrade') }
             'next-version-contracts' { $modules = @('test_g_cycle_evidence', 'test_g_cycle_replay', 'test_client_g_cycle_evidence', 'test_client_g_cycle_solver_input', 'test_client_g_cycle_reporter', 'test_client_g_cycle_recovery', 'test_client_g_cycle_admission', 'test_client_g_cycle_composition', 'test_managed_base_absent_rollback', 'test_legacy_receipt_startup_retention', 'test_managed_base_resources', 'test_s1_normal_resource_retirement.NormalRetirementTests', 'test_resource_compatibility', 'test_game_startup', 'test_game_startup_service', 'test_game_startup_control', 'test_qt_startup_state', 'test_qt_startup_splash', 'test_client_startup_splash', 'test_client_lazy_pages', 'test_client_performance', 'test_client_package_progress', 'test_qt_game_watcher_packaging', 'test_qt_installer_reuse_guard', 'test_qt_installer_projection', 'test_uninstall_data_wizard', 'test_mixed_retired_author_package') }
             # Synthetic contracts only; unittest -v preserves each genuine skip reason.
             'map-defaults' { $modules = @('test_bundled_author_resources', 'test_package_profiles', 'test_client_paths', 'test_client_editor_upgrade', 'test_map_resource_context', 'test_qt_installer_projection') }

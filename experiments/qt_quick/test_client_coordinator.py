@@ -28,6 +28,21 @@ class Service(QObject):
 
 
 class CoordinatorTests(unittest.TestCase):
+    def test_original_success_signal_waits_for_a_verified_member_and_deduplicates_round(self):
+        notices = []
+        self.coordinator.notificationRequested.connect(lambda *args:notices.append(args))
+        public = dict(roundId=1,mapId='map-a',floor='-3',identityPhase='UNLOCKED')
+        for changes in ({}, {'identityPhase':'GROUP_LOCKED'},
+                        {'identityPhase':'MEMBER_VERIFIED','provisional':True}):
+            self.coordinator._notify_first_valid_output(dict(public,**changes))
+        self.assertEqual(notices, [])
+        verified = dict(public,identityPhase='MEMBER_VERIFIED')
+        self.coordinator._notify_first_valid_output(verified)
+        self.coordinator._notify_first_valid_output(dict(verified,floor='-4'))
+        self.assertEqual(notices, [('地图已识别','map-a · -3层','success')])
+        self.coordinator._notify_first_valid_output(dict(verified,roundId=2))
+        self.assertEqual(len(notices),2)
+
     @classmethod
     def setUpClass(cls):
         cls.app = QCoreApplication.instance() or QCoreApplication([])
@@ -791,13 +806,7 @@ class CoordinatorTests(unittest.TestCase):
         self.assertIsNone(self.coordinator._last_render_token)
         self.windows.hide.assert_called_once_with("aligned")
 
-    def test_s0_candidate_tracking_uses_same_opening_probe(self):
-        self.session.snapshot.update(season='s0', candidateProvisionalDisplayEnabled=True,
-            candidateStreamingEnabled=True, nativeCandidatePreviewAvailable=False,
-            availableCommands=['refresh_map', 'observe_candidate_floor'])
-        self.coordinator._last_manual_floor_observation_at = 0
-        self.coordinator._track_map()
-        self.session.dispatch.assert_called_once_with('observe_candidate_floor')
+
 
     def test_material_ack_is_exact_and_never_changes_session_transaction(self):
         """A queued Image callback cannot acknowledge a later target or job."""
@@ -819,23 +828,7 @@ class CoordinatorTests(unittest.TestCase):
         self.coordinator.acceptSiblingMaterial("target", True)
         self.assertEqual(self.runtime.acknowledge_sibling.call_count, 1)
 
-    def test_file_backed_group_waits_for_worker_validation_and_keeps_original_deadline(self):
-        self.coordinator._pending_aligned = dict(token='target')
-        self.runtime.sibling_requires_registry_validation = Mock(return_value=True)
-        self.runtime.acknowledge_sibling = Mock(return_value=dict(success=False, sourceRetained=True))
-        self.session.dispatchMaintenance = Mock(return_value=True)
-        self.coordinator._material_timer.start(1000)
-        self.coordinator.acceptSiblingMaterial('target', True)
-        self.runtime.acknowledge_sibling.assert_not_called()
-        self.assertTrue(self.coordinator._material_timer.isActive())
-        self.session.dispatchMaintenance.assert_called_once_with('validate_sibling_registry', {'renderToken':'target'})
-        self.coordinator._sibling_registry_validated('old-token', dict(success=True))
-        self.runtime.acknowledge_sibling.assert_not_called()
-        self.coordinator._sibling_registry_validated('target', dict(success=False, reason='registered-group-resource-unavailable'))
-        self.runtime.acknowledge_sibling.assert_called_once_with('target', False, reason='registered-group-resource-unavailable')
-        self.assertEqual(self.coordinator._pending_aligned, {})
-        self.assertFalse(self.coordinator._material_timer.isActive())
-        self.session.refreshRuntime.assert_called_once()
+
 
     def test_material_failure_and_timeout_keep_valid_source_surface(self):
         self.coordinator._aligned = dict(token="source", routeUrl="image://live/source")

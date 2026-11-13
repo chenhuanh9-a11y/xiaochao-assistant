@@ -75,9 +75,10 @@ class GateAnchorLocator:
                  asset_dir: str | Path = HERE / 'assets', *, read_resource=None):
         self.config = config or LocatorConfig()
         asset_dir = Path(asset_dir)
-        read = Path.read_bytes if read_resource is None else read_resource
-        manifest = json.loads(read(asset_dir / 'template_manifest.json'))
-        data = read(asset_dir / 'native_glyph_template.png')
+        manifest_path = asset_dir / 'template_manifest.json'
+        glyph_path = asset_dir / 'native_glyph_template.png'
+        manifest = json.loads(manifest_path.read_text() if read_resource is None else read_resource(manifest_path))
+        data = glyph_path.read_bytes() if read_resource is None else read_resource(glyph_path)
         self.template_sha256 = hashlib.sha256(data).hexdigest()
         if self.template_sha256 != manifest['template_sha256']:
             raise ValueError('Glyph template digest does not match offline provenance')

@@ -74,6 +74,9 @@ class StagedS0ClosureTests(unittest.TestCase):
         qt.mkdir(parents=True)
         (qt / 'client.py').write_text('# synthetic source presence only\n', encoding='utf-8')
         (qt / 'Client.qml').write_text('// synthetic source presence only\n', encoding='utf-8')
+        grid = self.fixture.source_root / build.GRID_PROJECT
+        grid.parent.mkdir(parents=True)
+        grid.write_text('<!-- synthetic project presence only; never built -->\n', encoding='utf-8')
         version = self.fixture.source_root / 'version.json'
         version.write_text(json.dumps(dict(displayVersion='1.0.0', numericVersion='1.0.0.0')), encoding='utf-8')
         icon_row = self.asset(build.BRAND_ICON, b'synthetic-brand-identity')
@@ -94,6 +97,7 @@ class StagedS0ClosureTests(unittest.TestCase):
         output = io.StringIO()
         planned_output = self.fixture.source_root / 'work/support-plan'
         with patch.object(build, 'environment', return_value=dict(success=True, errors=[])), \
+             patch.object(build, 'grid_sdk_info', return_value=dict(version=build.GRID_SDK)), \
              patch.object(build, 'notice_inputs', return_value={}), \
              patch.object(build, 'BRAND_ICON_SHA256', icon_row['sha256']), \
              patch.object(build, 'check_package', return_value=dict(success=True)), \

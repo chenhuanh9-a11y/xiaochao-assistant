@@ -187,6 +187,12 @@ def assert_resources_ready(root):
     """Call under the runtime lease or a short lock, before reading any resource."""
     root = _safe(Path(os.path.abspath(root)))
     assert_installer_upgrade_ready(root)
+    _assert_resource_transactions_ready(root)
+
+
+def _assert_resource_transactions_ready(root):
+    """Resource-only checks, also used by the owner of a native Setup marker."""
+    root = _safe(Path(os.path.abspath(root)))
     for name, code in (
         ('pending-resource-reset.json', 'resource-reset-recovery-required'),
         ('pending-upgrade.json', 'upgrade-recovery-required'),

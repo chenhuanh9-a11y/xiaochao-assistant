@@ -30,8 +30,21 @@ from shared_structure_context import load_shared_version_context
 from shared_structure_reference import SharedStructureResourceStore
 from side_door_recognition import SideDoorRecognizer
 from side_entry_search import prepare_arrays
-from side_entry_geometry import _bounded_list, _bounded_points
 import star_map_import as files
+
+
+def _bounded_list(value, maximum, label):
+    """Bound imported declarations before original loaders allocate arrays."""
+    if not isinstance(value, list) or len(value) > maximum:
+        raise ValueError('entry-resource-complexity: ' + label)
+    return value
+
+
+def _bounded_points(value, maximum, label):
+    for point in _bounded_list(value, maximum, label):
+        if not isinstance(point, list) or len(point) != 2 or any(isinstance(v, (list, dict)) for v in point):
+            raise ValueError('invalid entry coordinates: ' + label)
+    return value
 
 
 SCHEMA = 'xingtu-native-recognition-base-v1'
@@ -742,14 +755,11 @@ def _decode_component(view, live_view, season, mode):
 
 def decode_native_base(view, *, season='s0', mode='nightmare'):
     """Decode supported base data without authorizing activation or identity."""
-    try:
-        return _decode(view, season, mode)
-    except (files.ImportRejected, NativeBaseUnavailable):
-        raise
-    except (OSError, ValueError, TypeError, KeyError, IndexError, OverflowError,
-            AttributeError, SystemError, zipfile.BadZipFile, zlib.error, EOFError) as error:
-        code = 'imported-native-base-invalid'
-        raise files.ImportRejected(code, code=code) from error
+    from imported_original_base import decode_original_base
+    return decode_original_base(view, season=season, mode=mode)
+
+
+
 
 
 __all__ = ['decode_native_base', 'NativeBaseBundle', 'NativeBaseUnavailable']

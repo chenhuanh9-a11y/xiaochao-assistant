@@ -59,10 +59,10 @@ class ImportedProviderBoundaryTests(unittest.TestCase):
                       for row in contexts})
         (self.resolver.root / 'catalog.json').write_text(json.dumps(catalog))
         expected_gaps = {
-            ('s0', 'nightmare'): ['native-base-schema-unsupported'],
-            ('s0', 'difficult'): ['imported-native-base-difficult-context-invalid'],
-            ('s1', 'difficult'): ['native-base-schema-unsupported'],
-            ('s1', 'nightmare'): ['native-base-schema-unsupported'],
+            ('s0', 'nightmare'): ['original-qt-base-required'],
+            ('s0', 'difficult'): ['original-qt-base-required'],
+            ('s1', 'difficult'): ['original-qt-base-required'],
+            ('s1', 'nightmare'): ['original-qt-base-required'],
         }
         with patch('client_providers.EngineFactories._build', side_effect=AssertionError('legacy loader used')):
             for season in ('s0', 's1'):

@@ -1,4 +1,4 @@
-"""S0D real resource-page pointer flow through import, lease and activation.
+"""S0D original-layout resource-page pointer flow through import and activation.
 
 The test delays the real activation helper briefly to observe the service's
 worker and Session idle lease. The helper itself, catalog transaction and
@@ -27,8 +27,8 @@ from client_live_runtime import LiveRuntime
 from client_paths import RuntimePaths
 from client_session import SessionService
 from imported_resource_catalog import ResourceResolver
+from original_qt_resource_fixtures import OriginalS0DifficultSourceFixture
 from test_client_live_runtime import FixtureCapture
-import test_export_s0_difficult_native_base_package as source_fixture
 
 
 class ImportedS0DifficultActivationUiTests(unittest.TestCase):
@@ -41,7 +41,7 @@ class ImportedS0DifficultActivationUiTests(unittest.TestCase):
         else:
             temporary = tempfile.TemporaryDirectory(prefix='s0d-activation-ui-source-')
             cls.addClassCleanup(temporary.cleanup)
-            cls.source = source_fixture.S0DifficultSourceFixture(Path(temporary.name).resolve())
+            cls.source = OriginalS0DifficultSourceFixture(Path(temporary.name).resolve())
             cls.source.export()
 
     def setUp(self):
@@ -109,10 +109,10 @@ class ImportedS0DifficultActivationUiTests(unittest.TestCase):
         self.assertEqual(current.base.component_ref.resource_version, current.controls.component_ref.resource_version)
         self.assertEqual(self.service.packageRows[0]['status'], 'selected')
         engine = self.factories.get_engine('difficult', season='s0')
-        self.assertFalse(engine.qt_native_base.rank_ready)
+        self.assertTrue(engine.qt_native_base.rank_ready)
         self.assertIn('已启用', self.service.message)
 
-    def test_resource_page_pointer_saves_activates_and_keeps_data_unranked(self):
+    def test_resource_page_pointer_saves_activates_original_engine_and_keeps_ui_stable(self):
         import_started = time.perf_counter()
         self.service.importArchive(QUrl.fromLocalFile(str(self.source.output)).toString())
         self.wait()
@@ -239,12 +239,15 @@ class ImportedS0DifficultActivationUiTests(unittest.TestCase):
         report = self.factories.capabilities()['difficult']
         self.assertEqual(len(engine.pack.by_id), 30)
         self.assertTrue(report['dataReady'], report)
-        self.assertFalse(report['rankReady'], report)
-        self.assertFalse(report['available'], report)
-        self.assertFalse(report['liveReady'], report)
-        self.assertFalse(engine.qt_rank_ready)
-        self.assertFalse(engine.qt_live_ready)
-        self.assertTrue(engine.qt_native_context.structure_candidate_capability['candidateReady'])
+        self.assertTrue(report['rankReady'], report)
+        self.assertTrue(report['available'], report)
+        self.assertTrue(report['liveReady'], report)
+        self.assertTrue(engine.qt_rank_ready)
+        self.assertTrue(engine.qt_live_ready)
+        map_id = next(iter(engine.pack.by_id))
+        floor = str(engine.pack.floors[0])
+        self.assertTrue(engine.qt_native_context.has_reference_binding(map_id, floor))
+        self.assertIsNotNone(engine.qt_shared_provider('shared-structure', map_id, floor))
         self.assertFalse(engine.memory_store.root.exists())
 
         # The optional real-package receipt records the decoded bitmap shapes

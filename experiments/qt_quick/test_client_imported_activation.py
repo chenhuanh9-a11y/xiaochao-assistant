@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 
 import client_imported_activation as imported_activation
-from client_imported_providers import (ImportedProviderUnavailable, SUPPORTED_CAPABILITIES,
+from client_imported_providers import (SUPPORTED_CAPABILITIES,
                                        build_imported_engine_factories)
 from client_paths import RuntimePaths
 from imported_resource_activation import activate_catalog_locked
@@ -22,7 +22,8 @@ from imported_resource_packages import ComponentRef
 from imported_resource_selection import inspect_selection
 from resource_transaction import resource_runtime_lease, resource_write_lock
 import star_map_import as files
-import test_imported_native_base as base_fixture
+from imported_original_base import decode_original_base
+from original_qt_resource_fixtures import OriginalS0NightmareSourceFixture
 
 
 def _wire(ref):
@@ -38,8 +39,10 @@ def _encoded(value):
 class ClientImportedActivationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        base_fixture.ImportedNativeBaseTests.setUpClass()
-        cls.addClassCleanup(base_fixture.ImportedNativeBaseTests.doClassCleanups)
+        source_temp = tempfile.TemporaryDirectory(prefix='original-s0n-activation-source-')
+        cls.addClassCleanup(source_temp.cleanup)
+        cls.source = OriginalS0NightmareSourceFixture(Path(source_temp.name))
+        cls.source.export()
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -48,7 +51,7 @@ class ClientImportedActivationTests(unittest.TestCase):
         self.paths = RuntimePaths(self.install_root, False)
         # Resolve the Windows temp root before it becomes a resource-lock key.
         self.root = Path(self.paths.imported_resource_root).resolve()
-        saved = save_archive(base_fixture.ImportedNativeBaseTests.archive, self.root)
+        saved = save_archive(self.source.output, self.root)
         self.refs = {ref.component_id: ref for ref in saved.component_refs}
         self.resolver = ResourceResolver(
             self.root, supported_capabilities=SUPPORTED_CAPABILITIES)
@@ -56,7 +59,7 @@ class ClientImportedActivationTests(unittest.TestCase):
     def save_revision(self, version, *, wrong_control_floor=False):
         """Reversion the real synthetic exporter ZIP and keep its full inventory valid."""
         members = {}
-        with zipfile.ZipFile(base_fixture.ImportedNativeBaseTests.archive) as archive:
+        with zipfile.ZipFile(self.source.output) as archive:
             members = {name: archive.read(name) for name in archive.namelist()}
         manifest = json.loads(members['manifest.json'])
         manifest['resourceVersion'] = version
@@ -127,10 +130,9 @@ class ClientImportedActivationTests(unittest.TestCase):
     def _valid_display_component(self):
         from client_providers import SharedReferenceProvider
         from imported_author_display import SCHEMA as DISPLAY_SCHEMA
-        from imported_native_base import decode_native_base
         from imported_resource_packages import PackageView
         view = PackageView(self.root, self.refs['base'])
-        base = decode_native_base(view)
+        base = decode_original_base(view, season='s0', mode='nightmare')
         provider = SharedReferenceProvider(view.root, base.resources, base.versions,
                                            check_current=base.assert_current)
         mid, floor = next(iter(base.pack.by_id)), base.pack.floors[0]
@@ -211,10 +213,9 @@ class ClientImportedActivationTests(unittest.TestCase):
             self.activate()
             original_bytes = (self.root / 'catalog.json').read_bytes()
 
-            with self.assertRaises(ImportedProviderUnavailable) as caught:
+            with self.assertRaisesRegex(ValueError, 'original-controls-floor-context-mismatch'):
                 self.activate(bad_refs)
 
-            self.assertIn('controls-base-floors-mismatch', caught.exception.resource_gaps)
             self.assertEqual((self.root / 'catalog.json').read_bytes(), original_bytes)
 
     def test_cancel_after_catalog_publication_recovers_previous_catalog(self):

@@ -126,28 +126,14 @@ class ComponentResourceReaderTests(unittest.TestCase):
             reader(view.root / fixture_module.PRODUCT)
 
     def test_native_base_decoder_accepts_real_short_and_long_component_aliases(self):
-        producer = native_base_fixtures.NativeBaseExporterTests(
-            'test_real_roundtrip_preserves_full_competition_and_source_bytes')
-        producer.setUp()
-        self.addCleanup(producer.doCleanups)
-        coordinates = producer.read(native_base_producer.COORDINATES)
-        for floor in native_base_producer.FLOORS:
-            coordinates['maps'][producer.mid]['floors'][floor].update(
-                coordinateWidth=8, coordinateHeight=8)
-            coordinates['profiles']['shared-structure']['maps'][producer.mid]['floors'][floor]['evidence'] = dict(
-                method='same-typed-shared-native-reference-canvas', algebraicallyExact=True)
-        producer.write(native_base_producer.COORDINATES, coordinates)
-        main = producer.read(native_base_producer.ENTRIES + '/entries.json')
-        main['entries'][0].update(center=[2., 2.], kind='main', material='fixture-native-room')
-        producer.write(native_base_producer.ENTRIES + '/entries.json', main)
-        producer.export()
+        from original_qt_resource_fixtures import OriginalNightmareBaseFixture
+        OriginalNightmareBaseFixture.setUpClass()
+        self.addCleanup(OriginalNightmareBaseFixture.doClassCleanups)
+        producer = OriginalNightmareBaseFixture.fixture
         resource_root = producer.root / 'roundtrip-resources'
         saved = archives.save_archive(producer.output, resource_root)
         ref = next(ref for ref in saved.component_refs if ref.component_id == 'base')
-
-        # Exercise the same path split as Windows CI: PackageView retains the
-        # actual 8.3 alias, while NativeDifficultPack.resolve() asks the reader
-        # with the corresponding long path.
+        # Retain the actual Windows short/long alias boundary with current data.
         aliased_root = self.short_path_alias(resource_root)
         view = PackageView(aliased_root, ref)
         bundle = native_base.decode_native_base(view)

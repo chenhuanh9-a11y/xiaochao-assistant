@@ -27,6 +27,7 @@ import star_map_import as files
 from test_imported_author_display import _AuthorDisplayFixture
 from test_client_imported_s1_activation import _inert_component
 import test_export_s1_native_base_package as s1_base_fixture
+from original_qt_resource_fixtures import OriginalS1SourceFixture
 
 
 def changed_png():
@@ -173,7 +174,7 @@ class ClientImportedAuthorSelectionTests(_AuthorSelectionFixture):
         # through the actual decoder against that base. The difficult author
         # remains selected and is still the previous version of this package.
         with tempfile.TemporaryDirectory(prefix='author-selection-nightmare-', dir=self.root) as source_root:
-            nightmare_source = s1_base_fixture.S1NativeBaseSourceFixture(
+            nightmare_source = OriginalS1SourceFixture(
                 Path(source_root), mode='nightmare')
             nightmare_source.export()
             saved = save_archive(nightmare_source.output, self.resources)

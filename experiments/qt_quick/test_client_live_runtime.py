@@ -721,10 +721,8 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.fit["selectedRouteCurrentFrameResidual"]["verified"] = False
         result = self.dispatch("capture_now", floor="2", verified=True, liveAuthorization=True)
         self.assertFalse(result["success"])
-        self.assertTrue(self.runtime.snapshot()["displayAuthorized"])
-        retained = self.runtime.render_payload(first["renderToken"])
-        self.assertEqual(retained["floor"], "1")
-        self.assertNotEqual(retained["frameId"], self.runtime._frame_id)
+        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
+        self.assertIsNone(self.runtime.render_payload(first["renderToken"]))
 
     def test_explicit_prepare_then_ordered_g_and_close_preserves_round_reference(self):
         self.assertNotIn("map", self.runtime.snapshot()["availableCommands"])
@@ -954,7 +952,7 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertEqual(self.runtime.render_payload(output[0]["renderToken"])["floor"], "2")
         self.assertEqual(events[-1]["event"], "render-ready")
 
-    def test_failed_current_residual_retains_completed_material_during_recovery_and_cancellation(self):
+    def test_failed_current_residual_hides_before_recovery_and_cancellation(self):
         first = self.begin_and_capture()
         events = []
         self.runtime.set_event_callback(lambda row: events.append(row) if row["event"] != "recognition-diagnostic" else None)
@@ -970,15 +968,14 @@ class LiveRuntimeContracts(unittest.TestCase):
              patch.object(_AlignmentHost, "fit", side_effect=slow):
             worker = threading.Thread(target=lambda: output.append(self.runtime.dispatch("refresh_map", {}, cancelled)))
             worker.start(); self.assertTrue(entered.wait(5))
-            self.assertIsNotNone(self.runtime.render_payload(first["renderToken"]))
-            self.assertFalse(any(row["event"] == "render-revoked" for row in events))
+            self.assertIsNone(self.runtime.render_payload(first["renderToken"]))
+            self.assertEqual(next(row["reason"] for row in events if row["event"] == "render-revoked"), "current-frame-residual-failed")
             cancelled.set(); release.set(); worker.join(5)
         self.assertFalse(output[0]["success"])
         self.assertTrue(output[0]["stale"])
-        self.assertTrue(self.runtime.snapshot()["core"]["displayAuthorized"])
-        self.assertIsNotNone(self.runtime.render_payload(first["renderToken"]))
+        self.assertFalse(self.runtime.snapshot()["core"]["displayAuthorized"])
 
-    def test_unknown_floor_retains_completed_material_until_confirmed_close_without_solver(self):
+    def test_unknown_floor_and_closed_frame_revoke_without_solver(self):
         first = self.begin_and_capture()
         events = []
         self.runtime.set_event_callback(lambda row: events.append(row) if row["event"] != "recognition-diagnostic" else None)
@@ -986,12 +983,12 @@ class LiveRuntimeContracts(unittest.TestCase):
              patch.object(_AlignmentHost, "fit", side_effect=AssertionError("unknown must not solve")):
             unknown = self.dispatch("refresh_map")
         self.assertEqual(unknown["reason"], "current-floor-unavailable")
-        self.assertIsNotNone(self.runtime.render_payload(first["renderToken"]))
+        self.assertIsNone(self.runtime.render_payload(first["renderToken"]))
         self.assertTrue(self.runtime.snapshot()["mapOpen"], "transient unknown must keep passive observation active")
         with patch("map_interface_observation.detect_map_interface", return_value=dict(detected=False)), \
              patch.object(_AlignmentHost, "fit", side_effect=AssertionError("closed must not solve")):
             self.dispatch("refresh_map")
-            self.assertTrue(self.runtime.snapshot()["displayAuthorized"])
+            self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
             self.dispatch("refresh_map")
         self.assertFalse(self.runtime.snapshot()["mapOpen"])
         evidence = [row for row in events if row["event"] == "automatic-failure-sample"]
@@ -1000,7 +997,7 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertTrue(all(row["event"] == "render-revoked" for row in events
             if row["event"] != "automatic-failure-sample"))
 
-    def test_cancel_steady_verification_retains_completed_authority_and_coalesces_duplicates(self):
+    def test_cancel_steady_verification_discards_old_authority_and_coalesces_duplicates(self):
         first = self.begin_and_capture()
         events = []
         self.runtime.set_event_callback(lambda row: events.append(row) if row["event"] != "recognition-diagnostic" else None)
@@ -1021,8 +1018,8 @@ class LiveRuntimeContracts(unittest.TestCase):
             cancelled.set(); release.set(); worker.join(5)
         self.assertFalse(output[0]["success"])
         self.assertTrue(output[0]["stale"])
-        self.assertIsNotNone(self.runtime.render_payload(first["renderToken"]))
-        self.assertEqual([row["event"] for row in events], ["pose-attempt"])
+        self.assertIsNone(self.runtime.render_payload(first["renderToken"]))
+        self.assertEqual([row["event"] for row in events], ["pose-attempt", "render-revoked"])
 
     def test_same_floor_full_fit_keeps_original_sensor_classification(self):
         self.begin_and_capture()
@@ -1290,6 +1287,27 @@ class SharedFloorPolicyContracts(unittest.TestCase):
                 evidence = read_floor_evidence(read, [])
                 self.assertEqual(evidence.stable, selected)
                 self.assertFalse(evidence.strong_latest)
+
+
+class OriginalPrivateQueueDrainTests(unittest.TestCase):
+    def test_stopped_real_private_queue_remains_busy_until_running_work_returns(self):
+        import time
+        runtime = LiveRuntime(engine_factories={}, capture_provider=FixtureCapture())
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(runtime.shutdown)
+        self.addCleanup(release.set)
+        def work():
+            entered.set()
+            release.wait(5)
+        runtime._s1_private_jobs.submit(work)
+        self.assertTrue(entered.wait(2))
+        runtime.stop_private_evidence()
+        self.assertTrue(runtime.private_evidence_busy)
+        release.set()
+        deadline = time.monotonic() + 2
+        while runtime.private_evidence_busy and time.monotonic() < deadline:
+            time.sleep(.001)
+        self.assertFalse(runtime.private_evidence_busy)
 
 
 if __name__ == "__main__":

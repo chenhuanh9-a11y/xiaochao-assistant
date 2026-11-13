@@ -14,7 +14,7 @@ from client_providers import EngineFactories, ProviderResourceBinding, ProviderU
 
 # Capabilities are granted by completed program decoders, never package claims.
 SUPPORTED_CAPABILITIES = frozenset({'native-s0-nightmare-base-v1', 'native-s0-difficult-base-v1', 's0-signed-templates-v1',
-    'native-s1-difficult-base-v1', 'native-s1-nightmare-base-v1', 's1-signed-column-geometry-v1'})
+    'native-s1-difficult-base-v1', 'native-s1-nightmare-base-v1', 's1-signed-column-geometry-v1', 'original-qt-resources-v1'})
 
 
 class ImportedProviderUnavailable(ProviderUnavailable):
@@ -26,152 +26,34 @@ class ImportedProviderUnavailable(ProviderUnavailable):
 
 
 def load_native_resources(base_view, controls_view, *, season='s0', mode='nightmare', require_rank=False):
-    """Decode one base/control context and its guarded reference provider.
-
-    This data assembly creates no engine, memory store or scanner. Callers own
-    its operation/catalog lifetime; images use the same real legacy references
-    as ranking consumers without receiving ranking or live permission.
-    """
+    """Decode original resource DTOs; observers/rankers remain the donor code."""
     from imported_controls_profile import S0ControlsProfile
     from imported_s1_controls_profile import S1ControlsProfile
-    from imported_s1_native_context import ImportedS1NativeContext
-    from imported_difficult_native_context import ImportedDifficultNativeContext
-    from imported_native_base import decode_native_base
-    from client_providers import SharedReferenceProvider
-
-    bundle = decode_native_base(base_view, season=season, mode=mode)
-    if not bundle.ready:
-        raise ImportedProviderUnavailable('native-base-incomplete', bundle.gaps)
-    rank_ready = bundle.rank_ready
-    if require_rank and not rank_ready:
-        raise ImportedProviderUnavailable('native-base-rank-unavailable', ('native-base-rank-unavailable',))
-    if controls_view.component['dependencies']:
-        raise ImportedProviderUnavailable('controls-dependencies-unsupported', ('controls-dependencies-unsupported',))
-    controls = S1ControlsProfile(controls_view) if season == 's1' else S0ControlsProfile(controls_view)
-    context = controls.for_context(season, mode)
-    pack, root = bundle.pack, base_view.root
-    if context is None or set(context.contract.floor_ids) != set(pack.floors):
-        raise ImportedProviderUnavailable('controls-base-floors-mismatch', ('controls-base-floors-mismatch',))
-
-    if season == 's1':
-        native = ImportedS1NativeContext(base_view, bundle, controls)
-    elif mode == 'difficult':
-        native = ImportedDifficultNativeContext(base_view, bundle, controls)
-    else:
-        native = None
-
+    from imported_original_base import decode_original_base, OriginalNativeContext
+    from imported_original_controls import require_original_controls
     from imported_native_context import ImportedResourceOwners
-    legacy_references = bundle.legacy_references
-    owners = ImportedResourceOwners(base_view, bundle, controls, native, legacy_references)
+    from client_providers import SharedReferenceProvider
+    bundle = decode_original_base(base_view, season=season, mode=mode)
+    controls = S1ControlsProfile(controls_view) if season == 's1' else S0ControlsProfile(controls_view)
+    require_original_controls(controls, season=season, mode=mode)
+    context = controls.for_context(season, mode)
+    if context is None or set(context.contract.floor_ids) != set(bundle.pack.floors):
+        raise ImportedProviderUnavailable('controls-base-floors-mismatch', ('controls-base-floors-mismatch',))
+    native = OriginalNativeContext(base_view, bundle, controls) if season == 's1' or mode == 'difficult' else None
+    if native is not None:
+        bundle.pack.display_context = native
+    owners = ImportedResourceOwners(base_view, bundle, controls, native, bundle.legacy_references)
     check_current = owners.assert_current
-    provider = SharedReferenceProvider(root, bundle.resources, bundle.versions,
-        legacy_reference_loader=legacy_references.reference if legacy_references is not None else None,
+    provider = SharedReferenceProvider(base_view.root, bundle.resources, bundle.versions,
+        legacy_reference_loader=bundle.legacy_references.reference if bundle.legacy_references is not None else None,
         check_current=check_current, operation_owners=owners)
     check_current()
     return bundle, controls, native, provider, check_current
 
 
 def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='nightmare', require_rank=True):
-    """Use the same decoded views for prospective and active construction.
-
-    Callers own their operation/catalog lifetime. This function never resolves
-    another catalog, publishes selection or writes personal learning data.
-    Data activation may set require_rank=False; the decoded rank capability is
-    still installed on the engine and checked by every ranking entry.
-    """
-    from difficult_native_identity import NativeDifficultCandidateEngine
-    from nightmare_candidate import NightmareMemoryStore
-    from s0_vertical_controls import observe_s0_map
-    from client_providers import _build_memory_store, attach_structure_scanner
-
-    bundle, controls, native, provider, check_current = load_native_resources(
-        base_view, controls_view, season=season, mode=mode, require_rank=require_rank)
-    pack, root, interfaces = bundle.pack, base_view.root, bundle.interfaces
-    rank_ready = bundle.rank_ready
-
-    def entry_current():
-        try:
-            check_current()
-            return True
-        except (OSError, ValueError):
-            return False
-
-    if season == 's1':
-        memory = _build_memory_store(pack, paths.memory_root(mode, season), root, season=season, controls=controls)
-    else:
-        sample_validator = ((lambda frame: observe_s0_map(frame, mode, season=season, controls=controls)[0].get('detected') is True)
-                            if rank_ready else (lambda frame: False))
-        memory = NightmareMemoryStore(pack, paths.memory_root(mode, season), portable_seed_path=None,
-                                      sample_validator=sample_validator)
-    engine = NativeDifficultCandidateEngine(pack, identity_root=root / interfaces['identityEntries'],
-        identity_profile_id=interfaces['identityProfile'], identity_floors=pack.floors,
-        exit_icon_path=base_view.path(interfaces['exitIcon']) if bundle.semantic_side_entries else None,
-        entry_semantic_side_entries=bundle.semantic_side_entries,
-        entry_passport_source_available=bundle.passport_source_available,
-        entry_structure_store=bundle.resources, entry_shared_reference_provider=provider,
-        entry_read_resource=bundle.reader, entry_typed_index_path=base_view.path(interfaces['typedIndex']),
-        shared_reference_loader=provider, entry_context_is_current=entry_current,
-        memory_store=memory, native_similarity_root=None,
-        structure_profile_provider=lambda: 'shared-structure',
-        structure_cache_context_provider=lambda: str(base_view.component_ref))
-    local = engine.side_entry_identity
-    if (engine.entry_identity.error is not None or local is None
-            or any(error is not None for error in
-                   (local.side_door_error, local.side_search_error))
-            or (local.passport_error is not None if bundle.passport_source_available else
-                local.passport_error != 'entry-passports-source-unavailable')):
-        raise ImportedProviderUnavailable('native-entry-construction-failed', ('native-entry-construction-failed',))
-    if bundle.legacy_passports is not None:
-        local.passports.extend(deepcopy(bundle.legacy_passports['entries']))
-        local.entry_coverage.extend(deepcopy(bundle.legacy_passports['coverage']))
-    engine.qt_native_base = bundle
-    from structure_pose_inputs import StructurePoseInputCache
-    engine.qt_pose_input_cache = StructurePoseInputCache()
-    engine.qt_pose_prepare_lock = threading.RLock()
-    engine.qt_assert_resource_current = check_current
-    engine.qt_shared_provider = provider
-    engine.qt_fast_structure_source = bundle.fast_structure_source
-    engine.qt_adapters = bundle.adapters
-    engine.qt_controls_profile = controls
-    engine.qt_resource_root = root
-    engine.qt_catalog = engine.qt_optional_displays = None
-    engine.qt_native_context = native
-    engine.qt_logical_group_registry = bundle.reviewed_front_groups
-    engine.qt_live_gaps = tuple(native.live_gaps) if native is not None else ()
-    engine.qt_rank_ready = rank_ready
-    engine.qt_structure_scan_ready = bool(native is not None
-        and native.structure_candidate_capability.get('operatorDeclaredScanReady') is True)
-    engine.qt_rank_gaps = () if rank_ready else ('native-base-rank-unavailable',)
-    engine.qt_live_ready = rank_ready and not engine.qt_live_gaps
-    engine.qt_season = season
-    engine.qt_resource_inventory = dict(typedLayers=len(bundle.versions),
-        legacyLayers=len(bundle.legacy_references.bindings) if bundle.legacy_references is not None else 0,
-        mainEntries=len(engine.entry_identity.entries), sideEntries=len(engine.side_entry_identity.entries),
-        semanticSideEntries=local.semantic_side_entries,
-        fastPreparedLayers=len(bundle.fast_structure_source.entries),
-        fastPreparedGaps=list(bundle.fast_structure_source.gaps),
-        reviewedGroupCount=len(bundle.reviewed_front_groups.groups) if bundle.reviewed_front_groups is not None else 0,
-        reviewedGroupReviewSource=(bundle.reviewed_front_groups.review_source if bundle.reviewed_front_groups is not None else None),
-        reviewedGroupGaps=(dict(bundle.reviewed_front_groups.group_gaps) if bundle.reviewed_front_groups is not None else
-                           {'registration': ('reviewed-front-groups-not-provided',)}))
-    from structure_pose_inputs import prepare_structure_pose_common_models
-    engine.qt_pose_common_models = prepare_structure_pose_common_models(engine)
-    if engine.qt_pose_common_models is not None:
-        engine.qt_resource_inventory['commonPoseModelBytes'] = engine.qt_pose_common_models.retained_bytes
-        engine.qt_pose_input_cache.max_bytes -= engine.qt_pose_common_models.retained_bytes
-    if season == 's1':
-        from s1_structure_selection import StructureCatalog
-        from client_s1_coordinate_recognition import attach_imported_s1_coordinate_recognition
-        engine.qt_s1_index_resource_root = root
-        catalog = StructureCatalog.from_engine(engine)
-        coordinate = attach_imported_s1_coordinate_recognition(engine, catalog)
-        attach_structure_scanner(engine, catalog,
-            private_fit=coordinate.fixed_fit if coordinate is not None else None)
-    elif rank_ready or engine.qt_structure_scan_ready:
-        from s1_structure_selection import StructureCatalog
-        attach_structure_scanner(engine, StructureCatalog.from_engine(engine))
-    check_current()
-    return engine
+    from client_original_providers import build_original_engine
+    return build_original_engine(base_view, controls_view, paths, season=season, mode=mode, require_rank=require_rank)
 
 
 class ImportedEngineFactories(EngineFactories):
@@ -237,6 +119,24 @@ class ImportedEngineFactories(EngineFactories):
     def _get(self, mode, season='s0'):
         key = context_key(mode, season)
         engine = super()._get(mode, season)
+        def entry_failed():
+            with self._lock:
+                if self._engines.get(key) is engine:
+                    self._engines.pop(key)
+                    engine.qt_rank_ready = engine.qt_live_ready = False
+                    engine.qt_rank_gaps = ('original-entry-index-unavailable',)
+                    self._reports[key].update(prepared=True,reason='original-entry-index-unavailable',
+                        resourceGaps=['original-entry-index-unavailable'],
+                        **self._unavailable_engine_fields('original-entry-index-unavailable'))
+        engine.qt_entry_resource_failed = entry_failed
+        entry_check = getattr(engine,'qt_assert_entry_resources_current',None)
+        if callable(entry_check):
+            try:
+                entry_check()
+            except (OSError,ValueError) as error:
+                entry_failed()
+                raise ImportedProviderUnavailable('original-entry-index-unavailable',
+                    ('original-entry-index-unavailable',)) from error
         check = getattr(engine, 'qt_assert_resource_current', None)
         if check is not None:
             try:
@@ -274,19 +174,6 @@ class ImportedEngineFactories(EngineFactories):
         engine.qt_resource_inventory['optionalResourceGaps'] = list(resources.optional_gaps) + (
             list(optional.errors.values()) if optional is not None else []) + (
             ['reviewed-groups-decoder-unavailable'] if resources.groups is not None else [])
-        from structure_pose_inputs import prepare_structure_pose_static_payloads
-        engine.qt_pose_static_payloads = prepare_structure_pose_static_payloads(engine)
-        if engine.qt_pose_static_payloads is not None:
-            retained = engine.qt_pose_static_payloads.retained_bytes
-            engine.qt_resource_inventory['staticPosePayloadBytes'] = retained
-            engine.qt_pose_input_cache.max_bytes -= retained
-        coordinate = getattr(engine, 'qt_s1_coordinate_recognition', None)
-        if coordinate is not None:
-            # This is a preparation hint from declared floor metadata, not an
-            # observed game floor. Every later observation still proves floor,
-            # pool scope and geometry through the original consumer.
-            prepared = coordinate.prepare_static_floor(coordinate.catalog.floors[0])
-            engine.qt_resource_inventory['s1StaticCoordinatePreparation'] = prepared
         engine.qt_assert_resource_current()
         return engine
 

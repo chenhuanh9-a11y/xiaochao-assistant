@@ -1,10 +1,8 @@
-"""Export declared S0/S1 source data into an inert recognition-base package.
+"""Export the original Qt engine's S0/S1 data into an inert base package.
 
-S0 nightmare keeps its byte-preserving structure/entry flow. S0 difficult keeps
-native and legacy working-draft inventories separate. S1 difficult and
-nightmare share the declared map, typed, neutral and proposal flow, enriching
-only version/coordinate references and controls metadata. This producer does
-not activate a catalog or grant proposal pose/identity authority.
+The current API and CLI retain original resource bytes, coordinates and fast
+preparations. Author displays remain separate. The older normalized typed-base
+producer is retired; its private data helpers are historical implementation.
 """
 from __future__ import annotations
 
@@ -686,34 +684,7 @@ def _s1_controls_payloads(mode='difficult'):
     return {'profile.json': _encoded(profile)}
 
 
-def _round_trip_s1(path, destination, mode):
-    """Exercise the declared S1 decoder and its imported controls view."""
-    from imported_native_base import decode_native_base
-    from imported_s1_controls_profile import S1ControlsProfile
-    inspected = archives.inspect_archive(path)
-    saved = archives.save_archive(path, destination,
-                                  expected_archive_sha256=inspected.archive_sha256)
-    refs = {ref.component_id: ref for ref in saved.component_refs}
-    base = PackageView(destination, refs['base'])
-    bundle = decode_native_base(base, season='s1', mode=mode)
-    controls_view = PackageView(destination, refs['controls'])
-    controls = S1ControlsProfile(controls_view)
-    context = controls.for_context('s1', mode)
-    if (context is None or set(context.contract.floor_ids) != set(bundle.pack.floors)
-            or {(key[1], key[3]) for key in bundle.resources.entries}
-            != {(row.id, floor) for row in bundle.pack.maps for floor in bundle.pack.floors}):
-        _reject('roundtrip-s1-controls-or-typed-inventory')
-    bundle.assert_current()
-    # Data-only consumer round trip; full derivation belongs to this explicit
-    # producer boundary and activation, never ordinary engine construction.
-    def provider(profile, map_id, floor):
-        bundle.assert_current()
-        return bundle.resources.load(profile, map_id, floor, variant='variant-01')
-    bundle.fast_structure_source.validate_all(provider, compare_derived=True)
-    return dict(mapCount=len(bundle.pack.maps), typedLayerCount=len(bundle.resources.entries),
-        mainEntries=len(bundle.entry_identity.entries), localEntries=len(bundle.side_entry_identity.entries),
-        controlsDetector=controls.detector_id, controlsFloors=list(context.contract.floor_ids),
-        proposalOnly=True, mode=mode, fastPreparedLayerCount=len(bundle.fast_structure_source.entries))
+
 
 
 def _embed_front_groups(payloads, *, season, mode, registration=None):
@@ -783,89 +754,7 @@ def _group_report(bundle):
     return dict(reviewedGroupCount=len(registry.groups), reviewedGroupGaps=dict(registry.group_gaps))
 
 
-def _round_trip(path, destination, *, season='s0', mode='nightmare'):
-    """Exercise the real container, installed views and current data consumers."""
-    if season == 's1' and mode in {'difficult', 'nightmare'}:
-        return _round_trip_s1(path, destination, mode)
-    if (season, mode) == ('s0', 'difficult'):
-        from imported_native_base import decode_native_base
-        from imported_controls_profile import S0ControlsProfile
-        inspected = archives.inspect_archive(path)
-        saved = archives.save_archive(path, destination, expected_archive_sha256=inspected.archive_sha256)
-        refs = {ref.component_id: ref for ref in saved.component_refs}
-        base_view = PackageView(destination, refs['base'])
-        bundle = decode_native_base(base_view, season='s0', mode='difficult')
-        controls = S0ControlsProfile(PackageView(destination, refs['controls']))
-        context = controls.for_context('s0', 'difficult')
-        if context is None or set(context.contract.floor_ids) != set(bundle.pack.floors):
-            _reject('roundtrip-controls-floors')
-        from client_providers import SharedReferenceProvider
-        provider = SharedReferenceProvider(base_view.root, bundle.resources, bundle.versions,
-            check_current=bundle.assert_current)
-        bundle.fast_structure_source.validate_all(provider, compare_derived=True)
-        bundle.assert_current()
-        return dict(mapCount=len(bundle.pack.maps), typedLayerCount=len(bundle.resources.entries),
-            legacyLayerCount=len(bundle.legacy_references.bindings) if bundle.legacy_references else 0,
-            mainEntries=len(bundle.entry_identity.entries), localEntries=len(bundle.side_entry_identity.entries),
-            controlsTemplates=len(controls.templates.labels), controlsLabels=list(controls.templates.label_values),
-            rankReady=bundle.rank_ready, nativePassportsAvailable=bundle.passport_source_available,
-            semanticSideEntries=bundle.semantic_side_entries,
-            fastPreparedLayerCount=len(bundle.fast_structure_source.entries), **_group_report(bundle))
-    if (season, mode) != ('s0', 'nightmare'):
-        _reject('context-unsupported')
-    from difficult_entry_identity import MapEntryGeometryIdentity
-    from difficult_native_identity import NativeDifficultPack
-    from difficult_side_entry_identity import MapLocalEntryIdentity
-    from imported_controls_profile import S0ControlsProfile
-    from nightmare_author_coordinate_adapter import AuthorCoordinateAdapters
-    from shared_structure_context import load_shared_version_context
-    from shared_structure_reference import SharedStructureResourceStore
-    from side_door_recognition import SideDoorRecognizer
-    inspected = archives.inspect_archive(path)
-    saved = archives.save_archive(path, destination,
-                                  expected_archive_sha256=inspected.archive_sha256)
-    refs = {ref.component_id: ref for ref in saved.component_refs}
-    base = PackageView(destination, refs['base'])
-    reader = ComponentResourceReader(base)
-    pack = NativeDifficultPack(base.root, PACK, expected_mode='nightmare', expected_season='s0',
-                               read_resource=reader)
-    resources = SharedStructureResourceStore(base.path(INDEX), base.root, read_resource=reader)
-    if resources.error is not None:
-        _reject('roundtrip-typed-index:' + resources.error)
-    adapters = AuthorCoordinateAdapters(base.path(COORDINATES), read_resource=reader)
-    entry_root = base.root / ENTRIES
-    main = MapEntryGeometryIdentity(entry_root, structure_store=resources,
-        profile_id=PROFILE, profile_for_map=pack.identity_profiles.__getitem__, read_resource=reader)
-    local = MapLocalEntryIdentity(entry_root, mode='nightmare', profile_id=PROFILE, floors=FLOORS,
-        exit_icon_path=base.path(EXIT), structure_store=resources,
-        profile_for_map=pack.identity_profiles.__getitem__, read_resource=reader,
-        typed_index_path=base.path(INDEX))
-    errors = [main.error, local.side_door_error, local.side_search_error, local.passport_error]
-    if any(error is not None for error in errors):
-        _reject('roundtrip-entry:' + ';'.join(str(error) for error in errors if error))
-    SideDoorRecognizer(base.path(EXIT), read_resource=reader)
-    versions = load_shared_version_context(base.root, pack, resources, adapters, None, local.entries,
-        neutral_relative=NEUTRAL, entry_root_relative=ENTRIES, read_resource=reader)
-    if (set(versions) != set(resources.entries)
-            or any(row['sharedError'] for row in versions.values())):
-        _reject('roundtrip-version-binding')
-    for profile, mid, variant, floor in resources.entries:
-        product = resources.load(profile, mid, floor, variant=variant)
-        if (product is None or not np.any(product.clean_mask)
-                or list(product.shape) != versions[profile, mid, variant, floor]['canvas'].get('shapeHW')):
-            _reject('roundtrip-typed-product:' + mid + '/' + floor)
-    controls = S0ControlsProfile(PackageView(destination, refs['controls']))
-    if set(controls.for_context('s0', 'nightmare').contract.floor_ids) != set(pack.floors):
-        _reject('roundtrip-controls-floors')
-    from imported_native_base import decode_native_base
-    bundle = decode_native_base(base, season='s0', mode='nightmare')
-    bundle.fast_structure_source.validate_all(
-        lambda profile, mid, floor: bundle.resources.load(profile, mid, floor), compare_derived=True)
-    return dict(mapCount=len(pack.maps), typedLayerCount=len(resources.entries),
-                mainEntries=len(main.entries), localEntries=len(local.entries),
-                controlsTemplates=len(controls.templates.labels),
-                controlsLabels=list(controls.templates.label_values),
-                fastPreparedLayerCount=len(bundle.fast_structure_source.entries), **_group_report(bundle))
+
 
 
 def _discard_owned_temporary(path, identity):
@@ -914,78 +803,17 @@ def _publish_output(staged, output, digest, *, before_move=None):
 
 
 def export_package(source_root, output, *, package_id, resource_version, source_inventory=None,
-                   season='s0', mode='nightmare', group_registration=None, s1_coordinate_asset_dir=None):
-    """Validate and exclusively create the requested ZIP; never alter source."""
-    output = Path(output).absolute()
-    files._no_links(output)
-    if output.exists():
-        raise FileExistsError('native-base-export-output-exists')
-    source = _Source(source_root, source_inventory)
-    if output.resolve().is_relative_to(source.root.resolve()):
-        _reject('output-inside-source')
-    if season not in ('s0', 's1') or mode not in ('nightmare', 'difficult'):
-        _reject('context-unsupported')
-    # Reuse the installed protocol's identity validation, not a new ID policy.
-    ComponentRef(package_id, resource_version, 'base', '0' * 64)
-    if (season, mode) == ('s0', 'nightmare'):
-        base, map_count = _base_payloads(source)
-        controls = _controls_payloads()
-    elif (season, mode) == ('s0', 'difficult'):
-        base, map_count = _s0_difficult_base_payloads(source)
-        controls = _controls_payloads(mode)
-    else:
-        base, map_count = _s1_base_payloads(source, mode=mode)
-        controls = _s1_controls_payloads(mode=mode)
-    if s1_coordinate_asset_dir is not None:
-        if season != 's1':
-            _reject('s1-coordinate-assets-context')
-        from imported_native_base import (S1_COORDINATE_INTERFACE, S1_COORDINATE_DIRECTORY,
-                                          S1_COORDINATE_FILES)
-        assets = _Source(s1_coordinate_asset_dir, None)
-        for name in S1_COORDINATE_FILES:
-            base[S1_COORDINATE_DIRECTORY + '/' + name] = assets.read(name)
-        declaration = decode_resource_json(base['resource-context.json'])
-        declaration['runtimeInterfaces'][S1_COORDINATE_INTERFACE] = S1_COORDINATE_DIRECTORY
-        base['resource-context.json'] = _encoded(declaration)
-    _embed_front_groups(base, season=season, mode=mode, registration=group_registration)
-    payloads = {'base': base, 'controls': controls}
-    context = [dict(season=season, mode=mode)]
-    manifest = dict(schema='xingtu-resource-package', formatVersion=1,
-        packageId=package_id, resourceVersion=resource_version,
-        clientCompatibility=dict(resourceProtocol=1, requiredCapabilities=(
-            ['native-s1-nightmare-base-v1'] if (season, mode) == ('s1', 'nightmare') else [])),
-        components=[dict(componentId=component, type=kind, schemaVersion=1,
-                         contexts=context, entrypoint=entry, dependencies={})
-                    for component, kind, entry in [('base', 'recognition-base', 'resource-context.json'),
-                        ('controls', 'controls-profile', 'profile.json')]],
-        files=[dict(componentId=component, path=path, bytes=len(raw),
-                    sha256=hashlib.sha256(raw).hexdigest())
-               for component, members in payloads.items() for path, raw in sorted(members.items())])
-    manifest_raw = _encoded(manifest)
-    PackageView._validate_manifest(manifest,
-        ComponentRef(package_id, resource_version, 'base', hashlib.sha256(manifest_raw).hexdigest()))
-    with tempfile.TemporaryDirectory(prefix='xingtu-native-base-export-') as temporary:
-        staged = Path(temporary) / 'package.zip'
-        with zipfile.ZipFile(staged, 'x', compression=zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr('manifest.json', manifest_raw)
-            for component, members in payloads.items():
-                for path, raw in sorted(members.items()):
-                    archive.writestr(f'data/{component}/{path}', raw)
-        checked = _round_trip(staged, Path(temporary) / 'roundtrip-resources',
-                              season=season, mode=mode)
-        if checked['mapCount'] != map_count:
-            _reject('roundtrip-map-inventory')
-        with staged.open('rb') as handle:
-            digest = hashlib.file_digest(handle, 'sha256').hexdigest()
-        _publish_output(staged, output, digest)
-        result = dict(output=str(output), bytes=output.stat().st_size, sha256=digest,
-            packageId=package_id, resourceVersion=resource_version,
-            sourceFiles=len(source.raw), sourceInventoryChecked=source.inventory is not None,
-            files=len(manifest['files']), catalogActivated=False, **checked)
-        if season == 's1':
-            result.update(season=season, mode=mode,
-                          sourceInventoryFiles=len(source.inventory) if source.inventory is not None else None)
-        return result
+                   season='s0', mode='nightmare', group_registration=None, s1_coordinate_asset_dir=None,
+                   original_qt=True):
+    """Export the current original-layout base; never alter the source tree."""
+    if original_qt is not True:
+        raise ValueError('historical-normalized-base-export-retired')
+    if group_registration is not None:
+        raise ValueError('original-base-uses-source-reviewed-groups')
+    from export_original_qt_base import export_original_package
+    return export_original_package(source_root, output, package_id=package_id,
+        resource_version=resource_version, source_inventory=source_inventory,
+        season=season, mode=mode, s1_coordinate_asset_dir=s1_coordinate_asset_dir)
 
 
 def main(argv=None):
@@ -1001,6 +829,8 @@ def main(argv=None):
     parser.add_argument('--s1-coordinate-asset-dir', type=Path,
                         help='Explicit S1 base coordinate index and glyph calibration directory')
     parser.add_argument('--season', choices=('s0', 's1'), default='s0')
+    parser.add_argument('--original-qt', action='store_true', default=True,
+                        help='兼容显式参数；默认即保留 d7063612 原资源字节与布局')
     parser.add_argument('--mode', choices=('nightmare', 'difficult'), default='nightmare')
     args = parser.parse_args(argv)
     if args.output.suffix.casefold() != BASE_SUFFIX:
@@ -1008,7 +838,7 @@ def main(argv=None):
     print(json.dumps(export_package(args.source_root, args.output, package_id=args.package_id,
         resource_version=args.resource_version, source_inventory=args.source_inventory,
         season=args.season, mode=args.mode, group_registration=args.group_registration,
-        s1_coordinate_asset_dir=args.s1_coordinate_asset_dir),
+        s1_coordinate_asset_dir=args.s1_coordinate_asset_dir, original_qt=args.original_qt),
         ensure_ascii=False, sort_keys=True))
 
 

@@ -585,7 +585,7 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
                 self.assertTrue(capabilities['rankReady'])
                 self.assertFalse(capabilities['liveReady'])
                 floor_capability = capabilities['floorObservation']
-                self.assertEqual(floor_capability['validationScope'], 'source-image-replay')
+                self.assertEqual(floor_capability['evidence'], 'private-test-four-floor-contract')
                 self.assertEqual(floor_capability['sourceReplayFloors'], [-1, -2, -3, -4])
                 self.assertFalse(floor_capability['liveValidated'])
                 self.assertTrue(capabilities['candidateObservation']['candidateReady'])

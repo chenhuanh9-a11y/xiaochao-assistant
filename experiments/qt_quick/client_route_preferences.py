@@ -148,6 +148,9 @@ def _owned_s1_display_reference(engine, map_id, floor):
     """
     if getattr(engine, 'qt_season', None) != 's1':
         return NotImplemented
+    if (getattr(engine, 'qt_s1_coordinate_recognition', None) is None
+            or getattr(engine, 'qt_pose_static_payloads', None) is None):
+        return NotImplemented
     from client_providers import DisplayResourceChanged, SharedReferenceProvider
     from client_s1_coordinate_recognition import PreparedS1CoordinateRecognition
     from structure_pose_inputs import (PoseInputsUnavailable, PreparedStructureStaticPayloads,

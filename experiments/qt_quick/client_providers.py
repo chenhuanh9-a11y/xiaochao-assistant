@@ -169,13 +169,14 @@ class _SharedReferenceReadOperation:
 class SharedReferenceProvider:
     """Version-checked typed references; six-entry cache, no pose/UI state."""
     def __init__(self, root, resources, versions, *, legacy_reference_loader=None, check_current=None,
-                 operation_owners=None):
+                 operation_owners=None, native=None):
         if check_current is not None and not callable(check_current):
             raise TypeError('reference lifetime guard must be callable')
         if legacy_reference_loader is not None and not callable(legacy_reference_loader):
             raise TypeError('legacy reference loader must be callable')
         self.root, self.resources, self.versions = root, resources, versions
-        self._legacy_reference_loader = legacy_reference_loader
+        self._legacy_reference_loader = (legacy_reference_loader if legacy_reference_loader is not None
+            else getattr(native, 'legacy_reference', None))
         self._check_current = check_current
         self._operation_owners = operation_owners
         self._cache = OrderedDict()
@@ -1112,14 +1113,7 @@ class EngineFactories(dict):
             profile, exit_icon = "shared-structure", None
             engine_type = NativeDifficultCandidateEngine
         elif mode == "nightmare":
-            interfaces = dict(identityPack="references/nightmare-map-pack.json",
-                typedIndex="references/nightmare-shared-structure-index.json",
-                coordinatePack="references/nightmare-canonical-coordinate-pack.json",
-                neutralDisplay="references/nightmare-structure-display.json",
-                identityEntries="references/nightmare-entries",
-                exitIcon="references/difficult-exit-icon.json", identityProfile="zhan10-speed")
-            interfaces.update(self.nightmare_interfaces)
-            raw = _read(root, interfaces['identityPack'])
+            raw = _read(root, "references/nightmare-map-pack.json")
             # NightmarePack supports developer/environment source roots. Reject
             # those manifests before constructing it, keeping every path local.
             if not raw.get("maps") or any(row.get("resourceBase") != "resource-root" for row in raw["maps"]):
@@ -1127,26 +1121,25 @@ class EngineFactories(dict):
             for row in raw["maps"]:
                 for relative in [row["oneFlow"], *row["layers"].values()]:
                     _local(root, relative)
-            pack = NightmarePack(_local(root, interfaces['identityPack']), resource_root=root)
-            resources = SharedStructureResourceStore(_local(root, interfaces['typedIndex']), root)
+            pack = NightmarePack(_local(root, "references/nightmare-map-pack.json"))
+            resources = SharedStructureResourceStore(_local(root, "references/nightmare-shared-structure-index.json"), root)
             if resources.error:
                 raise ValueError(resources.error)
-            adapters = AuthorCoordinateAdapters(_local(root, interfaces['coordinatePack']))
+            adapters = AuthorCoordinateAdapters(_local(root, "references/nightmare-canonical-coordinate-pack.json"))
             catalog = None
             # Author display is optional and never recognition evidence.
             catalog_path = _local(root, "references/nightmare-author-route-catalog.json")
-            if self.optional_displays and catalog_path.is_file():
+            if catalog_path.is_file():
                 try:
                     catalog = AuthorRouteCatalog(catalog_path, asset_base=root)
                 except (OSError, ValueError, KeyError, TypeError) as error:
                     # Match the original typed-resource path: optional display
                     # metadata must not disable independently validated geometry.
                     catalog_error = f"{type(error).__name__}:{error}"
-            entry_relative = interfaces['identityEntries']
-            entry_root = _local(root, entry_relative)
-            neutral = interfaces['neutralDisplay']
-            profile = interfaces['identityProfile']
-            exit_icon = _local(root, interfaces['exitIcon']) if interfaces['exitIcon'] else None
+            entry_root = _local(root, "references/nightmare-entries")
+            neutral = "references/nightmare-structure-display.json"
+            entry_relative = "references/nightmare-entries"
+            profile, exit_icon = "zhan10-speed", _local(root, "references/difficult-exit-icon.json")
             version_pack = pack
             engine_type = MapIdentityEngine
         else:
@@ -1177,13 +1170,11 @@ class EngineFactories(dict):
         # Constructor performs no IO; ranking submits no human-label writes.
         # Explicit live manual confirmation reuses this store on its worker.
         # Source/test diagnostics retain isolated memory.
-        memory_root = (self.memory_root_provider(mode, season) if self.memory_root_provider is not None else
-                       runtime_paths().memory_root(mode, season) if PRODUCTION else
+        memory_root = (runtime_paths().memory_root(mode, season) if PRODUCTION else
                        root / ".qt-saved-frame-memory" / mode if season == "s0" else
                        root / ".qt-saved-frame-memory" / season / mode)
-        memory = _build_memory_store(pack, memory_root, root, season=season, controls=self.controls_profile)
-        provider = SharedReferenceProvider(root, resources, {},
-            legacy_reference_loader=native.legacy_reference if native is not None else None)
+        memory = _build_memory_store(pack, memory_root, root, season=season)
+        provider = SharedReferenceProvider(root, resources, {}, native=native)
         engine = engine_type(pack, identity_root=entry_root, identity_profile_id=profile,
             identity_floors=pack.floors, exit_icon_path=exit_icon,
             entry_structure_store=resources, entry_shared_reference_provider=provider,
@@ -1232,7 +1223,6 @@ class EngineFactories(dict):
             # Separate complete schema2 inventory root from selected mode root.
             engine.qt_s1_index_resource_root = self.root
         engine.qt_adapters = adapters
-        engine.qt_controls_profile = self.controls_profile
         engine.qt_catalog = catalog
         engine.qt_native_context = native
         engine.qt_season = season
@@ -1240,14 +1230,11 @@ class EngineFactories(dict):
         engine.qt_live_ready = not engine.qt_live_gaps
         if season == "s1":
             from s1_author_displays import S1AuthorDisplays
-            if self.optional_displays:
-                optional = S1AuthorDisplays(self.root, native)
-                engine.qt_optional_displays = optional
-                engine.qt_adapters, engine.qt_catalog = optional.adapters, optional.catalog
-                engine.qt_resource_inventory["optionalAuthorErrors"] = dict(optional.errors)
-            else:
-                engine.qt_optional_displays = None
-            from s1_structure_selection import StructureCatalog
+            optional = S1AuthorDisplays(self.root, native)
+            engine.qt_optional_displays = optional
+            engine.qt_adapters, engine.qt_catalog = optional.adapters, optional.catalog
+            engine.qt_resource_inventory["optionalAuthorErrors"] = dict(optional.errors)
+            from s1_structure_selection import StructureCatalog, StructureCandidateScanner
             catalog = StructureCatalog.from_engine(engine)
             private_observer = None
             def private_coordinate_prepare(frame, pool_ids, floor, *, cancelled, stage=None):
@@ -1271,12 +1258,44 @@ class EngineFactories(dict):
                         provider=lambda mid, fl: engine.qt_shared_provider("shared-structure", mid, fl))
                 return pose_index.make_hint(source, target_floor=floor, current_owner_scope=owner_scope)
             engine.qt_s1_pose_prior = pose_prior
-            attach_structure_scanner(engine, catalog,
-                private_fit=lambda *args, **kwargs: private_observer.fixed_fit(*args, **kwargs))
-            return engine
-        if not self.optional_displays:
-            # New resource catalogs own displays separately from base geometry.
-            engine.qt_optional_displays = None
+            def structure_scan(frame, *, floor, floor_source="operator-declared", cancelled=None, budget_seconds=None,
+                               on_progress=None, candidate_order=None, preferred_map_id=None,
+                               preferred_material_committed=None, private_coordinate_report=None, planned_map_ids=None,
+                               first_material_committed=None, pose_priors=None, collect_fit_diagnostics=False):
+                # Lazy import keeps provider construction free of live IO.
+                from client_live_runtime import _AlignmentHost
+                host = _AlignmentHost(engine, pose_priors=pose_priors,
+                    collect_fit_diagnostics=collect_fit_diagnostics)
+                fixed = private_coordinate_report is not None and private_coordinate_report.get("coordinateVerified") is True
+                fit = (lambda f, mid, fl, cancel, **kw: private_observer.fixed_fit(
+                    f, mid, fl, cancel, report=private_coordinate_report, **kw)) if fixed else host.fit
+                scanner = StructureCandidateScanner(catalog, fit,
+                    prepare_fit=None if fixed else host.prepare_structure_scan)
+                report = scanner.scan(frame, floor=floor, floor_source=floor_source,
+                                    cancelled=cancelled, budget_seconds=budget_seconds,
+                                    on_progress=on_progress, candidate_order=candidate_order,
+                                    preferred_map_id=preferred_map_id,
+                                    preferred_material_committed=preferred_material_committed,
+                                    planned_map_ids=planned_map_ids, first_material_committed=first_material_committed)
+                report["posePriorOutcomes"] = [{key: event[key] for key in
+                    ("mapId", "floor", "accepted", "fallback", "elapsedMs") if key in event}
+                    for event in host.events if event.get("event") == "experimental-pose-prior"][:6]
+                if collect_fit_diagnostics and report['status'] != 'cancelled':
+                    try:
+                        from s1_fit_diagnostics import scan_summary
+                        report['fitEvidence'] = scan_summary(host.events, mode=catalog.mode,
+                            resource_key=catalog.resource_key, floor=floor, frame_shape=frame.shape,
+                            event_counts=host.diagnostic_event_counts, outcomes=report.get('outcomes', ()))
+                    except Exception:
+                        pass  # Evidence cannot turn a solver result into a failure.
+                return report
+            def structure_rank(frame, *, floor, budget_seconds=None):
+                report = structure_scan(frame, floor=floor, budget_seconds=budget_seconds)
+                engine.last_s1_structure_scan = report
+                engine.last_difficult_evidence = {key: value for key, value in report.items() if key != "poses"}
+                return StructureCandidateScanner.rank_rows(report, engine.pack)
+            engine.qt_s1_structure_scan = structure_scan
+            engine.qt_s1_structure_rank = structure_rank
             return engine
         from optional_author_displays import OptionalAuthorDisplays
         optional = OptionalAuthorDisplays(root, pack, catalog, adapters, versions, mode=mode)

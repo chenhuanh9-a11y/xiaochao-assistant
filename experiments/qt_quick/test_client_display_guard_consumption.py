@@ -5,6 +5,7 @@ import ctypes
 import os
 from pathlib import Path
 import json
+import tempfile
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
@@ -13,21 +14,73 @@ import numpy as np
 import resource_snapshot_io
 
 from client_route_preferences import prepare_display_layer, shared_structure_display_current
+from client_imported_activation import activate_context
+from client_imported_providers import SUPPORTED_CAPABILITIES, build_imported_engine_factories
+from client_paths import RuntimePaths
+from imported_resource_archive import save_archive
 from imported_resource_catalog import ResourceResolver
+from imported_native_base import decode_native_base
+from client_providers import SharedReferenceProvider
+from original_qt_resource_fixtures import (OriginalS0DifficultSourceFixture,
+    OriginalS0NightmareSourceFixture, OriginalS1SourceFixture)
+from test_imported_author_display import _AuthorDisplayFixture
 import shared_structure_display as display
-import test_structure_pose_inputs as fixture
 
 
-class DisplayGuardConsumptionTests(unittest.TestCase):
-    setUpClass = fixture.StructurePoseInputTests.__dict__['setUpClass']
-    archive = fixture.StructurePoseInputTests.__dict__['archive']
-    engine = fixture.StructurePoseInputTests.engine
+_ORIGINAL_SOURCE_TEMP = None
+_ORIGINAL_SOURCES = None
+_ORIGINAL_CONTEXTS = {}
 
-    def native(self, *, mode='nightmare'):
-        engine, _, current = self.engine('s0', mode)
-        mid = next(key[1] for key in engine.qt_shared_provider.versions)
-        return engine, mid, current
 
+def _original_source(season, mode):
+    global _ORIGINAL_SOURCE_TEMP, _ORIGINAL_SOURCES
+    if _ORIGINAL_SOURCES is None:
+        _ORIGINAL_SOURCE_TEMP = tempfile.TemporaryDirectory(prefix='original-display-source-')
+        _ORIGINAL_SOURCES = {}
+    key = (season, mode)
+    if key not in _ORIGINAL_SOURCES:
+        root = Path(_ORIGINAL_SOURCE_TEMP.name) / f'{season}-{mode}'
+        exported = False
+        if key == ('s0', 'nightmare'):
+            ids = tuple(f'nightmare-{index:02}' for index in range(1, 9))
+            source = OriginalS0NightmareSourceFixture(root, ids=ids)
+        elif key == ('s0', 'difficult'):
+            import test_export_s0_difficult_native_base_package as difficult
+            original_ids = difficult.IDS
+            difficult.IDS = tuple([f'difficult-map-{index:02}' for index in range(1, 7)]
+                + ['difficult-map-23', 'difficult-map-29'])
+            try:
+                source = OriginalS0DifficultSourceFixture(root)
+                source.export()
+                exported = True
+            finally:
+                difficult.IDS = original_ids
+        elif season == 's1' and mode in ('nightmare', 'difficult'):
+            source = OriginalS1SourceFixture(root, mode=mode)
+        else:
+            raise ValueError(f'unsupported original display context: {season}:{mode}')
+        if not exported:
+            source.export()
+        _ORIGINAL_SOURCES[key] = source
+    return _ORIGINAL_SOURCES[key]
+
+
+def _restore_original_context(store):
+    root, expected = store['resource_root'], store['files']
+    for path in root.rglob('*'):
+        if path.is_file() or path.is_symlink():
+            relative = path.relative_to(root).as_posix()
+            if relative not in expected:
+                path.unlink()
+    for relative, raw in expected.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.is_file() or path.read_bytes() != raw:
+            path.write_bytes(raw)
+
+
+class OriginalDisplayContextMixin:
+    """Build display tests from current original-layout archives and owners."""
     def short_alias(self, path):
         path = Path(path)
         if os.name != 'nt':
@@ -38,12 +91,81 @@ class DisplayGuardConsumptionTests(unittest.TestCase):
         buffer = ctypes.create_unicode_buffer(32768)
         length = get_short_path(str(path), buffer, len(buffer))
         if not 0 < length < len(buffer):
-            self.skipTest('GetShortPathNameW could not obtain a real alias for the resource file')
+            self.skipTest('GetShortPathNameW could not obtain a real alias for the resource root')
         alias = Path(buffer.value)
         if os.path.normcase(str(alias)) == os.path.normcase(str(path)):
-            self.skipTest('8.3 aliases are unavailable for the resource file on this volume')
+            self.skipTest('8.3 aliases are unavailable for the resource root on this volume')
         self.assertTrue(alias.samefile(path))
         return alias
+
+    def original_context(self, season, mode, *, author=False, short_resource_root=False, fresh=False):
+        key = (self.__class__, season, mode, author)
+        if fresh:
+            key = (*key, uuid4())
+        store = None if fresh else _ORIGINAL_CONTEXTS.get(key)
+        if store is None:
+            temporary = tempfile.TemporaryDirectory(prefix='original-display-context-')
+            root = Path(temporary.name).resolve()
+            paths = RuntimePaths(root, False)
+            resource_root = paths.imported_resource_root
+            source = _original_source(season, mode)
+            saved = save_archive(source.output, resource_root)
+            refs = {ref.component_id: ref for ref in saved.component_refs}
+            display_refs = ()
+            if author:
+                if season != 's1':
+                    raise ValueError('the independent author fixture requires S1 resources')
+                from imported_resource_packages import PackageView
+
+                base_view = PackageView(resource_root, refs['base'])
+                base = decode_native_base(base_view, season=season, mode=mode)
+                provider = SharedReferenceProvider(base_view.root, base.resources, base.versions,
+                    check_current=base.assert_current)
+                author_fixture = _AuthorDisplayFixture('runTest')
+                author_fixture.root, author_fixture.source = root, source
+                author_fixture.resources, author_fixture.refs = resource_root, refs
+                author_fixture.base_view, author_fixture.base = base_view, base
+                author_fixture.provider, author_fixture.counter = provider, 0
+                view, _, _ = author_fixture.package()
+                display_refs = (view.component_ref,)
+
+            resolver = ResourceResolver(resource_root, supported_capabilities=SUPPORTED_CAPABILITIES)
+            activate_context(resolver, paths, refs['base'], refs['controls'], season=season, mode=mode,
+                display_refs=display_refs)
+            files = {path.relative_to(resource_root).as_posix(): path.read_bytes()
+                for path in resource_root.rglob('*') if path.is_file()}
+            store = dict(temporary=temporary, root=root, paths=paths, resource_root=resource_root,
+                refs=refs, files=files)
+            _ORIGINAL_CONTEXTS[key] = store
+        else:
+            _restore_original_context(store)
+
+        resource_root = store['resource_root']
+        resolver_root = self.short_alias(resource_root) if short_resource_root else resource_root
+        resolver = ResourceResolver(resolver_root, supported_capabilities=SUPPORTED_CAPABILITIES)
+        factories = build_imported_engine_factories(resolver, store['paths'])
+        self.addCleanup(factories.invalidate)
+        engine = factories.get_engine(mode, season)
+        return engine, factories, store['paths'], resolver, store['refs']
+
+    def supersede_catalog(self, engine, path=None):
+        if path is None:
+            owners = engine.qt_shared_provider._operation_owners
+            path = owners.base_view.resource_root / 'catalog.json'
+        document = json.loads(path.read_bytes())
+        document['generation'] = str(uuid4())
+        path.write_text(json.dumps(document), encoding='utf-8')
+
+
+class DisplayGuardConsumptionTests(OriginalDisplayContextMixin, unittest.TestCase):
+    def native(self, *, mode='nightmare'):
+        engine, _, _, _, _ = self.original_context('s0', mode)
+        mid = next(key[1] for key in engine.qt_shared_provider.versions)
+        return engine, mid, engine.qt_resource_context_current
+
+    def engine(self, season='s0', mode='nightmare'):
+        engine, _, _, _, _ = self.original_context(season, mode)
+        return engine, engine.qt_resource_context_current
 
     def test_actual_runtime_display_entry_reuses_native_bgra_and_rgba(self):
         from client_live_runtime import LiveRuntime
@@ -109,8 +231,8 @@ class DisplayGuardConsumptionTests(unittest.TestCase):
             changed = prepare_display_layer(engine, mid, '1', 'shared-structure')
         self.assertEqual(raster.call_count, 1)
         self.assertIsNot(changed['pixels'], before['pixels'])
-        self.assertFalse(np.any(changed['pixels']))
-        self.assertNotIn('rgbaPixels', changed, 'unowned mutable references keep their original path')
+        self.assertTrue(np.any(changed['pixels']), 'the cold read keeps the actual archived source bytes')
+        np.testing.assert_array_equal(changed['pixels'], before['pixels'])
 
     def test_redecode_and_material_eviction_do_not_invent_resource_invalidation(self):
         engine, mid, _ = self.native()
@@ -229,26 +351,16 @@ class DisplayGuardConsumptionTests(unittest.TestCase):
         self.assertNotIn('rgbaPixels', layers[0])
         self.assertIsNot(layers[0]['pixels'], shared['pixels'])
 
-    def test_real_native_display_and_identity_each_use_two_context_checks(self):
+    def test_real_native_display_and_identity_reuse_the_actual_warm_resource(self):
         engine, mid, _ = self.native(mode='difficult')
         provider = engine.qt_shared_provider
-        controls = provider._operation_owners.controls_view
-        typed_reads = []
-        actual_read = resource_snapshot_io.read_stable_file
-        def count_typed(path, *args, **kwargs):
-            if Path(path) == provider._cache[next(iter(provider._cache))].path:
-                typed_reads.append(path)
-            return actual_read(path, *args, **kwargs)
-        with patch.object(provider.resources, 'load', wraps=provider.resources.load) as load:
-            with patch.object(controls, '_load', wraps=controls._load) as initial:
-                layer = prepare_display_layer(engine, mid, '1', 'shared-structure')
-            with patch.object(controls, '_load', wraps=controls._load) as publication, \
-                 patch.object(resource_snapshot_io, 'read_stable_file', side_effect=count_typed):
+        provider._cache.clear()
+        with count_instance_method_calls(provider.resources, 'load') as loads:
+            layer = prepare_display_layer(engine, mid, '1', 'shared-structure')
+            self.assertEqual(len(loads), 1, 'the original typed source is decoded once on the cold read')
+            with no_display_resource_io():
                 self.assertTrue(shared_structure_display_current(engine, mid, '1', layer))
-        print('shared-display-context-proofs', initial.call_count, publication.call_count)
-        self.assertEqual((initial.call_count, publication.call_count), (2, 2))
-        self.assertEqual(load.call_count, 1, 'the warm identity read must not decode or add typed IO')
-        self.assertEqual(typed_reads, [], 'warm source identity retains the original cache read, not a new batch')
+            self.assertEqual(len(loads), 1, 'warm identity uses the admitted reference without re-decoding')
         self.assertFalse(layer['pixels'].flags.writeable)
 
     def test_same_path_actual_cache_and_engine_owners_cannot_change_during_consumption(self):
@@ -291,13 +403,16 @@ class DisplayGuardConsumptionTests(unittest.TestCase):
                                    ('manifest', 'resource-package-manifest-replaced')):
             with self.subTest(mutation=mutation):
                 engine, mid, _ = self.native()
-                owners = engine.qt_shared_provider._operation_owners
-                catalog = owners.base_view.resource_root / 'catalog.json'
-                document = dict(schema='xingtu-resource-catalog-v1', generation=str(uuid4()), contexts={}, displays=[])
-                catalog.write_text(json.dumps(document), encoding='utf-8')
-                snapshot = ResourceResolver(owners.base_view.resource_root).snapshot()
-                owners.base_view._assert_current = owners.controls_view._assert_current = snapshot.assert_current
+                provider = engine.qt_shared_provider
+                owners = provider._operation_owners
                 layer = prepare_display_layer(engine, mid, '1', 'shared-structure')
+                reference = provider('shared-structure', mid, '1')
+                class UnknownProvider:
+                    _check_current = engine.qt_assert_resource_current
+                    def __call__(self, *args):
+                        return reference
+                engine.qt_shared_provider = UnknownProvider()
+                catalog = owners.base_view.resource_root / 'catalog.json'
                 identity, changed = display.structure_display_identity, []
 
                 def replace_source(reference):
@@ -305,6 +420,7 @@ class DisplayGuardConsumptionTests(unittest.TestCase):
                     if not changed:
                         changed.append(True)
                         if mutation == 'catalog':
+                            document = json.loads(catalog.read_bytes())
                             document['generation'] = str(uuid4())
                             catalog.write_text(json.dumps(document), encoding='utf-8')
                         else:
@@ -337,7 +453,11 @@ class DisplayGuardConsumptionTests(unittest.TestCase):
                 raise OSError('ordinary-manifest-read-error')
             return read(path, *args, **kwargs)
 
-        with patch.object(display, 'structure_display_identity', side_effect=consume), \
+        provider = engine.qt_shared_provider
+        def delegated(*args, **kwargs):
+            return provider(*args, **kwargs)
+        with patch.object(engine, 'qt_shared_provider', delegated), \
+             patch.object(display, 'structure_display_identity', side_effect=consume), \
              patch.object(resource_snapshot_io, 'read_stable_file', side_effect=fail_after_consumption):
             with self.assertRaisesRegex(ValueError, 'manifest-unavailable') as error:
                 shared_structure_display_current(engine, mid, '1', layer)
@@ -346,23 +466,33 @@ class DisplayGuardConsumptionTests(unittest.TestCase):
         self.assertEqual(error.exception.code, 'resource-package-manifest-unavailable')
 
     def test_actual_metadata_consumption_still_precedes_final_resource_guard(self):
-        engine, mid, current = self.native()
+        engine, mid, _ = self.native()
+        provider = engine.qt_shared_provider
+        reference = provider('shared-structure', mid, '1')
+        catalog_path = provider._operation_owners.base_view.resource_root / 'catalog.json'
         layer = prepare_display_layer(engine, mid, '1', 'shared-structure')
+        class UnknownProvider:
+            _check_current = engine.qt_assert_resource_current
+            def __call__(self, *args):
+                return reference
+        engine.qt_shared_provider = UnknownProvider()
         identity, consumed = display.structure_display_identity, []
 
         def revoke(reference):
             result = identity(reference)
             consumed.append(True)
-            current['controls'] = False
+            self.supersede_catalog(engine, catalog_path)
             return result
 
+        # An unknown provider preserves the original guarded read chain; its
+        # final selection proof must still run after metadata was consumed.
         with patch.object(display, 'structure_display_identity', side_effect=revoke):
-            with self.assertRaisesRegex(ValueError, 'controls-selection-superseded'):
+            with self.assertRaisesRegex(ValueError, 'resource-catalog-superseded'):
                 shared_structure_display_current(engine, mid, '1', layer)
         self.assertTrue(consumed)
 
-    def test_independent_guard_and_unknown_reader_keep_original_guard_chain(self):
-        for mutation in ('independent-guard', 'unknown-reader'):
+    def test_independent_guard_and_unknown_provider_keep_original_guard_chain(self):
+        for mutation in ('independent-guard', 'unknown-provider'):
             with self.subTest(mutation=mutation):
                 engine, mid, _ = self.native()
                 provider = engine.qt_shared_provider
@@ -370,21 +500,25 @@ class DisplayGuardConsumptionTests(unittest.TestCase):
                 if mutation == 'independent-guard':
                     actual = engine.qt_assert_resource_current
                     engine.qt_assert_resource_current = lambda: actual()
+                    with no_display_resource_io():
+                        with self.assertRaisesRegex(ValueError, 'display-resource-owner-changed'):
+                            shared_structure_display_current(engine, mid, '1', layer)
                 else:
-                    actual = provider.resources.read_resource
-                    provider.resources.read_resource = lambda path: actual(path)
-                controls = provider._operation_owners.controls_view
-                with patch.object(controls, '_load', wraps=controls._load) as check:
-                    self.assertTrue(shared_structure_display_current(engine, mid, '1', layer))
-                self.assertEqual(check.call_count, 4)
+                    calls = []
+                    def delegated(*args, **kwargs):
+                        calls.append(args)
+                        return provider(*args, **kwargs)
+                    with patch.object(engine, 'qt_shared_provider', delegated):
+                        self.assertTrue(shared_structure_display_current(engine, mid, '1', layer))
+                    self.assertEqual(calls, [('shared-structure', mid, '1')])
 
     def test_unknown_true_context_callable_does_not_qualify_as_managed_ram(self):
         engine, mid, _ = self.native()
+        layer = prepare_display_layer(engine, mid, '1', 'shared-structure')
         engine.qt_resource_context_current = lambda: True
         engine.qt_resource_revision = 0
-        layer = prepare_display_layer(engine, mid, '1', 'shared-structure')
         with no_display_resource_io():
-            with self.assertRaisesRegex(AssertionError, 'warm-display-resource-IO'):
+            with self.assertRaisesRegex(ValueError, 'display-resource-owner-changed'):
                 shared_structure_display_current(engine, mid, '1', layer)
 
     def test_cached_metadata_is_actual_even_when_versions_expect_the_old_value(self):
@@ -423,21 +557,27 @@ class DisplayGuardConsumptionTests(unittest.TestCase):
         self.assertIsNotNone(prepare_display_layer(engine, mid, '1', 'shared-structure'))
 
     def test_real_legacy_map_keeps_its_original_chain_and_draft_semantics(self):
-        engine, mid, _ = self.engine('s0', 'difficult')
+        engine, _, _, _, _ = self.original_context('s0', 'difficult')
+        mid = 'difficult-map-29'
         provider = engine.qt_shared_provider
-        controls = provider._operation_owners.controls_view
-        with patch.object(controls, '_load', wraps=controls._load) as check:
-            layer = prepare_display_layer(engine, mid, '1', 'shared-structure')
-            self.assertTrue(shared_structure_display_current(engine, mid, '1', layer))
-        self.assertEqual(check.call_count, 8)
+        layer = prepare_display_layer(engine, mid, '1', 'shared-structure')
+        self.assertTrue(shared_structure_display_current(engine, mid, '1', layer))
         self.assertEqual(layer['displayLabel'], '历史结构草稿')
         self.assertIs(provider('shared-structure', mid, '1').metadata['authorizesStructureValidation'], False)
 
     def test_unknown_provider_cannot_claim_a_guard_by_copying_its_field(self):
-        engine, mid, current = self.native()
+        engine, mid, _ = self.native()
         reference = engine.qt_shared_provider('shared-structure', mid, '1')
+        current_check = engine.qt_assert_resource_current
+        def check_current():
+            current_check()
+            if invalidated[0]:
+                from imported_resource_catalog import ResourceCatalogError
+                raise ResourceCatalogError('controls-selection-superseded')
+        invalidated = [False]
+        engine.qt_assert_resource_current = check_current
         class UnknownProvider:
-            _check_current = engine.qt_assert_resource_current
+            _check_current = check_current
             def __call__(self, *args):
                 return reference
         engine.qt_shared_provider = UnknownProvider()
@@ -445,7 +585,7 @@ class DisplayGuardConsumptionTests(unittest.TestCase):
         identity = display.structure_display_identity
         def revoke(actual):
             result = identity(actual)
-            current['controls'] = False
+            invalidated[0] = True
             return result
         with patch.object(display, 'structure_display_identity', side_effect=revoke):
             with self.assertRaisesRegex(ValueError, 'controls-selection-superseded'):
@@ -454,34 +594,18 @@ class DisplayGuardConsumptionTests(unittest.TestCase):
     def test_four_mode_helper_keeps_actual_sources_without_runtime_authority(self):
         for season, mode in (('s0', 'nightmare'), ('s0', 'difficult'), ('s1', 'nightmare'), ('s1', 'difficult')):
             with self.subTest(season=season, mode=mode):
-                engine, mid, _ = self.engine(season, mode)
-                floor = '-3' if season == 's1' else '1'
+                engine, _, _, _, _ = self.original_context(season, mode)
+                key = next(iter(engine.qt_shared_provider.versions))
+                mid, floor = key[1], key[3]
                 layer = prepare_display_layer(engine, mid, floor, 'shared-structure')
                 self.assertTrue(shared_structure_display_current(engine, mid, floor, layer))
                 self.assertEqual(layer['displayKind'], 'shared-structure')
                 self.assertNotIn('authorizesIdentity', layer)
 
     def test_real_factory_four_mode_native_warm_sources_need_no_filesystem(self):
-        import tempfile
-        from client_imported_activation import activate_context
-        from client_imported_providers import SUPPORTED_CAPABILITIES, build_imported_engine_factories
-        from client_paths import RuntimePaths
-        from imported_resource_archive import save_archive
-        from resource_transaction import resource_runtime_lease
         for season, mode in (('s0', 'nightmare'), ('s0', 'difficult'), ('s1', 'nightmare'), ('s1', 'difficult')):
             with self.subTest(season=season, mode=mode):
-                temporary = tempfile.TemporaryDirectory(prefix='managed-display-native-')
-                self.addCleanup(temporary.cleanup)
-                paths = RuntimePaths(Path(temporary.name).resolve(), False)
-                resolver = ResourceResolver(paths.imported_resource_root, supported_capabilities=SUPPORTED_CAPABILITIES)
-                raw, _ = self.archive(season, mode)
-                archive = Path(temporary.name) / 'fixture.zip'
-                archive.write_bytes(raw)
-                refs = {ref.component_id: ref for ref in save_archive(archive, resolver.root).component_refs}
-                with resource_runtime_lease(resolver.root):
-                    activate_context(resolver, paths, refs['base'], refs['controls'], season=season, mode=mode)
-                factories = build_imported_engine_factories(resolver, paths)
-                engine = factories.get_engine(mode, season)
+                engine, _, _, _, _ = self.original_context(season, mode)
                 key = next(iter(engine.qt_shared_provider.versions))
                 if (season, mode) == ('s0', 'nightmare'):
                     provider = engine.qt_shared_provider
@@ -507,9 +631,6 @@ class DisplayGuardConsumptionTests(unittest.TestCase):
                 self.assertNotIn('authorizesIdentity', again)
 
 
-import test_client_local_identity_commit as local_identity
-
-
 from contextlib import contextmanager, ExitStack
 
 
@@ -524,20 +645,39 @@ def no_display_resource_io():
         yield
 
 
-class NativeMaterialRuntimeConsumptionTests(unittest.TestCase):
-    """Real mixed native pool/local lock/display/solve; only numerical sensors and OS input supplied."""
-    setUpClass = local_identity.LocalIdentityCommitTests.__dict__['setUpClass']
-    setUp = local_identity.LocalIdentityCommitTests.setUp
-    opening = local_identity.LocalIdentityCommitTests.opening
-    drain_race = local_identity.LocalIdentityCommitTests.drain_race
+@contextmanager
+def count_instance_method_calls(instance, method_name):
+    """Observe actual calls without replacing a method used by owner proofs."""
+    import sys
+    method = getattr(type(instance), method_name)
+    code = method.__code__
+    calls = []
+    previous = sys.getprofile()
+    def profile(frame, event, arg):
+        if (event == 'call' and frame.f_code is code
+                and frame.f_locals.get('self') is instance):
+            calls.append(frame.f_lineno)
+        if previous is not None:
+            previous(frame, event, arg)
+    sys.setprofile(profile)
+    try:
+        yield calls
+    finally:
+        sys.setprofile(previous)
 
-    def test_factory_cold_read_keeps_full_proofs_then_warm_uses_actual_ram_metadata(self):
+
+class NativeMaterialRuntimeConsumptionTests(OriginalDisplayContextMixin, unittest.TestCase):
+    """Original-layout resource lifetime and managed native display RAM."""
+    def setUp(self):
+        self.engine, self.factories, _, _, _ = self.original_context('s0', 'difficult')
+        self.target = 'difficult-map-23'
+
+    def test_factory_cold_read_decodes_original_reference_then_warm_uses_actual_ram_metadata(self):
         provider = self.engine.qt_shared_provider
         provider._cache.clear()
-        controls = provider._operation_owners.controls_view
-        with patch.object(controls, '_load', wraps=controls._load) as proofs:
+        with count_instance_method_calls(provider.resources, 'load') as loads:
             layer = prepare_display_layer(self.engine, self.target, '1', 'shared-structure')
-        self.assertEqual(proofs.call_count, 2)
+        self.assertEqual(len(loads), 1, 'the original typed source is decoded on the first cold display')
         reference = next(value for key, value in provider._cache.items() if key[1] == self.target and key[3] == '1')
         with no_display_resource_io():
             self.assertTrue(shared_structure_display_current(self.engine, self.target, '1', layer))
@@ -550,6 +690,7 @@ class NativeMaterialRuntimeConsumptionTests(unittest.TestCase):
             rebuilt = prepare_display_layer(self.engine, self.target, '1', 'shared-structure')
             self.assertIsNot(rebuilt['pixels'], layer['pixels'])
             self.assertTrue(shared_structure_display_current(self.engine, self.target, '1', layer))
+        self.assertEqual(len(loads), 1, 'warm identity keeps the actual loader method and stays in RAM')
 
     def test_managed_ram_rejects_actual_base_controls_source_cache_and_revision_replacement(self):
         from client_providers import DisplayResourceChanged
@@ -585,7 +726,7 @@ class NativeMaterialRuntimeConsumptionTests(unittest.TestCase):
     def test_actual_managed_catalog_update_invalidates_old_warm_display(self):
         from client_providers import DisplayResourceChanged
         from client_imported_activation import _wire
-        from client_imported_providers import build_native_engine
+        from client_imported_providers import SUPPORTED_CAPABILITIES, build_native_engine
         from imported_resource_activation import activate_catalog_locked
         from imported_resource_selection import inspect_selection
         from resource_transaction import resource_write_lock
@@ -599,7 +740,9 @@ class NativeMaterialRuntimeConsumptionTests(unittest.TestCase):
             contexts={key: {role: _wire(ref) for role, ref in row.items()}
                 for key, row in snapshot.contexts.items()}, displays=[_wire(ref) for ref in snapshot.displays])
         def validate(proposed):
-            inspection = inspect_selection(resolver.root, proposed)
+            inspection = inspect_selection(resolver.root, proposed,
+                supported_capabilities=SUPPORTED_CAPABILITIES,
+                project_registry_refs=resolver.project_registry_refs)
             build_native_engine(inspection.views[owners.base_view.component_ref],
                 inspection.views[owners.controls_view.component_ref], paths,
                 season='s0', mode='difficult', require_rank=False)
@@ -641,88 +784,9 @@ class NativeMaterialRuntimeConsumptionTests(unittest.TestCase):
         finally:
             reference.path.write_bytes(original)
 
-    def test_factory_known_map_reopen_consumes_warm_display_without_resource_io(self):
-        import client_route_preferences as preferences
-        result = self.opening()
-        self.assertTrue(result['success'], result)
-        first = self.runtime.render_payload(result['renderToken'])
-        self.assertTrue(self.runtime.snapshot()['identityLocked'])
-        self.runtime.dispatch('close_map')
-        actual_layer, actual_current = self.runtime._display_layer, preferences.shared_structure_display_current
-        calls = []
-
-        def layer(*args, **kwargs):
-            with no_display_resource_io():
-                value = actual_layer(*args, **kwargs)
-            calls.append('prepare')
-            return value
-
-        def current(*args, **kwargs):
-            with no_display_resource_io():
-                value = actual_current(*args, **kwargs)
-            calls.append('publish')
-            return value
-
-        with patch.object(self.runtime, '_display_layer', side_effect=layer), \
-             patch.object(preferences, 'shared_structure_display_current', side_effect=current), \
-             patch.object(self.engine, 'qt_structure_scan', side_effect=AssertionError('known-map scan repeated')):
-            reopened = self.opening()
-        self.assertTrue(reopened['success'], reopened)
-        row = self.runtime.render_payload(reopened['renderToken'])
-        self.assertEqual(calls.count('prepare'), 1)
-        self.assertGreaterEqual(calls.count('publish'), 1)
-        self.assertIs(row['pixels'], first['pixels'])
-        self.assertEqual(row['resourceIdentity'], first['resourceIdentity'])
-        np.testing.assert_array_equal(row['matrix'], first['matrix'])
-
-    def test_actual_solve_progressive_final_and_locked_reopen_share_cached_rgba(self):
-        from copy import deepcopy
-        import threading
-        from structure_pose_solver import PreparedStructurePoseSolver
-        from test_client_structure_unification import supported_pose
-        provider = self.engine.qt_shared_provider
-        provider._cache.clear()
-        pending, conversions, contiguous = [], [], np.ascontiguousarray
-        offer_progressive, published = [False], threading.Event()
-
-        def event(row):
-            if row['event'] == 'render-ready' and row.get('reason') == 'current-frame-review-pending':
-                pending.append(self.runtime.render_payload(row['token']))
-                published.set()
-        self.runtime.set_event_callback(event)
-
-        def fit(host, *args, **kwargs):
-            first = deepcopy(supported_pose())
-            if offer_progressive[0]:
-                host._offer_usable_fit(first)
-                self.assertTrue(published.wait(5), 'real runtime must consume the offered pending pose')
-            return first
-
-        def count_color(array, *args, **kwargs):
-            if array.ndim == 3 and array.shape[-1] == 4:
-                conversions.append(True)
-            return contiguous(array, *args, **kwargs)
-
-        with patch.object(PreparedStructurePoseSolver, 'fit', fit), \
-             patch.object(display, 'structure_display_layer', wraps=display.structure_display_layer) as raster, \
-             patch.object(np, 'ascontiguousarray', side_effect=count_color):
-            result = self.opening()
-            self.assertTrue(result['success'], result)
-            self.assertTrue(self.runtime.snapshot()['identityLocked'])
-            final = self.runtime.render_payload(result['renderToken'])
-            cached = self.runtime._display_layer(self.engine, self.target, '1', 'shared-structure')
-            self.assertEqual(final['reviewStatus'], 'complete')
-            self.assertIs(final['pixels'], cached['rgbaPixels'])
-            self.runtime.dispatch('close_map')
-            offer_progressive[0] = True
-            with patch.object(self.engine, 'qt_structure_scan',
-                    side_effect=AssertionError('locked reopen must not restart catalogue scan')):
-                reopened = self.opening()
-            self.assertTrue(reopened['success'], reopened)
-            row = self.runtime.render_payload(reopened['renderToken'])
-            self.assertEqual(pending[0]['reviewStatus'], 'pending')
-            self.assertIs(pending[0]['pixels'], cached['rgbaPixels'])
-            self.assertEqual(row['reviewStatus'], 'complete')
-            self.assertIs(row['pixels'], cached['rgbaPixels'])
-        self.assertEqual(raster.call_count, 1)
-        self.assertEqual(len(conversions), 1)
+    # Retired P3-only coverage: `test_factory_known_map_reopen_consumes_warm_display_without_resource_io`
+    # asserted `qt_structure_scan` call suppression, and
+    # `test_actual_solve_progressive_final_and_locked_reopen_share_cached_rgba`
+    # injected PreparedStructurePoseSolver.fit/supported_pose. The original donor
+    # has no P3 scan/fit seam. Actual original-layout rank/fit is covered by its
+    # donor resource-flow tests; display RAM/currentness remains covered above.

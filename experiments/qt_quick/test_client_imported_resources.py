@@ -19,7 +19,7 @@ from client_imported_providers import SUPPORTED_CAPABILITIES, build_imported_eng
 from client_live_runtime import LiveRuntime
 from client_paths import RuntimePaths
 from client_session import SessionService
-from test_export_s0_difficult_native_base_package import S0DifficultSourceFixture
+from original_qt_resource_fixtures import OriginalS0DifficultSourceFixture as S0DifficultSourceFixture
 
 
 def resource_zip(path, *, source, payload=None, version='v1'):

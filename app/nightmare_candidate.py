@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 import os
 import stat
 import sys
@@ -59,7 +60,8 @@ def imread_unicode(path: Path, flags: int = cv2.IMREAD_COLOR) -> np.ndarray | No
 
 class NightmareSourceCandidateStore:
     """Load provenance-bound PNG candidates without treating labels as IDs."""
-    def __init__(self, resource_root):
+    def __init__(self, resource_root, *, read_resource=None):
+        self.read_resource=read_resource
         self.resource_root=Path(resource_root)
         self.index_path=self.resource_root/'references/nightmare-source-candidate-index.json'
         self.entries={}
@@ -72,7 +74,7 @@ class NightmareSourceCandidateStore:
         self._rgba_lock=threading.RLock()
         self._runtime_bindings={}
         try:
-            payload=json.loads(self.index_path.read_text(encoding='utf8'))
+            payload=json.loads(self.index_path.read_text(encoding='utf8') if read_resource is None else read_resource(self.index_path))
             if payload.get('schemaVersion')!=1:raise ValueError('unsupported source-candidate index')
             self.feature_store=payload.get('featureStore')
             rows=payload.get('entries') or []
@@ -109,7 +111,9 @@ class NightmareSourceCandidateStore:
         with self._rgba_lock:
             cached=self._rgba_cache.get(key)
             if cached is not None:return cached
-        image=imread_unicode(self.resource_root/Path(row['resourcePath']),cv2.IMREAD_UNCHANGED)
+        path=self.resource_root/Path(row['resourcePath'])
+        image=(imread_unicode(path,cv2.IMREAD_UNCHANGED) if self.read_resource is None else
+               cv2.imdecode(np.frombuffer(self.read_resource(path),np.uint8),cv2.IMREAD_UNCHANGED))
         if image is None or image.ndim!=3 or image.shape[2]!=4:return None
         if image.shape[:2]!=tuple(reversed(row['canvasPx'])):return None
         with self._rgba_lock:
@@ -217,7 +221,7 @@ class NightmareSourceCandidateStore:
                         featureMaxEdge=config.get('maxEdge'),runtimeMaxEdge=int(max_edge))
                     return {},dict(self._sift_feature_status)
                 path=self.resource_root/relative
-                with np.load(path,allow_pickle=False) as archive:
+                with np.load(path if self.read_resource is None else BytesIO(self.read_resource(path)),allow_pickle=False) as archive:
                     metadata=json.loads(str(archive['metadata'].item()))
                     if any(metadata.get(key)!=value for key,value in config.items() if key!='path'):
                         raise ValueError('feature-store metadata mismatch')
@@ -1285,11 +1289,11 @@ def side_door_candidate_pool(
 class NightmarePack:
     mode='nightmare'
     floors=('1','2','B1')
-    def __init__(self, manifest_path: Path = DEFAULT_MANIFEST, *, resource_root: Path | None = None) -> None:
+    def __init__(self, manifest_path: Path = DEFAULT_MANIFEST, *, read_resource=None) -> None:
         self.manifest_path = Path(manifest_path)
-        raw = json.loads(self.manifest_path.read_text(encoding="utf-8"))
-        self.resource_root=Path(resource_root) if resource_root is not None else self.manifest_path.parent.parent
-        self.source_candidates=NightmareSourceCandidateStore(self.resource_root)
+        raw = json.loads(self.manifest_path.read_text(encoding="utf-8") if read_resource is None else read_resource(self.manifest_path))
+        self.resource_root=self.manifest_path.parent.parent
+        self.source_candidates=NightmareSourceCandidateStore(self.resource_root, read_resource=read_resource)
         configured = os.environ.get("IDENTITYV_NIGHTMARE_MAPS")
         bundled = USER_ROOT / "assets" / "nightmare-maps"
         # A producer's sourceRoot is provenance for resource-root manifests,
@@ -1318,7 +1322,7 @@ class NightmarePack:
             resource_base = item.get("resourceBase", "source-root")
             if resource_base not in {"source-root", "resource-root"}:
                 raise ValueError(f"unsupported nightmare resource base: {resource_base}")
-            root = self.resource_root if resource_base == "resource-root" else self.source_root
+            root = self.manifest_path.parent.parent if resource_base == "resource-root" else self.source_root
             self.maps.append(NightmareMap(
                 id=item["id"], name=item["name"], direction=item["direction"],
                 door_count=int(item["doorCount"]), shape=item["shape"],

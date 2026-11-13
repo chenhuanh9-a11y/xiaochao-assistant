@@ -343,13 +343,8 @@ class SideDoorRecognizer:
         marked_poster_path: Path | None = None,
         *, read_resource=None,
     ) -> None:
-        if read_resource is not None and marked_poster_path is not None:
-            raise ValueError('entry-reader-marked-poster-unsupported')
         self.read_resource = read_resource
         data = json.loads(vision_index_path.read_text(encoding="utf-8") if read_resource is None else read_resource(vision_index_path))
-        if read_resource is not None:
-            from side_entry_geometry import _bounded_list
-            _bounded_list(data.get('sideDoors', []), 4096, 'exit references')
         icon = data["exitIcon"]
         self.exit_icon = np.frombuffer(base64.b64decode(icon["pixels"]), np.uint8).reshape(icon["height"], icon["width"])
         self.references = []
@@ -375,7 +370,7 @@ class SideDoorRecognizer:
             ))
         self._repair_known_reference_anchors(vision_index_path)
         self.taxonomy_by_map: dict[str, dict] = {}
-        if taxonomy_path and (read_resource is not None or taxonomy_path.exists()):
+        if taxonomy_path and taxonomy_path.exists():
             taxonomy = json.loads(taxonomy_path.read_text(encoding="utf-8") if read_resource is None else read_resource(taxonomy_path))
             grouped: dict[str, list[dict]] = {}
             for record in taxonomy.get("records", []):
@@ -418,15 +413,11 @@ class SideDoorRecognizer:
             if not references:
                 continue
             path = vision_index_path.parent / f"{map_id}.webp"
-            if self.read_resource is not None:
-                image = cv2.imdecode(np.frombuffer(self.read_resource(path), dtype=np.uint8), cv2.IMREAD_COLOR)
-                if image is None:
-                    raise ValueError('invalid side-door reference image')
-            else:
-                try:
-                    image = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR)
-                except OSError:
-                    image = None
+            try:
+                data = np.fromfile(path, dtype=np.uint8) if self.read_resource is None else np.frombuffer(self.read_resource(path), dtype=np.uint8)
+                image = cv2.imdecode(data, cv2.IMREAD_COLOR)
+            except OSError:
+                image = None
             if image is None:
                 continue
             map_mask, room_mask = map_room_color_masks(image)

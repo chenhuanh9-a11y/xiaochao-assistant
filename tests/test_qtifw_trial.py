@@ -207,6 +207,64 @@ class TrialTests(unittest.TestCase):
         self.assertEqual(policy['mapPackages'], [])
         self.assertNotIn('_internal/references/base.json', policy['files'])
 
+    def test_upgrade_release_builder_keeps_program_only_projection_and_retired_map_entries(self):
+        import xml.etree.ElementTree as ET
+        stage, record, source = program_only_stage(self.scope)
+        build_record = self.scope / 'freeze-record.json'
+        build_record.write_text(json.dumps(record), encoding='utf8')
+        output, ifw = self.scope / 'upgrade-release', self.scope / 'ifw'
+        ifw.mkdir()
+        (ifw / 'installerbase.exe').write_bytes(b'synthetic installer base, never run')
+        def git(*args):
+            return source['commit'] if args == ('rev-parse', 'HEAD') else ''
+        def external_compiler(command, **kwargs):
+            # Only external compilers are replaced. Exact freeze validation,
+            # inventory, stage, XML, scripts and bootstrap layout remain real.
+            executable = Path(command[0]).name
+            if 'PyInstaller' in command:
+                helper = output / 'helper/qtifw-trial-helper'
+                helper.mkdir(parents=True)
+                (helper / 'qtifw-trial-helper.exe').write_bytes(b'synthetic helper')
+            elif executable == 'repogen.exe':
+                repository = Path(command[-1])
+                repository.mkdir()
+                (repository / 'Updates.xml').write_text('<Updates />')
+            elif executable == 'binarycreator.exe':
+                path = Path(kwargs['cwd']) / 'update.rcc' if '-rcc' in command else Path(command[-1])
+                path.write_bytes(b'synthetic output, never run')
+            elif executable == 'ISCC.exe':
+                (output / ('星图-' + record['version']['version'] + '-Setup.exe')).write_bytes(b'synthetic wrapper')
+            else:
+                self.fail('unexpected external command: ' + executable)
+            return subprocess.CompletedProcess(command, 0)
+        compiler = self.scope / 'ISCC.exe'
+        compiler.touch()
+        args = ['build-qtifw', '--stage', str(stage), '--build-record', str(build_record),
+                '--ifw-bin', str(ifw), '--output', str(output), '--release', '--upgrade-capable',
+                '--iscc', str(compiler)]
+        with patch.object(sys, 'argv', args), patch.object(builder.build, '_git', side_effect=git), \
+             patch.object(builder.build, 'source_identity', return_value=source), \
+             patch.object(builder.build, 'verify_invoker_manifest', return_value=None), \
+             patch.object(builder.subprocess, 'run', side_effect=external_compiler), redirect_stdout(StringIO()):
+            builder.main()
+        policy = json.loads((output / 'qtifw-trial-policy.json').read_bytes())
+        self.assertTrue(policy['upgradeCapable'])
+        self.assertEqual(policy['targetVersion'], record['version'])
+        self.assertEqual(policy['mapPackages'], [])
+        self.assertNotIn('scope', policy)
+        self.assertFalse(any('managed-base-resources' in name or name.endswith('/base.json') for name in policy['files']))
+        for package in (builder.PACKAGE, builder.DATA_PACKAGE):
+            metadata = ET.parse(output / 'packages' / package / 'meta/package.xml').getroot()
+            self.assertEqual(metadata.findtext('Version'), record['version']['version'])
+        component = (output / 'packages' / builder.PACKAGE / 'meta/component.js').read_text(encoding='utf8')
+        self.assertNotIn('install-maps', component)
+        self.assertIn('TrialUpgradeActive', component)
+        self.assertTrue((output / 'helper/qtifw-trial-helper/boot/repository/Updates.xml').is_file())
+        self.assertTrue((output / 'helper/qtifw-trial-helper/boot/update.rcc').is_file())
+        receipt = json.loads((output / 'qtifw-build-record.json').read_bytes())
+        self.assertEqual(receipt['payloadSource'], source['commit'])
+        self.assertFalse(receipt['installed'])
+
     @unittest.skipUnless(os.name == "nt", "Win32 per-install Run entry")
     def test_uninstall_disables_own_run_entry_even_if_watcher_exe_is_missing(self):
         from game_startup import WATCHER_NAME, MAIN_NAME, set_enabled, enabled

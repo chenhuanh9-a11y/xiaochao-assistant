@@ -31,7 +31,13 @@ Qt 交互沿用持久页面和稳定卡片 ID：重复点击当前页/标签应�
 
 ## 四模式与资源独立化计划
 
-S0/S1 困难、噩梦的当前调用清单、必要例外、统一架构、基础资源外置、分阶段实施和分层验收见 [四模式识别、贴合与资源导入统一方案](unified-recognition-resources-plan.md)。该文档区分已核实的现状与待实现目标，不表示运行链已统一或完成实机验收。
+S0/S1 困难、噩梦的资源外置及此前整合设计见 [四模式识别、贴合与资源导入统一方案](unified-recognition-resources-plan.md)。其中整合识别、竞态和 prepared solver 的设计属于历史方案；当前运行链按下面的原分支实现维护。
+
+识别、贴合、楼层判断与轻提示恢复到 `codex/qt-csharp-grid-20261110` 的 `d7063612fc847067f58b71940071228721d79fe0`。默认程序入口使用 C# 网格候选搜索；Python 继续执行原分支的识别、精化和最终接受/拒绝。实际入口由 Qt Session worker 的 C# request scope 进入 `client_live_runtime.LiveRuntime` 及其原 `_AlignmentHost`；S0 噩梦使用原 `MapIdentityEngine`，其余模式使用原 `NativeDifficultCandidateEngine` 和原 S1 scanner。`RecognitionRace`、direct/local structure recognition、`StructurePoseSolver` 与 prepared inputs 不参与默认生产调用链；保留的历史单元或辅助定义不能作为接回它们的理由。C# 服务失败拒绝当前请求，后续请求可重新启动服务，没有自动切回 Python 网格的策略。
+
+`client_original_providers` 和 original base/control loader 只负责将独立组件内的原始资源、参数和坐标交给上述原实现，并保留资源当前性及取消保护。基础包使用 `xingtu-original-qt-base-v1` 入口、原 typed/legacy 结构和原 fast 数据；作者图仍为独立显示组件。旧整合基础包保留在仓库时不会继续取得可用模式资格，须导入适配的新基础包及其对应路线包。模式、地图、楼层或资源变化的失效与 Qt 启动、页面、安装删除职责继续使用现有产品壳；正常及构造中途退出均在 Session worker 排空后关闭唯一 C# owner。
+
+当前 Windows 回归以此用户要求为范围：旧 race/direct/local/prepared 求解、normalized 基础包、可任意注入像素算法参数及 proposal-only 编排的历史测试不再代表产品要求。其源码保留用于历史对照，不计入当前通过数。独立资源、显示缓存、事务、取消和后台队列测试须迁移真实 original 包 fixture；不能随算法一起退掉。`test_original_qt_resource_flow` 验证实际导出、保存、启用和工厂，楼层资源当前性由 `test_imported_s0_observation.OriginalS0ControlsLifecycleTests` 验证，C# 原数值组件及请求生命周期由 `test_hybrid_grid_backend`、`test_qt_csharp_grid_runtime` 验证。复杂度与派生资源校验属于资源准入，不能移进每帧求解。定向回归通过不等于历史全库测试、GUI、游戏、安装或性能目标通过。
 
 ## 贴合速度与可靠显示的验收口径
 

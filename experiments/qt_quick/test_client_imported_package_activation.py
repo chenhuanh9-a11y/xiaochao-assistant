@@ -10,18 +10,18 @@ import zipfile
 
 import client_imported_activation as activation
 import client_imported_activation_plan as planning
-from client_imported_providers import (ImportedProviderUnavailable, SUPPORTED_CAPABILITIES,
+from client_imported_providers import (SUPPORTED_CAPABILITIES,
                                        build_imported_engine_factories)
 from client_paths import RuntimePaths
-from imported_native_base import decode_native_base
+from imported_original_base import decode_original_base
 from imported_resource_archive import save_archive
 from imported_resource_activation import activate_catalog_locked
 from imported_resource_catalog import ResourceCatalogError, ResourceResolver, SCHEMA
 from imported_resource_packages import PackageView
 from imported_resource_selection import inspect_selection
 from resource_transaction import resource_runtime_lease, resource_write_lock
-import test_export_s0_difficult_native_base_package as difficult_fixture
-from s0_nightmare_group_source_fixture import S0NightmareGroupSourceFixture
+from original_qt_resource_fixtures import (OriginalS0DifficultSourceFixture,
+    OriginalS0NightmareSourceFixture)
 
 
 def _encoded(value):
@@ -35,9 +35,9 @@ class ImportedPackageActivationTests(unittest.TestCase):
         cls.source_temp = tempfile.TemporaryDirectory(prefix='package-activation-producers-')
         cls.addClassCleanup(cls.source_temp.cleanup)
         source_root = Path(cls.source_temp.name).resolve()
-        nightmare = S0NightmareGroupSourceFixture(source_root / 'nightmare')
+        nightmare = OriginalS0NightmareSourceFixture(source_root / 'nightmare')
         cls.nightmare_zip = nightmare.export()['output']
-        hard = difficult_fixture.S0DifficultSourceFixture(source_root / 'difficult')
+        hard = OriginalS0DifficultSourceFixture(source_root / 'difficult')
         hard.export()
         cls.difficult_zip = hard.output
 
@@ -141,9 +141,9 @@ class ImportedPackageActivationTests(unittest.TestCase):
         for row in catalog['contexts'].values():
             self.assertEqual(set(row), {'recognitionBase', 'controls', 'reviewedGroups'})
 
-        nightmare_bundle = decode_native_base(PackageView(self.root, self.nightmare['base']),
+        nightmare_bundle = decode_original_base(PackageView(self.root, self.nightmare['base']),
             season='s0', mode='nightmare')
-        difficult_bundle = decode_native_base(PackageView(self.root, self.difficult['base']),
+        difficult_bundle = decode_original_base(PackageView(self.root, self.difficult['base']),
             season='s0', mode='difficult')
         self.assertEqual(len(nightmare_bundle.pack.maps), 26)
         self.assertEqual(len(difficult_bundle.pack.maps), 30)
@@ -165,10 +165,9 @@ class ImportedPackageActivationTests(unittest.TestCase):
             ('s0', 'difficult', bad['base'], bad['controls']),
         )
         with resource_runtime_lease(self.root):
-            with self.assertRaises(ImportedProviderUnavailable) as caught:
+            with self.assertRaisesRegex(ValueError, 'original-controls-floor-context-mismatch'):
                 activation.activate_contexts(self.resolver, self.paths, contexts)
 
-        self.assertIn('controls-base-floors-mismatch', caught.exception.resource_gaps)
         self.assertFalse((self.root / 'catalog.json').exists())
         self.assertFalse((self.root / 'transactions' / 'pending-catalog.json').exists())
         after = self.resolver.snapshot()

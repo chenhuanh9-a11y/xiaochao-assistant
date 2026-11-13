@@ -25,6 +25,7 @@ from PySide6.QtTest import QTest
 
 import client
 from client_paths import WORK_ROOT
+from original_qt_resource_fixtures import OriginalS0DifficultSourceFixture
 
 
 class ImportedResourceStartupTests(unittest.TestCase):
@@ -50,8 +51,7 @@ class ImportedResourceStartupTests(unittest.TestCase):
             legacy.parent.mkdir(parents=True)
             legacy.write_bytes(b'{"legacy":"must remain untouched"}')
             import zipfile
-            from test_export_s0_difficult_native_base_package import S0DifficultSourceFixture
-            source = S0DifficultSourceFixture(root / 'source')
+            source = OriginalS0DifficultSourceFixture(root / 'source')
             source.export()
             bad_zip, good_zip = root / 'old.zip', source.output
             with zipfile.ZipFile(bad_zip, 'w') as archive:

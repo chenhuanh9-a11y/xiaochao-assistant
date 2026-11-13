@@ -20,6 +20,7 @@ from imported_resource_packages import ComponentRef
 from imported_resource_selection import inspect_selection
 from resource_transaction import resource_runtime_lease, resource_write_lock
 import test_export_s1_native_base_package as source_fixture
+from original_qt_resource_fixtures import OriginalS1SourceFixture
 
 
 def _wire(ref):
@@ -55,7 +56,7 @@ class ImportedS1ActivationTests(unittest.TestCase):
     def setUpClass(cls):
         temporary = tempfile.TemporaryDirectory(prefix='s1-activation-source-')
         cls.addClassCleanup(temporary.cleanup)
-        cls.source = source_fixture.S1NativeBaseSourceFixture(Path(temporary.name).resolve())
+        cls.source = OriginalS1SourceFixture(Path(temporary.name).resolve())
         cls.source.export()
 
     def setUp(self):
@@ -138,13 +139,12 @@ class ImportedS1ActivationTests(unittest.TestCase):
             self.assertNotIn('automaticFloorEligible', report['floorObservation'])
             self.assertEqual(report['floorObservation']['automaticFloors'], [-1, -2, -3, -4])
             self.assertEqual(report['floorObservation']['sourceReplayFloors'], [-1, -2, -3, -4])
-            self.assertFalse(engine.side_entry_identity.semantic_side_entries)
-            self.assertIsNone(engine.side_entry_identity.exit_icon_path)
+            self.assertFalse(engine.qt_native_base.semantic_side_entries)
             self.assertFalse(engine.side_entry_identity.side_doors)
             self.assertFalse(engine.side_entry_identity.side_search)
-            self.assertIsNone(engine.qt_s1_private_coordinate_prepare)
-            self.assertIsNone(engine.qt_s1_pose_prior)
-            self.assertIsNone(engine.qt_logical_group_registry)
+            self.assertTrue(callable(engine.qt_s1_private_coordinate_prepare))
+            self.assertTrue(callable(engine.qt_s1_pose_prior))
+            self.assertIsNotNone(engine.qt_logical_group_registry)
 
             with patch.object(engine.entry_identity, 'rank',
                               side_effect=AssertionError('legacy entry rank used')), \

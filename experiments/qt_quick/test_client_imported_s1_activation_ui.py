@@ -19,6 +19,7 @@ from client_session import SessionService
 from imported_resource_catalog import ResourceResolver
 from test_client_live_runtime import FixtureCapture
 import test_export_s1_native_base_package as source_fixture
+from original_qt_resource_fixtures import OriginalS1SourceFixture
 
 
 class ImportedS1ActivationUiTests(unittest.TestCase):
@@ -30,7 +31,7 @@ class ImportedS1ActivationUiTests(unittest.TestCase):
         cls.app = existing or QGuiApplication([])
         temporary = tempfile.TemporaryDirectory(prefix='s1-activation-ui-source-')
         cls.addClassCleanup(temporary.cleanup)
-        cls.source = source_fixture.S1NativeBaseSourceFixture(Path(temporary.name).resolve())
+        cls.source = OriginalS1SourceFixture(Path(temporary.name).resolve())
         cls.source.export()
 
     def setUp(self):

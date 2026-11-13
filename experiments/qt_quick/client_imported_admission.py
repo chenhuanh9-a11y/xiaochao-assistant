@@ -18,7 +18,11 @@ def _context_base(snapshot, season, mode, *, cancelled=None, validated=None):
             continue
         reader = ComponentResourceReader(view)
         entrypoint = view.component['entrypoint']
-        reader.json(entrypoint)
+        entry = reader.json(entrypoint)
+        if view.component['type'] == 'recognition-base':
+            from imported_original_base import SCHEMA
+            if entry.get('schema') != SCHEMA:
+                raise ResourceCatalogError('original-qt-base-required')
         for relative in view.inventory:
             files._check_cancelled(cancelled)
             if relative != entrypoint:

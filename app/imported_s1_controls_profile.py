@@ -11,7 +11,6 @@ from floor_contract import FloorContract, floor_contract
 from floor_control_region import normalized_region
 from imported_resource_packages import PackageView
 from imported_resource_reader import decode_resource_json
-from s1_map_ui_geometry import MapUiGeometryParameters
 import star_map_import as files
 
 
@@ -23,6 +22,14 @@ MAX_SHAPE_SIZES = 32
 _FIELDS = frozenset(('schema', 'detectorId', 'contexts', 'fixedSearchRegion',
                      'expandedSearchRegion', 'mapUi'))
 _SHAPES = frozenset(('close', 'plus', 'minus'))
+
+
+@dataclass(frozen=True)
+class MapUiGeometryParameters:
+    """Data-only external declaration; the original observer owns decisions."""
+    search: object
+    sizes: tuple[float, ...]
+    minimum_correlation: object
 
 
 def _reject(reason):

@@ -71,7 +71,7 @@ def _bank():
     return bank, label_array
 
 
-def classify_label(patch, *, selected, templates=None):
+def classify_label(patch, *, selected):
     """Digit-anchored gray NCC preserves all soft pixels left of the digit.
 
     Never crop to a detected sign component: blur could make that component
@@ -103,21 +103,10 @@ def classify_label(patch, *, selected, templates=None):
     image = cv2.GaussianBlur(image,(0,0),.5)
     vector = image.ravel()-image.mean()
     vector /= max(1e-9,float(np.linalg.norm(vector)))
-    if templates is None:
-        bank, labels = _bank()
-        label_values = LABELS
-        family = TEMPLATE_FAMILY
-    else:
-        # Imported profiles supply the same complete competitor set. Keeping
-        # this as a structural interface avoids making the offline generator
-        # depend on package IO or importing the profile decoder.
-        bank = templates.vectors
-        labels = templates.labels
-        label_values = templates.label_values
-        family = templates.family
+    bank, labels = _bank()
     # Explicit contraction avoids a large thread pool for these tiny matches.
     matches = np.einsum('ij,j->i',bank,vector,optimize=False)
-    scores = {label:float(matches[labels==label].max()) for label in label_values}
+    scores = {label:float(matches[labels==label].max()) for label in LABELS}
     # A visible thin minus can lose NCC weight after pixel quantization while
     # the numeral remains crisp. Keep its independent same-polarity geometry
     # rather than allowing the stronger unsigned glyph to erase it.
@@ -131,8 +120,8 @@ def classify_label(patch, *, selected, templates=None):
     # -1 merely because those are the only two S0 row semantics.
     if len(signs) > 1 or len(signs) != len(marks):
         return None
-    eligible = tuple(label for label in label_values if label<0) if signs else label_values
+    eligible = tuple(label for label in LABELS if label<0) if signs else LABELS
     best = max(eligible,key=scores.get)
     return dict(label=best, scores=scores, digitAspect=float(dw/dh),
                 digitCenterY=float(dy+(dh-1)/2),
-                family=family)
+                family=TEMPLATE_FAMILY)

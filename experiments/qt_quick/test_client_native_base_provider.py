@@ -11,28 +11,33 @@ import numpy as np
 
 from client_imported_providers import build_imported_engine_factories, build_native_engine
 from client_paths import RuntimePaths
-from imported_native_base import decode_native_base
+from imported_original_base import decode_original_base
 from imported_resource_activation import activate_catalog_locked
 from imported_resource_archive import save_archive
 from imported_resource_catalog import ResourceResolver
 from imported_resource_selection import inspect_selection
 from resource_transaction import resource_write_lock
-import test_imported_native_base as base_fixture
+from client_imported_providers import SUPPORTED_CAPABILITIES
+from original_qt_resource_fixtures import OriginalS0NightmareSourceFixture
 
 
 class NativeBaseProviderTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        base_fixture.ImportedNativeBaseTests.setUpClass()
-        cls.addClassCleanup(base_fixture.ImportedNativeBaseTests.doClassCleanups)
+        import tempfile
+        source_temp = tempfile.TemporaryDirectory(prefix='original-s0n-provider-source-')
+        cls.addClassCleanup(source_temp.cleanup)
+        cls.source = OriginalS0NightmareSourceFixture(Path(source_temp.name))
+        cls.source.export()
 
     def setUp(self):
         import tempfile
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.paths = RuntimePaths(Path(temporary.name).resolve(), False)
-        self.resolver = ResourceResolver(self.paths.imported_resource_root)
-        saved = save_archive(base_fixture.ImportedNativeBaseTests.archive, self.resolver.root)
+        self.resolver = ResourceResolver(self.paths.imported_resource_root,
+            supported_capabilities=SUPPORTED_CAPABILITIES)
+        saved = save_archive(self.source.output, self.resolver.root)
         self.refs = {ref.component_id: ref for ref in saved.component_refs}
         self.factories = build_imported_engine_factories(self.resolver, self.paths)
 
@@ -46,7 +51,9 @@ class NativeBaseProviderTests(unittest.TestCase):
         def validate(proposed):
             # Use the prospective views, including the second validation while
             # catalog publication is pending; no old active resolver fallback.
-            inspection = inspect_selection(self.resolver.root, proposed)
+            inspection = inspect_selection(self.resolver.root, proposed,
+                supported_capabilities=self.resolver.supported_capabilities,
+                project_registry_refs=self.resolver.project_registry_refs)
             engine = build_native_engine(inspection.views[self.refs['base']],
                 inspection.views[self.refs['controls']], self.paths)
             self.assertTrue(engine.qt_native_base.ready)
@@ -57,6 +64,7 @@ class NativeBaseProviderTests(unittest.TestCase):
 
     def test_default_factory_builds_actual_typed_engine_and_structural_display(self):
         from difficult_native_identity import NativeDifficultCandidateEngine
+        from map_identity_engine import MapIdentityEngine
         from client_route_preferences import prepare_display_layer
         self.activate()
         with patch('client_providers.EngineFactories._build', side_effect=AssertionError('legacy build entered')):
@@ -64,65 +72,56 @@ class NativeBaseProviderTests(unittest.TestCase):
         report = self.factories.capabilities()['nightmare']
         self.assertTrue(report['available'], report)
         engine = self.factories.get_engine('nightmare')
-        self.assertIsInstance(engine, NativeDifficultCandidateEngine)
-        self.assertEqual(report['inventory']['typedLayers'], 3)
+        self.assertIsInstance(engine, MapIdentityEngine)
+        self.assertNotIsInstance(engine, NativeDifficultCandidateEngine)
+        self.assertEqual(report['inventory']['typedLayers'], 78)
         self.assertEqual(engine.qt_controls_profile.for_context('s0', 'nightmare').contract.floor_id_for(-1), 'B1')
-        self.assertIsNone(engine.native_similarity_index)
-        self.assertIs(engine.qt_logical_group_registry, engine.qt_native_base.reviewed_front_groups)
-        self.assertIsNotNone(engine.qt_logical_group_registry)
-        self.assertEqual(engine.qt_logical_group_registry.file_ref.component, self.refs['base'])
+        self.assertEqual(engine.native_similarity_index.groups, ())
+        self.assertEqual(len(engine.qt_logical_group_registry.groups), 3)
         self.assertIsNone(engine.qt_optional_displays)
-        self.assertIsNone(engine.memory_store.portable_seed_path)
+        self.assertTrue(Path(engine.memory_store.portable_seed_path).is_relative_to(
+            self.resolver.root))
+        # The restored donor deliberately disables portable exemplars in a
+        # source/private profile. It must not create a stand-in seed file.
+        from client_providers import PRODUCTION
+        self.assertEqual(engine.memory_store.portable_seed_path.name,
+            'nightmare-portable-layout-seeds.json' if PRODUCTION else '.qt-no-portable-seeds.json')
+        if not PRODUCTION:
+            self.assertFalse(engine.memory_store.portable_seed_path.exists())
         self.assertEqual(engine.memory_store.root, self.paths.memory_root('nightmare'))
         self.assertFalse(engine.memory_store.root.exists(), 'construction wrote personal data')
-        layer = prepare_display_layer(engine, 'fixture-map', '1', 'wang-qingxin')
+        map_id = next(iter(engine.pack.by_id))
+        layer = prepare_display_layer(engine, map_id, '1', 'shared-structure')
         self.assertEqual(layer['effectiveProfileId'], 'shared-structure')
         self.assertEqual(layer['pixels'].shape, (8, 8, 4))
         np.testing.assert_array_equal(layer['matrixDisplayToReference'], np.eye(3))
-        self.assertEqual(engine.pack.identity_profiles['fixture-map'], 'zhan10-speed')
+        self.assertEqual(engine.pack.identity_profiles[map_id], 'zhan10-speed')
 
-    def test_old_package_without_registration_does_not_fall_back_to_program_groups(self):
-        from imported_group_registry import INTERFACE, RESOURCE_PATH
-        members = dict(base_fixture.ImportedNativeBaseTests.members)
-        context_path = 'data/base/resource-context.json'
-        context = json.loads(members[context_path])
-        context['runtimeInterfaces'].pop(INTERFACE)
-        members[context_path] = json.dumps(context).encode('utf-8')
-        members.pop('data/base/' + RESOURCE_PATH)
-        manifest = json.loads(members['manifest.json'])
-        manifest['resourceVersion'] = 'without-reviewed-groups'
-        manifest['files'] = [row for row in manifest['files']
-                             if (row['componentId'], row['path']) != ('base', RESOURCE_PATH)]
-        for row in manifest['files']:
-            raw = members[f"data/{row['componentId']}/{row['path']}"]
-            row.update(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
-        members['manifest.json'] = json.dumps(manifest).encode('utf-8')
-        archive_path = self.paths.installation_root / 'without-reviewed-groups.zip'
-        with zipfile.ZipFile(archive_path, 'x') as archive:
-            for name, raw in members.items():
-                archive.writestr(name, raw)
-        saved = save_archive(archive_path, self.resolver.root)
-        self.refs = {ref.component_id: ref for ref in saved.component_refs}
+    def test_donor_front_group_selection_is_exact_and_scoped_to_floor_and_entrance(self):
         self.activate()
         engine = self.factories.get_engine('nightmare')
-        self.assertTrue(engine.qt_native_base.ready)
-        self.assertIsNone(engine.qt_native_base.reviewed_front_groups)
-        self.assertIsNone(engine.qt_logical_group_registry)
+        registry = engine.qt_logical_group_registry
+        group = registry.group_for('nightmare-04', floor='1', entrance_kind='front')
+        self.assertEqual(group['memberIds'], ('nightmare-04', 'nightmare-12', 'nightmare-19'))
+        self.assertIsNone(registry.group_for('nightmare-01', floor='1', entrance_kind='front'))
+        self.assertIsNone(registry.group_for('nightmare-04', floor='2', entrance_kind='front'))
+        self.assertIsNone(registry.group_for('nightmare-04', floor='1', entrance_kind='side'))
+        registry.validate(group, engine.qt_shared_provider)
 
     def test_missing_to_activated_and_later_catalog_generation_rebuilds_cache(self):
         self.factories.prepare_context('nightmare')
         self.assertFalse(self.factories.capabilities()['nightmare']['available'])
         self.activate()
-        with patch('imported_native_base.decode_native_base', wraps=decode_native_base) as decode:
+        with patch('imported_original_base.decode_original_base', wraps=decode_original_base) as decode:
             first = self.factories.get_engine('nightmare')
             self.assertIs(self.factories.get_engine('nightmare'), first)
             self.assertEqual(decode.call_count, 1)
         self.activate()
         with self.assertRaisesRegex(ValueError, 'superseded'):
-            first.qt_shared_provider('shared-structure', 'fixture-map', '1')
+            first.qt_shared_provider('shared-structure', 'nightmare-01', '1')
         second = self.factories.get_engine('nightmare')
         self.assertIsNot(first, second)
-        self.assertIsNotNone(second.qt_shared_provider('shared-structure', 'fixture-map', '1'))
+        self.assertIsNotNone(second.qt_shared_provider('shared-structure', 'nightmare-01', '1'))
 
     def test_catalog_change_after_build_rejects_its_late_available_result(self):
         from client_providers import ProviderUnavailable
@@ -217,19 +216,25 @@ class NativeBaseProviderTests(unittest.TestCase):
             with self.subTest(target=target):
                 self.factories.invalidate()
                 state = dict(decoded=False, raised=False)
+                calls = []
                 def decode(*args, **kwargs):
-                    bundle = decode_native_base(*args, **kwargs)
+                    bundle = decode_original_base(*args, **kwargs)
                     state['decoded'] = True
                     return bundle
                 def read(reader, path):
+                    calls.append((state['decoded'], Path(path).name))
                     if state['decoded'] and not state['raised'] and Path(path).name == target:
                         state['raised'] = True
                         raise PermissionError()
                     return original(reader, path)
-                with patch('imported_native_base.decode_native_base', side_effect=decode), \
+                with patch('imported_original_base.decode_original_base', side_effect=decode), \
                      patch.object(ComponentResourceReader, '__call__', read):
-                    with self.assertRaisesRegex(ProviderUnavailable, 'native-entry-construction-failed'):
+                    try:
                         self.factories.get_engine('nightmare')
+                    except ProviderUnavailable as error:
+                        self.assertIn('original-entry-index-unavailable', str(error))
+                    else:
+                        self.fail(f'failed entry read was accepted; state={state}, calls={calls}')
                 self.assertTrue(state['raised'])
                 self.assertFalse(self.factories.capabilities()['nightmare']['available'])
                 self.assertNotIn('s0:nightmare', self.factories._engines)

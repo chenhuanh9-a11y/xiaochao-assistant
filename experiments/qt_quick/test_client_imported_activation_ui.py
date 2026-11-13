@@ -22,7 +22,7 @@ from client_live_runtime import LiveRuntime
 from client_paths import RuntimePaths
 from client_session import SessionService
 from imported_resource_catalog import ResourceResolver
-import test_imported_native_base as base_fixture
+from original_qt_resource_fixtures import OriginalNightmareBaseFixture
 from test_client_live_runtime import FixtureCapture
 
 
@@ -30,8 +30,8 @@ class ImportedActivationUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QGuiApplication.instance() or QGuiApplication([])
-        base_fixture.ImportedNativeBaseTests.setUpClass()
-        cls.addClassCleanup(base_fixture.ImportedNativeBaseTests.doClassCleanups)
+        OriginalNightmareBaseFixture.setUpClass()
+        cls.addClassCleanup(OriginalNightmareBaseFixture.doClassCleanups)
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='resource-activation-ui-')
@@ -73,7 +73,7 @@ class ImportedActivationUiTests(unittest.TestCase):
         # Prepare dormant history through storage. Product import now also
         # activates; these cases specifically exercise explicit switch/retry.
         from imported_resource_archive import save_archive
-        archive = base_fixture.ImportedNativeBaseTests.archive
+        archive = OriginalNightmareBaseFixture.archive
         save_archive(archive, self.resolver.root)
         self.service.listPackages()
         self.wait()
@@ -83,7 +83,7 @@ class ImportedActivationUiTests(unittest.TestCase):
         return self.service.packageRows[0]['key']
 
     def test_product_import_activates_nightmare_base_and_controls_without_second_action(self):
-        archive = base_fixture.ImportedNativeBaseTests.archive
+        archive = OriginalNightmareBaseFixture.archive
         self.service.importArchive(QUrl.fromLocalFile(str(archive)).toString())
         self.wait()
         self.assertFalse(self.errors, self.errors)
@@ -220,13 +220,18 @@ class ImportedActivationUiTests(unittest.TestCase):
         self.assertTrue(self.errors)
         self.assertTrue(self.service.recoveryRequired)
         self.assertFalse(self.service.pendingWrites)
-        self.assertFalse(self.changes)
+        # Pending publication blocks consumption and invalidates old UI/cache
+        # owners even though the attempted activation did not succeed.
+        self.assertEqual(self.changes, [True])
+        from imported_resource_catalog import ResourceCatalogError
+        with self.assertRaises(ResourceCatalogError):
+            self.resolver.snapshot()
         self.service.requestRecovery()
         self.wait()
         self.assertFalse(self.service.recoveryRequired)
         self.assertFalse((self.resolver.root / 'transactions/pending-catalog.json').exists())
         self.assertFalse((self.resolver.root / 'catalog.json').exists())
-        self.assertEqual(self.changes, [True])
+        self.assertEqual(self.changes, [True, True])
 
     def test_actual_qml_button_activates_the_saved_package(self):
         key = self.save()

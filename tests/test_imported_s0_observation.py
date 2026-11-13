@@ -241,5 +241,73 @@ class ImportedS0ObservationTests(unittest.TestCase):
                                      corrupted, controls=controls))
 
 
+class OriginalS0ControlsLifecycleTests(unittest.TestCase):
+    """Current source observer plus real external owner, without P3 parameters.
+
+    ImportedS0ObservationTests above records the retired arbitrary-parameter
+    detector. The current observer accepts only the donor controls contract.
+    """
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+
+    def profile(self):
+        import json
+        from export_native_base_package import _controls_payloads
+        payloads = _controls_payloads('nightmare')
+        document = json.loads(payloads['profile.json'])
+        document['contexts'].update(json.loads(_controls_payloads('difficult')['profile.json'])['contexts'])
+        vectors, labels = _bank()
+        package = ProfilePackage(Path(self.temp.name), entrypoint=document,
+            vectors=vectors, labels=labels)
+        return package, S0ControlsProfile(package.view)
+
+    def test_original_parameters_preserve_independent_pixel_observation_in_both_modes(self):
+        from s0_vertical_controls import _observe_s0_map_original
+        _, controls = self.profile()
+        for mode in ('nightmare', 'difficult'):
+            with self.subTest(mode=mode):
+                frame = s0_bright(mode, 1)
+                expected, expected_read = _observe_s0_map_original(frame, mode)
+                actual, read = observe_s0_map(frame, mode, controls=controls)
+                self.assertTrue(actual['detected'], (actual, read))
+                self.assertEqual(actual['floor'], '1')
+                self.assertEqual(actual, expected)
+                self.assertEqual(read, expected_read)
+
+    def test_changed_manifest_after_original_pixels_rejects_the_result(self):
+        import s0_vertical_controls as detector
+        package, controls = self.profile()
+        original = detector._observe_s0_map_original
+        def change_after_pixels(*args, **kwargs):
+            result = original(*args, **kwargs)
+            self.assertTrue(result[0]['detected'], result)
+            manifest = package.package_root / 'manifest.json'
+            manifest.write_bytes(manifest.read_bytes() + b' ')
+            return result
+        with patch.object(detector, '_observe_s0_map_original', side_effect=change_after_pixels):
+            with self.assertRaisesRegex(ValueError, 'manifest-changed'):
+                observe_s0_map(s0_bright('nightmare'), 'nightmare', controls=controls)
+
+    def test_stale_owner_fails_before_original_pixels(self):
+        package, controls = self.profile()
+        manifest = package.package_root / 'manifest.json'
+        manifest.write_bytes(manifest.read_bytes() + b' ')
+        with patch('s0_vertical_controls._observe_s0_map_original',
+                   side_effect=AssertionError('stale controls reached pixels')):
+            with self.assertRaisesRegex(ValueError, 'manifest-changed'):
+                observe_s0_map(s0_bright('nightmare'), 'nightmare', controls=controls)
+
+    def test_parameter_or_context_change_cannot_silently_select_another_observer(self):
+        _, controls = self.profile()
+        with patch('s0_vertical_controls._observe_s0_map_original',
+                   side_effect=AssertionError('unqualified controls reached pixels')):
+            with self.assertRaisesRegex(ValueError, 'original-controls-floor-context-mismatch'):
+                observe_s0_map(s0_bright('nightmare'), 'nightmare', season='s1', controls=controls)
+            controls.fixed_search_region = (.1, .1, .2, .2)
+            with self.assertRaisesRegex(ValueError, 'original-controls-parameters-not-source-equivalent'):
+                observe_s0_map(s0_bright('nightmare'), 'nightmare', controls=controls)
+
+
 if __name__ == "__main__":
     unittest.main()

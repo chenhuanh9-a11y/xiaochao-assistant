@@ -66,7 +66,9 @@ def bound_owner(policy, target):
     target = scoped(policy, target)
     owner = json.loads(_safe(target / OWNER).read_text(encoding="utf-8"))
     if owner.get("instance") != policy["instance"] or owner.get("payloadSource") != policy["payloadSource"]:
-        raise ValueError("trial-owner-mismatch")
+        from qtifw_upgrade import accepts_previous_owner
+        if not accepts_previous_owner(policy, target, owner):
+            raise ValueError("trial-owner-mismatch")
     if policy.get("allowNewTargets") and os.path.normcase(owner.get("target", "")) != os.path.normcase(str(target)):
         raise ValueError("trial-owner-target-mismatch")
     return target, owner
@@ -82,6 +84,11 @@ def owned_program(policy, target):
                 or name.casefold().startswith("work/")):
             raise ValueError("invalid-program-inventory")
         path = _safe(target / "program" / relative)
+        for parent in path.parents:
+            if parent == target:
+                break
+            if parent.exists() and not parent.is_dir():
+                raise ValueError("program-parent-not-directory")
         if path.exists():
             info = path.stat()
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
@@ -231,14 +238,22 @@ def receipt(policy, target, name, value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("check-target", "prepare", "verify-program", "verify", "disable-watcher", "inspect-data", "hold-uninstall", "select-data", "undo-data", "noop", "data", "pause", "fail"))
+    parser.add_argument("action", choices=("bootstrap-check", "bootstrap-run", "check-target", "prepare", "verify-program", "verify", "disable-watcher", "inspect-data", "hold-uninstall", "select-data", "undo-data", "noop", "data", "pause", "fail"))
     parser.add_argument("target", type=Path)
     parser.add_argument("choice", nargs="?", default="keep")
     parser.add_argument("operation", nargs="?", default="none", choices=("none", "purge"))
+    parser.add_argument("--result-file", type=Path)
     args = parser.parse_args()
     policy = json.loads(Path(__file__).with_name("qtifw-trial-policy.json").read_text(encoding="utf-8"))
     try:
-        if args.action == "check-target":
+        if args.action in {"bootstrap-check", "bootstrap-run"}:
+            from qtifw_upgrade import check, run
+            result = check(policy, args.target) if args.action == "bootstrap-check" else run(policy, args.target)
+            if args.result_file:
+                args.result_file.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+            print(json.dumps(result, ensure_ascii=True))
+            return 10 if args.action == "bootstrap-check" and result["mode"] == "update" else 0
+        elif args.action == "check-target":
             # Browsing/validation must not create the target, marker or receipt.
             print(json.dumps(check_target(policy, args.target), ensure_ascii=True))
             return 0
@@ -318,6 +333,8 @@ def main():
         print(json.dumps(result, ensure_ascii=True))
         return 0
     except (ValueError, OSError, KeyError) as error:
+        if args.result_file:
+            args.result_file.write_text(json.dumps(dict(success=False, reason=str(error)), ensure_ascii=False), encoding="utf-8")
         if args.action in {"data", "undo-data", "verify", "verify-program"}:
             try:
                 name = "data" if args.action in {"data", "undo-data"} else args.action

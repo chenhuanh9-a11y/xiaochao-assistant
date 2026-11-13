@@ -17,6 +17,7 @@ from imported_resource_archive import save_archive
 from imported_resource_packages import PackageView
 import star_map_import as files
 import test_export_s1_native_base_package as base_fixture
+from original_qt_resource_fixtures import OriginalS1SourceFixture
 import test_export_s0_difficult_native_base_package as difficult_fixture
 
 
@@ -41,7 +42,7 @@ class _AuthorDisplayFixture(unittest.TestCase):
     def setUpClass(cls):
         temporary = tempfile.TemporaryDirectory(prefix='display-base-source-')
         cls.addClassCleanup(temporary.cleanup)
-        cls.source = base_fixture.S1NativeBaseSourceFixture(Path(temporary.name))
+        cls.source = OriginalS1SourceFixture(Path(temporary.name))
         cls.source.export()
 
     def setUp(self):

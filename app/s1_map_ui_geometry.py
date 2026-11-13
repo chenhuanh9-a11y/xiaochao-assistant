@@ -7,9 +7,7 @@ No single edge, color region, numeral or prior observation can satisfy this.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from functools import lru_cache
-from typing import Mapping
 
 import cv2
 import numpy as np
@@ -21,14 +19,6 @@ SEARCH = {'close': (.92, .02, .99, .18), 'plus': (.92, .25, .99, .46),
           'minus': (.92, .66, .99, .86)}
 SIZES = (.024, .026, .028, .030, .032, .034, .036, .038)
 MIN_CORRELATION = {'close': .62, 'plus': .65, 'minus': .65}
-
-
-@dataclass(frozen=True)
-class MapUiGeometryParameters:
-    """Validated search bounds, scale fractions and score thresholds."""
-    search: Mapping[str, tuple[float, float, float, float]]
-    sizes: tuple[float, ...]
-    minimum_correlation: Mapping[str, float]
 
 
 @lru_cache(maxsize=96)
@@ -70,10 +60,8 @@ def _glyph_contrasts(patch, kind):
     return [background-float(p[horizontal].mean()), background-float(p[vertical].mean())]
 
 
-def _match(gray, width, viewport, kind, floor_right, parameters=None):
-    roi=(SEARCH if parameters is None else parameters.search)[kind]
-    sizes=SIZES if parameters is None else parameters.sizes
-    minimum=(MIN_CORRELATION if parameters is None else parameters.minimum_correlation)[kind]
+def _match(gray, width, viewport, kind, floor_right):
+    roi=SEARCH[kind]
     x0=max(floor_right,round(viewport.left+roi[0]*viewport.width))
     y0=round(viewport.top+roi[1]*viewport.height)
     x1=round(viewport.left+roi[2]*viewport.width)
@@ -82,7 +70,7 @@ def _match(gray, width, viewport, kind, floor_right, parameters=None):
     if image.size==0:
         return None
     candidates=[]
-    for fraction in sizes:
+    for fraction in SIZES:
         size=max(12,round(width*fraction))
         if size>=min(image.shape):
             continue
@@ -92,7 +80,7 @@ def _match(gray, width, viewport, kind, floor_right, parameters=None):
         # translation variants of one icon are merged below.
         for _ in range(8):
             _,score,_,where=cv2.minMaxLoc(scores)
-            if not np.isfinite(score) or score<minimum:
+            if not np.isfinite(score) or score<MIN_CORRELATION[kind]:
                 break
             x,y=where;patch=image[y:y+size,x:x+size]
             contrasts=_glyph_contrasts(patch,kind)
@@ -104,7 +92,7 @@ def _match(gray, width, viewport, kind, floor_right, parameters=None):
             radius=max(1,round(size*.65))
             scores[max(0,y-radius):y+radius+1,max(0,x-radius):x+radius+1]=-1
         else:
-            if float(scores.max())>=minimum:
+            if float(scores.max())>=MIN_CORRELATION[kind]:
                 return None
     distinct=[]
     for candidate in sorted(candidates,key=lambda item:item['score'],reverse=True):
@@ -124,26 +112,21 @@ def _rail(gray, width, plus, minus, floor_right):
     if end<=start:
         return None
     middle=round((xp+xm)/2);half=max(1,round(.002*width));side=max(half+1,round(.010*width))
-    radius=round(.005*width)
-    left=max(0,middle-radius-side-half)
-    right=min(gray.shape[1],middle+radius+side+half+1)
-    band=gray[start:end,left:right].astype(np.float32)
+    band=gray[start:end].astype(np.float32)
     best=None
     for x in range(middle-round(.005*width),middle+round(.005*width)+1):
         if x-side-half<floor_right or x+side+half>=gray.shape[1]:
             continue
-        local=x-left
-        center=band[:,local-half:local+half+1].mean(axis=1)
-        left_values=band[:,local-side-half:local-side+half+1].mean(axis=1)
-        right_values=band[:,local+side-half:local+side+half+1].mean(axis=1)
-        support=float((center-np.maximum(left_values,right_values)>=12).mean())
+        center=band[:,x-half:x+half+1].mean(axis=1)
+        left=band[:,x-side-half:x-side+half+1].mean(axis=1)
+        right=band[:,x+side-half:x+side+half+1].mean(axis=1)
+        support=float((center-np.maximum(left,right)>=12).mean())
         if best is None or support>best['support']:
             best=dict(support=support,x=x,startY=start,endY=end)
     return best if best is not None and best['support']>=.85 else None
 
 
-def observe_s1_map_ui_geometry(frame, *, floor_search_right=.92, minimum_height=600, parameters=None,
-                                excluded_bounds=()):
+def observe_s1_map_ui_geometry(frame, *, floor_search_right=.92, minimum_height=600):
     """Finite per-frame evidence only; no map/floor/runtime authority here.
 
     S1 retains its 600px default. S0 may pass its independently replayed
@@ -157,33 +140,17 @@ def observe_s1_map_ui_geometry(frame, *, floor_search_right=.92, minimum_height=
         return dict(verified=False,reason='s1-map-ui-size-unsupported')
     viewport=centered_safe_viewport((width,height))
     scale_width=viewport.width
-    if (type(floor_search_right) not in (int,float) or not 0<=floor_search_right<=1):
-        return dict(verified=False,reason='s1-map-ui-search-boundary-invalid')
     right=round(viewport.left+scale_width*floor_search_right)
-    if not 0<=right<width:
-        return dict(verified=False,reason='s1-map-ui-empty-search-band')
     # Isolate bytes before *all* preprocessing. Blurring the full frame would
     # let floor pixels across the boundary change external shape evidence.
     # Keep global coordinates, but never sample or convolve the floor ROI.
-    band=np.array(frame[:,right:],copy=True,order='C') if excluded_bounds else np.ascontiguousarray(frame[:,right:])
-    if not band.size:
-        return dict(verified=False,reason='s1-map-ui-empty-search-band')
-    for bounds in excluded_bounds:
-        if (not isinstance(bounds,(tuple,list)) or len(bounds)!=4
-                or any(type(value) is not int for value in bounds)):
-            return dict(verified=False,reason='s1-map-ui-exclusion-invalid')
-        x0,y0,x1,y1=bounds
-        if not (0<=x0<x1<=width and 0<=y0<y1<=height):
-            return dict(verified=False,reason='s1-map-ui-exclusion-invalid')
-        start,end=max(right,x0)-right,min(width,x1)-right
-        if start<end:
-            band[y0:y1,start:end]=0
+    band=np.ascontiguousarray(frame[:,right:])
     gray=np.zeros((height,width),np.uint8)
     gray[:,right:]=cv2.GaussianBlur(cv2.cvtColor(band,cv2.COLOR_BGR2GRAY),
                                   (0,0),max(1,scale_width/1920))
     shapes={}
     for kind in ('close','plus','minus'):
-        shape=_match(gray,scale_width,viewport,kind,right,parameters)
+        shape=_match(gray,scale_width,viewport,kind,right)
         if shape is None:
             return dict(verified=False,reason='s1-map-ui-'+kind+'-unverified',shapes=shapes)
         shapes[kind]=shape

@@ -13,27 +13,50 @@ import export_author_display_component as display_exporter
 import generic_author_package
 import imported_resource_archive as archives
 from client_imported_browse import imported_home_rows, load_imported_browse_context
-from client_imported_providers import SUPPORTED_CAPABILITIES
+from client_imported_providers import SUPPORTED_CAPABILITIES, build_native_engine
+from client_paths import RuntimePaths
 from difficult_entry_identity import MapEntryGeometryIdentity
 from difficult_side_entry_identity import MapLocalEntryIdentity
 from imported_resource_activation import activate_catalog_locked
 from imported_resource_catalog import ResourceResolver, SCHEMA
 from imported_resource_packages import PackageView
 from imported_resource_selection import inspect_selection
+from imported_resource_archive import save_archive
 from resource_transaction import resource_write_lock
 import star_map_import as files
+from original_qt_resource_fixtures import (OriginalS0DifficultSourceFixture,
+    OriginalS0NightmareSourceFixture, OriginalS1SourceFixture)
 import test_export_author_display_component_modes as source_modes
 
 
 class ImportedBrowseModeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # Reuse the producer test's complete class-level synthetic source/base
-        # preparation. It exports S0N, S0D and S1N exactly once and is imported
-        # as a module so unittest does not discover or rerun its TestCase.
-        source_modes.AuthorDisplayComponentModeTests.setUpClass()
-        cls.addClassCleanup(source_modes.AuthorDisplayComponentModeTests.doClassCleanups)
-        cls.bases = source_modes.AuthorDisplayComponentModeTests.bases
+        temporary = tempfile.TemporaryDirectory(prefix='original-browse-producers-')
+        cls.addClassCleanup(temporary.cleanup)
+        root = Path(temporary.name).resolve()
+        producers = {
+            's0n': (OriginalS0NightmareSourceFixture(root / 's0n'), 's0', 'nightmare'),
+            's0d': (OriginalS0DifficultSourceFixture(root / 's0d'), 's0', 'difficult'),
+            's1n': (OriginalS1SourceFixture(root / 's1n', mode='nightmare'), 's1', 'nightmare'),
+        }
+        cls.bases = {}
+        for key, (source, season, mode) in producers.items():
+            source.export()
+            cls.bases[key] = cls._install_base(source.output, root / ('installed-' + key), season, mode)
+
+    @staticmethod
+    def _install_base(archive, resource_root, season, mode):
+        saved = save_archive(archive, resource_root)
+        refs = {ref.component_id: ref for ref in saved.component_refs}
+        base_view = PackageView(resource_root, refs['base'])
+        controls_view = PackageView(resource_root, refs['controls'])
+        paths = RuntimePaths((Path(resource_root) / 'install').resolve(), False)
+        engine = build_native_engine(base_view, controls_view, paths,
+            season=season, mode=mode, require_rank=False)
+        return dict(archive=Path(archive), resource_root=Path(resource_root),
+            ref=refs['base'], controls_ref=refs['controls'], view=base_view,
+            base=engine.qt_native_base, engine=engine, season=season, mode=mode)
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='imported-browse-mode-')
@@ -215,7 +238,7 @@ class ImportedBrowseModeTests(unittest.TestCase):
 
     def test_s0_nightmare_browse_reads_only_the_selected_component(self):
         info = self.bases['s0n']
-        self._browse_success('s0n', 'fixture-map', '1')
+        self._browse_success('s0n', next(iter(info['base'].pack.by_id)), '1')
 
     def test_s0_difficult_browse_keeps_legacy_map29_as_a_gap(self):
         info = self.bases['s0d']
@@ -267,7 +290,7 @@ class ImportedBrowseModeTests(unittest.TestCase):
                 self.assertEqual(metadata['staticAcceptance'], 'working-draft-not-batch-accepted')
                 self.assertFalse(metadata['authorizesMapIdentity'])
                 self.assertFalse(metadata['authorizesStructureValidation'])
-        self.assertFalse(info['base'].rank_ready)
+        self.assertTrue(info['base'].rank_ready)
         self.assertEqual(resolver.snapshot().catalog_stamp, before)
 
     def test_remaining_modes_without_author_return_real_structure_home_rows(self):

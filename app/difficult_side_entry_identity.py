@@ -15,53 +15,26 @@ class MapLocalEntryIdentity:
     def __init__(self, root, *, route_loader=None, shared_reference_provider=None, geometry_provider=None, author_visible_provider=None,
                  mode='difficult', profile_id='zhan10-speed', floors=('1','2'),
                  exit_icon_path=None, structure_store=None, profile_for_map=None,
-                 read_resource=None, typed_index_path=None, semantic_side_entries=True,
-                 passport_source_available=True):
-        if type(semantic_side_entries) is not bool:
-            raise TypeError('semantic_side_entries-must-be-bool')
-        if type(passport_source_available) is not bool:
-            raise TypeError('passport_source_available-must-be-bool')
+                 read_resource=None, typed_index_path=None):
+        self.read_resource = read_resource
         self.root = Path(root)
         self.mode = mode
         self.profile_id = profile_id
         self.profile_for_map = profile_for_map or (lambda map_id: self.profile_id)
         self.floors = tuple(floors)
-        self.semantic_side_entries = semantic_side_entries
-        self.passport_source_available = passport_source_available
-        self.exit_icon_path = (Path(exit_icon_path) if exit_icon_path is not None else
-                               self.root.parent / 'difficult-exit-icon.json') if semantic_side_entries else None
+        self.exit_icon_path = Path(exit_icon_path) if exit_icon_path is not None else self.root.parent / 'difficult-exit-icon.json'
         self.route_loader = route_loader
-        self.read_resource = read_resource
         self.shared_reference_provider = shared_reference_provider
         self.geometry_provider = geometry_provider
         self.author_visible_provider = author_visible_provider
-        if structure_store is None:
-            if read_resource is not None:
-                raise ValueError('entry-reader-requires-structure-store')
-            from author_structure_resources import AuthorStructureResourceStore
-            structure_store = AuthorStructureResourceStore(self.root / 'index.json', self.root)
-        self.structures = structure_store
+        from author_structure_resources import AuthorStructureResourceStore
+        self.structures = structure_store if structure_store is not None else AuthorStructureResourceStore(self.root / 'index.json', self.root)
         path = self.root / 'side-entries.json'
         payload = json.loads(path.read_text(encoding='utf8') if read_resource is None else read_resource(path))
         if payload.get('schemaVersion') != 1 or payload.get('mode') != self.mode or payload.get('profileId') != self.profile_id:
             raise ValueError('entry index mode/profile mismatch')
         self.semantic_gaps = payload['semanticGaps']
         self.entries = []
-        if read_resource is not None:
-            from side_entry_geometry import _bounded_list, _bounded_points
-            _bounded_list(payload['entries'], 256, 'side entries')
-            total_turns = 0
-            for item in payload['entries']:
-                turns = _bounded_list(item['turns'], 1024, 'side turns')
-                total_turns += len(turns)
-                if total_turns > 65536:
-                    raise ValueError('entry-resource-complexity: side turns total')
-                for turn in turns:
-                    _bounded_points([turn['point']], 1, 'side turn point')
-                    if len(_bounded_points(turn['rays'], 2, 'side turn rays')) != 2 or type(turn['next']) is not int:
-                        raise ValueError('invalid side turn shape')
-                for gate in _bounded_list(item.get('gates', []), 64, 'side gates'):
-                    _bounded_points([gate['center']], 1, 'side gate center')
         for item in payload['entries']:
             points = np.asarray([t['point'] for t in item['turns']], float).reshape(-1, 2)
             rays = np.asarray([t['rays'] for t in item['turns']], float).reshape(-1, 2, 2)
@@ -71,69 +44,36 @@ class MapLocalEntryIdentity:
             self.entries.append((item, points, rays, pairs))
         self.registered_floors=frozenset((str(item['mapId']),str(item['floor']))
             for item,_,_,_ in self.entries)
-        if semantic_side_entries:
-            from side_entry_geometry import load_side_doors
-            self.side_doors, self.side_door_error = load_side_doors(self.root, self.entries, self.mode, self.profile_id,
-                read_resource=read_resource, typed_index_path=typed_index_path)
-            from side_entry_search import load_index
-            self.side_search, self.side_search_error = load_index(self.root, self.entries, self.side_doors,
-                read_resource=read_resource)
-        else:
-            self.side_doors, self.side_search = {}, {}
-            self.side_door_error = self.side_search_error = None
+        from side_entry_geometry import load_side_doors
+        self.side_doors, self.side_door_error = load_side_doors(self.root, self.entries, self.mode, self.profile_id,
+            read_resource=read_resource, typed_index_path=typed_index_path)
+        from side_entry_search import load_index
+        self.side_search, self.side_search_error = load_index(self.root, self.entries, self.side_doors,
+            read_resource=read_resource)
         self.passports = []
         self.entry_coverage = []
         self.passport_error = None
-        if not passport_source_available:
-            self.passport_error = 'entry-passports-source-unavailable'
-        else:
-            try:
-                path = self.root / 'entry-passports.json'
-                passport = json.loads(path.read_text(encoding='utf8') if read_resource is None else read_resource(path))
-                if (passport.get('schemaVersion'), passport.get('mode'), passport.get('profileId')) != (1, self.mode, self.profile_id):
-                    raise ValueError('entrance passport mode/profile mismatch')
-                if read_resource is not None:
-                    self._bound_passports(passport)
-                self.passports = passport['entries']
-                self.entry_coverage = passport['coverage']
-            except (OSError, ValueError, KeyError, TypeError) as error:
-                self.passport_error = str(error)
+        try:
+            path = self.root / 'entry-passports.json'
+            passport = json.loads(path.read_text(encoding='utf8') if read_resource is None else read_resource(path))
+            if (passport.get('schemaVersion'), passport.get('mode'), passport.get('profileId')) != (1, self.mode, self.profile_id):
+                raise ValueError('entrance passport mode/profile mismatch')
+            self.passports = passport['entries']
+            self.entry_coverage = passport['coverage']
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            self.passport_error = str(error)
         self._exit_recognizer = None
-
-    @staticmethod
-    def _bound_passports(passport):
-        from side_entry_geometry import _bounded_list, _bounded_points, _bounded_wall_lines
-        _bounded_list(passport['coverage'], 256, 'passport coverage')
-        for item in _bounded_list(passport['entries'], 1024, 'passports'):
-            _bounded_points([item['center']], 1, 'passport center')
-            _bounded_wall_lines(item['knownWallLines'], 256, 'passport walls')
-            for room in _bounded_list(item['localInstances'], 128, 'passport instances') + _bounded_list(item.get('optionalRooms', []), 64, 'optional rooms'):
-                _bounded_points(room['outline'], 256, 'passport outline')
-                _bounded_wall_lines(room.get('knownWallLines', []), 256, 'instance walls')
-                for port in _bounded_list(room.get('ports', []), 64, 'instance ports'):
-                    _bounded_points(port['points'], 64, 'port points')
 
     def has_registered_floor(self,map_id,floor):
         """Whether the shared local-structure locator has data for this floor."""
         return (str(map_id),str(floor)) in self.registered_floors
 
     def _entry_observations(self, frame, *, context=None):
-        shared = getattr(self, 'observation_dependencies', None)
-        if shared is not None and shared.owns(frame):
-            bounds = context.get('observationBounds') if context is not None else None
-            return shared.get(('exit-observations', None if bounds is None else tuple(bounds)),
-                lambda: self._entry_observations_uncached(frame, context=context),
-                cancelled=getattr(self, 'observation_cancelled', None))
-        return self._entry_observations_uncached(frame, context=context)
-
-    def _entry_observations_uncached(self, frame, *, context=None):
         """Reuse actual exit/rectangle primitives without altering nightmare."""
-        if not self.semantic_side_entries:
-            return []
         from side_door_recognition import SideDoorRecognizer
         from nightmare_candidate import visible_map_component, local_side_door_rectangle, live_side_door_direction
         if self._exit_recognizer is None:
-            self._exit_recognizer = SideDoorRecognizer(self.exit_icon_path, read_resource=getattr(self, 'read_resource', None))
+            self._exit_recognizer = SideDoorRecognizer(self.exit_icon_path, read_resource=self.read_resource)
         bounds = context.get('observationBounds') if context is not None else None
         if bounds is None:
             visible = visible_map_component(frame)
@@ -365,19 +305,208 @@ class MapLocalEntryIdentity:
                     coverageComplete=inventory_complete)
 
     def rank_entry(self, frame, floor=None, *, budget_seconds=None, candidate_map_ids=None):
-        """Collect resumable passport source jobs at the existing entry point."""
+        """Exit-first local competition; no full-floor pose search or identity write."""
+        from single_map_structure import current_part
         started = time.perf_counter()
         deadline = started + (2. if budget_seconds is None else max(0., float(budget_seconds)))
-        work = self.prepare_rank_entry(frame, floor, deadline=deadline, candidate_map_ids=candidate_map_ids)
-        while (job := work.next_job()) is not None:
-            if time.perf_counter() >= deadline:
-                break
-            job.run()
-        return work.finish(elapsed_ms=(time.perf_counter() - started) * 1000)
-
-    def prepare_rank_entry(self, frame, floor=None, *, deadline=None, candidate_map_ids=None):
-        from entry_passport_evidence import PassportEntryEvidence
-        return PassportEntryEvidence(self, frame, floor, deadline=deadline, candidate_map_ids=candidate_map_ids)
+        rows, examined = [], []
+        meta = dict(exitObserved=False, entryObserved=False, complete=True, verificationComplete=False,
+                    coverageComplete=False, identityAmbiguous=True, poseAmbiguous=True)
+        def finish(reason):
+            meta.update(reason=reason, elapsedMs=(time.perf_counter()-started)*1000, examined=examined)
+            return rows, meta
+        if floor is not None and str(floor) not in self.floors:
+            return finish('entry-unsupported-floor')
+        if time.perf_counter() >= deadline:
+            meta['complete'] = False
+            return finish('entry-budget-incomplete')
+        if floor is not None:
+            items = [p for p in self.passports if p['floor'] == str(floor)]
+            coverage = [c for c in self.entry_coverage if c['floor'] == str(floor)]
+            if (not items and not self.passport_error
+                and not any(c['complete'] for c in coverage)):
+                # An incomplete source inventory with no floor references
+                # cannot identify or contradict an observed entrance.
+                meta['coverageGaps'] = coverage
+                meta['exitObserved'] = None
+                meta['observationStatus'] = 'source-inventory-incomplete'
+                return finish('entry-coverage-incomplete')
+        observations = self._entry_observations(frame)
+        meta['observations'] = observations
+        exits = [o for o in observations if o['reliable']]
+        meta['exitObserved'] = bool(exits)
+        if not exits:
+            meta['verificationComplete'] = True
+            return finish('entry-no-reliable-exit')
+        coverage = [c for c in self.entry_coverage if floor is None or c['floor'] == str(floor)]
+        meta['coverageGaps'] = [c for c in coverage if not c['complete']]
+        meta['coverageComplete'] = bool(coverage and not meta['coverageGaps'] and not self.passport_error)
+        if self.passport_error:
+            return finish('entry-passport-unavailable')
+        if not meta['coverageComplete']:
+            return finish('entry-coverage-incomplete')
+        context = self._geometry(frame)
+        if context is None:
+            return finish('entry-observation-unavailable')
+        qlines = current_part(frame, context, 'lines')
+        if not qlines:
+            return finish('entry-observed-walls-insufficient')
+        route_cache = {}
+        cardinal = {'左': 'W', '右': 'E', '上': 'N', '下': 'S'}
+        for observation_id, observation in enumerate(exits):
+            rectangle = observation['rectangle']
+            direction = observation['direction']
+            if not direction.get('reliable') or not rectangle or not rectangle.get('success'):
+                meta['complete'] = False
+                examined.append(dict(observation=observation_id, reason='exit-direction-or-local-width-unresolved'))
+                continue
+            outward = cardinal[direction['direction']]
+            l, t, r, b = rectangle['bounds']
+            width = (b-t) if outward in ('E', 'W') else (r-l)
+            icon_center = np.asarray(observation['icon']['center'])
+            # Physical terminal cell centre from wall width, not enlarged
+            # author glyph size or a handselected reference pose.
+            local_center = {'W': [l+width/2, (t+b)/2], 'E': [r-width/2, (t+b)/2],
+                            'N': [(l+r)/2, t+width/2], 'S': [(l+r)/2, b-width/2]}[outward]
+            for item in self.passports:
+                if floor is not None and item['floor'] != str(floor):
+                    continue
+                if candidate_map_ids is not None and item['mapId'] not in candidate_map_ids:
+                    continue
+                if time.perf_counter() >= deadline:
+                    meta['complete'] = False
+                    return finish('entry-budget-incomplete')
+                report = dict(mapId=item['mapId'], floor=item['floor'], sourceEntryId=item['sourceEntryId'],
+                              family=item['family'], observation=observation_id)
+                examined.append(report)
+                if item['directionKnown'] and outward not in item['outwardDirections']:
+                    report['reason'] = 'source-exit-direction-incompatible'
+                    continue
+                slines = item['knownWallLines']
+                arrays = self._entry_wall_arrays(qlines, slines)
+                center = np.asarray(item['center'])
+                fit_cache, fits = {}, []
+                initial_scale = width/item['unit']
+                for ratio in (1., .97, 1.03, .94, 1.06):
+                    for anchor in (local_center, icon_center):
+                        scale = initial_scale*ratio
+                        translation = np.asarray(anchor)-scale*center
+                        # This stage estimates a LOCAL pose from observed known
+                        # passport wall planes. It is not a whole-frame verdict:
+                        # all current pixels still enter verify below, unchanged.
+                        fit = self._fit_entry_local_walls(qlines,slines,arrays,scale,translation,fit_cache)
+                        if fit is None:
+                            continue
+                        matrix = fit['matrix']
+                        # Continuous fitting must remain bound to THIS exit.
+                        anchor_error = np.linalg.norm(matrix[:2, :2]@center+matrix[:2, 2]-icon_center)
+                        if anchor_error > max(6., width*.2) or abs(matrix[0, 0]/initial_scale-1) > .08:
+                            continue
+                        fits.append(fit)
+                report['partialPoses'] = len(fits)
+                fits = self._refined_entry_fits(fits)
+                report.update(reason='local-wall-pose-candidates' if fits else 'exit-local-wall-geometry-incompatible', poses=len(fits))
+                if fits:
+                    report['localWallCorrespondenceDomain'] = dict(queryLines=qlines,sourceLines=slines)
+                    report['initialPoses'] = [dict(matrixSourceToClient=f['matrix'].tolist(),planes=f['planes']) for f in fits]
+                verified_matrices = {}
+                def build_row(fit):
+                    matrix = fit['matrix']
+                    room_evidence = self._entry_room_evidence(item, matrix, qlines, context['query'])
+                    row = dict(mapId=item['mapId'], floor=item['floor'], region=item['region'], profileId=self.profile_for_map(item['mapId']),
+                               sourceEntryId=item['sourceEntryId'], entryKind='side-entry-passport' if item['family'] == 'side' else 'main-entry-passport',
+                               score=float(len(fit['planes'])), matrixSourceToClient=matrix.tolist(), identityVerified=False,
+                               sourceProduct=item['sourceProduct'],
+                               entryEvidence=dict(sourceEntryId=item['sourceEntryId'], observationId=observation_id,
+                                                  exit=observation, directionCompatible=True,
+                                                  sourceDirectionKnown=item['directionKnown'], localGeometryVerified=room_evidence['verified'],
+                                                  roomGeometry=room_evidence,
+                                                  refinement=dict(kind='continuous-local-wall-normal-fit', planes=fit['planes'], heldOutNormals=fit['heldOutNormals'])))
+                    # Identical matrix, source entry and frame imply identical
+                    # validators. Reuse only exact equality within this item;
+                    # never reuse near-pose or previous-frame verification.
+                    key = tuple(matrix.ravel())
+                    if key not in verified_matrices:
+                        verified_matrices[key] = self.verify(frame,row,context=context,_route_cache=route_cache)
+                    row['verification'] = dict(verified_matrices[key])
+                    row['entryEvidence']['allObservedExits'] = self.check_entry_evidence(frame, row, meta)
+                    if row['entryEvidence']['allObservedExits']['contradicted']:
+                        row['verification']['success'] = False
+                        row['verification']['reason'] = 'entry-other-current-exit-contradiction'
+                    return row
+                for fit in fits:
+                    if time.perf_counter() >= deadline:
+                        meta['complete'] = False
+                        return finish('entry-budget-incomplete')
+                    chain = [fit]
+                    converged = False
+                    for iteration in range(4):
+                        if time.perf_counter() >= deadline:
+                            meta['complete'] = False
+                            return finish('entry-budget-incomplete')
+                        matrix = chain[-1]['matrix']
+                        next_fit = self._fit_entry_local_walls(qlines,slines,arrays,matrix[0,0],matrix[:2,2],fit_cache)
+                        if next_fit is None:
+                            break
+                        next_matrix = next_fit['matrix']
+                        if np.array_equal(matrix,next_matrix):
+                            converged = True
+                            break
+                        if (np.linalg.norm(next_matrix[:2,:2]@center+next_matrix[:2,2]-icon_center)>max(6.,width*.2)
+                                or abs(next_matrix[0,0]/initial_scale-1)>.08):
+                            break
+                        if any(np.array_equal(next_matrix,previous['matrix']) for previous in chain):
+                            break
+                        same_correspondence = self._entry_correspondence_extends(chain[-1],next_fit)
+                        chain.append(next_fit)
+                        if not same_correspondence:
+                            # This is a different correspondence hypothesis,
+                            # not a refinement entitled to swallow its parent.
+                            break
+                    verified_rows, verified_complete = self._verify_entry_refinement_chain(chain,converged,build_row,deadline)
+                    rows.extend(verified_rows)
+                    first = next((r for r in verified_rows if r['verification'].get('success')
+                        and r['entryEvidence'].get('localGeometryVerified')), None)
+                    if first is not None:
+                        # Speed-first: one verified entrance is actionable;
+                        # unexamined competing maps remain explicitly unknown.
+                        first['competitionComplete'] = False
+                        meta.update(complete=False, verificationComplete=False, entryObserved=True,
+                                    selectionPolicy='first-verified-entry')
+                        return finish('entry-first-verified')
+                    if not verified_complete:
+                        meta['complete'] = False
+                        return finish('entry-budget-incomplete')
+                    if len(rows) > 64:
+                        meta['complete'] = False
+                        return finish('entry-candidate-budget-incomplete')
+        # Equivalence is a post-verification statement, never a reason to skip
+        # a different pose's current-wall and actual-author verification.
+        rows, equivalent_groups = self._verified_entry_pose_groups(rows, context['observationBounds'])
+        meta['equivalentVerifiedPoseGroups'] = equivalent_groups
+        # Every locally plausible entrance competes, regardless of score.
+        possible = [r for r in rows if r['verification'].get('success')]
+        # Family is local observed/source semantics, not a backwards inference
+        # from final display success. A known entrance failing whole-frame or
+        # author verification must not masquerade as missing passport data.
+        family_rows = [r for r in rows if r['entryEvidence'].get('localGeometryVerified')
+                       and r['entryEvidence'].get('directionCompatible')
+                       and r['entryEvidence'].get('exit', {}).get('reliable')]
+        side = [r for r in family_rows if r['entryKind'] == 'side-entry-passport']
+        main = [r for r in family_rows if r['entryKind'] == 'main-entry-passport']
+        meta['entryObserved'] = bool(side and not main and meta['complete'])
+        meta['verificationComplete'] = meta['complete']
+        identities = {(r['mapId'], r['floor']) for r in possible}
+        meta['identityAmbiguous'] = len(identities) != 1
+        meta['poseAmbiguous'] = len(possible) != 1
+        for row in rows:
+            row['competitionComplete'] = meta['complete']
+            row['poseAmbiguous'] = sum(r['mapId'] == row['mapId'] and r['floor'] == row['floor'] for r in possible) > 1
+        if main or not side:
+            return finish('entry-family-unresolved')
+        if not possible and meta['complete']:
+            return finish('entry-local-verification-failed')
+        return finish('entry-local-competition' if meta['complete'] else 'entry-local-observation-incomplete')
 
     def _geometry(self, frame):
         from difficult_entry_identity import entry_geometry
@@ -390,13 +519,6 @@ class MapLocalEntryIdentity:
         return entry_geometry(frame)
 
     def _observe(self, frame):
-        shared = getattr(self, 'observation_dependencies', None)
-        if shared is not None and shared.owns(frame):
-            return shared.get(('side-observation',), lambda: self._observe_uncached(frame),
-                              cancelled=getattr(self, 'observation_cancelled', None))
-        return self._observe_uncached(frame)
-
-    def _observe_uncached(self, frame):
         from single_map_structure import current_part
         context = self._geometry(frame)
         if context is None:
@@ -425,19 +547,213 @@ class MapLocalEntryIdentity:
             return [], dict(reason='unsupported-floor', complete=True)
         if deadline <= started:
             return [], dict(reason='side-budget-incomplete', complete=False)
-        work = self.prepare_rank(frame, floor, map_id=map_id, deadline=deadline,
-                                 candidate_map_ids=candidate_map_ids)
-        while (job := work.next_job()) is not None:
-            if time.perf_counter() >= deadline:
-                break
-            job.run()
-        return work.finish(elapsed_ms=(time.perf_counter() - started) * 1000)
+        context, nodes, qpairs = self._observe(frame)
+        if len(nodes) < 4 or not len(qpairs):
+            return [], dict(reason='side-visible-structure-insufficient', complete=True,
+                            queryTurns=len(nodes), minimumQueryTurns=4, queryPairs=len(qpairs))
+        q = np.array([n['point'] for n in nodes])
+        qr = np.array([n['rays'] for n in nodes])
+        local_search = self.side_search if str(floor) == '2' and map_id is None else None
+        rows, result = self._rank_observed(frame, floor, map_id, context, q, qr, qpairs,
+                                          started, deadline, local_search,
+                                          candidate_map_ids=candidate_map_ids)
+        return rows, dict(result, sideDoorPath='door-local-index' if local_search else 'ordinary-structure',
+                          sideDoorResourceError=self.side_door_error, sideLocalIndexError=self.side_search_error)
 
-    def prepare_rank(self, frame, floor=None, *, map_id=None, deadline=None, candidate_map_ids=None,
-                     prepared_index=None):
-        from side_entry_evidence import SideEntryEvidence
-        return SideEntryEvidence(self, frame, floor, map_id=map_id, deadline=deadline,
-                                  candidate_map_ids=candidate_map_ids, prepared_index=prepared_index)
+    def _rank_observed(self, frame, floor, map_id, context, q, qr, qpairs, started, deadline, local_search=None,
+                       *, candidate_map_ids=None):
+        """Door-neighbourhood proposals with complete conservative competition.
+
+        All original source turns remain available to correspondence, continuous
+        refinement and the unchanged full-image validators. No fixed-radius crop.
+        """
+        rows, complete = [], True
+        seed_count = 0
+        search_counts = dict(localSearchMaps=0, localSeedTotal=0, outsideSeedsScreened=0,
+                             outsideSeedsRejected=0, ringEvaluations=[0, 0, 0, 0])
+        for item, source, rays, spairs in self.entries:
+            if map_id is not None and item['mapId'] != map_id:
+                continue
+            if floor is not None and item['floor'] != str(floor):
+                continue
+            if candidate_map_ids is not None and item['mapId'] not in candidate_map_ids:
+                continue
+            if time.perf_counter() >= deadline:
+                complete = False
+                break
+            if not len(spairs):
+                continue
+            prepared = (local_search or {}).get((item['mapId'], item['floor']))
+            compatible = np.min(np.sum(qr[:, None] * rays[None], axis=3), axis=2) >= .95
+            # Incompatible turns can never be hits. Keep row-major pair order
+            # while evaluating only the same orientation-compatible entries.
+            oriented_qids, oriented_sids = np.nonzero(compatible)
+            oriented_query, oriented_source = q[oriented_qids], source[oriented_sids]
+            hypotheses = []
+            seen = set()
+            if prepared is not None:
+                from side_entry_search import local_hypotheses
+                hypotheses, searched, counts = local_hypotheses(q, qpairs, compatible, source, spairs,
+                    prepared, frame.shape, item['unit'], deadline)
+                complete = complete and searched
+                seed_count += counts['exactSeedEvaluations']
+                search_counts['localSearchMaps'] += 1
+                for name in ('localSeedTotal', 'outsideSeedsScreened', 'outsideSeedsRejected'):
+                    search_counts[name] += counts[name]
+                search_counts['ringEvaluations'] = [a+b for a, b in zip(search_counts['ringEvaluations'], counts['ringEvaluations'])]
+            else:
+                # Ordinary search remains available when optional local data is
+                # absent. No current-frame icon is a prerequisite for either path.
+                deltas = source[spairs[:, 1]] - source[spairs[:, 0]]
+                denoms = np.sum(deltas*deltas, axis=1)
+                long_enough = denoms >= (.6 * item['unit']) ** 2
+            for a, b in (() if prepared is not None else qpairs):
+                if time.perf_counter() >= deadline:
+                    complete = False
+                    break
+                selected = compatible[a, spairs[:, 0]] & compatible[b, spairs[:, 1]] & long_enough
+                delta = deltas[selected]
+                scales = ((q[b]-q[a]) @ delta.T) / denoms[selected]
+                translations = q[a] - scales[:, None]*source[spairs[selected, 0]]
+                eligible = ((scales*item['unit'] >= 8) & (scales*item['unit'] <= min(frame.shape[:2])/4)
+                            & (np.linalg.norm(q[b]-q[a]-scales[:, None]*delta, axis=1) <= 3))
+                # Batch cheap residuals, preserve the original seed order and
+                # deduplication order. Expensive full correspondences are sparse.
+                for scale, translation in zip(scales[eligible], translations[eligible]):
+                    if time.perf_counter() >= deadline:
+                        complete = False
+                        break
+                    key = tuple(np.rint(np.r_[scale * item['unit'] * 4, translation / 3]).astype(int))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    seed_count += 1
+                    distances = np.linalg.norm(oriented_query - (oriented_source * scale + translation), axis=1)
+                    hits = distances <= 3
+                    hit_q, hit_s = oriented_qids[hits], oriented_sids[hits]
+                    if len(hit_q) < 4:
+                        continue
+                    unique = (np.bincount(hit_q)[hit_q] == 1) & (np.bincount(hit_s)[hit_s] == 1)
+                    pairs = np.column_stack((hit_q[unique], hit_s[unique]))
+                    if len(pairs) < 4:
+                        continue
+                    extent = np.ptp(source[pairs[:, 1]], axis=0) / item['unit']
+                    if min(extent) < 1:
+                        continue
+                    if any(np.linalg.norm(translation-h['translation']) + abs(scale-h['scale'])*item['unit'] < 3 for h in hypotheses):
+                        continue
+                    hypotheses.append(dict(scale=scale, translation=translation.tolist(), chainCount=len(pairs),
+                                           extentGrid=extent.tolist(), pairs=pairs.tolist()))
+            hypotheses.sort(key=lambda h: -h['chainCount'])
+            finalists=hypotheses[:3]
+            # Pair-generated scales inherit raster rounding. Refine the same
+            # bounded finalist set for every registered map using measured
+            # correspondences and the shared isotropic similarity model.
+            continuous=[]
+            for h in finalists:
+                pairs=np.asarray(h['pairs'])
+                for _ in range(3):
+                    src=source[pairs[:,1]];dst=q[pairs[:,0]]
+                    centered=src-src.mean(axis=0)
+                    s=float(np.sum(centered*(dst-dst.mean(axis=0)))/np.sum(centered**2))
+                    t=dst.mean(axis=0)-s*src.mean(axis=0)
+                    hits=np.linalg.norm(oriented_query-(oriented_source*s+t),axis=1)<=3
+                    hq,hs=oriented_qids[hits],oriented_sids[hits]
+                    unique=(np.bincount(hq)[hq]==1)&(np.bincount(hs)[hs]==1)
+                    updated=np.column_stack((hq[unique],hs[unique]))
+                    if len(updated)<4:break
+                    pairs=updated
+                if not 8<=s*item['unit']<=min(frame.shape[:2])/4:continue
+                continuous.append(dict(h,scale=s,translation=t.tolist(),pairs=pairs.tolist(),
+                    chainCount=len(pairs),extentGrid=(np.ptp(source[pairs[:,1]],axis=0)/item['unit']).tolist()))
+            finalists=[]
+            for h in sorted(continuous,key=lambda r:-r['chainCount']):
+                s=h['scale'];t=np.asarray(h['translation'])
+                if any(np.max(np.linalg.norm(source*(s-r['scale'])+t-r['translation'],axis=1))<=3
+                    for r in finalists):continue
+                finalists.append(h)
+            for h in finalists:
+                matched = source[np.asarray(h['pairs'])[:, 1]]
+                gates = [g for g in item['gates'] if np.min(np.linalg.norm(matched - g['center'], axis=1)) <= 12 * item['unit']]
+                s = h['scale']; x, y = h['translation']
+                rows.append(dict(mapId=item['mapId'], floor=item['floor'], region=item['region'], profileId=self.profile_for_map(item['mapId']),
+                                 entryKind='side-neighborhood' if gates else 'local-structure', score=float(h['chainCount']),
+                                 hypothesis=h, matrixSourceToClient=[[s, 0, x], [0, s, y], [0, 0, 1]],
+                                 sideGates=gates, sourceProduct=item['sourceProduct'], identityVerified=False,
+                                 evidenceScope='oriented measured wall candidates; side icon itself is not detected'))
+        rows.sort(key=lambda r: -r['score'])
+        top = rows[0]['score'] if rows else 0
+        competitors = [r for r in rows if r['score'] >= max(4, top-1)]
+        optional_door = None
+        # Structure is always first. Only a remaining strong competition can
+        # justify the existing icon cross-check, and it reuses these poses.
+        # This preserves B99's useful disambiguation without a second search.
+        if local_search and complete and top >= 6 and len(competitors) > 1 and time.perf_counter() < deadline:
+            from side_entry_geometry import observed_side_boundary
+            observed_at = time.perf_counter()
+            try:
+                observed = observed_side_boundary(self._entry_observations(frame, context=context))
+                if observed is not None:
+                    for row in rows:
+                        row['sideDoorConstraint'] = dict(door=self.side_doors[row['mapId']],
+                            observed=observed, unit=float(local_search[(row['mapId'], row['floor'])]['cell'])*12)
+                    possible = [row for row in competitors if not self._side_door_contradicted(row)]
+                    if possible and len(possible) < len(competitors):
+                        optional_door = possible
+                    else:
+                        for row in rows:row.pop('sideDoorConstraint', None)
+            except (ValueError, TypeError, KeyError, OSError, cv2.error) as error:
+                for row in rows:row.pop('sideDoorConstraint', None)
+                search_counts['sideOptionalDoorError'] = str(error)
+            search_counts['sideOptionalDoorMs'] = (time.perf_counter()-observed_at)*1000
+        verification_complete = complete
+        # Decode once per actual resource in this rank only. Geometry remains
+        # current-frame and per-pose; caller-owned loaders retain their policy.
+        route_cache = {}
+        active = optional_door if optional_door is not None else competitors
+        for row in active if complete and len(active) <= 3 else []:
+            if time.perf_counter() >= deadline:
+                verification_complete = False
+                break
+            row['verification'] = self.verify(frame, row, context=context, _route_cache=route_cache)
+        if optional_door is not None:
+            usable = any(row.get('verification', {}).get('success')
+                         and (row['verification'].get('residual') or {}).get('verified')
+                         and row['hypothesis']['chainCount'] >= 6
+                         and min(row['hypothesis']['extentGrid']) >= 2 for row in active)
+            if not usable:
+                # A bad optional observation must not erase an ordinary fit.
+                # Reuse the generated poses and already executed validators.
+                for row in rows:row.pop('sideDoorConstraint', None)
+                active = competitors
+                optional_door = None
+                for row in active if complete and len(active) <= 3 else []:
+                    if time.perf_counter() >= deadline:
+                        verification_complete = False
+                        break
+                    if 'verification' not in row:
+                        row['verification'] = self.verify(frame,row,context=context,_route_cache=route_cache)
+        search_counts['sideOptionalDoorUsed'] = optional_door is not None
+        competitor_ids = {id(row) for row in competitors}
+        for row in rows:
+            if 'verification' not in row:
+                # An unexecuted validator is not a measured geometry failure.
+                # Preserve why the existing conservative consumer cannot use
+                # this row, without changing competition or validation limits.
+                contradicted = self._side_door_contradicted(row)
+                reason = ('current-side-door-geometry' if contradicted else
+                          'side-search-incomplete-unverified' if not complete else
+                          'side-outside-score-band-unverified' if id(row) not in competitor_ids else
+                          'side-competition-limit-unverified' if len(competitors) > 3 else
+                          'side-verification-budget-incomplete')
+                row['verification'] = dict(success=False, evaluated=False, reason=reason)
+            row['competitionComplete'] = complete
+            row['poseAmbiguous'] = sum(r['mapId'] == row['mapId'] and r['floor'] == row['floor'] for r in competitors) > 1
+        return rows, dict(reason='side-local-candidates' if complete else 'side-budget-incomplete', complete=complete,
+                          queryTurns=len(q), competitiveHypotheses=len(competitors), seedCorrespondences=seed_count,
+                          verificationComplete=verification_complete and len(active) <= 3,
+                          identityAmbiguous=len({(r['mapId'], r['floor']) for r in competitors}) != 1,
+                          elapsedMs=(time.perf_counter()-started)*1000, **search_counts)
 
     def _load_route(self, profile_id, map_id, floor, resource, cache=None):
         from nightmare_candidate import imread_unicode
@@ -446,8 +762,6 @@ class MapLocalEntryIdentity:
             # Never turn failure into success using a different source image.
             if self.route_loader is not None:
                 return self.route_loader(profile_id, map_id, floor)
-            if getattr(self, 'read_resource', None) is not None:
-                return None
             path = (self.root / resource).resolve()
             key = (profile_id, map_id, str(floor), path)
             if cache is None:
@@ -491,13 +805,6 @@ class MapLocalEntryIdentity:
                     scope='all current observed fragments, not only fitted passport planes')
 
     def refine_candidate(self, frame, row):
-        shared = getattr(self, 'observation_dependencies', None)
-        if shared is not None and shared.owns(frame):
-            return shared.get(('side-refine', id(self.shared_reference_provider), shared.value_key(row)),
-                lambda: self._refine_candidate_uncached(frame, row))
-        return self._refine_candidate_uncached(frame, row)
-
-    def _refine_candidate_uncached(self, frame, row):
         """Refine a unique registered-floor proposal, then run the same validator."""
         from single_map_structure import partial_wall_geometry
         started=time.perf_counter()
@@ -525,17 +832,6 @@ class MapLocalEntryIdentity:
         return candidate
 
     def verify(self, frame, row, *, context=None, _route_cache=None):
-        shared = getattr(self, 'observation_dependencies', None)
-        if shared is not None and shared.owns(frame):
-            actual_context = self._geometry(frame) if context is None else context
-            key = ('side-verify', id(self.shared_reference_provider), shared.value_key(row),
-                   shared.value_key(None if actual_context is None else
-                       {name: actual_context.get(name) for name in ('query', 'observationBounds')}))
-            return shared.get(key, lambda: self._verify_uncached(frame, row,
-                context=actual_context, _route_cache=_route_cache))
-        return self._verify_uncached(frame, row, context=context, _route_cache=_route_cache)
-
-    def _verify_uncached(self, frame, row, *, context=None, _route_cache=None):
         """Current-frame evidence only; the shared consumer must authorize display."""
         if self._side_door_contradicted(row):
             return dict(success=False, reason='side-door-boundary-contradiction')

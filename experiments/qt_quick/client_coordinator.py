@@ -490,18 +490,26 @@ class ClientCoordinator(QObject):
         acknowledge = getattr(self.runtime, "acknowledge_sibling", None)
         if not callable(acknowledge):
             return
-        requires_validation = getattr(self.runtime, 'sibling_requires_registry_validation', None)
-        if accepted and callable(requires_validation) and requires_validation(token):
-            if pending.get('registryCheckPending'):
-                return
-            pending['registryCheckPending'] = True
-            maintenance = getattr(self.session, 'dispatchMaintenance', None)
-            if callable(maintenance) and maintenance('validate_sibling_registry', {'renderToken': token}):
-                return
-            self._finish_sibling_material(token, False, reason='registered-group-validation-unavailable')
-            return
-        self._finish_sibling_material(token, bool(accepted), reason=(
-            'target-material-ready' if accepted else 'target-material-rejected'))
+        self._material_timer.stop()
+        result = acknowledge(token, bool(accepted), reason="target-material-ready" if accepted else "target-material-rejected")
+        self._pending_aligned = {}
+        committed = bool(accepted and isinstance(result, dict) and result.get("success"))
+        if committed:
+            self._accepted_material = pending
+            self._present_runtime_state(self.runtime.snapshot(), trigger="sibling-material-accepted")
+            if not self.session.busy:
+                self.session.refreshRuntime()
+        else:
+            self._trace("sibling-material-rejected", payload=pending,
+                        reason=(result or {}).get("reason", "target-material-rejected"))
+            if not accepted:
+                self._report_display_failure(pending, "target-material-rejected", "Target Image rejected the route material")
+            if isinstance(result, dict) and not result.get("sourceRetained"):
+                self._present_runtime_state(self.runtime.snapshot(), trigger="sibling-source-expired")
+        finish = getattr(self.images, "finish_staging", None)
+        if callable(finish):
+            finish(token, committed)
+        self.changed.emit()
 
     @Slot(str, dict)
     def _sibling_registry_validated(self, token, receipt):
@@ -553,9 +561,8 @@ class ClientCoordinator(QObject):
 
     @staticmethod
     def _native_candidate_preview_ready(state):
-        return ((state.get("nativeCandidatePreviewAvailable") is True
-                 or state.get("candidateProvisionalDisplayEnabled") is True
-                 and state.get("candidateStreamingEnabled") is True)
+        return (state.get("season") == "s1"
+                and state.get("nativeCandidatePreviewAvailable") is True
                 and not state.get("manualAlignmentSession"))
 
     def _map_resource_problem(self, state=None, *, allow_manual_floor=False):
@@ -1934,16 +1941,10 @@ class ClientCoordinator(QObject):
             self._map_resource_notified.clear()
         if self.session.busy:
             pending = self.session.snapshot.get("pendingAction")
-            get_material = getattr(self.runtime, "render_payload", None)
-            retained = (get_material(self._last_render_token)
-                if pending in {"map", "capture_now", "fit_manual_frame"}
-                and self._last_render_token and callable(get_material) else None)
-            retaining_material = bool(retained and retained.get("liveAuthorization")
-                and retained.get("poseFinalVerified") is True and retained.get("reviewStatus") == "complete")
             reprojecting = (pending == "set_context" and self._pending_context
                             and self._pending_context[0] == self._applied_context[0]
                             and self._pending_context[2] == self._applied_context[2])
-            if not reprojecting and not retaining_material and pending not in {
+            if not reprojecting and pending not in {
                     "refresh_map", "observe_manual_floor", "observe_candidate_floor", "recover_map_open", "probe_map_after_drag", "reselect_map", "previous_candidate", "next_candidate",
                     "select_candidate", "confirm_route", "set_floor", "cycle_floor",
                     "select_group_member"}:
@@ -2120,8 +2121,7 @@ class ClientCoordinator(QObject):
                         window=dict(name="aligned", visible=False))
 
     def _notify_first_valid_output(self, public):
-        if (public.get("reviewStatus") == "pending" or public.get("provisional")
-                or public.get("identityPhase") in {"UNLOCKED", "GROUP_LOCKED"}):
+        if public.get("provisional") or public.get("identityPhase") in {"UNLOCKED", "GROUP_LOCKED"}:
             return
         success_key = ("success", public.get("roundId"), public.get("mapId"))
         if success_key not in self._notified:

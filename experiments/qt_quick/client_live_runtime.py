@@ -6,6 +6,7 @@ All algorithm work is synchronous and belongs to SessionService's worker.
 from __future__ import annotations
 
 import copy
+from contextlib import nullcontext
 import hashlib
 import math
 from pathlib import Path
@@ -20,11 +21,9 @@ from client_paths import APP_ROOT, WORK_ROOT
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from alignment_core_v2 import AlignmentCoreV2
-from structure_pose_solver import StructurePoseSolver as _AlignmentHost
 from season_context import normalize_season, context_key
 from client_engine import (EngineAdapter, clone_similarity_state, stage_similarity_rank, automatic_identity_candidates, registered_logical_family, ranked_entrance_kind, similarity_evidence_summary, initial_group_display_member, is_registered_identity_group,
-                           INITIAL_IDENTITY_BUDGET_SECONDS, registered_family_identity,
-                           validate_established_registered_family)
+                           INITIAL_IDENTITY_BUDGET_SECONDS)
 from floor_observation_policy import (MANUAL_FLOOR_HOLD_SECONDS,
                                       read_floor_evidence, decide_floor_transition, game_floor_control_hit)
 from client_manual_map import manual_map_thumbnail_source
@@ -37,109 +36,6 @@ MAP_RECOVERY_SECONDS = 2.
 # S1 has no entrance shortlist; allow its exact selected-mode catalog scan.
 # This cooperative ceiling is not the 500 ms latency target.
 S1_STRUCTURE_CANDIDATE_BUDGET_SECONDS = 4.5
-CANDIDATE_CONTROL_ACTIONS = ("next_candidate", "previous_candidate", "select_candidate",
-    "reselect_map", "map_reselection", "confirm_route")
-
-
-def _display_rgba(layer):
-    """Use the provider's immutable native material, or convert its BGRA layer."""
-    if 'rgbaPixels' in layer:
-        return layer['rgbaPixels']
-    import numpy as np
-    pixels = np.ascontiguousarray(layer['pixels'][:, :, [2, 1, 0, 3]])
-    pixels.setflags(write=False)
-    return pixels
-
-
-def _prepare_alignment_host(engine, group, settings, map_id, floor, *, frame=None,
-                            steady=None, cancelled=None, usable_fit_callback=None):
-    """Keep resource and temporal-state preparation outside numerical fitting."""
-    if getattr(engine, 'qt_native_base', None) is None:
-        return (_AlignmentHost(engine, group, settings, steady=steady,
-                    usable_fit_callback=usable_fit_callback),
-                dict(kind='legacy-provider'), None)
-    from client_providers import prepare_pose_solver
-    host, preparation = prepare_pose_solver(engine, map_id, floor, group=group,
-        settings=settings, cancelled=cancelled, usable_fit_callback=usable_fit_callback)
-    receipt = None
-    if steady is not None:
-        adapter, context, current, signature = steady
-        host.steady_input, generation = adapter.capture_prepared_input(
-            host, frame, map_id, floor, context=context, is_current=current,
-            cancelled=cancelled, display_signature=signature,
-            enabled=bool(settings.get('idvb0059Enabled', True)))
-        receipt = adapter, generation
-    return host, preparation, receipt
-
-
-def _alignment_host_current(engine, host, steady_receipt=None):
-    from client_providers import pose_inputs_current
-    return bool((not hasattr(host, 'inputs') or pose_inputs_current(engine, host.inputs))
-        and (steady_receipt is None or steady_receipt[0].generation_current(steady_receipt[1])))
-
-
-def _engine_resource_current(engine):
-    """Prepared resource ownership only; never load or validate files here."""
-    current = getattr(engine, 'qt_resource_context_current', None)
-    return current is None or bool(current())
-
-
-def _fit_alignment_host(host, frame, map_id, floor, cancelled, entry_candidate=None, *,
-                        entry_observation=None, observation_bounds=None, on_usable_fit=None, timing=None):
-    """Consume numerical progress on the runtime worker, outside the solver."""
-    from structure_pose_solver import PreparedStructurePoseSolver
-    options = {}
-    if entry_candidate is not None:
-        options['entry_candidate'] = entry_candidate
-    if entry_observation is not None:
-        options['entry_observation'] = entry_observation
-    if observation_bounds is not None:
-        options['observation_bounds'] = observation_bounds
-    def compute(stop):
-        started = time.perf_counter()
-        try:
-            return host.fit(frame, map_id, floor, stop, **options)
-        finally:
-            if timing is not None:
-                timing.update(elapsedMs=(time.perf_counter()-started)*1000,
-                    kind='prepared-ram' if isinstance(host, PreparedStructurePoseSolver) else 'legacy-combined')
-    if not isinstance(host, PreparedStructurePoseSolver) or on_usable_fit is None:
-        return compute(cancelled)
-    from concurrent.futures import ThreadPoolExecutor
-    from queue import Empty, Full, Queue
-    offers, ready, stopped = Queue(maxsize=1), threading.Event(), threading.Event()
-    previous = host.usable_fit_callback
-    def offer(fit):
-        if not stopped.is_set():
-            try:
-                offers.put_nowait(copy.deepcopy(fit))
-            except Full:
-                return
-            ready.set()
-    host.usable_fit_callback = offer
-    try:
-        # One synchronous runtime operation owns this worker and joins it on
-        # every exit. Cancellation cannot accumulate detached fit tasks.
-        with ThreadPoolExecutor(max_workers=1, thread_name_prefix='structure-pose') as pool:
-            future = pool.submit(compute, lambda: stopped.is_set() or cancelled())
-            future.add_done_callback(lambda _: ready.set())
-            try:
-                while True:
-                    ready.wait(.05)
-                    ready.clear()
-                    while True:
-                        try:
-                            first = offers.get_nowait()
-                        except Empty:
-                            break
-                        if not cancelled():
-                            on_usable_fit(first)
-                    if future.done() and offers.empty():
-                        return future.result()
-            finally:
-                stopped.set()
-    finally:
-        host.usable_fit_callback = previous
 
 
 class _Cancellation:
@@ -258,6 +154,521 @@ class _PreparationHost:
         return None, False
 
 
+class _AlignmentHost:
+    """Only explicit resource/pose inputs needed by the unchanged shared solvers."""
+    def __init__(self, engine, group=None, settings=None, *, steady=None, pose_priors=None,
+                 collect_fit_diagnostics=False, grid_runtime=None):
+        self.engine, self.pack = engine, engine.pack
+        self.author_coordinate_adapters = engine.qt_adapters
+        self.group = group
+        self.current_alignment_candidate = None
+        self.settings = dict(settings or {})
+        self.events = []
+        self.steady = steady
+        self.pose_priors = dict(pose_priors or {})
+        self.collect_fit_diagnostics = collect_fit_diagnostics
+        self.grid_runtime = grid_runtime
+        self.diagnostic_event_counts = {}
+
+    def _log(self, event, **values):
+        if self.collect_fit_diagnostics:
+            self.diagnostic_event_counts[event] = min(1000000, self.diagnostic_event_counts.get(event, 0)+1)
+        self.events.append(dict(event=event, **values))
+        del self.events[:-24]
+
+    def _shared_structure_mode_enabled(self):
+        return True
+
+    def _open_cycle_transient_motion_active(self, map_id):
+        return False
+
+    def _shared_structure_reference(self, profile, map_id, floor):
+        return self.engine.qt_shared_provider(profile, map_id, floor)
+
+    def _active_round_layer_group(self, map_id):
+        return self.group if self.group is not None and self.group.map_id == map_id else None
+
+    def _alignment_entry_locator(self):
+        return self.engine.entry_identity
+
+    def _author_route_clean_product_for_route(self, route, profile, map_id, floor):
+        return self._shared_structure_reference(profile, map_id, floor)
+
+    def _author_route_structure_reference_cached(self, route, profile, *, map_id=None, floor=None):
+        reference = self._shared_structure_reference(profile, map_id, floor)
+        return (reference.validation_mask, True, 0.0) if reference is not None else (None, False, 0.0)
+
+    def _round_group_floor_view(self, map_id, floor, **kwargs):
+        import numpy as np
+        group = self._active_round_layer_group(map_id)
+        canonical = group.canonical_pose_for_floor(str(floor)) if group else None
+        basis = self.author_coordinate_adapters.matrix_profile_to_canonical("shared-structure", map_id, floor)
+        if canonical is None or basis is None:
+            return None
+        matrix = np.asarray(canonical) @ np.asarray(basis)
+        return dict(canonicalMatrixSourceToClient=canonical, recognitionMatrixSourceToClient=matrix,
+                    matrixSourceToClient=matrix)
+
+    def _canonical_geometry_current_frame_residual(self, frame, map_id, floor, profile, matrix, route, **kwargs):
+        from nightmare_candidate import selected_route_current_frame_residual
+        from alignment_observation import canonical_residual_evidence
+        reference = self._shared_structure_reference("shared-structure", map_id, floor)
+        if reference is None:
+            return dict(verified=False, reason="shared-reference-unavailable"), None
+        pack_id = self.author_coordinate_adapters.canonical_pack_id
+        # Reuse only identical numerical work within one synchronous fit.
+        # Never trust a residual supplied by a solver or retain one across
+        # observations. The canonical evidence wrapper still runs below.
+        import numpy as np
+        cache = getattr(self, "_observation_residual_cache", None)
+        visible = kwargs.get("visible_override")
+        transform = np.asarray(matrix)
+        key = (str(map_id), str(floor), id(frame), id(reference), id(reference.validation_mask),
+               transform.dtype.str, transform.shape, transform.tobytes(),
+               kwargs.get("maximum_dimension", 960), id(visible))
+        cached = cache.get(key) if cache is not None else None
+        if cached is None:
+            residual = dict(selected_route_current_frame_residual(frame, None, matrix,
+                maximum_dimension=kwargs.get("maximum_dimension", 960),
+                visible_override=visible, route_profile_id="wang-qingxin",
+                reference_override=reference.validation_mask, shared_reference=reference))
+            if cache is not None:
+                # Strong references prevent identity reuse; copies isolate any
+                # diagnostic additions made by individual consumers.
+                if len(cache) >= 2:
+                    cache.pop(next(iter(cache)))
+                cache[key] = (frame, reference, visible, copy.deepcopy(residual))
+        else:
+            residual = copy.deepcopy(cached[3])
+        # These are the existing canonical consumer's provenance fields. The
+        # original residual kernel supplies the verdict; no caller flag does.
+        canonical_residual_evidence(residual, basis="game-rendered-shared-structure", coordinate_pack_id=pack_id)
+        return residual, dict(sharedReference=reference, basis="game-rendered-shared-structure",
+                              matrixSourceToClient=matrix, coordinatePackId=pack_id, profileBridgeVerified=True)
+
+    def _rendered_profile_current_frame_residual(self, frame, route, matrix, *, profile_id=None, **kwargs):
+        # The solver is explicitly bound to one map/floor before each call.
+        return self._canonical_geometry_current_frame_residual(
+            frame, self.map_id, self.floor, "shared-structure", matrix, route, **kwargs)[0]
+
+    def _alignment_v2_independent_member_fit(self, frame, route, map_id, floor, profile, **kwargs):
+        from alignment_structure_dispatch import independent_member_fit
+        return independent_member_fit(self, frame, route, map_id, floor, profile, **kwargs)
+
+    def _reverify_entry(self, frame, map_id, floor, reference, candidate, cancelled, context=None):
+        """Adapt the legacy bounded entry set through its existing verifiers."""
+        import cv2
+        from alignment_observation import rendered_profile_residual_is_verified
+        if (not isinstance(candidate, dict) or candidate.get("mapId") != map_id
+                or str(candidate.get("floor", floor)) != str(floor)):
+            return None
+        side = candidate.get("locatorKind") == "side" or candidate.get("entryKind") == "side"
+        anchored = side and ("entryPoseCandidates" in candidate or candidate.get("exitAnchoredEntry") is True)
+        candidates = candidate.get("entryPoseCandidates") if anchored else [candidate]
+        candidates = candidates if isinstance(candidates, list) else [candidate]
+        accepted = []
+        for item in candidates:
+            if cancelled and cancelled():
+                return dict(success=False, reason="structure-work-obsolete")
+            if (not isinstance(item, dict) or item.get("mapId") != map_id
+                    or str(item.get("floor", floor)) != str(floor)):
+                continue
+            try:
+                if side:
+                    locator = self.engine.side_entry_identity
+                    checked = locator.verify(frame, item) if locator is not None else None
+                elif isinstance(item.get("hypothesis"), dict):
+                    entry = self.engine.entry_identity
+                    checked = entry.verify(frame, dict(mapId=map_id, hypothesis=item["hypothesis"]),
+                        context=entry.geometry(frame), route=reference.clean_mask)
+                else:
+                    checked = None
+                if isinstance(checked, dict) and checked.get("success"):
+                    residual = self._rendered_profile_current_frame_residual(
+                        frame, reference.clean_mask, checked["matrixSourceToClient"], profile_id="shared-structure")
+                    if rendered_profile_residual_is_verified(residual):
+                        accepted.append((checked, residual))
+            except (ValueError, TypeError, KeyError, OSError, cv2.error) as error:
+                self._log("entry-seed-reverification-unavailable", error=str(error))
+        if cancelled and cancelled():
+            return dict(success=False, reason="structure-work-obsolete")
+        if len(accepted) == 1:
+            checked, residual = accepted[0]
+            return dict(success=True, reason="difficult-entry-current-frame-candidate",
+                matrixSourceToClient=checked["matrixSourceToClient"],
+                coordinateSpace="shared-structure-to-client", routeProfileId="shared-structure",
+                selectedRouteCurrentFrameResidual=residual, strategy="verified-entry-current-frame",
+                difficultEntryValidation=checked)
+        if anchored:
+            checked = dict(success=False, reason="side-entry-pose-ambiguous" if accepted else "side-entry-pose-unverified")
+            if bool(self.settings.get("poseIndexCandidatesEnabled", self.settings.get("difficultGridEnabled", False))):
+                indexed = self._alignment_v2_independent_member_fit(frame, reference.clean_mask,
+                    map_id, floor, "shared-structure", cancelled=cancelled, pose_index_only=True, context=context)
+                if indexed.get("reason") != "pose-index-no-candidates":
+                    return dict(indexed, entryFallback="confirmed-map-floor-pose-index", difficultEntryValidation=checked)
+            return dict(success=False, reason="difficult-entry-current-frame-rejected", difficultEntryValidation=checked,
+                entryReverification=dict(candidateCount=len(candidates), acceptedPoseCount=len(accepted), reason=checked["reason"]))
+        return None
+
+    def prepare_structure_scan(self, frame, observation_bounds):
+        """One scan owns raw observations; no cache survives into another frame.
+
+        Each candidate gets a fresh context containing only source-independent
+        fields. Projected masks, unknown filtering and verdicts remain private
+        to that candidate. Geometry extraction stays lazy for budget/cancel.
+        """
+        _test_evidence("solver-input", frame)
+        from nightmare_candidate import visible_map_components
+        from single_map_structure import current_geometry, current_part, observed_corner_chains, marker_occluded_corner_proposals
+        from fast_structure_alignment import sample_edges
+        bounds = tuple(observation_bounds)
+        observations, components = {}, None
+
+        def geometry(visible=None):
+            key = None if visible is None else id(visible)
+            if key not in observations:
+                context = current_geometry(frame, observation_bounds=bounds,
+                                           visible_override=visible)
+                if context is not None:
+                    for part in ("nodes", "edge", "observed", "lines"):
+                        current_part(frame, context, part)
+                    context["_observed_corner_chains"] = (context["nodes"], context["observed"],
+                                                          observed_corner_chains(frame, context))
+                    marker_occluded_corner_proposals(frame, context, context["_observed_corner_chains"][2])
+                    edge = context["observed"]
+                    context["_sampled_observation_edges"] = (edge, sample_edges(edge, 300), sample_edges(edge, 96))
+                observations[key] = context
+            context = observations[key]
+            return dict(context) if context is not None else None
+
+        def islands():
+            nonlocal components
+            if components is None:
+                components = visible_map_components(frame, observation_bounds=bounds)
+            return components
+
+        def fit_one(candidate_frame, map_id, floor, cancelled, *, observation_bounds=None):
+            if candidate_frame is not frame or tuple(observation_bounds or ()) != bounds:
+                raise ValueError("structure-scan-observation-context-mismatch")
+            return self.fit(frame, map_id, floor, cancelled,
+                            observation_bounds=bounds, _scan_observation=(geometry, islands))
+        return fit_one
+
+    def fit(self, frame, map_id, floor, cancelled, entry_candidate=None, *, observation_bounds=None, _scan_observation=None):
+        check_current = getattr(self.engine, 'qt_assert_resource_current', None)
+        if check_current is not None:
+            check_current()
+        scope = self.grid_runtime.fit_scope(cancelled) if self.grid_runtime is not None else nullcontext()
+        with scope:
+            result = self._fit_owned(frame, map_id, floor, cancelled, entry_candidate,
+                observation_bounds=observation_bounds, _scan_observation=_scan_observation)
+        if check_current is not None:
+            check_current()
+        return result
+
+    def _fit_owned(self, frame, map_id, floor, cancelled, entry_candidate=None, *, observation_bounds=None, _scan_observation=None):
+        _test_evidence("solver-input", frame)
+        if observation_bounds is None:
+            fit = self._fit_observation(frame, map_id, floor, cancelled, entry_candidate)
+            if fit.get("success") and (fit.get("markerOccludedWallProposal") or fit.get("markerOccludedWallObservation")):
+                rejected = self._marker_recovery_peer_rejection(frame, map_id, floor, fit,
+                    cancelled, None, None)
+                if rejected is not None:
+                    return rejected
+            return fit
+        # Preserve the existing result whenever the largest island has usable
+        # structure (including wall-only success). Only an unsupported failure
+        # can trigger the wider search for map pixels behind brighter scenery.
+        import numpy as np
+        from nightmare_candidate import visible_map_components
+        from single_map_structure import current_geometry, observed_corner_chains, marker_occluded_corner_proposals
+        original = (_scan_observation[0]() if _scan_observation is not None else
+                    current_geometry(frame, observation_bounds=observation_bounds))
+        initial = (self._fit_observation(frame, map_id, floor, cancelled, entry_candidate,
+            observation_bounds=observation_bounds, _context=original) if original is not None
+            else dict(success=False, reason="manual-current-geometry-unavailable"))
+        initial_reason = str(initial.get("reason", ""))
+        if initial.get("success") and cancelled and cancelled():
+            return dict(success=False, reason="structure-work-obsolete")
+        if initial.get("success") and (initial.get("markerOccludedWallProposal") or initial.get("markerOccludedWallObservation")):
+            rejected = self._marker_recovery_peer_rejection(frame, map_id, floor, initial,
+                cancelled, observation_bounds, _scan_observation)
+            if rejected is not None:
+                return rejected
+        if (initial.get("success") or any(word in initial_reason for word in
+                ("obsolete", "ambiguous", "budget-unresolved"))
+                or original is not None and observed_corner_chains(frame, original)):
+            return initial
+        islands = (_scan_observation[1]() if _scan_observation is not None else
+                   visible_map_components(frame, observation_bounds=observation_bounds))
+        if len(islands) > 32:
+            return dict(success=False, reason="manual-component-budget-unresolved",
+                        componentCount=len(islands), componentBudget=32)
+        reference = self._shared_structure_reference("shared-structure", map_id, floor)
+        if reference is None:
+            return dict(success=False, reason="shared-reference-unavailable")
+        h, w = reference.clean_mask.shape
+        extent = np.array([[0, 0, 1], [w, 0, 1], [0, h, 1], [w, h, 1]])
+        accepted, diagnostics, evidence_contexts, unresolved = [], [], [], False
+        # A clean secondary pose still has to explain a failed marker-bearing
+        # primary. Evidence belongs to the observation, not the chosen seed.
+        marker_peer_evidence = bool(original is not None
+            and marker_occluded_corner_proposals(frame, original, []))
+        for island in islands:
+            if cancelled and cancelled():
+                return dict(success=False, reason="structure-work-obsolete")
+            if original is not None and tuple(island[1]) == tuple(original["observationBounds"]):
+                diagnostics.append(dict(bounds=list(island[1]), area=island[2]["area"],
+                                        success=False, reason=initial_reason))
+                continue
+            context = (_scan_observation[0](island) if _scan_observation is not None else
+                       current_geometry(frame, observation_bounds=observation_bounds, visible_override=island))
+            if context is None:
+                continue
+            measured_chains = observed_corner_chains(frame, context)
+            if measured_chains:
+                evidence_contexts.append(context)
+            elif marker_occluded_corner_proposals(frame, context, measured_chains):
+                marker_peer_evidence = True
+            fit = self._fit_observation(frame, map_id, floor, cancelled, entry_candidate,
+                observation_bounds=observation_bounds, _context=context)
+            reason = str(fit.get("reason", ""))
+            diagnostics.append(dict(bounds=list(island[1]), area=island[2]["area"],
+                                    success=bool(fit.get("success")), reason=reason))
+            if "obsolete" in reason:
+                return dict(success=False, reason="structure-work-obsolete")
+            if "ambiguous" in reason or "budget-unresolved" in reason:
+                unresolved = True
+            if fit.get("success"):
+                matrix = np.asarray(fit["matrixSourceToClient"])
+                if not any(np.linalg.norm((extent @ (matrix - np.asarray(old["matrixSourceToClient"])).T)[:, :2], axis=1).max() <= 3
+                           for old in accepted):
+                    accepted.append(fit)
+        if cancelled and cancelled():
+            return dict(success=False, reason="structure-work-obsolete")
+        if unresolved or len(accepted) > 1:
+            return dict(success=False, reason="manual-component-pose-ambiguous",
+                        componentFits=diagnostics, acceptedPoseCount=len(accepted), unresolved=unresolved)
+        if len(accepted) == 1:
+            fit = accepted[0]
+            # Do not explain one convenient small island while contradicting
+            # other independently observed structure. A conflict fails closed.
+            for context in evidence_contexts:
+                if cancelled and cancelled():
+                    return dict(success=False, reason="structure-work-obsolete")
+                if tuple(context["observationBounds"]) == tuple(fit.get("observationBounds") or ()):
+                    continue
+                consistent = self._component_pose_consistent(frame, reference, fit["matrixSourceToClient"], context)
+                if cancelled and cancelled():
+                    return dict(success=False, reason="structure-work-obsolete")
+                if not consistent:
+                    return dict(success=False, reason="manual-components-inconsistent",
+                                componentFits=diagnostics, conflictingBounds=list(context["observationBounds"]))
+            if cancelled and cancelled():
+                return dict(success=False, reason="structure-work-obsolete")
+            if marker_peer_evidence or fit.get("markerOccludedWallProposal") or fit.get("markerOccludedWallObservation"):
+                rejected = self._marker_recovery_peer_rejection(frame, map_id, floor, fit,
+                    cancelled, observation_bounds, _scan_observation)
+                if rejected is not None:
+                    return rejected
+            return dict(fit, componentFits=diagnostics, acceptedPoseCount=1, manualComponentFallback=True)
+        return dict(success=False, reason="manual-components-current-geometry-rejected" if diagnostics
+                    else "manual-current-geometry-unavailable", componentFits=diagnostics)
+
+    def _marker_recovery_peer_rejection(self, frame, map_id, floor, fit, cancelled, bounds, scan):
+        """New marker-derived poses must explain independent peer structure.
+
+        A few HUD fragments or unknown fog have no independent geometry and
+        cannot veto a pose. Reuse the wall fitter's two separated planes on
+        each axis as the evidence floor, then retain the strict validators.
+        This checks the original primary too when a secondary was recovered.
+        """
+        from nightmare_candidate import visible_map_components
+        from single_map_structure import (current_geometry, current_part,
+            visible_wall_segments, _static_validation_context)
+        import numpy as np
+        islands = scan[1]() if scan is not None else visible_map_components(frame, observation_bounds=bounds)
+        selected_bounds = fit.get("observationBounds")
+        if bounds is None:
+            # The implicit solver keeps its original largest-island search,
+            # prior/steady order and default ROI. Do not broaden it to S1's
+            # full-frame domain merely to validate a marker-derived success.
+            h, w = frame.shape[:2]
+            bounds = (int(w*.16), int(h*.22), int(w*.76), int(h*.80))
+            if selected_bounds is None and islands:
+                selected_bounds = islands[0][1]
+        if len(islands) > 32:
+            return dict(success=False, reason="manual-component-budget-unresolved",
+                        componentCount=len(islands), componentBudget=32)
+        reference = self._shared_structure_reference("shared-structure", map_id, floor)
+        for island in islands:
+            if cancelled and cancelled():
+                return dict(success=False, reason="structure-work-obsolete")
+            if tuple(island[1]) == tuple(selected_bounds or ()):
+                continue
+            # Enumeration adds an 8px image halo. It must not introduce walls
+            # outside the caller's domain; the clipped edge remains unknown.
+            x0, y0, x1, y1 = island[1]
+            clipped = (max(x0, bounds[0]), max(y0, bounds[1]),
+                       min(x1, bounds[2]), min(y1, bounds[3]))
+            if clipped != tuple(island[1]):
+                x0, y0, x1, y1 = clipped
+                if x0 >= x1 or y0 >= y1:
+                    continue
+                visible = (frame[y0:y1, x0:x1], clipped, island[2])
+                context = current_geometry(frame, observation_bounds=bounds, visible_override=visible)
+            else:
+                context = (scan[0](island) if scan is not None else
+                           current_geometry(frame, observation_bounds=bounds, visible_override=island))
+            if context is None:
+                continue
+            measured = _static_validation_context(frame, context, np.asarray(fit["matrixSourceToClient"]),
+                getattr(reference, "unknown_mask", None))
+            lines = (current_part(frame, context, "lines") if measured is context else
+                     visible_wall_segments(context["query"], current_part(frame, measured, "observed"),
+                                           nodes=current_part(frame, context, "nodes")))
+            independent = True
+            for axis in (0, 1):
+                planes = []
+                for line in lines:
+                    if line["axis"] == axis and not any(abs(line["normal"]-old) <= 3 for old in planes):
+                        planes.append(line["normal"])
+                if len(planes) < 2 or max(planes)-min(planes) < 24:
+                    independent = False
+                    break
+            if not independent:
+                continue
+            consistent = self._component_pose_consistent(frame, reference, fit["matrixSourceToClient"], context)
+            if cancelled and cancelled():
+                return dict(success=False, reason="structure-work-obsolete")
+            if not consistent:
+                return dict(success=False, reason="manual-components-inconsistent",
+                            conflictingBounds=list(context["observationBounds"]))
+        if cancelled and cancelled():
+            return dict(success=False, reason="structure-work-obsolete")
+        return None
+
+    def _component_pose_consistent(self, frame, reference, matrix, context):
+        from single_map_structure import projected_geometry, regional_validation, _static_validation_context
+        from alignment_observation import rendered_profile_residual_is_verified
+        import numpy as np
+        projected = projected_geometry(frame, reference.clean_mask, np.asarray(matrix), context)["mask"]
+        validation_context = _static_validation_context(frame, context, np.asarray(matrix),
+            getattr(reference, "unknown_mask", None))
+        if not regional_validation(frame, context["query"], projected, _context=validation_context).get("regionalEdgeVerified"):
+            return False
+        residual = self._rendered_profile_current_frame_residual(frame, reference.clean_mask, matrix,
+            profile_id="shared-structure", visible_override=context.get("visible"))
+        return rendered_profile_residual_is_verified(residual)
+
+    def _fit_observation(self, frame, map_id, floor, cancelled, entry_candidate=None, *, observation_bounds=None, _context=None):
+        previous = getattr(self, "_observation_residual_cache", None)
+        self._observation_residual_cache = {}
+        try:
+            return self._fit_observation_uncached(frame, map_id, floor, cancelled, entry_candidate,
+                observation_bounds=observation_bounds, _context=_context)
+        finally:
+            self._observation_residual_cache = previous
+
+    def _fit_observation_uncached(self, frame, map_id, floor, cancelled, entry_candidate=None, *, observation_bounds=None, _context=None):
+        from alignment_observation import rendered_profile_residual_is_verified
+        from fast_structure_alignment import try_alignment
+        from single_map_structure import current_geometry, solve, solve_initial_structure
+        self.map_id, self.floor = map_id, str(floor)
+        reference = self._shared_structure_reference("shared-structure", map_id, floor)
+        if reference is None:
+            return dict(success=False, reason="shared-reference-unavailable")
+        explicit_domain = observation_bounds is not None
+        context = (_context if _context is not None else current_geometry(frame, observation_bounds=observation_bounds)) if explicit_domain else None
+        if explicit_domain and context is None:
+            return dict(success=False, reason="manual-current-geometry-unavailable")
+        # Original structure-fit order: default 0059 prior before entry/fast.
+        if self.steady is not None and not explicit_domain:
+            adapter, context, current, signature = self.steady
+            steady = adapter.try_alignment(self, frame, map_id, floor, context=context,
+                is_current=current, cancelled=cancelled, display_signature=signature,
+                enabled=bool(self.settings.get("idvb0059Enabled", True)))
+            if steady is not None:
+                return steady
+        # Original caller order: current fast proposal, established relation
+        # recovery (including an unverified target), bounded entry, then initial.
+        context = context if explicit_domain else current_geometry(frame)
+        hint = self.pose_priors.get((str(map_id), str(floor)))
+        options = {"pose_prior": hint} if hint is not None else {}
+        fit = try_alignment(self, frame, map_id, floor, cancelled=cancelled,
+                            entry_seed=entry_candidate, context=context, **options)
+        strategy = "shared-fast-alignment"
+        identity_profile = (self.engine.identity_profile_for_map(map_id)
+            if callable(getattr(self.engine, "identity_profile_for_map", None))
+            else getattr(self.engine, "identity_profile_id", None))
+        entry_first = (identity_profile == "shared-structure"
+            and callable(getattr(getattr(self.engine, "side_entry_identity", None), "rank_entry", None)))
+        if (not explicit_domain and fit is None and entry_first and entry_candidate is None and self.group is not None
+                and self.group.map_id == map_id and str(floor) in self.group.verified_floors
+                and self.group.route_profile_id == "shared-structure"):
+            # Legacy confirmed same-floor recovery is translation-only, even
+            # on a miss. Do not restart unknown-scale initial estimation.
+            fit = solve(self, frame, map_id, floor, "shared-structure", reference.clean_mask,
+                        cancelled=cancelled, _context=context)
+            strategy = "shared-established-group-recovery"
+        def recover_existing_group():
+            if self.group is not None and self.group.verified_floors and str(floor) in self.group.relations:
+                recovery = solve(self, frame, map_id, floor, "shared-structure", reference.clean_mask,
+                                 cancelled=cancelled, _context=context)
+                if (recovery.get("success") or recovery.get("reason") != "structure-current-geometry-failed"
+                        or recovery.get("sharedProjectionGeometryInsufficient")):
+                    return recovery
+            return None
+        if not explicit_domain and fit is None and (not entry_first or (self.group is not None and str(floor) not in self.group.verified_floors)):
+            fit = recover_existing_group()
+            strategy = "shared-established-group-recovery"
+        if not explicit_domain and fit is None:
+            fit = self._reverify_entry(frame, map_id, floor, reference, entry_candidate, cancelled, context=context)
+            strategy = "verified-entry-current-frame"
+        if not explicit_domain and fit is None and entry_first:
+            fit = recover_existing_group()
+            strategy = "shared-established-group-recovery"
+        if not explicit_domain and fit is None:
+            from client_known_floor_recovery import recover_registered_floor
+            fit = recover_registered_floor(self, frame, map_id, floor, reference, cancelled)
+            strategy = "shared-registered-floor-recovery"
+        if fit is None:
+            fit = self._alignment_v2_independent_member_fit(frame, reference.clean_mask, map_id, floor,
+                "shared-structure", cancelled=cancelled, context=context)
+            strategy = "shared-initial-structure"
+        def record_fit(value):
+            if self.collect_fit_diagnostics:
+                try:
+                    from s1_fit_diagnostics import observation_summary
+                    self._log('s1-fit-observation', mapId=str(map_id), floor=str(floor),
+                        **observation_summary(frame, context, value, strategy, reference))
+                except Exception:
+                    pass  # Optional evidence cannot change the actual fit verdict.
+            return value
+        if not fit.get("success"):
+            return record_fit(fit)
+        # Independently wrap/verify the final matrix in its actual typed canvas,
+        # exactly as the production canonical consumer does after any sensor.
+        residual = self._rendered_profile_current_frame_residual(
+            frame, reference.clean_mask, fit["matrixSourceToClient"], profile_id="shared-structure",
+            visible_override=context.get("visible") if explicit_domain else None)
+        if not rendered_profile_residual_is_verified(residual):
+            return record_fit(dict(success=False, reason="canonical-current-frame-residual-unverified", residual=residual))
+        from single_map_structure import observed_corner_chains, marker_occluded_corner_proposals
+        marker_wall_observation = False
+        if context is not None and (explicit_domain or strategy == "shared-fast-alignment"):
+            if fit.get("markerOccludedWallProposal"):
+                marker_wall_observation = not (fit.get("diagnostics") or {}).get("queryChains")
+            elif (fit.get("diagnostics") or {}).get("queryChains") is None:
+                measured = observed_corner_chains(frame, context)
+                marker_wall_observation = bool(not measured
+                    and marker_occluded_corner_proposals(frame, context, measured))
+        return record_fit(dict(fit, selectedRouteCurrentFrameResidual=residual,
+                    markerOccludedWallObservation=marker_wall_observation,
+                    observationBounds=context["observationBounds"] if explicit_domain else None,
+                    observationComponent=dict(context["visible"][2], bounds=context["visible"][1]) if explicit_domain else None,
+                    coordinateSpace="shared-structure-to-client", routeProfileId="shared-structure",
+                    strategy=strategy))
 
 
 class LiveRuntime:
@@ -271,8 +682,9 @@ class LiveRuntime:
                  allowed_read_root=None, evidence_kind="unverified", clock=None, diagnostics=None,
                  recorded_s1_provisional_display=False, recorded_s1_streaming=False,
                  recorded_s1_scan_order="natural", recorded_s1_scan_budget=S1_STRUCTURE_CANDIDATE_BUDGET_SECONDS,
-                 recorded_s1_priority_index=None, s1_candidate_purpose=None):
+                 recorded_s1_priority_index=None, s1_candidate_purpose=None, grid_runtime=None):
         self._diagnostics = diagnostics
+        self.grid_runtime = grid_runtime
         self.g_cycle_evidence = None  # Explicit process-only test mode; no normal writer.
         from s1_candidate_purpose import native_candidate_purpose_is_valid, private_native_candidate_purpose_is_valid, native_round_lock_purpose_is_valid, native_final_round_lock_purpose_is_valid
         self._native_s1_candidate_preview = bool(
@@ -364,10 +776,7 @@ class LiveRuntime:
         from client_idvb0059_adapter import Idvb0059Adapter
         self._steady = Idvb0059Adapter()
         from s1_private_experiment import LatestEvidenceQueue
-        from weakref import WeakSet
         self._s1_private_jobs = LatestEvidenceQueue()
-        self._recognition_races = WeakSet()
-        self._private_evidence_stopping = False
         self._private_observation_sequence = 0
         self._reset_identity()
         self._reset_floor_policy()
@@ -396,18 +805,6 @@ class LiveRuntime:
     def _candidate_preview_requested(self):
         return self._recorded_s1_provisional_display or self._native_s1_candidate_preview
 
-    def _structure_candidate_available(self, report=None, engine=None):
-        """Current-frame candidate purpose, separate from formal identity rank."""
-        if self._season == 's1':
-            return self._s1_candidate_available(report, engine)
-        if self._season != 's0' or self._mode != 'difficult':
-            return False
-        if report is not None and report.get('dataReady') is not True:
-            return False
-        capability = ((report or {}).get('candidateObservation') or
-            getattr(getattr(engine, 'qt_native_context', None), 'structure_candidate_capability', {}))
-        return isinstance(capability, dict) and capability.get('candidateReady') is True
-
     def _candidate_streaming_requested(self):
         return self._recorded_s1_streaming or self._native_s1_candidate_preview
 
@@ -422,26 +819,6 @@ class LiveRuntime:
         return bool(self._candidate_preview_requested() and self._season == "s1"
             and not self._durable_map_id
             and not self._manual_alignment)
-
-    def _candidate_provisional_enabled(self, engine=None):
-        """Current-ticket geometry can display without owning map identity.
-
-        S1 keeps its explicit purpose qualification. Imported S0 uses its
-        selected-mode scanner capability; no S1 identity/pool policy is granted.
-        """
-        if self._season == "s1":
-            return self._s1_provisional_enabled()
-        engine = self._engine if engine is None else engine
-        return bool(self._season == "s0" and self._mode in ("difficult", "nightmare")
-            and engine is not None and not self._map_id and not self._durable_map_id
-            and not self._manual_alignment and not self._manual_selection_unlocked()
-            and self._observation_stream_enabled(engine))
-
-    def _candidate_probe_available(self, engine=None):
-        engine = self._engine if engine is None else engine
-        return bool(self._candidate_provisional_enabled(engine) and (
-            self._s1_candidate_available(engine=engine) if self._season == 's1'
-            else self._observation_stream_enabled(engine)))
 
     def _manual_selection_unlocked(self):
         """Manual mode waits for the player's pick instead of ranking identity."""
@@ -484,7 +861,7 @@ class LiveRuntime:
 
     def _reset_identity(self):
         self._s1_round_map_id = ""
-        self._clear_candidate_reference()
+        self._clear_s1_reference()
         self._s1_candidate_preference = None
         self._s1_candidate_pose_hint = None
         self._clear_private_pool()
@@ -586,7 +963,7 @@ class LiveRuntime:
                 ticket = proposal["candidateTicket"]
                 if (not self._capture_is_current(proposal["captured"].context, proposal["candidateCaptureGeneration"])
                         or self._render is None or self._render.get("token") != token
-                        or not self._candidate_provisional_enabled() or session is not self._s1_structure_session
+                        or not self._s1_provisional_enabled() or session is not self._s1_structure_session
                         or ticket != self._s1_structure_ticket
                         or proposal["candidateScope"] != self._s1_candidate_preference_scope(proposal["captured"], session.catalog)
                         or not session.choose_candidate(proposal["mapId"], ticket).get("success")):
@@ -618,12 +995,8 @@ class LiveRuntime:
                 return self._receipt("remember_render_material", payload, success=False, reason="material-context-expired")
             proposal["consumed"] = True
             engine, group, settings = self._engine, self._group, dict(self._settings)
-        host, _, _ = _prepare_alignment_host(engine, group, settings,
-            proposal["mapId"], proposal["floor"], cancelled=lambda: self._cancelled(cancelled))
-        current = lambda context: (not self._cancelled(cancelled)
-            and _alignment_host_current(engine, host)
-            and self._steady_is_current(context, proposal["captured"]))
-        remembered = self._steady.remember_committed(host,
+        current = lambda context: not self._cancelled(cancelled) and self._steady_is_current(context, proposal["captured"])
+        remembered = self._steady.remember_committed(_AlignmentHost(engine, group, settings, grid_runtime=self.grid_runtime),
             proposal["frame"], proposal["mapId"], proposal["floor"], proposal["fit"],
             context=proposal["context"], is_current=current, material_accepted=True,
             display_signature=self._steady_signature(proposal["captured"]),
@@ -668,9 +1041,6 @@ class LiveRuntime:
                 self._identity_review_last = None
                 self._pending_sibling = None
                 self._provisional_reference_context = None
-                # The original repeated-evidence policy withdrew this identity;
-                # its material is no longer an ordinary failed-frame fallback.
-                self._revoke_render("identity-current-structure-conflict")
                 self._notify("group-state", reason="repeated-current-structure-contradictions",
                              legacyEvents=[dict(event=event, **values) for event, values in events])
             return reopened
@@ -724,6 +1094,25 @@ class LiveRuntime:
         bind_identity_context(engine, priority=lambda: current("_identity_priority"),
                               context=lambda: current("_identity_prior"))
 
+    @staticmethod
+    def _current_entry_seeds(rows, floor):
+        import numpy as np
+        seeds = {}
+        for row in rows:
+            entry = row.get("difficultEntry") or {}
+            checked = entry.get("verification") or {}
+            if (entry.get("mapId") != row.get("mapId") or str(entry.get("floor", floor)) != str(floor)
+                    or checked.get("success") is not True or entry.get("poseAmbiguous")
+                    or (entry.get("entryCrossCheck") or {}).get("contradicted") is True):
+                continue
+            try:
+                matrix = np.asarray(checked.get("matrixSourceToClient"), dtype=float)
+                if matrix.shape == (3, 3) and np.isfinite(matrix).all():
+                    seeds[row["mapId"]] = entry
+            except (ValueError, TypeError):
+                pass
+        return seeds
+
     def _identity_observation_current(self):
         observation = self._last_observation
         return bool(observation is not None and observation["frame_id"] == self._frame_id
@@ -740,30 +1129,69 @@ class LiveRuntime:
         self._identity_source = "group-default" if is_registered_identity_group(state) else "native-similarity"
         return True
 
+    def _rank_s1_structure(self, engine, frame, floor, epoch, frame_id, cancelled):
+        """Current geometry proposals; never promote a map/group to identity."""
+        from s1_structure_selection import StructureCatalog, StructureEvidenceSession, StructureCandidateScanner
+        catalog = StructureCatalog.from_engine(engine)
+        with self._lock:
+            if (epoch != self._epoch or frame_id != self._frame_id or engine is not self._engine
+                    or str(floor) != self._observed_floor or not self._identity_observation_current()):
+                return None, None, "stale-structure-observation"
+            session = self._s1_structure_session
+            if session is None or session.catalog != catalog:
+                if session is not None:
+                    session.end_round()
+                session = self._s1_structure_session = StructureEvidenceSession(catalog, str(self._round))
+            ticket = session.begin_observation(str(floor))
+            self._s1_structure_ticket = ticket
+            self._automatic_candidate_rows = []
+            intent_generation = self._group_intent_generation
+            locked_map = self._s1_round_locked_map()
+            if locked_map and locked_map not in catalog.map_ids:
+                return None, None, "locked-map-resource-unavailable"
+        obsolete = lambda: (self._cancelled(cancelled) or epoch != self._epoch
+            or frame_id != self._frame_id or engine is not self._engine
+            or intent_generation != self._group_intent_generation)
+        report = engine.qt_s1_structure_scan(frame, floor=str(floor),
+            floor_source="current-frame-verified", cancelled=obsolete,
+            budget_seconds=self._recorded_s1_scan_budget if self._s1_provisional_enabled() else S1_STRUCTURE_CANDIDATE_BUDGET_SECONDS,
+            **({"planned_map_ids": (locked_map,)} if locked_map else {}))
+        rows = StructureCandidateScanner.rank_rows(report, engine.pack)
+        with self._lock:
+            if obsolete() or not self._identity_observation_current() or not session.commit(report, ticket):
+                return None, None, "stale-structure-observation"
+            self._identity_rank_rows = rows
+            self._identity_source = "s1-structure-candidates"
+            self._automatic_candidate_rows = [dict(row, key=row["mapId"], identityKind="candidate") for row in rows]
+            self._update_candidates(rows, floor)
+            # Cursor only. It does not confirm or authorize a map/pose.
+            if rows and self._gate.selected_id not in report["supportedMapIds"]:
+                self._gate.select(rows[0]["mapId"])
+        self._recognition_diagnostic("identity-rank", "s1-current-structure-proposals",
+            inputs=dict(floor=floor, frameId=frame_id, budgetSeconds=S1_STRUCTURE_CANDIDATE_BUDGET_SECONDS),
+            structureEvidence={key:value for key,value in report.items() if key != "poses"})
+        self._notify("structure-candidates", reason=("s1-current-candidate-display" if self._s1_provisional_enabled()
+            else "s1-structure-candidates-awaiting-confirmation"),
+            supportedMapIds=report["supportedMapIds"], scanComplete=report["scanComplete"], identityVerified=False)
+        if self._s1_provisional_enabled() and rows:
+            # A fresh observation always starts at its current highest-ranked
+            # supported hypothesis, never at a remembered display map.
+            return rows[0]["mapId"], None, None
+        return None, None, None
 
-    def _observation_stream_enabled(self, engine):
-        # Cancellation polls this predicate. Use prepared capabilities here;
-        # the scanner and fit publication boundaries own resource revalidation.
-        scan = getattr(engine, 'qt_structure_scan', None) or getattr(engine, 'qt_s1_structure_scan', None)
-        return bool(callable(scan) and (
-            self._season == 's1' and not self._manual_alignment
-            or self._season == 's0' and getattr(engine, 'qt_native_base', None) is not None
-            and (getattr(engine, 'qt_rank_ready', False) or getattr(engine, 'qt_structure_scan_ready', False))))
-
-    def _stream_observation(self, action, payload, cancelled, engine, epoch,
+    def _stream_s1_observation(self, action, payload, cancelled, engine, epoch,
                                captured, frame, floor, digest, capture_generation,
                                frame_generation, frame_id, cycle, snapshot):
         """One captured ticket streams material; finalization never chooses again."""
         from s1_structure_selection import StructureCatalog, StructureEvidenceSession, StructureCandidateScanner
         from s1_stream_priority import candidate_order
         catalog = StructureCatalog.from_engine(engine)
-        provisional_display = self._candidate_provisional_enabled(engine)
         shape = tuple(frame.shape)
         dimensions = tuple(captured.context.full_client_size)
         if snapshot is None or shape[:2] != (dimensions[1], dimensions[0]):
             return self._receipt(action, payload, success=False, reason="stream-frame-shape-mismatch")
         with self._lock:
-            if (self._private_evidence_stopping or epoch != self._epoch or frame_id != self._frame_id or not self._observation_stream_enabled(engine)
+            if (epoch != self._epoch or frame_id != self._frame_id or not self._s1_provisional_enabled()
                     or not self._identity_observation_current()):
                 return self._receipt(action, payload, success=False, reason="stale-stream-observation", stale=True)
             session = self._s1_structure_session
@@ -781,12 +1209,12 @@ class LiveRuntime:
                 self._s1_candidate_preference is not None and payload.get("forceCatalogue") is not True
                 and action not in ("reselect_map", "map_reselection")) else None
             private_prepare = getattr(engine, "qt_s1_private_coordinate_prepare", None)
-            private_enabled = catalog.season == 's1' and self._native_s1_round_lock and callable(private_prepare)
+            private_enabled = self._native_s1_round_lock and callable(private_prepare)
             round_map_id = self._s1_round_locked_map()
             if round_map_id and (not private_enabled or round_map_id not in catalog.map_ids):
                 # A changed/missing catalogue cannot silently substitute a map.
                 # Resource replacement still ends the unsafe runtime context.
-                self._clear_candidate_reference()
+                self._clear_s1_reference()
                 self._clear_private_pool()
                 return self._receipt(action, payload, success=False,
                     reason="locked-map-resource-unavailable", posePending=True)
@@ -820,35 +1248,13 @@ class LiveRuntime:
             display_generation = getattr(self, "_display_generation", 0)
             intent_generation = self._group_intent_generation
             round_id = self._round
-            identity_snapshot = (self._identity_native, self._identity_context(), intent_generation)
             priority_handles = dict(self._stream_priority_handles)
             self._private_observation_sequence += 1
             private_sequence = self._private_observation_sequence
         first_result = None
-        pixel_scope = None
-
-        def pixel_observation_scope():
-            nonlocal pixel_scope
-            if pixel_scope is None:
-                from round_layer_group_commit import RoundPoseObservationScope
-                pixel_scope = RoundPoseObservationScope(frame)
-            return pixel_scope
-
-        entry_selection, entry_seed, entry_published, entry_preserved = None, None, False, False
-        published_report = None
-        coordinate_work = None
-        coordinate_material_committed = False
-        coordinate_context = dict(season=catalog.season, mode=catalog.mode, floor=str(floor),
-            frameId=frame_id, roundId=round_id, epoch=epoch, cycleId=cycle,
-            privateFrameDigest=digest, privateResourceDigest=catalog.resource_key,
-            attemptId=payload.get('_diagnosticAttemptId', ''),
-            openingId=payload.get('_diagnosticOpeningId', ''), inputSequence=payload.get('inputSequence'))
         attempted = set()
         last_material_reason = "no-current-supported-candidates"
         started = time.monotonic()
-        scan_budget = (self._recorded_s1_scan_budget if provisional_display and catalog.season == 's1' else
-            S1_STRUCTURE_CANDIDATE_BUDGET_SECONDS if catalog.season == 's1' else INITIAL_IDENTITY_BUDGET_SECONDS)
-        deadline = time.perf_counter() + scan_budget if scan_budget is not None else None
         private_report = None
         private_material_ms = 0.0
         scan_plan, scan_revision = (), None
@@ -862,9 +1268,8 @@ class LiveRuntime:
                 and ticket == self._s1_structure_ticket)
 
         def current():
-            return (not self._private_evidence_stopping and owns_ticket() and not self._cancelled(cancelled)
-                and self._active and self._map_open and self._observation_stream_enabled(engine)
-                and _engine_resource_current(engine)
+            return (owns_ticket() and not self._cancelled(cancelled)
+                and self._active and self._map_open and self._s1_provisional_enabled()
                 and settings_generation == self._settings_generation
                 and display_generation == getattr(self, "_display_generation", 0)
                 and intent_generation == self._group_intent_generation
@@ -895,177 +1300,11 @@ class LiveRuntime:
                 self._automatic_candidate_rows = []
                 for candidate in self._candidate_rows:
                     candidate["structureSupported"] = False
-                if revoke_pixels and not self._display_current(row):
+                if revoke_pixels:
                     self._revoke_render(reason)  # Last mutation; notification may reenter.
 
-        def publish_entry(evidence, *, channel='candidate'):
-            nonlocal entry_selection, entry_seed, entry_published, entry_preserved, intent_generation, first_result
-            with self._lock:
-                if (not current() or evidence.get('frameKey') != digest
-                        or not session.commit_entry_evidence(evidence, ticket, channel=channel)):
-                    return False
-                if entry_preserved and not any(row.get('identityHardGatePassed') is True for row in evidence['rows']):
-                    return True  # UNKNOWN in the other lane does not undo current positive evidence.
-                entry_selection, entry_seed, stale = self._commit_identity_rows(
-                    engine, evidence['rows'], frame, floor, epoch, frame_id, cancelled,
-                    identity_snapshot=identity_snapshot)
-                if stale or not owns_ticket():
-                    return False
-                # The reducer checks the intent again after synchronous
-                # notifications. Adopt only its own completed group transition.
-                intent_generation = self._group_intent_generation
-                if not current():
-                    return False
-                entry_published = True
-                if entry_selection:
-                    # A candidate's display receipt is not the entry lock's
-                    # material receipt, even when its current pose is reusable.
-                    first_result = None
-                entry_preserved = bool(entry_selection or self._identity_fields()['groupLocked']
-                    or any(row.get('identityHardGatePassed') is True for row in evidence['rows'])
-                    or any(row.get('identityKind') == 'group' for row in self._automatic_candidate_rows))
-                return entry_preserved
-
-        def publish_observed_entry(evidence, *, entry_observation=None, channel='candidate'):
-            # The completed work stays private. Public JSON rows cannot carry a
-            # frame/engine owner or turn self-reported pose flags into authority.
-            nonlocal selected_entry_observation
-            result = publish_entry(evidence, channel=channel)
-            with self._lock:
-                if result and current():
-                    if entry_selection:
-                        selected_entry_observation = entry_observation
-                    source = getattr(entry_observation, 'engine', None)
-                    diagnostics = getattr(source, 'last_difficult_evidence', None)
-                    if diagnostics is not None:
-                        engine.last_difficult_evidence = diagnostics
-            return result
-
-        selected_entry_observation = None
-
-        def identity_committed():
-            with self._lock:
-                if private_enabled:
-                    row = self._render
-                    return bool(current() and self._s1_private_pool is pool and pool.locked_id
-                        and (not self._native_s1_final_round_lock or self._s1_round_map_id == pool.locked_id)
-                        and first_result is not None and row is not None
-                        and row.get('token') == first_result.get('renderToken')
-                        and row.get('mapId') == pool.locked_id and row.get('frameId') == frame_id
-                        and row.get('poseFinalVerified') is True and self._display_current(row))
-                return bool(current() and entry_selection and self._map_id == entry_selection
-                    and self._gate.confirmed_id == entry_selection and self._durable_map_id == entry_selection)
-
-        def accept_current_material(mid, result):
-            nonlocal first_result
-            with self._lock:
-                row = self._render
-                if (not current() or private_enabled and (self._s1_private_pool is not pool or mid not in pool.remaining)
-                        or not result.get('success') or row is None
-                        or row.get('frameId') != frame_id or row.get('mapId') != mid
-                        or row.get('token') != result.get('renderToken')
-                        or row.get('poseFinalVerified') is not True or not self._display_current(row)):
-                    return False
-                first_result = result
-                if private_enabled and pool.accept_material(mid, coordinate_current=True):
-                    if self._native_s1_final_round_lock:
-                        self._s1_round_map_id = mid
-                        self._render.update(self._identity_fields())
-                    self._notify('private-experimental-locked', reason='private-unique-pool-current-material',
-                        **pool.snapshot(), privateResourceDigest=catalog.resource_key)
-                return True
-
-        def coordinate_source_current():
-            # Read-only cancellation only. All ledger/material authority is
-            # checked again under the runtime lock by its consumer.
-            return bool(private_enabled and not self._private_evidence_stopping
-                and engine is self._engine and self._private_pool_scope_current(pool)
-                and getattr(engine, 'qt_s1_coordinate_recognition', None) is not None
-                and engine.qt_s1_coordinate_recognition.current())
-
-        def coordinate_work_bound(work):
-            from common_coordinate_observation import CommonCoordinateObservationWork
-            return bool(isinstance(work, CommonCoordinateObservationWork)
-                and work.frame_snapshot is snapshot and work.catalog == catalog
-                and work.prepared is getattr(engine, 'qt_s1_coordinate_recognition', None)
-                and work.floor == str(floor) and work.prepared.current())
-
-        def queue_coordinate_history(work):
-            # Transfer an actual completed source report; never repeat its
-            # extraction/compare or ask a historical frame for current pixels.
-            if not coordinate_work_bound(work) or not work.coordinate_complete:
-                return
-            def consume():
-                with self._lock:
-                    if (not coordinate_source_current() or work.ledger_consumed
-                            or pool.retain_locked_identity and pool.locked_id):
-                        return
-                    self._consume_s1_coordinate_report(pool, catalog, str(floor), work.report,
-                        work.pool_ids, work.source_pool_revision, coordinate_context,
-                        current=coordinate_source_current, work=work)
-            self._s1_private_jobs.submit(consume, sequence=private_sequence)
-
-        def publish_coordinate(work, *, phase):
-            nonlocal coordinate_work, first_result, last_material_reason, coordinate_material_committed
-            with self._lock:
-                if not current() or not private_enabled or not coordinate_work_bound(work):
-                    return False
-                if phase == 'registered':
-                    coordinate_work = work
-                    return True
-                if work is not coordinate_work:
-                    return False
-                if phase == 'coordinate':
-                    if not work.coordinate_complete or work._failed:
-                        return False
-                    reason = self._consume_s1_coordinate_report(pool, catalog, str(floor), work.report,
-                        work.pool_ids, work.source_pool_revision, coordinate_context,
-                        current=current, work=work)
-                    if reason is None or not current():
-                        return False
-                    if (first_result is not None and (self._render is None
-                            or self._render.get('mapId') not in pool.remaining)):
-                        first_result = None
-                    if reason == 'private-contradiction-recovery':
-                        first_result = None
-                        last_material_reason = reason
-                        return False
-                    if len(pool.remaining) != 1:
-                        return False
-                    mid = pool.remaining[0]
-                    if first_result is not None and accept_current_material(mid, first_result):
-                        return False
-                    return dict(mapId=mid, poolRevision=pool.revision)
-                if (phase != 'complete' or not work.current_fit(engine, frame, work.map_id, floor, pool.revision)
-                        or pool.remaining != (work.map_id,)):
-                    return False
-                revision = pool.revision
-            try:
-                result = self._solve_observation(action, payload, cancelled, engine, None, epoch,
-                    captured, frame, floor, digest, capture_generation, frame_generation, frame_id, cycle,
-                    work.map_id, coordinate_observation=work,
-                    coordinate_pool_revision=revision,
-                    pixel_observation_scope=pixel_observation_scope(),
-                    structure_current=lambda: current() and self._s1_private_pool is pool
-                        and pool.revision == revision and pool.remaining == (work.map_id,))
-            except MemoryError:
-                raise
-            except Exception as error:
-                # Ordinary material failures belong to this lane, just as in
-                # the candidate publication below. The other lane can recover;
-                # actual context invalidation still retires the whole request.
-                last_material_reason = type(error).__name__ + ':' + str(error)
-                return False
-            last_material_reason = result.get('reason', 'material-unavailable')
-            coordinate_material_committed = accept_current_material(work.map_id, result)
-            return coordinate_material_committed
-
         def publish(report):
-            nonlocal first_result, last_material_reason, private_material_ms, published_report
-            # A race terminal is consumed promptly while the other lane keeps
-            # working. The caller later finalizes that same object once.
-            if report is published_report:
-                return not obsolete()
+            nonlocal first_result, last_material_reason, private_material_ms
             rows = StructureCandidateScanner.rank_rows(report, engine.pack)
             with self._lock:
                 if private_enabled:
@@ -1082,12 +1321,8 @@ class LiveRuntime:
                 if (not current() or report.get("frameKey") != digest
                         or not session.commit(report, ticket)):
                     return False
-                published_report = report
-                if entry_preserved or coordinate_material_committed:
-                    return True
                 self._identity_rank_rows = rows
-                if not self._provisional_display_map_id:
-                    self._identity_source = f"{catalog.season}-structure-candidates"
+                self._identity_source = "s1-structure-candidates"
                 self._automatic_candidate_rows = [dict(row, key=row["mapId"], identityKind="candidate") for row in rows]
                 self._update_candidates(rows, floor)
                 # A list update must not change an already materialized choice.
@@ -1099,7 +1334,7 @@ class LiveRuntime:
                 checkedMapIds=report["checkedMapIds"], supportedMapIds=report["supportedMapIds"],
                 firstVerifiedPoseElapsedSeconds=report.get("firstVerifiedPoseElapsedSeconds"),
                 rawFrameDigest=digest, shapeSnapshotId=snapshot.sha256, frameShape=list(shape))
-            for row in rows if provisional_display else ():
+            for row in rows:
                 mid = row["mapId"]
                 with self._lock:
                     eligible = not private_enabled or (self._s1_private_pool is pool and mid in pool.remaining)
@@ -1111,7 +1346,6 @@ class LiveRuntime:
                     result = self._solve_observation(action, payload, cancelled, engine, None, epoch,
                         captured, frame, floor, digest, capture_generation, frame_generation,
                         frame_id, cycle, mid, structure_ticket=(session, ticket),
-                        pixel_observation_scope=pixel_observation_scope(),
                         structure_current=lambda: not obsolete() and (not private_enabled
                             or self._s1_private_pool is pool and mid in pool.remaining
                             and pool.recovery_revision == recovery_revision))
@@ -1122,7 +1356,24 @@ class LiveRuntime:
                     continue
                 private_material_ms += (time.monotonic() - material_started) * 1000
                 last_material_reason = result.get("reason", "material-unavailable")
-                accept_current_material(mid, result)
+                with self._lock:
+                    if (current() and (not private_enabled or self._s1_private_pool is pool and mid in pool.remaining)
+                            and result.get("success") and self._render is not None
+                            and self._render.get("frameId") == frame_id
+                            and self._render.get("mapId") == mid
+                            and self._render.get("token") == result.get("renderToken")
+                            and self._display_current(self._render)):
+                        first_result = result
+                        if (private_enabled and self._s1_private_pool is pool
+                                and pool.accept_material(mid, coordinate_current=True)):
+                            if self._native_s1_final_round_lock:
+                                self._s1_round_map_id = mid
+                                # Material was published just before the ledger
+                                # committed. Refresh identity metadata only; its
+                                # token, transform and display grant do not change.
+                                self._render.update(self._identity_fields())
+                            self._notify("private-experimental-locked", reason="private-unique-pool-current-material",
+                                **pool.snapshot(), privateResourceDigest=catalog.resource_key)
             return True
 
         def preferred_material_committed(map_id):
@@ -1184,7 +1435,7 @@ class LiveRuntime:
                     self._stream_priority_handles.update(priority_handles)
             self._notify("structure-scan-started", reason=ordering["reason"], streamFrameId=frame_id,
                 streamEpoch=epoch, streamRoundId=round_id, streamCycleId=cycle,
-                candidateOrder=list(order), ordering=ordering, budgetSeconds=scan_budget,
+                candidateOrder=list(order), ordering=ordering, budgetSeconds=self._recorded_s1_scan_budget,
                 rawFrameDigest=digest, shapeSnapshotId=snapshot.sha256, frameShape=list(shape),
                 clientDimensions=list(dimensions))
             def scan_current():
@@ -1195,14 +1446,10 @@ class LiveRuntime:
                     # owes one full catalogue pass, regardless of that ledger.
                     scan_plan, scan_revision = ((tuple(catalog.map_ids) if recovery_scan else tuple(pool.remaining)),
                         pool.revision) if private_enabled else ((), None)
-                    # A first preview cannot stop standalone S1's initial scan.
-                    # Its separate ACK-based preferred reuse remains below.
-                    options = dict(first_material_committed=(first_material_committed
-                        if (catalog.season == 's0' or private_enabled)
-                        and not recovery_scan and payload.get("forceCatalogue") is not True
-                        and action not in ("reselect_map", "map_reselection") else None))
-                    if private_enabled:
-                        options['planned_map_ids'] = scan_plan
+                    options = dict(planned_map_ids=scan_plan,
+                        first_material_committed=(first_material_committed
+                            if not recovery_scan and payload.get("forceCatalogue") is not True
+                            and action not in ("reselect_map", "map_reselection") else None)) if private_enabled else {}
                     if pose_priors:
                         options["pose_priors"] = dict(pose_priors)
                     if (private_enabled and pool.retain_locked_identity and pool.locked_id
@@ -1221,53 +1468,15 @@ class LiveRuntime:
                         privatePoolRevision=pool.revision if private_enabled else None,
                         privateExperimentalLocked=bool(private_enabled and pool.locked_id),
                         privateRecoveryPending=recovery_scan)
-                scan = getattr(engine, 'qt_structure_scan', None) or getattr(engine, 'qt_s1_structure_scan', None)
-                if getattr(engine, 'qt_recognition_race', None) is not None:
-                    options.update(on_entry_observation=publish_observed_entry,
-                        identity_committed=identity_committed)
-                    if (private_enabled and getattr(engine, 'qt_s1_coordinate_recognition', None) is not None
-                            and not (pool.retain_locked_identity and pool.locked_id)):
-                        options.update(on_coordinate_work=publish_coordinate,
-                            on_coordinate_history=queue_coordinate_history,
-                            coordinate_pool_ids=tuple(pool.remaining), coordinate_pool_revision=pool.revision,
-                            coordinate_source_current=coordinate_source_current)
-                report = scan(frame, floor=str(floor), floor_source="current-frame-verified",
-                    cancelled=obsolete, budget_seconds=scan_budget,
+                report = engine.qt_s1_structure_scan(frame, floor=str(floor), floor_source="current-frame-verified",
+                    cancelled=obsolete, budget_seconds=self._recorded_s1_scan_budget,
                     on_progress=publish, candidate_order=order, preferred_map_id=preferred,
-                    preferred_material_committed=preferred_material_committed,
-                    **(dict(on_entry_evidence=publish_entry) if catalog.season == 's0' else {}),
-                    **({'deadline': deadline} if deadline is not None else {}),
-                    frame_snapshot=snapshot, **options)
+                    preferred_material_committed=preferred_material_committed, **options)
                 if _test_evidence_active() and type(report.get('fitEvidence')) is dict:
                     _test_evidence('fit-evidence', frame, dict(report['fitEvidence'],
                         priorBinding=prior_binding, priorReason=prior_reason))
                 return report
-            with self._lock:
-                if self._private_evidence_stopping:
-                    return self._receipt(action, payload, success=False, reason='stale-stream-observation', stale=True)
-                race = getattr(engine, 'qt_recognition_race', None)
-                if race is not None:
-                    self._recognition_races.add(race)
             report = scan_current()
-            if catalog.season == 's0' and report['status'] != 'cancelled' and not obsolete():
-                if not entry_published and 'entryEvidence' in report:
-                    publish_entry(report['entryEvidence'])
-                if entry_selection and not obsolete():
-                    first_result = self._solve_observation(action, payload, cancelled, engine, self._group, epoch,
-                        captured, frame, floor, digest, capture_generation, frame_generation,
-                        frame_id, cycle, entry_selection, entry_seed,
-                        entry_observation=selected_entry_observation,
-                        structure_ticket=(session, ticket), structure_current=current,
-                        pixel_observation_scope=pixel_observation_scope())
-                elif not entry_selection and first_result is None:
-                    last_material_reason = 'identity-not-uniquely-verified'
-            if first_result is not None and not first_result.get('success'):
-                # Entry evidence may lock identity after this stream began as
-                # a provisional display. Preserve its solver's concrete failure,
-                # including one that revoked its own context before returning.
-                if first_result.get('stale'):
-                    withdraw("stream-scan-cancelled")
-                return first_result
             # A locked ID outlives an UNKNOWN current fit/material result, but
             # its old pixels do not. Final round locks never reopen identity;
             # legacy auto-test evidence experiments retain their own policy.
@@ -1300,8 +1509,6 @@ class LiveRuntime:
                 result = dict(first_result, structureScanStatus=report["status"],
                     structureScanComplete=report["scanComplete"], structureScanElapsedSeconds=report["elapsedSeconds"],
                     candidateReuse=report.get("candidateReuse", "none"), scanSkipped=report.get("scanSkipped", False))
-            elif catalog.season == 's1' and not provisional_display:
-                result = self._s1_structure_pending_receipt(action, payload)
             else:
                 result = self._receipt(action, payload, success=False, reason=last_material_reason,
                     posePending=True, identityUnresolved=not bool(self._s1_round_locked_map()))
@@ -1334,21 +1541,11 @@ class LiveRuntime:
                 privateScanMs=report["elapsedSeconds"] * 1000, privateMaterialMs=private_material_ms,
                 elapsedSeconds=report["elapsedSeconds"], totalSeconds=time.monotonic()-started,
                 firstVerifiedPoseElapsedSeconds=report.get("firstVerifiedPoseElapsedSeconds"))
-            direct = report.get('directStructureRecognition', {})
-            preparation = report.get('posePreparation', [])
             self._recognition_diagnostic("s1-scan-result", report["status"],
                 inputs=self._failure_diagnostic(payload), checkedCount=len(report["checkedMapIds"]),
                 supportedCount=len(report["supportedMapIds"]),
                 elapsedMs=report["elapsedSeconds"] * 1000,
-                posePriorOutcomes=report.get("posePriorOutcomes", []),
-                candidatePreparationCount=len(preparation),
-                candidatePreparationMs=sum(row.get('elapsedMs', 0) for row in preparation),
-                candidateFitMs=sum(row.get('fitMs', 0) for row in preparation),
-                directStructureRecognition={key: direct[key] for key in (
-                    'status', 'floor', 'authorizesIdentity', 'lock', 'measuredChainCount',
-                    'aCount', 'bCount', 'fingerprintUnique', 'retrievalComplete',
-                    'qualificationGaps', 'extractionMs', 'retrievalMs', 'heldOutMs',
-                    'computationMs', 'elapsedMs') if key in direct})
+                posePriorOutcomes=report.get("posePriorOutcomes", []))
             return result
         except (MemoryError, KeyboardInterrupt, SystemExit):
             withdraw("stream-scan-exception")
@@ -1377,28 +1574,19 @@ class LiveRuntime:
             # ordinary close, even if first paint lost the race. No UI authority
             # follows it. Queue ordering is capture admission, not finish time.
             if private_enabled and not (pool.retain_locked_identity and pool.locked_id):
-                if coordinate_work is None or coordinate_work.retire_unstarted_source():
-                    self._enqueue_private_observation(pool, engine, catalog, captured, frame, str(floor),
-                        digest, epoch, frame_id, round_id, cycle, payload, private_sequence)
+                self._enqueue_private_observation(pool, engine, catalog, captured, frame, str(floor),
+                    digest, epoch, frame_id, round_id, cycle, payload, private_sequence)
 
     @property
     def private_evidence_busy(self):
-        with self._lock:
-            races = tuple(self._recognition_races)
-        return self._s1_private_jobs.busy or any(race.busy for race in races)
+        return self._s1_private_jobs.busy
 
     def stop_private_evidence(self):
         # Stop admission first, then invalidate the running immutable task.
         # Exit drain polls busy; the UI never joins a native kernel here.
-        with self._lock:
-            if self._private_evidence_stopping:
-                return
-            self._private_evidence_stopping = True
-            races = tuple(self._recognition_races)
-            self._clear_private_pool()
         self._s1_private_jobs.shutdown()
-        for race in races:
-            race.cancel()
+        with self._lock:
+            self._clear_private_pool()
 
     def _clear_private_pool(self):
         self._s1_private_pool = None
@@ -1468,9 +1656,69 @@ class LiveRuntime:
                     before, revision = tuple(pool.remaining), pool.revision
                 evidence = engine.qt_s1_private_coordinate_prepare(owned_frame, before, floor,
                     cancelled=cancelled, stage=stage)
-                reason = self._consume_s1_coordinate_report(pool, catalog, floor, evidence,
-                    before, revision, context, current=scope_current)
-                state = "finished" if reason is not None else "cancelled"
+                with self._lock:
+                    if not scope_current() or pool.revision != revision:
+                        self._private_record(context, "private-evidence-discarded", reason="private-owner-or-revision-changed",
+                            snapshotPoolRevision=revision, currentPoolRevision=pool.revision)
+                        return
+                    if (evidence.get("mode"), evidence.get("resourceKey"), evidence.get("floor")) != (
+                            catalog.mode, catalog.resource_key, floor):
+                        state = "failed"
+                        return
+                    was_locked = pool.locked_id
+                    reason = pool.observe(evidence)
+                    summary = evidence.get("coordinateEvidence", {})
+                    self._private_record(context, "private-pool-observed", reason=reason,
+                        privatePoolBefore=list(before), privatePoolAfter=list(pool.remaining),
+                        snapshotPoolRevision=revision, currentPoolRevision=pool.revision,
+                        privateContradictedMapIds=evidence.get("contradictedMapIds", []),
+                        privateUnknownMapIds=evidence.get("unknownMapIds", list(before)),
+                        privateCoordinateReason=evidence.get("reason", ""),
+                        privateCoordinateVerified=evidence.get("coordinateVerified") is True,
+                        privatePoseDomainNarrow=evidence.get("poseAvailable") is True,
+                        privateCoordinateBasis=summary.get("basis", ""), privateScaleRange=summary.get("scaleRange", []),
+                        privateCoordinateErrorPx=summary.get("pointCoordinateErrorBoundPx", summary.get("anchorErrorPx", 0)),
+                        privateHypothesisCount=summary.get("sharedHypothesisCount", 0),
+                        privateGateStatus=evidence.get("gateStatus", "unknown"),
+                        privateGateReason=evidence.get("gateReason", "private-coordinate-unavailable"),
+                        privateGateMs=evidence.get("gateMs", 0), privateObservationMs=evidence.get("observationMs", 0),
+                        privateCompareMs=evidence.get("elapsedMs", 0), privateTotalMs=evidence.get("totalMs", 0),
+                        privateResourceMs=evidence.get("resourceMs", 0),
+                        **pool.snapshot())
+                    if reason == "private-contradiction-recovery":
+                        self._private_contradiction_recovered(pool, was_locked, evidence, catalog)
+                    if reason == "private-pool-updated" and tuple(pool.remaining) != before:
+                        # Historical positive evidence may complete after paint.
+                        # Retire a now-excluded candidate immediately, not only
+                        # when a future foreground scan happens to publish.
+                        row = self._render
+                        if (row is not None and row.get("candidateDisplayOnly")
+                                and row.get("mapId") not in pool.remaining):
+                            self._s1_candidate_preference = self._s1_candidate_pose_hint = None
+                            self._revoke_render("s1-candidate-excluded")
+                        self._notify("s1-candidate-pool-changed", reason=reason,
+                            **pool.snapshot(), privateResourceDigest=catalog.resource_key)
+                    # Formal evidence needs bounded reasons too; the optional
+                    # private timing sink is deliberately disabled in production.
+                    try:
+                        self._recognition_diagnostic("s1-round-evidence", reason,
+                            inputs={key: context[key] for key in
+                                ("attemptId", "openingId", "roundId", "epoch", "cycleId", "floor")},
+                            remainingCount=len(pool.remaining),
+                            contradictedCount=len(evidence.get("contradictedMapIds", [])),
+                            unknownCount=len(evidence.get("unknownMapIds", before)),
+                            privatePoolAfter=list(pool.remaining),
+                            privateCoordinateReason=evidence.get("reason", "private-coordinate-unknown"),
+                            privateCoordinateVerified=evidence.get("coordinateVerified") is True,
+                            privatePoseDomainNarrow=evidence.get("poseAvailable") is True,
+                            candidateChecks=[{key: check[key] for key in
+                                ("mapId", "unavoidableMissCount", "sampleCount", "unavoidableSpanPx", "explicitContradiction")
+                                if key in check} for check in evidence.get("candidateChecks", [])[:32]],
+                            privatePoolId=pool.pool_id, privatePoolRevision=pool.revision,
+                            privateExperimentalLocked=bool(pool.locked_id))
+                    except Exception:
+                        pass  # Diagnostics cannot change the ledger result.
+                    state = "finished"
             except BaseException as error:
                 state = "failed"
                 stage("prepare-error", state, (time.monotonic()-began)*1000, exceptionType=type(error).__name__)
@@ -1483,83 +1731,13 @@ class LiveRuntime:
         stage("queue", "started", 0.)
         self._s1_private_jobs.submit(run, discard, sequence=sequence)
 
-    def _consume_s1_coordinate_report(self, pool, catalog, floor, evidence, before, revision,
-                                      context, *, current, work=None):
-        """The one pool writer, for current and historical coordinate evidence."""
-        with self._lock:
-            if work is not None and work.ledger_consumed:
-                return None
-            if not current() or pool.revision != revision or tuple(pool.remaining) != tuple(before):
-                self._private_record(context, "private-evidence-discarded", reason="private-owner-or-revision-changed",
-                    snapshotPoolRevision=revision, currentPoolRevision=pool.revision)
-                return None
-            if (not isinstance(evidence, dict) or
-                    (evidence.get("mode"), evidence.get("resourceKey"), evidence.get("floor")) !=
-                    (catalog.mode, catalog.resource_key, floor)):
-                return None
-            was_locked = pool.locked_id
-            reason = pool.observe(evidence)
-            if work is not None:
-                work.ledger_consumed = True
-            summary = evidence.get("coordinateEvidence", {})
-            self._private_record(context, "private-pool-observed", reason=reason,
-                privatePoolBefore=list(before), privatePoolAfter=list(pool.remaining),
-                snapshotPoolRevision=revision, currentPoolRevision=pool.revision,
-                privateContradictedMapIds=evidence.get("contradictedMapIds", []),
-                privateUnknownMapIds=evidence.get("unknownMapIds", list(before)),
-                privateCoordinateReason=evidence.get("reason", ""),
-                privateCoordinateVerified=evidence.get("coordinateVerified") is True,
-                privatePoseDomainNarrow=evidence.get("poseAvailable") is True,
-                privateCoordinateBasis=summary.get("basis", ""), privateScaleRange=summary.get("scaleRange", []),
-                privateCoordinateErrorPx=summary.get("pointCoordinateErrorBoundPx", summary.get("anchorErrorPx", 0)),
-                privateHypothesisCount=summary.get("sharedHypothesisCount", 0),
-                privateGateStatus=evidence.get("gateStatus", "unknown"),
-                privateGateReason=evidence.get("gateReason", "private-coordinate-unavailable"),
-                privateGateMs=evidence.get("gateMs", 0), privateObservationMs=evidence.get("observationMs", 0),
-                privateCompareMs=evidence.get("elapsedMs", 0), privateTotalMs=evidence.get("totalMs", 0),
-                privateResourceMs=evidence.get("resourceMs", 0), **pool.snapshot())
-            if reason == "private-contradiction-recovery":
-                self._private_contradiction_recovered(pool, was_locked, evidence, catalog)
-            if reason == "private-pool-updated" and tuple(pool.remaining) != tuple(before):
-                row = self._render
-                if (row is not None and row.get("candidateDisplayOnly")
-                        and row.get("mapId") not in pool.remaining):
-                    self._s1_candidate_preference = self._s1_candidate_pose_hint = None
-                    if work is not None:
-                        token = self._retire_candidate_preview(reason='s1-candidate-excluded')
-                        if token:
-                            self._notify('render-revoked', reason='s1-candidate-excluded', token=token)
-                    else:
-                        self._revoke_render("s1-candidate-excluded")
-                self._notify("s1-candidate-pool-changed", reason=reason,
-                    **pool.snapshot(), privateResourceDigest=catalog.resource_key)
-            try:
-                self._recognition_diagnostic("s1-round-evidence", reason,
-                    inputs={key: context[key] for key in
-                        ("attemptId", "openingId", "roundId", "epoch", "cycleId", "floor")},
-                    remainingCount=len(pool.remaining),
-                    contradictedCount=len(evidence.get("contradictedMapIds", [])),
-                    unknownCount=len(evidence.get("unknownMapIds", before)),
-                    privatePoolAfter=list(pool.remaining),
-                    privateCoordinateReason=evidence.get("reason", "private-coordinate-unknown"),
-                    privateCoordinateVerified=evidence.get("coordinateVerified") is True,
-                    privatePoseDomainNarrow=evidence.get("poseAvailable") is True,
-                    candidateChecks=[{key: check[key] for key in
-                        ("mapId", "unavoidableMissCount", "sampleCount", "unavoidableSpanPx", "explicitContradiction")
-                        if key in check} for check in evidence.get("candidateChecks", [])[:32]],
-                    privatePoolId=pool.pool_id, privatePoolRevision=pool.revision,
-                    privateExperimentalLocked=bool(pool.locked_id))
-            except Exception:
-                pass  # Diagnostics cannot change the ledger result.
-            return reason
-
     def _private_contradiction_recovered(self, pool, previous_lock, evidence, catalog):
         """Under the lifetime lock: retire old material, then emit one transition.
 
         No Session refresh/dispatch, epoch change, hotkey or foreground cancel.
         The next fresh observation owns a full-catalogue recovery scan.
         """
-        self._clear_candidate_reference()
+        self._clear_s1_reference()
         self._s1_candidate_preference = self._s1_candidate_pose_hint = None
         self._remember_proposals = {token: proposal for token, proposal in self._remember_proposals.items()
             if not proposal.get("candidateOnly")}
@@ -1594,8 +1772,9 @@ class LiveRuntime:
             reason="s1-structure-candidates-awaiting-confirmation" if candidates else "s1-structure-candidates-unresolved",
             posePending=True, identityUnresolved=True, structureEvidence=evidence)
 
-    def _collect_legacy_entry_evidence(self, engine, frame, floor, epoch, frame_id, cancelled, *, rediscover=False):
-        """Explicit legacy providers use the shared source-plan collector."""
+    def _rank_identity(self, engine, frame, floor, epoch, frame_id, cancelled, *, rediscover=False):
+        if self._season == "s1" and callable(getattr(engine, "qt_s1_structure_scan", None)):
+            return self._rank_s1_structure(engine, frame, floor, epoch, frame_id, cancelled)
         with self._lock:
             previous, prior = self._identity_native, self._identity_prior
             context = self._identity_context()
@@ -1604,16 +1783,7 @@ class LiveRuntime:
         rows = (review(frame, floor, prior=prior, budget_seconds=INITIAL_IDENTITY_BUDGET_SECONDS)
                 if prior and callable(review) and not rediscover else engine.rank(frame, floor=floor,
                     limit=len(engine.pack.maps), budget_seconds=INITIAL_IDENTITY_BUDGET_SECONDS))
-        return self._commit_identity_rows(engine, rows, frame, floor,
-            epoch, frame_id, cancelled, rediscover=rediscover,
-            identity_snapshot=(previous, context, intent_generation))
-
-    def _commit_identity_rows(self, engine, rows, frame, floor, epoch, frame_id, cancelled, *,
-                              identity_snapshot, rediscover=False):
-        """The runtime alone commits identity; this reducer schedules no work."""
-        from entry_pose_proposals import current_entry_pose_seeds
-        previous, context, intent_generation = identity_snapshot
-        seeds = current_entry_pose_seeds(rows, floor)
+        seeds = self._current_entry_seeds(rows, floor)
         state, proposal = stage_similarity_rank(None if rediscover else previous, rows, context,
             hashlib.sha256(frame.tobytes()).hexdigest(), seeds, group_only=True)
         group_evidence = similarity_evidence_summary(proposal, state)
@@ -1644,16 +1814,10 @@ class LiveRuntime:
                 proposal=dict(status="logical-group-pending",reason="registered-family-"+family["status"])
                 unresolved_candidates=[dict(key=row["groupId"],mapId="",identityKind="group",name="待确认的相似地图组",**row)
                                        for row in family.get("candidates",())]
-        retired_preview_token = ""
         with self._lock:
             if (self._cancelled(cancelled) or epoch != self._epoch or frame_id != self._frame_id
                     or intent_generation != self._group_intent_generation or self._group_choice_inflight is not None):
                 return None, None, "stale-context"
-            if engine is not self._engine:
-                return None, None, "stale-context"
-            if not _engine_resource_current(engine):
-                self.invalidate("resource-context-superseded")
-                return None, None, "resource-context-superseded"
             if not self._identity_observation_current():
                 self.invalidate("capture-context-changed")
                 return None, None, "capture-context-changed"
@@ -1733,7 +1897,6 @@ class LiveRuntime:
                     self._durable_map_id = selected
                     self._identity_source = "automatic-hard-gate"
             if selected:
-                retired_preview_token = self._retire_candidate_preview(reason="candidate-identity-committed", map_id=selected)
                 if grouped and len(state.member_ids)>1:
                     self._group_member_preference=(*group_key,selected)
                 elif self._group_member_preference and selected not in self._group_member_preference[2]:
@@ -1743,9 +1906,6 @@ class LiveRuntime:
                 self._map_id = selected
                 self._gate.select(selected)
                 self._gate.confirm()
-            committed_intent_generation = self._group_intent_generation
-        if retired_preview_token:
-            self._notify("render-revoked", reason="candidate-identity-committed", token=retired_preview_token)
         self._recognition_diagnostic('identity-rank', proposal.get('reason', proposal.get('status', 'ranked')),
             inputs=dict(candidateCount=len(rows), acceptedCount=len(accepted), seedCount=len(seeds),
                 floor=floor, frameId=frame_id, budgetSeconds=INITIAL_IDENTITY_BUDGET_SECONDS),
@@ -1761,11 +1921,6 @@ class LiveRuntime:
                 nativeStatus=proposal.get("status"), nativeCandidateMemberId=proposal.get("candidateMemberId"),
                 establishedMemberIds=list(state.member_ids)[:32], selectedMapId=selected,
                 entranceKind=entrance_kind))
-        with self._lock:
-            if (self._cancelled(cancelled) or epoch != self._epoch or frame_id != self._frame_id
-                    or committed_intent_generation != self._group_intent_generation
-                    or self._group_choice_inflight is not None):
-                return None, None, 'stale-context'
         seed = seeds.get(selected)
         if seed is None and len(accepted) == 1 and accepted[0].get("mapId") == selected:
             seed = accepted[0].get("difficultEntry")
@@ -1818,9 +1973,6 @@ class LiveRuntime:
                 floor=self._floor, frame_generation=staged["generation"] if staged else self._frame_generation)
             and (staged is None or self._transient_drag is None and self._staged_choice_current(staged)))
         if not common:
-            return False
-        registered = registered_family_identity(pending.get('identity'))
-        if registered is not None and registered != registered_family_identity(self._identity_native):
             return False
         if pending.get("projection"):
             return bool(self._transient_cycle_current() and pending["group"] is self._group)
@@ -1886,43 +2038,6 @@ class LiveRuntime:
         if committed:self._notify("render-ready",token=token,reason=outcome,unchanged=False)
         return dict(success=committed,reason=outcome,token=token,sourceRetained=retained,projectionOnly=True)
 
-    def sibling_requires_registry_validation(self, token):
-        """Pure query for the UI; file-backed declarations are checked by a worker."""
-        with self._lock:
-            pending = self._pending_sibling
-            if pending is None or pending['render']['token'] != token:
-                return False
-            state = pending.get('identity') or self._identity_native
-            registry = getattr(self._engine, 'qt_logical_group_registry', None)
-            return bool(registered_family_identity(state) is not None
-                        and getattr(registry, 'file_ref', None) is not None)
-
-    def _validate_sibling_registry(self, token, payload, cancelled):
-        action = 'validate_sibling_registry'
-        with self._lock:
-            pending = self._pending_sibling
-            if (pending is None or pending['render']['token'] != token or self._cancelled(cancelled)
-                    or not self._pending_sibling_current(pending)):
-                return self._receipt(action, payload, success=False, reason='sibling-context-expired')
-            state = clone_similarity_state(pending.get('identity') or self._identity_native)
-            engine, scope = self._engine, self._sibling_scope()
-        failure = None
-        try:
-            validate_established_registered_family(engine, state)
-        except (OSError, ValueError) as error:
-            failure = str(error)[:512]
-        with self._lock:
-            if (self._pending_sibling is not pending or engine is not self._engine
-                    or scope != self._sibling_scope() or self._cancelled(cancelled)
-                    or not self._pending_sibling_current(pending)):
-                return self._receipt(action, payload, success=False, reason='sibling-context-expired')
-            if failure is not None:
-                self.invalidate('registered-group-resource-unavailable', source=action)
-                return self._receipt(action, payload, success=False, reason='registered-group-resource-unavailable',
-                                     messageDetail=failure)
-            pending['registryVerified'] = registered_family_identity(state)
-            return self._receipt(action, payload, success=True, reason='registered-group-resource-verified')
-
     def acknowledge_sibling(self, token, accepted, reason=""):
         """Commit original sibling identity only after Image.Ready acceptance.
 
@@ -1932,10 +2047,6 @@ class LiveRuntime:
         """
         with self._lock:
             pending = self._pending_sibling
-            if (accepted is True and self.sibling_requires_registry_validation(token)
-                    and pending.get('registryVerified') != registered_family_identity(
-                        pending.get('identity') or self._identity_native)):
-                accepted, reason = False, 'registered-group-validation-required'
             if pending is not None and pending.get("projection") and pending["render"]["token"]==token:
                 return self._acknowledge_projection(token,accepted,reason)
             if pending is None or pending["render"]["token"] != token:
@@ -2208,10 +2319,6 @@ class LiveRuntime:
             observation, floor, floor_read = self._observe(engine, frame)
         except Exception as error:
             with self._lock:
-                if engine is self._engine and not _engine_resource_current(engine):
-                    self.invalidate("resource-context-superseded")
-                    return self._receipt("probe_map_after_drag", payload, success=False,
-                        reason="resource-context-superseded", stale=True)
                 if obsolete() or render_owner != self._refresh_render_owner():
                     self._retire_refresh_owner(render_owner)
                     return self._receipt("probe_map_after_drag", payload, success=False,
@@ -2219,18 +2326,13 @@ class LiveRuntime:
                 # Consume a current failure under the ownership lock. Handing
                 # it to the generic dispatcher would open a window where a new
                 # drag owns these pixels before the old error revokes them.
-                if not self._retained_material_current(render_owner):
-                    self.invalidate("runtime-error", source=f'execute:probe_map_after_drag:{type(error).__name__}')
+                self.invalidate("runtime-error", source=f'execute:probe_map_after_drag:{type(error).__name__}')
                 return self._receipt("probe_map_after_drag", payload, success=False,
                     reason=f"{type(error).__name__}:{error}", error=True, stale=False,
                     unavailable=bool(getattr(error, "unavailable", False)),
                     **self._error_fields(error, "probe_map_after_drag"))
         detected = self._map_observed(engine, observation, floor_read)
         with self._lock:
-            if engine is self._engine and not _engine_resource_current(engine):
-                self.invalidate("resource-context-superseded")
-                return self._receipt("probe_map_after_drag", payload, success=False,
-                    reason="resource-context-superseded", stale=True)
             current_scope = self._sibling_scope()
             if (obsolete() or render_owner != self._refresh_render_owner()
                     or scope[:7] + scope[8:] != current_scope[:7] + current_scope[8:]
@@ -2239,7 +2341,7 @@ class LiveRuntime:
                 return self._receipt("probe_map_after_drag", payload, success=False, reason="transient-probe-expired", stale=True)
             if not detected:
                 self._probe_misses += 1
-                self._retire_material_owner(render_owner, "map-not-observed")
+                self._revoke_render("map-not-observed")
                 if self._probe_misses >= 2:
                     self.invalidate("map-closed", source="post-drag-probe")
                     payload["_mapInputVisual"] = dict(open=False, epoch=self._epoch, sequence=input_sequence,
@@ -2252,8 +2354,7 @@ class LiveRuntime:
             if (self._native_s1_candidate_preview and self._season == "s1"
                     and not self._manual_alignment and floor is None):
                 self._observed_floor = ""
-                if not self._retained_material_current(render_owner):
-                    self._revoke_render("current-floor-unavailable")
+                self._revoke_render("current-floor-unavailable")
                 return self._receipt("probe_map_after_drag", payload, success=False,
                     reason="current-floor-unavailable", fitAttempted=False)
             if self._transient_cycle is not None:
@@ -2314,8 +2415,7 @@ class LiveRuntime:
             if not self._capture_is_current(observation["captured"].context, observation["capture_generation"]):
                 return dict(success=False, reason="capture-context-changed")
             try:
-                clicked = game_floor_control_hit((screen_x, screen_y), current["clientBounds"], observation["floor_read"],
-                    controls=getattr(self._engine, 'qt_controls_profile', None))
+                clicked = game_floor_control_hit((screen_x, screen_y), current["clientBounds"], observation["floor_read"])
             except Exception:
                 # Original native click producer treats malformed HUD geometry
                 # as no hit; it must never mutate floor/pose from an exception.
@@ -2374,24 +2474,16 @@ class LiveRuntime:
                 return None
             return self._floor if evidence.stable is not None or self._manual_override else None
 
-    def _floor_read_conflicts(self, floor_read, target):
+    @staticmethod
+    def _floor_read_conflicts(floor_read, target):
         from floor_contract import floor_contract
-        controls = getattr(getattr(self, '_engine', None), 'qt_controls_profile', None)
-        if controls is None:
-            contract = floor_contract(floor_read.get("mode", "nightmare"), season=floor_read.get("season", "s0"))
-        else:
-            context = controls.for_context(floor_read.get('season', self._season), floor_read.get('mode', self._mode))
-            contract = context.contract if context is not None else None
+        contract = floor_contract(floor_read.get("mode", "nightmare"), season=floor_read.get("season", "s0"))
         observed = floor_read.get("selectedFloor")
         floor = contract.floor_id_for(observed) if contract else None
         return floor is not None and floor != str(target)
 
     def _floor_contract(self):
         from floor_contract import floor_contract
-        controls = getattr(getattr(self, '_engine', None), 'qt_controls_profile', None)
-        if controls is not None:
-            context = controls.for_context(self._season, self._mode)
-            return context.contract if context is not None else None
         return floor_contract(self._mode, season=self._season)
 
     def _current_frame_floor_conflicts(self, target, *, frame_id=None):
@@ -2425,13 +2517,11 @@ class LiveRuntime:
             rows.append(dict(key=item.id, mapId=item.id, name=str(getattr(item, "name", item.id)),
                 floor=str(floor), score=score,
                 selectionSeason=self._season,
-                structureSupported=evidence.get("identityEvidence") in (
-                    "s0-current-structure-proposal", "s1-current-structure-proposal"),
+                structureSupported=evidence.get("identityEvidence") == "s1-current-structure-proposal",
                 structureFrameId=self._frame_id, structureGeneration=self._frame_generation, structureRoundId=self._round,
-                reason="当前帧支持的未锁定候选，可直接切换显示" if self._candidate_provisional_enabled() and item.id in scores else
+                reason="当前帧支持的未锁定候选，可直接切换显示" if self._s1_provisional_enabled() else
                        "入口结构已确认" if evidence.get("identityHardGatePassed") is True else
-                       "结构匹配，地图身份待确认" if evidence.get("identityEvidence") in (
-                           "s0-current-structure-proposal", "s1-current-structure-proposal") else
+                       "结构匹配，地图身份待确认" if evidence.get("identityEvidence") == "s1-current-structure-proposal" else
                        "请对照地图人工选择"))
         self._candidate_rows = rows
 
@@ -2477,26 +2567,6 @@ class LiveRuntime:
                         self._group_choice_inflight = None
                     return self._receipt(action, payload, success=False, reason="group-choice-context-expired", stale=True)
                 state = clone_similarity_state(self._identity_native)
-                engine = self._engine
-            try:
-                validate_established_registered_family(engine, state)
-            except (OSError, ValueError) as error:
-                with self._lock:
-                    if self._group_choice_inflight and self._group_choice_inflight[0] == intent:
-                        self._group_choice_inflight = None
-                    if (not self._cancelled(cancelled) and intent == self._group_intent_generation
-                            and request_scope == self._sibling_scope()):
-                        self.invalidate('registered-group-resource-unavailable', source=action)
-                return self._receipt(action, payload, success=False, reason='registered-group-resource-unavailable',
-                                     messageDetail=str(error)[:512])
-            with self._lock:
-                current = self.snapshot(); current['groupMemberSelectionPending'] = False
-                if (self._cancelled(cancelled) or intent != self._group_intent_generation
-                        or request_scope != self._sibling_scope() or not group_member_choice_is_current(plan, current)
-                        or registered_family_identity(state) != registered_family_identity(self._identity_native)):
-                    if self._group_choice_inflight and self._group_choice_inflight[0] == intent:
-                        self._group_choice_inflight = None
-                    return self._receipt(action, payload, success=False, reason='group-choice-context-expired', stale=True)
                 observation = self._last_observation
                 if (not self._map_open or self._floor_required or observation is None
                         or observation["frame_id"] != self._frame_id
@@ -2601,11 +2671,6 @@ class LiveRuntime:
                     requestContext=copy.deepcopy(result.get("requestContext",{})))
 
     def _select_s1_provisional(self, action, payload, cancelled, *, birth_ticket=None, request_id=None):
-        # Keep the S1 dispatch seam for its existing request-lifetime consumers.
-        return self._select_candidate_provisional(action, payload, cancelled,
-            birth_ticket=birth_ticket, request_id=request_id)
-
-    def _select_candidate_provisional(self, action, payload, cancelled, *, birth_ticket=None, request_id=None):
         # Fail stale clicks immediately even while another capture owns work.
         with self._lock:
             if self._s1_round_locked_map():
@@ -2620,8 +2685,6 @@ class LiveRuntime:
             original_session, original_ticket = self._s1_structure_session, self._s1_structure_ticket
         with self._work:
             switch_from = None
-            refreshed_after_drag = False
-            requested_map_id = None
             with self._lock:
                 if self._s1_round_locked_map():
                     return self._receipt(action, payload, success=False, reason="identity-locked")
@@ -2629,24 +2692,10 @@ class LiveRuntime:
                         or self._s1_structure_ticket != original_ticket or not self._identity_observation_current()):
                     return self._receipt(action, payload, success=False, reason="stale-structure-candidate", stale=True)
                 session = self._s1_structure_session
-                refreshed_after_drag = self._transient_cycle_current()
-                if refreshed_after_drag and action == "select_candidate":
-                    # Admit the old row's intent before replacing its frame.
-                    # The requested ID must still earn a fresh ticket pose below.
-                    if any(payload.get(key) != value for key, value in (
-                            ("structureFrameId", self._frame_id), ("structureGeneration", self._frame_generation),
-                            ("structureRoundId", self._round))):
-                        return self._receipt(action, payload, success=False, reason="stale-structure-candidate", stale=True)
-                    requested_map_id = payload.get("mapId")
-                    choice = session.choose_candidate(requested_map_id, original_ticket)
-                    if (not choice.get("success")
-                            or choice.get("frameKey") != self._last_observation.get("digest")):
-                        return self._receipt(action, payload, success=False, reason="structure-candidate-not-current", stale=True)
-                if (refreshed_after_drag or action in ("previous_candidate", "next_candidate") and session is not None
+                if (action in ("previous_candidate", "next_candidate") and session is not None
                         and session.snapshot().get("currentStatus") in ("preferred-material-committed", "first-material-committed", "subset-unresolved")):
-                    # Dragged pixels no longer match the saved ticket. A partial
-                    # catalogue likewise lacks other poses. Both need a fresh
-                    # full-catalogue observation before switching candidates.
+                    # Other candidates have no pose on this frame. A deliberate
+                    # switch expands through a fresh full-catalogue observation.
                     switch_from = self._provisional_display_map_id
                     self._s1_candidate_preference = None
                     self._clear_private_pool()
@@ -2666,13 +2715,6 @@ class LiveRuntime:
                             self._capture_pending_owner = None
                 if not rescanned.get("success"):
                     return dict(rescanned, action=action)
-                with self._lock:
-                    if not owns_birth():
-                        return self._receipt(action, payload, success=False, reason="stale-structure-candidate", stale=True)
-                    if self._s1_round_locked_map() or not self._candidate_provisional_enabled():
-                        # A newly qualified identity wins during that capture;
-                        # this earlier display choice cannot replace its map.
-                        return dict(rescanned, action=action)
             with self._lock:
                 session, ticket = self._s1_structure_session, self._s1_structure_ticket
                 observation = self._last_observation or {}
@@ -2682,11 +2724,11 @@ class LiveRuntime:
                 rows = self._automatic_candidate_rows
                 if action == "select_candidate":
                     # A visual row must carry its originating observation.
-                    if not refreshed_after_drag and any(payload.get(key) != value for key, value in (
+                    if any(payload.get(key) != value for key, value in (
                         ("structureFrameId", self._frame_id), ("structureGeneration", self._frame_generation),
                         ("structureRoundId", self._round))):
                         return self._receipt(action, payload, success=False, reason="stale-structure-candidate", stale=True)
-                    mid = requested_map_id if refreshed_after_drag else payload.get("mapId")
+                    mid = payload.get("mapId")
                 else:
                     ids = [row["mapId"] for row in rows]
                     if not ids:
@@ -2697,25 +2739,12 @@ class LiveRuntime:
                 choice = session.choose_candidate(mid, ticket)
                 if not choice.get("success") or choice.get("frameKey") != observation.get("digest"):
                     return self._receipt(action, payload, success=False, reason="structure-candidate-not-current", stale=True)
-                from s1_structure_selection import StructureCatalog
-                try:
-                    check_current = getattr(self._engine, "qt_assert_resource_current", None)
-                    if check_current is not None:
-                        check_current()
-                    if StructureCatalog.from_engine(self._engine) != session.catalog:
-                        raise ValueError("structure-catalog-changed")
-                except (OSError, ValueError, RuntimeError):
-                    self._revoke_render("structure-resource-changed")
-                    return self._receipt(action, payload, success=False, reason="stale-structure-candidate", stale=True)
                 self._s1_candidate_preference = None
                 self._clear_private_pool()
                 # Revoke old material without erasing the current support ticket.
-                self._clear_candidate_reference()
+                self._clear_s1_reference()
                 old_token = self._render.get("token", "") if self._render else ""
                 self._core.revoke_display(reason="provisional-candidate-switch")
-                self._transient_drag = self._transient_cycle = None
-                self._remember_proposals = {token: proposal for token, proposal in self._remember_proposals.items()
-                    if not proposal.get("candidateOnly")}
                 self._render = self._render_capture_context = None
                 self._provisional_display_map_id = ""
                 self._gate.select(mid)
@@ -2727,55 +2756,31 @@ class LiveRuntime:
                 observation["cycle_id"], mid)
 
     def _manual_action(self, action, payload, cancelled, *, birth_ticket=None, request_id=None):
-        def request_current():
-            return not self._cancelled(cancelled) and (birth_ticket is None or birth_ticket == (
-                self._epoch, self._request_lifetime_generation, self._settings_generation))
-        with self._lock:
-            if not request_current():
-                return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
-        if self._candidate_provisional_enabled() and (action in ("previous_candidate", "next_candidate")
-                and (self._season == "s1" or bool(self._provisional_display_map_id))
-                or action == "select_candidate" and (self._season == "s1" or "structureFrameId" in payload)):
-            select = self._select_s1_provisional if self._season == "s1" else self._select_candidate_provisional
-            return select(action, payload, cancelled,
+        if self._s1_provisional_enabled() and action in ("select_candidate", "previous_candidate", "next_candidate"):
+            return self._select_s1_provisional(action, payload, cancelled,
                 birth_ticket=birth_ticket, request_id=request_id)
 
         if action in ("set_floor", "cycle_floor"):
             return self._set_floor(action, payload, cancelled)
         if action in ("reselect_map", "map_reselection"):
             with self._lock:
-                if not request_current():
-                    return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                 if self._s1_round_locked_map():
                     return self._receipt(action, payload, success=False, reason="identity-locked")
-                reselection_source = (self._round, self._frame_id, self._frame_generation, id(self._engine))
-                if self._candidate_provisional_enabled():
+                if self._s1_provisional_enabled():
                     # Clear before waiting for work, so an old scan/ACK cannot
                     # restore the preference after explicit re-identification.
                     self._s1_candidate_preference = None
                     self._clear_private_pool()
-                    expected_birth = (self._epoch + 1, self._request_lifetime_generation + 1,
-                        self._settings_generation)
-                    self.invalidate("candidate-reselection")
-                    if (expected_birth != (self._epoch, self._request_lifetime_generation, self._settings_generation)
-                            or reselection_source != (self._round, self._frame_id, self._frame_generation, id(self._engine))):
-                        return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
-                reselection_birth = (self._epoch, self._request_lifetime_generation, self._settings_generation)
-                def reselection_current():
-                    return (not self._cancelled(cancelled) and reselection_birth == (
-                        self._epoch, self._request_lifetime_generation, self._settings_generation)
-                        and reselection_source == (self._round, self._frame_id, self._frame_generation, id(self._engine)))
+                    self.invalidate("s1-candidate-reselection")
             with self._work:
                 with self._lock:
-                    if not reselection_current():
-                        return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                     epoch, mode, season = self._epoch, self._mode, self._season
                     engine = self._engine
                 engine = engine or self._get_engine(mode, season)
                 with self._lock:
                     if self._s1_round_locked_map():
                         return self._receipt(action, payload, success=False, reason="identity-locked")
-                    if not reselection_current() or mode != self._mode or season != self._season:
+                    if self._cancelled(cancelled) or epoch != self._epoch or mode != self._mode or season != self._season:
                         return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                     if self._gate is None:
                         from nightmare_candidate import RouteDisplayGate
@@ -2798,8 +2803,6 @@ class LiveRuntime:
                     self._gate.selected_id = selected
                     return self._receipt(action, payload, success=True, reason="candidate-reselection-opened")
         with self._lock:
-            if not request_current():
-                return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
             if self._s1_round_locked_map():
                 return self._receipt(action, payload, success=False, reason="identity-locked")
             if self._gate is None or (not self._active and not self._candidate_edit):
@@ -2811,23 +2814,12 @@ class LiveRuntime:
                     session, ticket = self._s1_structure_session, self._s1_structure_ticket
                     observation = self._last_observation or {}
                     mid = payload.get("mapId")
-                    if (self._map_id or not self._map_open or self._capture_pending
+                    if (self._season != "s1" or self._map_id or not self._map_open or self._capture_pending
                             or session is None or ticket is None
-                            or session.catalog.season != self._season or session.catalog.mode != self._mode
                             or payload.get("structureFrameId") != self._frame_id
                             or payload.get("structureGeneration") != self._frame_generation
                             or payload.get("structureRoundId") != self._round
                             or not self._identity_observation_current()):
-                        return self._receipt(action, payload, success=False, reason="stale-structure-candidate", stale=True)
-                    from s1_structure_selection import StructureCatalog
-                    try:
-                        check_current = getattr(self._engine, 'qt_assert_resource_current', None)
-                        if check_current is not None:
-                            check_current()
-                        catalog = StructureCatalog.from_engine(self._engine)
-                    except (OSError, ValueError, RuntimeError):
-                        return self._receipt(action, payload, success=False, reason="stale-structure-candidate", stale=True)
-                    if catalog != session.catalog:
                         return self._receipt(action, payload, success=False, reason="stale-structure-candidate", stale=True)
                     choice = session.choose_candidate(mid, ticket)
                     if not choice.get("success") or choice.get("frameKey") != observation.get("digest"):
@@ -3035,15 +3027,6 @@ class LiveRuntime:
                 # Manual UI actions explicitly capture once in the same worker.
                 return self._capture_and_solve(action, payload, cancelled, expected_epoch=epoch)
             entry_candidate = None
-            if not selected and self._observation_stream_enabled(engine) and not self._manual_selection_unlocked():
-                snapshot = getattr(observation['captured'], 'frame_snapshot', None)
-                if snapshot is None or snapshot.pixels is not observation['frame']:
-                    return self._receipt(action, payload, success=False,
-                        reason="retained-frame-snapshot-unavailable", stale=True)
-                return self._stream_observation(action, payload, cancelled, engine, epoch,
-                    observation['captured'], observation['frame'], floor, observation['digest'],
-                    observation['capture_generation'], generation, frame_id, cycle,
-                    snapshot)
             if not selected:
                 if self._manual_selection_unlocked():
                     return self._receipt(action, payload, success=True,
@@ -3052,7 +3035,7 @@ class LiveRuntime:
                 if engine.pack.mode == "difficult" and str(floor) == "2":
                     return self._receipt(action, payload, success=False,
                         reason="difficult-f2-entry-recognition-disabled", posePending=True)
-                selected, entry_candidate, stale = self._collect_legacy_entry_evidence(engine, observation["frame"], floor,
+                selected, entry_candidate, stale = self._rank_identity(engine, observation["frame"], floor,
                     epoch, frame_id, cancelled)
                 if stale:
                     return self._receipt(action, payload, success=False, reason=str(stale), stale=True)
@@ -3077,12 +3060,10 @@ class LiveRuntime:
             report = capabilities[self._mode]
             saved_ready = report["available"]
             live_gaps = tuple(report.get("liveGaps", ()))
-            live_ready = report.get("liveReady", self._season == "s0") is True
-            if not live_ready and not live_gaps:
+            if self._season != "s0" and not report.get("liveReady", False) and not live_gaps:
                 live_gaps = (f"season-live-contract-unavailable:{self._season}",)
-            candidate_ready = self._structure_candidate_available(report)
-            ready = bool((saved_ready or candidate_ready and report.get('dataReady'))
-                and (not live_gaps or candidate_ready))
+            candidate_ready = self._s1_candidate_available(report)
+            ready = saved_ready and (not live_gaps or candidate_ready)
             guarded = (self._evidence_kind != "live-client-capture"
                        or callable(getattr(self._capture, "is_current", None)))
             # The picker is a separate intent from the advertised confirm_route
@@ -3140,12 +3121,12 @@ class LiveRuntime:
                         commands.append("map")
                     if self._map_open:
                         commands.append("refresh_map")
-                        if self._candidate_probe_available():
+                        if self._native_s1_candidate_preview and self._s1_candidate_available(report):
                             commands.append("observe_candidate_floor")
             recovery = self.map_open_recovery_status()
             if recovery.get("pending"):
                 commands.append("recover_map_open")
-            stream_busy = bool(self._candidate_provisional_enabled() and self._capture_pending)
+            stream_busy = bool(self._candidate_streaming_requested() and self._s1_provisional_enabled() and self._capture_pending)
             if stream_busy:
                 commands = [cmd for cmd in commands if cmd not in ("select_candidate", "previous_candidate", "next_candidate", "confirm_route")]
             capture_state = getattr(self._capture, "snapshot", {}) if self._capture is not None else {}
@@ -3164,17 +3145,16 @@ class LiveRuntime:
                 displayFallback=metadata.get("fallback", False), fallbackReason=metadata.get("fallbackReason", ""),
                 engineConnected=True,
                 liveEngineAvailable=bool(ready and guarded and self._capture is not None
-                    and live_ready),
+                    and (self._season == "s0" or report.get("liveReady") is True)),
                 recordedStructureCandidateAvailable=candidate_ready and self._evidence_kind == "recorded",
                 recordedProvisionalDisplayEnabled=self._s1_provisional_enabled() and self._evidence_kind == "recorded",
                 recordedStreamingEnabled=bool(self._recorded_s1_streaming and self._s1_provisional_enabled()),
                 nativeCandidatePreviewAvailable=candidate_ready and self._native_s1_candidate_preview,
                 candidateStructureAvailable=candidate_ready,
-                candidateSupportedFloors=list(self._floor_contract().floor_ids) if candidate_ready else [],
+                candidateSupportedFloors=["-1", "-2", "-3", "-4"] if candidate_ready else [],
                 candidateUnvalidatedFloors=["-3", "-4"] if self._season == "s1" else [],
-                candidateProvisionalDisplayEnabled=self._candidate_provisional_enabled(),
-                candidateStreamingEnabled=bool(self._candidate_provisional_enabled()
-                    and (self._season == 's0' or self._candidate_streaming_requested())),
+                candidateProvisionalDisplayEnabled=self._s1_provisional_enabled(),
+                candidateStreamingEnabled=bool(self._candidate_streaming_requested() and self._s1_provisional_enabled()),
                 structureScanInProgress=stream_busy,
                 candidateSwitchUnavailableReason="current-scan-in-progress" if stream_busy else "",
                 liveUnavailableReason=(capabilities[self._mode]["reason"] if not saved_ready else
@@ -3247,18 +3227,9 @@ class LiveRuntime:
                 self._map_id if map_id is None else map_id,
                 str(self._floor if floor is None else floor))
 
-    def _fence_earlier_dispatches(self):
-        """Under _lock, keep queued requests with their original boundary."""
-        owners = getattr(self._dispatch_owners, "arrivals", ())
-        # A command fences earlier arrivals. External settings/resource changes
-        # have no command owner and fence everything that already arrived.
-        boundary = owners[-1] if owners else next(self._dispatch_serials)
-        self._dispatch_cutoff = max(self._dispatch_cutoff, boundary)
-
     def invalidate(self, reason="invalidated", *, source="", input_sequence=None):
         """Revoke immediately; return whether this close emitted a fit summary."""
         with self._lock:
-            candidate_preview = self._candidate_provisional_enabled()
             # A static reference is explicitly historical, not a retained
             # pose. Normal reopen must not blank it while acquiring fresh
             # evidence; conflict/reselection/context boundaries still revoke.
@@ -3268,7 +3239,7 @@ class LiveRuntime:
                 self._floor_required = True
             if not keep_static_floor_intent and reason not in ("map-closed", "escape", "foreground-lost", "map-key-open",
                               "s1-provisional-open-intent"):
-                self._clear_candidate_reference()
+                self._clear_s1_reference()
             if any(word in reason for word in ("resource", "context", "settings", "identity", "reselection", "candidate-selected", "end-round", "end_round", "reset_round", "stop_round")):
                 self._s1_candidate_preference = None
                 self._clear_private_pool()
@@ -3277,7 +3248,7 @@ class LiveRuntime:
                     handle.invalidate()
                 self._stream_priority_handles.clear()
             self._provisional_display_map_id = ""
-            if candidate_preview or self._candidate_preview_requested() and self._season == "s1":
+            if self._candidate_preview_requested() and self._season == "s1":
                 self._capture_pending = False
                 self._capture_pending_owner = None
             self._map_recovery = None
@@ -3321,7 +3292,12 @@ class LiveRuntime:
                 self._request_lifetime_generation += 1
                 # Requests that arrived before this hard boundary cannot take a
                 # fresh birth snapshot after waiting for the state lock.
-                self._fence_earlier_dispatches()
+                owners = getattr(self._dispatch_owners, "arrivals", ())
+                # A command fences only earlier arrivals, not newer commands
+                # already waiting for its state lock. External resource/settings
+                # boundaries have no command owner and fence the current queue.
+                boundary = owners[-1] if owners else next(self._dispatch_serials)
+                self._dispatch_cutoff = max(self._dispatch_cutoff, boundary)
             if self._manual_alignment and self._s1_floor_observer_available():
                 self._observed_floor = ""
                 self._s1_raw_floor = None
@@ -3403,10 +3379,10 @@ class LiveRuntime:
                 with self._lock:
                     self._event_delivery_error = f"{type(error).__name__}:{error}"[:256]
 
-    def _revoke_current_candidates(self, *, preserve_reference=False):
+    def _revoke_s1_current_candidates(self, *, preserve_reference=False):
         """Called under the lifetime lock before acquisition and on revocation."""
         if not preserve_reference:
-            self._clear_candidate_reference()
+            self._clear_s1_reference()
         self._provisional_display_map_id = ""
         if self._s1_structure_session is not None:
             self._s1_structure_session.revoke_current()
@@ -3415,45 +3391,12 @@ class LiveRuntime:
             for row in self._candidate_rows:
                 row["structureSupported"] = False
 
-    def _retire_candidate_preview(self, *, reason, map_id=None):
-        """Retire preview proposals before an identity writer commits.
-
-        The caller holds ``_lock`` and sends render-revoked after completing its
-        atomic identity update. Preserve the ticket so the lock's pose consumer
-        can independently validate/reuse the same current map/floor/frame fit.
-        Completed pixels for that exact choice survive until atomic replacement.
-        """
-        row, reference = self._render, self._reference_sheet or {}
-        owns_pixels = bool(row is not None and row.get("candidateDisplayOnly"))
-        keep_pixels = bool(owns_pixels and map_id and row.get('mapId') == map_id
-            and row.get('frameId') == self._frame_id and row.get('floor') == self._floor
-            and row.get('poseFinalVerified') is True and self._display_current(row)
-            and _engine_resource_current(self._engine))
-        owns_context = owns_pixels or row is None and bool(self._provisional_display_map_id)
-        owns_reference = bool(reference.get("candidateReference") or reference.get("s1CandidateReference"))
-        # A new acquisition may already have revoked pixels. Candidate-only
-        # memory still belongs to the retiring hypothesis, not the new identity.
-        self._clear_candidate_reference()
-        if owns_context or owns_reference:
-            self._provisional_reference_context = None
-        self._s1_candidate_preference = self._s1_candidate_pose_hint = None
-        self._remember_proposals = {key: proposal for key, proposal in self._remember_proposals.items()
-            if not proposal.get("candidateOnly")}
-        self._provisional_display_map_id = ""
-        if owns_context:
-            self._transient_drag = self._transient_cycle = None
-        if not owns_pixels or keep_pixels:
-            return ""
-        self._core.revoke_display(reason=reason)
-        self._render = self._render_capture_context = None
-        return row["token"]
-
     def _revoke_render(self, reason):
         """Revoke presentation without invalidating the current worker lifetime."""
         with self._lock:
-            self._revoke_current_candidates(
+            self._revoke_s1_current_candidates(
                 preserve_reference=(reason in ("new-capture", "new-provisional-capture")
-                    or self._season == "s1" and self._native_s1_final_round_lock
+                    or self._native_s1_final_round_lock
                     and reason not in ("s1-candidate-excluded", "private-contradiction-recovery")))
             token = self._render.get("token", "") if self._render is not None else ""
             self._discard_sibling()
@@ -3469,7 +3412,6 @@ class LiveRuntime:
     def configure_settings(self, settings):
         """Update explicit solver preferences; mode/profile use set_context."""
         with self._lock:
-            candidate_preview = self._candidate_provisional_enabled()
             variant_changed = settings.get("zhan10CoffinVariantId", "variant-01") != self._settings.get("zhan10CoffinVariantId", "variant-01")
             numbers_changed = settings.get("routePointNumbers", False) != self._settings.get("routePointNumbers", False)
             numbers_display_changed = numbers_changed and self._profile.startswith("custom:")
@@ -3480,8 +3422,6 @@ class LiveRuntime:
                 self._s1_solver_policy_generation += 1
             if settings_changed:
                 self._settings_generation += 1
-                if candidate_preview:
-                    self._fence_earlier_dispatches()
                 if (solver_changed and self._candidate_preview_requested() and self._season == "s1"
                         and not self._durable_map_id):
                     # Solver changes revoke identity evidence. Display-only saves
@@ -3595,7 +3535,7 @@ class LiveRuntime:
                 pose_current = bool(source and self._display_current(source)
                     and self._capture_is_current(self._render_capture_context, source.get("captureGeneration")))
                 candidate_proposal = None
-                if (not map_id and self._candidate_provisional_enabled() and pose_current
+                if (not map_id and self._s1_provisional_enabled() and pose_current
                         and source.get("candidateDisplayOnly") and not source.get("transient")
                         and source.get("mapId") == self._provisional_display_map_id):
                     proposal = self._remember_proposals.get(source["token"])
@@ -3608,8 +3548,8 @@ class LiveRuntime:
                         # durable identity or a fresh canonical pose from this.
                         map_id = source["mapId"]
                         candidate_proposal = proposal
-                if (not map_id and sheet is not None and (sheet.get("candidateReference") or sheet.get("s1CandidateReference"))
-                        and self._candidate_reference_current(sheet, check_display=False)):
+                if (not map_id and sheet is not None and sheet.get("s1CandidateReference")
+                        and self._s1_reference_current(sheet, check_display=False)):
                     # Closed-map author changes need no current pose and must
                     # not promote a candidate into the legacy identity owner.
                     map_id = sheet["mapId"]
@@ -3631,7 +3571,8 @@ class LiveRuntime:
                         _shared_display_bridge=lambda pref, mid, fl: prepare_route_reprojection(
                             engine, mid, fl, pref, variant_id=variant)["layer"]["matrixDisplayToReference"])
                     rebase_group_display_tracking(owner, staged_group, map_id, layer.get("effectiveProfileId", "shared-structure"))
-                pixels = _display_rgba(layer)
+                pixels = np.ascontiguousarray(layer["pixels"][:, :, [2, 1, 0, 3]])
+                pixels.setflags(write=False)
             except Exception as error:
                 with self._lock:
                     if scope == (self._epoch, self._round, self._cycle, self._frame_id, self._engine,
@@ -3644,9 +3585,9 @@ class LiveRuntime:
                         self._frame_id, self._engine, self._profile, self._map_id, self._floor,
                         getattr(self, "_display_generation", 0))):
                     return self._receipt(action, payload, success=False, reason="stale-display-settings", stale=True)
-                if (sheet is not None and (sheet.get("candidateReference") or sheet.get("s1CandidateReference"))
+                if (sheet is not None and sheet.get("s1CandidateReference")
                         and (self._reference_sheet is not sheet
-                             or not self._candidate_reference_current(sheet, check_display=False))):
+                             or not self._s1_reference_current(sheet, check_display=False))):
                     return self._receipt(action, payload, success=False, reason="stale-reference-context", stale=True)
                 if candidate_proposal is not None:
                     session = candidate_proposal["candidateSession"]
@@ -3748,9 +3689,6 @@ class LiveRuntime:
     def render_payload(self, token):
         with self._lock:
             row = self._render
-            if row is not None and not _engine_resource_current(self._engine):
-                self.invalidate("resource-context-superseded")
-                return None
             if (row is None or row["token"] != token or not self._display_current(row)
                     or row.get("displayGeneration") != getattr(self, "_display_generation", 0)):
                 return None
@@ -3768,13 +3706,13 @@ class LiveRuntime:
         row = self._reference_sheet
         if (row is not None and not self._durable_map_id and self._map_open
                 and row.get("mapId") == self._map_id and row.get("floor") == self._floor
-                and self._render is not None and self._display_current(self._render)):
+                and self._core.can_display(cycle_id=self._cycle, map_id=self._map_id,
+                    floor=self._floor, frame_generation=self._frame_generation)):
             self._provisional_reference_context = self._reference_owner_context(row)
 
-    def _clear_candidate_reference(self):
-        """Revoke candidate static pixels, independent of confirmed references."""
-        if ((self._reference_sheet or {}).get("candidateReference")
-                or (self._reference_sheet or {}).get("s1CandidateReference")):
+    def _clear_s1_reference(self):
+        """Revoke candidate static pixels without touching S0 reference policy."""
+        if (self._reference_sheet or {}).get("s1CandidateReference"):
             self._reference_sheet = self._reference_capture_context = None
 
     def _prepare_s1_static_reference(self, engine, pool, captured, floor, current):
@@ -3787,13 +3725,14 @@ class LiveRuntime:
             map_id = pool.locked_id or previous.get("mapId")
             if not map_id or map_id not in pool.remaining:
                 return
-            if previous.get("mapId") == map_id and self._candidate_reference_current(previous):
+            if previous.get("mapId") == map_id and self._s1_reference_current(previous):
                 return
             profile, generation = self._profile, getattr(self, "_display_generation", 0)
             variant = self._settings.get("zhan10CoffinVariantId", "variant-01")
         try:
             display = self._display_layer(engine, map_id, floor, profile, variant_id=variant)
-            pixels = _display_rgba(display)
+            pixels = np.ascontiguousarray(display["pixels"][:, :, [2, 1, 0, 3]])
+            pixels.setflags(write=False)
         except (ValueError, KeyError, OSError):
             return  # Missing static resources cannot be replaced by old-floor pixels.
         with self._lock:
@@ -3816,7 +3755,7 @@ class LiveRuntime:
             self._reference_capture_context = captured.context
         self._notify("reference-ready", reason="reference-sheet")
 
-    def _candidate_reference_current(self, row, *, check_display=True):
+    def _s1_reference_current(self, row, *, check_display=True):
         """Display-only ownership, independent of the legacy identity gate.
 
         A successful current candidate material may be kept across map close.
@@ -3825,12 +3764,10 @@ class LiveRuntime:
         candidate evidence and hard boundaries revoke it before blocking.
         """
         pool = self._s1_private_pool
-        historical_floor = bool(self._season == "s1" and self._native_s1_final_round_lock
+        historical_floor = bool(self._native_s1_final_round_lock
             and (self._floor_required or not self._observed_floor))
-        candidate_reference = row.get("candidateReference") or row.get("s1CandidateReference")
-        qualified = (self._candidate_preview_requested() if self._season == "s1"
-            else self._candidate_provisional_enabled())
-        return bool(candidate_reference and qualified and not self._manual_alignment
+        return bool(row.get("s1CandidateReference") and self._season == "s1"
+            and self._candidate_preview_requested() and not self._manual_alignment
             and self._active and not self._selection_pending
             and (historical_floor or not self._floor_required
                 and not self._current_frame_floor_conflicts(self._floor) and row.get("floor") == self._floor)
@@ -3856,8 +3793,8 @@ class LiveRuntime:
         """
         with self._lock:
             row = self._reference_sheet
-            if row is not None and (row.get("candidateReference") or row.get("s1CandidateReference")):
-                if not self._candidate_reference_current(row):
+            if row is not None and row.get("s1CandidateReference"):
+                if not self._s1_reference_current(row):
                     return None
                 # Static pixels retain their owner; formal identity metadata is
                 # current and must reflect a later scoped lock without repaint.
@@ -3885,7 +3822,8 @@ class LiveRuntime:
                 # Preserve the original provisional exception: an open-map
                 # reference needs current core authority; a closed-map sheet
                 # may reuse only its previously verified logical context.
-                valid_provisional = (self._render is not None and self._display_current(self._render) if self._map_open
+                valid_provisional = (self._core.can_display(cycle_id=self._cycle, map_id=self._map_id,
+                    floor=self._floor, frame_generation=self._frame_generation) if self._map_open
                     else self._provisional_reference_context == self._reference_owner_context(row))
                 if not valid_provisional:
                     return None
@@ -4053,110 +3991,53 @@ class LiveRuntime:
         except Exception:
             self._failure_control_observation = None
 
-    def _probe_candidate_floor(self, action, payload, cancelled, *, expected_epoch, request_id):
-        """Observe the opening without withdrawing its successful material.
+    def _probe_s1_candidate_floor(self, action, payload, cancelled, *, expected_epoch, request_id):
+        """Observe floor/canvas only; retain this opening's list until a boundary.
 
-        Unchanged pixels or a verified residual need no catalogue scan. This
-        observation never renews candidate/identity evidence. Changed geometry
-        uses the normal scanner on these captured pixels before replacement.
+        A same-floor observation neither renews the pose nor turns an old fit
+        into evidence for the new pixels. A layer change starts a fresh scan.
         """
         with self._work:
             with self._lock:
                 if (expected_epoch != self._epoch or self._cancelled(cancelled)
-                        or not self._candidate_probe_available()
+                        or not self._native_s1_candidate_preview or not self._s1_candidate_available(engine=self._engine)
                         or self._manual_alignment or not self._active or not self._map_open):
                     return self._receipt(action, payload, success=False, reason="candidate-probe-not-current", stale=True)
                 engine, epoch, frame_id = self._engine, self._epoch, self._frame_id
-                if not _engine_resource_current(engine):
-                    self.invalidate("resource-context-superseded")
-                    return self._receipt(action, payload, success=False, reason="resource-context-superseded", stale=True)
-                if self._transient_drag is not None:
-                    return self._receipt(action, payload, success=True, reason="refresh-coalesced", coalesced=True)
-                transient = self._transient_cycle_current()
-                render_owner = self._refresh_render_owner()
                 owner = self._capture_pending_owner = (epoch, request_id)
                 self._capture_pending = True
                 capture_generation = self._capture_generation()
-            replacement_started = False
             obsolete = lambda: (self._cancelled(cancelled) or epoch != self._epoch
-                or engine is not self._engine or not replacement_started and frame_id != self._frame_id)
+                or engine is not self._engine or frame_id != self._frame_id)
             try:
-                if transient:
-                    return self._probe_map_after_drag(payload, cancelled)
                 captured = self._capture_frame(cancelled, preserve_candidate=True)
                 frame = self._full_frame(captured)
                 with self._lock:
-                    if obsolete():
+                    if obsolete() or not self._capture_is_current(captured.context, capture_generation):
                         return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
-                    if not _engine_resource_current(engine):
-                        self.invalidate("resource-context-superseded")
-                        return self._receipt(action, payload, success=False, reason="resource-context-superseded", stale=True)
-                    if not self._capture_is_current(captured.context, capture_generation):
-                        self.invalidate("capture-context-changed")
-                        return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
                 observation, floor, read = self._observe(engine, frame)
                 with self._lock:
-                    if obsolete():
+                    if obsolete() or not self._capture_is_current(captured.context, capture_generation):
                         return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
-                    if not _engine_resource_current(engine):
-                        self.invalidate("resource-context-superseded")
-                        return self._receipt(action, payload, success=False, reason="resource-context-superseded", stale=True)
-                    if not self._capture_is_current(captured.context, capture_generation):
-                        self.invalidate("capture-context-changed")
-                        return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
                     if read.get("mapOpen") is False:
                         self.invalidate("map-closed")
                         return self._receipt(action, payload, success=False, reason="candidate-map-closed")
                     if floor is None:
+                        self._revoke_render("candidate-floor-unavailable")
+                        self._observed_floor = ""
                         return self._receipt(action, payload, success=False, reason="candidate-floor-unavailable")
-                    row = self._render
-                    same_floor = str(floor) == self._floor
-                    current_material = bool(same_floor and row is not None and self._display_current(row)
-                        and render_owner == self._refresh_render_owner()
-                        and self._render_capture_context == captured.context
-                        and row.get("captureGeneration") == capture_generation)
-                    previous = self._last_observation or {}
-                    same_pixels = bool(current_material and row.get("frameId") == previous.get("frame_id")
-                        and captured.frame_snapshot.frame_key == previous.get("digest"))
-                    if not same_floor:
-                        self._revoke_render("candidate-floor-changed")
-                verified = same_pixels
-                if current_material and not verified:
-                    import numpy as np
-                    from alignment_observation import rendered_profile_residual_is_verified
-                    host, _, _ = _prepare_alignment_host(engine, None, self._settings,
-                        row["mapId"], str(floor), cancelled=obsolete)
-                    basis = engine.qt_adapters.matrix_profile_to_canonical("shared-structure", row["mapId"], str(floor))
-                    if basis is not None:
-                        residual, _ = host._canonical_geometry_current_frame_residual(frame,
-                            row["mapId"], str(floor), "shared-structure",
-                            np.asarray(row["canonicalMatrix"]) @ np.asarray(basis), None)
-                        verified = rendered_profile_residual_is_verified(residual) and _alignment_host_current(engine, host)
-                with self._lock:
-                    if obsolete() or render_owner != self._refresh_render_owner() and same_floor:
-                        return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
-                    if not self._capture_is_current(captured.context, capture_generation):
-                        self.invalidate("capture-context-changed")
-                        return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
-                    if not _engine_resource_current(engine):
-                        self.invalidate("resource-context-superseded")
-                        return self._receipt(action, payload, success=False, reason="resource-context-superseded", stale=True)
-                    if verified:
+                    if str(floor) == self._floor and self._render is not None:
                         return self._receipt(action, payload, success=True, reason="candidate-floor-current", unchanged=True)
-                # Reuse this full-client capture. A failed/cancelled scan owns
-                # only its new evidence; the earlier successful display still
-                # has its original opening-scoped core authorization.
-                replacement_started = True
-                return self._capture_and_solve("refresh_map", payload, cancelled, expected_epoch=epoch,
-                    prepared=(captured, observation, floor, capture_generation, read))
+                    self._revoke_render("candidate-floor-changed" if str(floor) != self._floor
+                        else "candidate-pose-unavailable")
+                return self._capture_and_solve("capture_now", payload, cancelled, expected_epoch=epoch)
             except Exception as error:
                 with self._lock:
-                    if engine is self._engine and not _engine_resource_current(engine):
-                        self.invalidate("resource-context-superseded")
-                        return self._receipt(action, payload, success=False, reason="resource-context-superseded", stale=True)
                     if obsolete():
                         return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True,
                             errorType=type(error).__name__)
+                    if self._capture_pending_owner is owner:
+                        self._revoke_render("candidate-floor-probe-failed")
                     return self._receipt(action, payload, success=False,
                         reason=f"{type(error).__name__}:{error}", error=True,
                         **self._error_fields(error, action))
@@ -4170,19 +4051,18 @@ class LiveRuntime:
         _test_evidence("capture-start")
         # Candidate freshness ends before entering a possibly blocked capture.
         with self._lock:
-            candidate_preview = self._candidate_provisional_enabled()
-            if not preserve_candidate and (candidate_preview or self._native_s1_candidate_preview
+            if (not preserve_candidate and self._native_s1_candidate_preview
                     and self._season == "s1" and not self._manual_alignment):
                 # A new candidate fit supersedes manual pixels, including after
                 # a failed probe withdrew them. No persistent pose is updated.
                 self._transient_drag = self._transient_cycle = None
-            if preserve_candidate and self._map_open and (candidate_preview or self._native_s1_candidate_preview):
+            if preserve_candidate and self._native_s1_candidate_preview and self._map_open:
                 pass  # A floor-only probe cannot renew pose or candidate evidence.
-            elif self._candidate_provisional_enabled() and self._render is not None:
+            elif self._s1_provisional_enabled() and self._render is not None:
                 # Notify the actual presentation consumer before pixels block.
                 self._revoke_render("new-provisional-capture")
             else:
-                self._revoke_current_candidates(preserve_reference=True)
+                self._revoke_s1_current_candidates(preserve_reference=True)
         # Retire prior evidence BEFORE a new acquisition, including failures.
         self._failure_capture_stamp = None
         self._failure_control_observation = None
@@ -4263,18 +4143,10 @@ class LiveRuntime:
                 and (not self._private_pool_scope_current(pool) or row.get("mapId") not in pool.remaining)):
             return False
         observation = self._core.active_observation
-        # Material keeps its own observation/grant while a newer frame is
-        # measured. It never supplies that newer frame's pose or identity proof.
-        candidate = row.get("candidateDisplayOnly")
         return bool(self._active and self._map_open and row["epoch"] == self._epoch and observation
-            and row["cycleId"] == self._cycle and row["floor"] == self._floor
-            and row["roundId"] == self._round and (candidate or row["mapId"] == self._map_id)
-            and observation.frame_generation == row["generation"]
-            and self._core.display_authorization is not None
-            and self._core.display_authorization.authorization_id == row["authorizationId"]
-            and self._core.can_display(cycle_id=self._cycle, map_id=row["mapId"] if candidate else self._map_id,
-                floor=self._floor, frame_generation=row["generation"])
-            and row["mode"] == self._mode
+            and self._core.can_display(cycle_id=self._cycle, map_id=self._provisional_display_map_id or self._map_id, floor=self._floor,
+                                      frame_generation=self._frame_generation)
+            and row["frameId"] == self._frame_id and row["mode"] == self._mode
             and row.get("season", "s0") == self._season)
 
     def map_input_observation_is_current(self, observation):
@@ -4325,9 +4197,10 @@ class LiveRuntime:
         return self._dispatch_with_ownership(action, payload, cancelled)
 
     def _dispatch_with_ownership(self, action, payload=None, cancelled=None):
-        # Capture the operation kind before serial allocation/state waiting.
-        # A context change cannot turn an old candidate command into new work.
-        candidate_control_arrival = str(action) in CANDIDATE_CONTROL_ACTIONS
+        # Capture the S1 operation kind before serial allocation/state waiting.
+        # An intervening season change cannot turn an old switch into S0 work.
+        s1_candidate_arrival = (self._season == "s1"
+            and str(action) in ("next_candidate", "previous_candidate", "select_candidate"))
         # Allocation is one atomic next(), before any state-lock wait. The
         # birth tuple itself is read entirely under the state lock below.
         arrival_serial = next(self._dispatch_serials)
@@ -4340,7 +4213,7 @@ class LiveRuntime:
         try:
             def operation():
                 return self._dispatch_after_arrival(action, payload, cancelled,
-                    arrival_serial=arrival_serial, candidate_control_arrival=candidate_control_arrival,
+                    arrival_serial=arrival_serial, s1_candidate_arrival=s1_candidate_arrival,
                     request_id=request_id)
             # Even the recorder's accepting check can wait for a lock. Register
             # arrival first so diagnostic setup cannot move an old command past
@@ -4363,7 +4236,7 @@ class LiveRuntime:
                 owners.pop()
 
     def _dispatch_after_arrival(self, action, payload, cancelled, *, arrival_serial,
-                                candidate_control_arrival, request_id):
+                                s1_candidate_arrival, request_id):
         with self._lock:
             # Birth fences govern work that may activate or republish, not
             # explicit termination/revocation or state-setting commands.
@@ -4372,7 +4245,8 @@ class LiveRuntime:
             activation_request = (action in ("capture_now", "refresh_map", "recover_map_open",
                     "probe_map_after_drag", "fit_manual_frame", "observe_manual_floor",
                     "prepare_manual_alignment", "start_round", "observe_candidate_floor")
-                or candidate_control_arrival
+                or s1_candidate_arrival or self._season == "s1"
+                    and action in ("next_candidate", "previous_candidate", "select_candidate")
                 or action == "map" and payload.get("openIntent") is not False
                 or action == "toggle_round" and not (self._active or self._round_preparing))
             if activation_request and arrival_serial <= self._dispatch_cutoff:
@@ -4418,13 +4292,13 @@ class LiveRuntime:
                 "end_round", "cancel", "stop_round", "reset_round", "bind_capture"):
             return self._receipt(action, payload, success=False, reason="retired-mode")
         if action == "observe_candidate_floor":
-            return self._probe_candidate_floor(action, payload, cancelled,
+            return self._probe_s1_candidate_floor(action, payload, cancelled,
                 expected_epoch=capture_request_epoch, request_id=request_id)
-        if action in ("start_round", "toggle_round", "capture_now", "map", "refresh_map", "recover_map_open", "probe_map_after_drag"):
+        if self._season == "s1" and action in ("start_round", "toggle_round", "capture_now", "map", "refresh_map", "recover_map_open", "probe_map_after_drag"):
             report = self._offline.snapshot()["savedFrameCapabilities"][self._mode]
-            if not report.get("liveReady", self._season == "s0") and not self._structure_candidate_available(report):
+            if not report.get("liveReady", False) and not self._s1_candidate_available(report):
                 return self._receipt(action, payload, success=False,
-                    reason=";".join(report.get("liveGaps", ())) or f"{self._season}-live-contract-unavailable",
+                    reason=";".join(report.get("liveGaps", ())) or "s1-live-contract-unavailable",
                     unavailable=True)
         if action == "resume_group_automatic":
             return self._receipt(action, payload, success=False, reason="unsupported-action")
@@ -4443,24 +4317,18 @@ class LiveRuntime:
             if self._cancelled(cancelled):
                 return self._receipt(action, payload, success=False, reason="cancelled", cancelled=True)
             with self._lock:
-                candidate_operation = self._candidate_provisional_enabled() or self._season == "s1"
-                candidate_owner = (birth_ticket, self._frame_id, self._frame_generation, id(self._engine),
-                    self._s1_structure_session, self._s1_structure_ticket, self._group_intent_generation)
+                candidate_operation = self._s1_provisional_enabled() or self._season == "s1"
+                candidate_owner_epoch = capture_request_epoch if candidate_operation else self._epoch
             try:
                 return self._manual_action(action, payload, cancelled,
                     birth_ticket=birth_ticket, request_id=request_id)
             except Exception as error:
                 with self._lock:
-                    current_owner = ((self._epoch, self._request_lifetime_generation, self._settings_generation),
-                        self._frame_id, self._frame_generation, id(self._engine), self._s1_structure_session,
-                        self._s1_structure_ticket, self._group_intent_generation)
-                    stale_candidate = candidate_operation and candidate_owner != current_owner
-                    if not stale_candidate:
+                    if not candidate_operation or candidate_owner_epoch == self._epoch:
                         self.invalidate("manual-action-error")
                 return self._receipt(action, payload, success=False,
                     reason=f"{type(error).__name__}:{error}", error=True,
                     unavailable=bool(getattr(error, "unavailable", False)),
-                    **(dict(stale=True) if stale_candidate else {}),
                     **self._error_fields(error, action))
         if action == "toggle_sheet_visibility":
             with self._lock:
@@ -4471,14 +4339,14 @@ class LiveRuntime:
             with self._lock:
                 if self._s1_round_locked_map():
                     return self._receipt(action, payload, success=False, reason="identity-locked")
-                if self._candidate_provisional_enabled():
+                if self._s1_provisional_enabled():
                     if (capture_request_epoch != self._epoch or self._cancelled(cancelled)
                             or request_settings_generation != self._settings_generation):
                         return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                     self._s1_candidate_preference = None
                     self._clear_private_pool()
                     capture_request_epoch = self._epoch + 1
-                    self.invalidate("candidate-reselection")
+                    self.invalidate("s1-candidate-reselection")
                     if capture_request_epoch != self._epoch:
                         return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
         if action == "capture_now" and "inputObservationSequence" in payload:
@@ -4629,8 +4497,6 @@ class LiveRuntime:
                     return self._probe_map_after_drag(payload, cancelled)
                 if action == "remember_render_material":
                     return self._remember_render_material(str(payload.get("renderToken", "")), payload, cancelled)
-                if action == 'validate_sibling_registry':
-                    return self._validate_sibling_registry(str(payload.get('renderToken', '')), payload, cancelled)
                 if action == "bind_capture":
                     if self._capture is None:
                         raise RuntimeError("capture-provider-unavailable")
@@ -4673,8 +4539,9 @@ class LiveRuntime:
                 # The work lock does not own a newer input's lifetime. An old
                 # acquisition error may report failure, never revoke its successor.
                 stale_owner = action in ("map", "capture_now", "prepare_manual_alignment", "fit_manual_frame", "observe_manual_floor") and capture_request_epoch != self._epoch
-                if not stale_owner and not self._retained_material_current(self._refresh_render_owner()):
-                    self.invalidate("runtime-error", source=f'execute:{action}:{type(error).__name__}')
+                if not stale_owner:
+                    self.invalidate("resources-unavailable" if getattr(error,'resource_failure',False) is True
+                        else "runtime-error", source=f'execute:{action}:{type(error).__name__}')
             return self._receipt(action, payload, success=False, reason=f"{type(error).__name__}:{error}", error=True,
                     stale=stale_owner,
                     unavailable=bool(getattr(error, "unavailable", False)),
@@ -4687,13 +4554,8 @@ class LiveRuntime:
             from client_providers import ProviderUnavailable
             raise ProviderUnavailable(f"season-resources-unavailable:{season}")
         engine = getter(mode, season) if callable(getter) else self._factories[mode]()
-        candidate_ready = bool(require_live and season == self._season and mode == self._mode
-            and self._structure_candidate_available(engine=engine))
-        if require_live and not getattr(engine, 'qt_rank_ready', True) and not candidate_ready:
-            from client_providers import ProviderUnavailable
-            raise ProviderUnavailable(';'.join(getattr(engine, 'qt_rank_gaps', ())) or 'recognition-rank-unavailable')
-        if (require_live and not getattr(engine, "qt_live_ready", season == "s0")
-                and not candidate_ready):
+        if (require_live and season != "s0" and not getattr(engine, "qt_live_ready", False)
+                and not self._s1_candidate_available(engine=engine)):
             from client_providers import ProviderUnavailable
             raise ProviderUnavailable(";".join(getattr(engine, "qt_live_gaps", ())) or f"season-live-contract-unavailable:{season}")
         return engine
@@ -4958,16 +4820,9 @@ class LiveRuntime:
                         or published_owner is not None and published_owner != self._refresh_render_owner()):
                     self._retire_refresh_owner(payload.get("_recoveryRenderOwner"))
                     return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
-                # A post-solve worker error does not invalidate an already
-                # completed, current material. Preserve the error receipt and
-                # end recovery; close/context/floor changes still revoke it.
-                retained = self._retained_material_current(self._refresh_render_owner())
-                if retained:
-                    self.cancel_map_open_recovery('recovery-error-material-retained')
-                else:
-                    self.invalidate("runtime-error", source=f'map-recovery:{action}:{type(error).__name__}')
+                self.invalidate("runtime-error", source=f'map-recovery:{action}:{type(error).__name__}')
             return self._receipt(action, payload, success=False, reason=f"{type(error).__name__}:{error}",
-                error=True, sourceRetained=retained, **self._error_fields(error, action))
+                error=True, **self._error_fields(error, action))
         finally:
             with self._lock:
                 self._capture_pending = False
@@ -4979,31 +4834,12 @@ class LiveRuntime:
         return tuple(row.get(key) for key in ("epoch", "cycleId", "frameId", "generation",
             "token", "authorizationId", "transformRevision")) if row is not None else None
 
-    def _retained_material_current(self, owner):
-        """Retain a successful display, without renewing observation evidence."""
-        row = self._render
-        return bool(row is not None and (row.get("candidateDisplayOnly")
-                or row.get("poseFinalVerified") is True and row.get("reviewStatus") == "complete"
-                and not row.get("requiresMaterialAck"))
-            and owner == self._refresh_render_owner() and self._display_current(row)
-            and row["profileId"] == self._profile
-            and row.get("displayGeneration") == getattr(self, "_display_generation", 0)
-            and _engine_resource_current(self._engine)
-            and self._capture_is_current(self._render_capture_context, row.get("captureGeneration")))
-
-    def _retire_material_owner(self, owner, reason):
-        with self._lock:
-            if owner != self._refresh_render_owner():
-                return False
-            if self._retained_material_current(owner):
-                return False
-            self._revoke_render(reason)
-            return True
-
     def _retire_refresh_owner(self, owner):
-        if owner is None:
-            return False
-        return self._retire_material_owner(owner, "refresh-cancelled-or-stale")
+        with self._lock:
+            if owner is None or owner != self._refresh_render_owner():
+                return False
+            self._revoke_render("refresh-cancelled-or-stale")
+            return True
 
     def _refresh_map(self, payload, cancelled):
         # Passive timer requests never build an unbounded worker backlog.
@@ -5020,15 +4856,10 @@ class LiveRuntime:
                     return self._receipt("refresh_map", payload, success=True, reason="refresh-coalesced", coalesced=True)
                 if not self._active or not self._map_open:
                     return self._receipt("refresh_map", payload, success=False, reason="map-refresh-not-active")
-                candidate_probe = self._candidate_probe_available() and not self._transient_cycle_current()
                 transient = self._transient_cycle_current()
                 owner = self._refresh_render_owner()
-                if not candidate_probe:
-                    self._capture_pending = owns_capture = True
-                    capture_owner = self._capture_pending_owner = (epoch, object())
-            if candidate_probe:
-                return self._probe_candidate_floor("refresh_map", payload, cancelled,
-                    expected_epoch=epoch, request_id=object())
+                self._capture_pending = owns_capture = True
+                capture_owner = self._capture_pending_owner = (epoch, object())
             if transient:
                 receipt = self._probe_map_after_drag(payload, cancelled)
                 if receipt.get("success"):
@@ -5061,8 +4892,7 @@ class LiveRuntime:
                     self._retire_refresh_owner(published_owner)
                     return self._receipt("refresh_map", payload, success=False,
                         reason="cancelled-or-stale", stale=True)
-                if not self._retained_material_current(current_owner):
-                    self.invalidate("runtime-error", source=f'refresh-map:{type(error).__name__}')
+                self.invalidate("runtime-error", source=f'refresh-map:{type(error).__name__}')
             return self._receipt("refresh_map", payload, success=False,
                                  reason=f"{type(error).__name__}:{error}", error=True,
                     **self._error_fields(error, "refresh_map"))
@@ -5107,17 +4937,16 @@ class LiveRuntime:
             with self._lock:
                 if obsolete():
                     return self._receipt("refresh_map", payload, success=False, reason="cancelled-or-stale", stale=True)
-                self._retire_material_owner(self._refresh_render_owner(), reason)
+                self._revoke_render(reason)
             return None
         self._set_pose_phase("pending", "current-frame-refresh", map_id, floor, current_frame, self._frame_generation)
-        host, _, _ = _prepare_alignment_host(engine, group, self._settings, map_id, floor,
-            cancelled=obsolete)
+        host = _AlignmentHost(engine, group, self._settings, grid_runtime=self.grid_runtime)
         basis = engine.qt_adapters.matrix_profile_to_canonical("shared-structure", map_id, floor)
         if basis is None:
             with self._lock:
                 if obsolete():
                     return self._receipt("refresh_map", payload, success=False, reason="cancelled-or-stale", stale=True)
-                self._retire_material_owner(self._refresh_render_owner(), "refresh-reference-basis-unavailable")
+                self._revoke_render("refresh-reference-basis-unavailable")
             return None
         canonical = np.asarray(row["canonicalMatrix"], np.float64)
         source_matrix = canonical @ np.asarray(basis, np.float64)
@@ -5128,7 +4957,7 @@ class LiveRuntime:
             if context is None or context.get("visible") is None:
                 with self._lock:
                     if not obsolete():
-                        self._retire_material_owner(self._refresh_render_owner(), "manual-current-geometry-unavailable")
+                        self._revoke_render("manual-current-geometry-unavailable")
                 return None
             residual_options["visible_override"] = context["visible"]
         residual, _ = host._canonical_geometry_current_frame_residual(
@@ -5136,7 +4965,7 @@ class LiveRuntime:
         with self._lock:
             # The cancellation check and any rejection below are one owner
             # transaction. A first drag delta must not land between them.
-            if obsolete() or not _alignment_host_current(engine, host):
+            if obsolete():
                 return self._receipt("refresh_map", payload, success=False, reason="cancelled-or-stale", stale=True)
             if self._transient_drag is not None or self._transient_cycle_current():
                 return self._receipt("refresh_map", payload, success=True, reason="refresh-coalesced", coalesced=True)
@@ -5145,7 +4974,7 @@ class LiveRuntime:
                     or cycle != self._cycle or self._floor != floor):
                 return self._receipt("refresh_map", payload, success=False, reason="cancelled-or-stale", stale=True)
             if not rendered_profile_residual_is_verified(residual):
-                self._retire_material_owner(self._refresh_render_owner(), "current-frame-residual-failed")
+                self._revoke_render("current-frame-residual-failed")
                 return None
             if not self._capture_is_current(captured.context, capture_generation):
                 self.invalidate("capture-context-changed")
@@ -5160,21 +4989,19 @@ class LiveRuntime:
                 and previous["group"] is self._group)
             generation = self._frame_generation + 1
             frame_id = f"{self._round}:{generation}:{digest[:16]}"
-            core = self._copy_pose_core(self._core)
-            core.begin_observation(cycle_id=cycle, map_id=map_id, floor=floor,
+            self._core.begin_observation(cycle_id=cycle, map_id=map_id, floor=floor,
                 frame_generation=generation, frame_signature=(digest,), reason="current-pose-refresh")
             candidate = AlignmentCandidate(map_id, floor, canonical,
                 "same-floor-reopen-verified-refresh", generation, confidence=1.0, anchor_count=1,
                 anchor_kind="global", current_frame_verified=True, residual_verified=True,
                 global_residual_verified=True, translation_only=True,
                 metadata=dict(routeProfileId="shared-structure"))
-            decision = core.adjudicate(candidate)
-            token = core.authorize(decision)
-            if token is None or not core.commit(token, persist_pose=False):
-                self._retire_material_owner(self._refresh_render_owner(), "refresh-core-commit-rejected")
+            decision = self._core.adjudicate(candidate)
+            token = self._core.authorize(decision)
+            if token is None or not self._core.commit(token, persist_pose=False):
+                self._revoke_render("refresh-core-commit-rejected")
                 return self._receipt("refresh_map", payload, success=False, reason=decision.reason)
             self._discard_sibling()
-            self._core = core
             self._frame_generation, self._frame_id = generation, frame_id
             self._last_observation = dict(captured=captured, frame=frame, floor=floor, digest=digest, created_at=self._monotonic(),
                 capture_generation=capture_generation, frame_id=frame_id, observed_floor=self._observed_floor,
@@ -5254,12 +5081,11 @@ class LiveRuntime:
                         return self._receipt(action, payload, success=False, reason="stale-map-input", stale=True)
                     self._last_map_input_sequence = sequence
                 epoch, engine, map_id = self._epoch, self._engine, self._map_id
-                render_owner = self._refresh_render_owner()
                 manual_target, old_floor = self._manual_floor, self._floor
                 owner = self._manual_capture_owner = object()
                 self._capture_pending = True
                 if action != "observe_manual_floor":
-                    self._retire_material_owner(self._refresh_render_owner(), "manual-current-frame-request")
+                    self._revoke_render("manual-current-frame-request")
 
             def obsolete():
                 return (self._cancelled(cancelled) or epoch != self._epoch or engine is not self._engine
@@ -5307,14 +5133,12 @@ class LiveRuntime:
                     frame = _test_input_copy(self._full_frame(captured))
                     with self._lock:
                         if obsolete() or not self._capture_is_current(captured.context, capture_generation):
-                            self._retire_material_owner(render_owner, "manual-observation-context-expired")
                             return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
                     observation, observed, read = self._observe(engine, frame)
                 frame.setflags(write=False)
                 digest = hashlib.sha256(frame.tobytes()).hexdigest()
                 with self._lock:
                     if obsolete() or not self._capture_is_current(captured.context, capture_generation):
-                        self._retire_material_owner(render_owner, "manual-observation-context-expired")
                         return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
                     opened = read.get("mapOpen")
                     raw = read.get("rawSelectedFloor")
@@ -5347,12 +5171,10 @@ class LiveRuntime:
                     payload["_mapInputVisual"] = dict(open=opened, epoch=self._epoch,
                         sequence=self._last_map_input_sequence, captured=captured, captureGeneration=capture_generation)
                     if not floor:
-                        retained = self._retained_material_current(self._refresh_render_owner())
-                        if not retained:
-                            self._revoke_render("s1-floor-unknown")
-                            self._group = None
-                            self._core.reset_round(reason="s1-floor-unknown")
-                            self._floor = ""
+                        self._revoke_render("s1-floor-unknown")
+                        self._group = None
+                        self._core.reset_round(reason="s1-floor-unknown")
+                        self._floor = ""
                         self._floor_required = True
                         self._frame_generation += 1
                         self._frame_id = f"{self._round}:{self._frame_generation}:{digest[:16]}"
@@ -5377,9 +5199,8 @@ class LiveRuntime:
                         return dict(refreshed, action=action)
                 with self._lock:
                     if obsolete() or not self._capture_is_current(captured.context, capture_generation):
-                        self._retire_material_owner(render_owner, "manual-observation-context-expired")
                         return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
-                    self._retire_material_owner(self._refresh_render_owner(), "s1-current-floor-fit")
+                    self._revoke_render("s1-current-floor-fit")
                     if floor != old_floor:
                         self._group = None
                         self._core.reset_round(reason="s1-observed-floor-changed")
@@ -5400,7 +5221,7 @@ class LiveRuntime:
                     if obsolete():
                         return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True,
                             errorType=type(error).__name__)
-                    self._retire_material_owner(self._refresh_render_owner(), "s1-floor-observation-error")
+                    self._revoke_render("s1-floor-observation-error")
                 raise
             finally:
                 with self._lock:
@@ -5426,7 +5247,7 @@ class LiveRuntime:
                     return self._receipt(action, payload, success=False, reason="manual-map-floor-required")
                 epoch, engine, group = self._epoch, self._engine, self._group
                 map_id, floor = self._map_id, self._manual_floor
-                self._retire_material_owner(self._refresh_render_owner(), "manual-current-frame-request")
+                self._revoke_render("manual-current-frame-request")
                 owner = self._manual_capture_owner = object()
                 self._capture_pending = True
             obsolete = lambda: self._cancelled(cancelled) or epoch != self._epoch
@@ -5482,15 +5303,16 @@ class LiveRuntime:
                 return self._receipt(action, payload, success=False, reason="round-not-active")
             epoch, engine, group = self._epoch, self._engine, self._group
             input_sequence = self._last_map_input_sequence
-        # A new acquisition has its own evidence. The previous completed
-        # material remains owned by its original frame until replacement or a
-        # real opening/floor/resource/capture boundary.
+        # Recapture has not changed the observed map until acquisition starts.
+        # A provider's narrow pre-pixel foreground refusal must not itself
+        # erase a still-current observation. Other actions keep their existing
+        # revocation semantics; no failure after acquisition is retained.
         foreground_return = action == "capture_now" and payload.get("foregroundReturn") is True
         if prepared is None and (action not in ("refresh_map", "capture_now") or foreground_return):
             with self._lock:
                 self._game_floor_intent = None
                 self._floor_click_epoch_span = None
-            self._retire_material_owner(self._refresh_render_owner(), "new-capture")
+            self._revoke_render("new-capture")
         obsolete = lambda: self._cancelled(cancelled) or epoch != self._epoch
         preparing = action == "map" or foreground_return
         if prepared is not None:
@@ -5566,7 +5388,10 @@ class LiveRuntime:
                 with self._lock:
                     self._game_floor_intent = None
                     self._floor_click_epoch_span = None
-                self._retire_material_owner(self._refresh_render_owner(), "new-capture")
+                # Revoke BEFORE entering the real pixel acquisition. An old
+                # queued render-ready event cannot republish a prior token
+                # while this worker is blocked in a native/backend capture.
+                self._revoke_render("new-capture")
             try:
                 captured = self._capture_frame(obsolete, attempt_id=payload.get("_diagnosticAttemptId"))
                 captured_frame = self._full_frame(captured)
@@ -5588,14 +5413,22 @@ class LiveRuntime:
                 observed=(observation, floor, floor_read, opened))
         frame = self._full_frame(captured)
         width, height = captured.context.full_client_size
-        capture_snapshot = captured.frame_snapshot
-        if capture_snapshot is None or capture_snapshot.pixels is not frame:
-            raise ValueError('capture-frame-snapshot-unavailable')
         stream_snapshot = None
-        if self._observation_stream_enabled(engine):
-            stream_snapshot = capture_snapshot
+        if self._candidate_streaming_requested() and self._s1_provisional_enabled():
+            from priority_admission import FrameSnapshot
+            stream_snapshot = FrameSnapshot(frame)
+            # pixels returns a new ndarray view each time. Observe the exact
+            # view actually consumed below, not an immediately discarded one.
+            stream_frame = stream_snapshot.pixels
+            _test_evidence("input-alias", frame, stream_frame)
+            frame = stream_frame
+            # Recheck floor against the exact immutable frame consumed by scan,
+            # not a mutable transport buffer observed during preparation.
+            observation, floor, floor_read = self._observe(engine, frame)
             opened = observation.get("mapOpen")
-        _test_evidence("input-alias", captured.frame_bgr, frame)
+        else:
+            frame = _test_input_copy(frame)
+            frame.setflags(write=False)
         if obsolete():
             return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
         map_detected = observation.get("detected") is True
@@ -5620,17 +5453,15 @@ class LiveRuntime:
             with self._lock:
                 if obsolete():
                     return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
-                retained = self._retained_material_current(self._refresh_render_owner())
-                self._retire_material_owner(self._refresh_render_owner(), "current-floor-unavailable")
-            digest = capture_snapshot.frame_key
+                self._revoke_render("current-floor-unavailable")
+            digest = hashlib.sha256(frame.tobytes()).hexdigest()
             with self._lock:
                 if obsolete():
                     return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                 if not self._map_open:
                     self._cycle += 1
                 self._map_open = True
-                if not retained:
-                    self._floor = effective_floor or ""
+                self._floor = effective_floor or ""
                 if action == "recover_map_open":
                     payload["_recoveryResultScope"] = self._map_recovery_scope()
                 if effective_floor is None:
@@ -5643,13 +5474,13 @@ class LiveRuntime:
                 self._publish_game_pointer_context_locked()
                 for row in self._candidate_rows:
                     row["floor"] = self._floor
-            if effective_floor is not None and (not retained or self._manual_override):
+            if effective_floor is not None:
                 return self._solve_retained(action, payload, cancelled, acquire_current=False, expected_epoch=epoch)
             self._terminal_failure_sample("current-floor-unavailable", payload, captured, lambda: not obsolete())
             return self._receipt(action, payload, success=False, reason="current-floor-unavailable", observation=observation,
                 preparationObservation=preparation.observation_diagnostic() if preparing else {})
         if opened is not True:
-            if action == "refresh_map" or self._retained_material_current(self._refresh_render_owner()):
+            if action == "refresh_map":
                 from session_state_machine import map_probe_transition
                 probe_open = (observation.get("mapOpen") if engine.pack.mode == "difficult"
                               else bool(observation.get("detected")))
@@ -5659,7 +5490,7 @@ class LiveRuntime:
                     self._probe_misses, transition = map_probe_transition(
                         self._map_open, self._probe_misses, probe_open)
                     reason = "current-floor-unavailable" if probe_open is True and floor is None else "map-not-observed"
-                    self._retire_material_owner(self._refresh_render_owner(), reason)
+                    self._revoke_render(reason)
                     # While a failed-fit segment awaits the existing two-miss
                     # close decision, don't report its first probe miss as a
                     # separate operation failure. No segment: legacy reporting.
@@ -5688,7 +5519,7 @@ class LiveRuntime:
                 self._last_observation = None
                 self._pointer_context_snapshot = None
                 if action == "refresh_map":
-                    self._retire_material_owner(self._refresh_render_owner(), "current-floor-unavailable")
+                    self._revoke_render("current-floor-unavailable")
                 else:
                     self.invalidate("floor-unknown")
                 failure_receipt = self._receipt(action, payload, success=False,
@@ -5702,17 +5533,17 @@ class LiveRuntime:
             with self._lock:
                 if obsolete():
                     return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
-                self._retire_material_owner(self._refresh_render_owner(), "floor-policy-deferred")
+                self._revoke_render("floor-policy-deferred")
                 return self._receipt(action, payload, success=False, reason="floor-policy-deferred")
         floor = effective_floor
-        digest = capture_snapshot.frame_key
+        digest = hashlib.sha256(frame.tobytes()).hexdigest()
         with self._lock:
             if obsolete():
                 return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
             pending_selection = self._selection_pending
             if pending_selection:
                 self._revoke_render("candidate-awaiting-confirmation")
-        if action == "refresh_map" and not pending_selection and not self._candidate_provisional_enabled():
+        if action == "refresh_map" and not pending_selection and not self._s1_provisional_enabled():
             renewed = self._try_refresh_current(payload, captured, frame, floor, digest, capture_generation,
                                                  engine, epoch, obsolete, floor_read=floor_read)
             if renewed is not None:
@@ -5756,17 +5587,17 @@ class LiveRuntime:
                 return self._receipt(action, payload, success=True,
                     reason="manual-map-selection-pending", posePending=True,
                     manualSelectionPending=True, observation=observation)
-            if self._observation_stream_enabled(engine):
-                return self._stream_observation(action, payload, cancelled, engine, epoch,
-                    captured, frame, floor, digest, capture_generation, frame_generation,
-                    frame_id, cycle, stream_snapshot)
             if engine.pack.mode == "difficult" and str(floor) == "2":
                 return self._receipt(action, payload, success=False,
                     reason="difficult-f2-entry-recognition-disabled", posePending=True)
+            if self._candidate_streaming_requested() and self._s1_provisional_enabled():
+                return self._stream_s1_observation(action, payload, cancelled, engine, epoch,
+                    captured, frame, floor, digest, capture_generation, frame_generation,
+                    frame_id, cycle, stream_snapshot)
             # Opening the map again refreshes the selected member's geometry.
             # Only an identity reset/new round starts discovery; later side
             # views must not silently replace a front-group member selection.
-            map_id, entry_candidate, stale = self._collect_legacy_entry_evidence(engine, frame, floor, epoch, frame_id, cancelled)
+            map_id, entry_candidate, stale = self._rank_identity(engine, frame, floor, epoch, frame_id, cancelled)
             if stale:
                 return self._receipt(action, payload, success=False, reason=str(stale), stale=True)
             if not map_id:
@@ -5838,7 +5669,7 @@ class LiveRuntime:
         if base is None:return None
         prepared=prepare_route_reprojection(engine,map_id,floor,profile,base,variant_id=variant)
         layer=prepared["layer"]
-        rgba=_display_rgba(layer)
+        rgba=np.ascontiguousarray(layer["pixels"][:,:,[2,1,0,3]]);rgba.setflags(write=False)
         display_matrix=translated_source_matrix(prepared["matrixSourceToClient"],*offset)
         projected=translated_source_matrix(base,*offset)
         view=dict(overlay=rgba,matrixSourceToClient=display_matrix.tolist(),
@@ -5893,8 +5724,7 @@ class LiveRuntime:
             pendingSiblingToken=token,renderToken=row["sourceToken"],projectionOnly=True,posePending=True)
 
     def _stage_round_group_commit(self, engine, group, map_id, floor, canonical, render_matrix,
-                                  display, frame, captured, cycle, frame_generation, residual, *, component_override=None,
-                                  observation_scope=None):
+                                  display, frame, captured, cycle, frame_generation, residual, *, component_override=None):
         """Reuse the original single-root relation and validation-pool writer."""
         from types import SimpleNamespace
         from round_layer_group_commit import (commit_alignment_v2_round_pose,
@@ -5925,7 +5755,7 @@ class LiveRuntime:
         accepted = commit_alignment_v2_round_pose(owner, map_id, floor, display["pixels"], frame,
             context.client_screen_bounds, render_matrix=render_matrix, canonical_matrix=canonical,
             route_profile_id=display.get("effectiveProfileId", "shared-structure"), source="initial-structure-v2", residual=residual,
-            component_override=component_override, observation_scope=observation_scope,
+            component_override=component_override,
             normalize_route_profile_id=lambda profile: profile,
             display_environment_signature=lambda _: signature, map_anchor_focus_point=map_anchor_focus_point)
         return owner.round_layer_group if accepted else None
@@ -5933,30 +5763,20 @@ class LiveRuntime:
     def _solve_observation(self, action, payload, cancelled, engine, group, epoch, captured, frame,
                            floor, digest, capture_generation, frame_generation, frame_id, cycle,
                            map_id, entry_candidate=None, *, identity_stage=None, manual_choice=None,
-                           staged_observation=None, structure_ticket=None, structure_current=None,
-                           entry_observation=None, coordinate_observation=None,
-                           coordinate_pool_revision=None, pixel_observation_scope=None):
+                           staged_observation=None, structure_ticket=None, structure_current=None):
         import numpy as np
         from alignment_core_v2 import AlignmentCandidate
         from alignment_observation import rendered_profile_residual_is_verified
-        from client_providers import DisplayResourceChanged
         from round_layer_group import RoundLayerGroup
-        from round_layer_group_commit import RoundPoseObservationScope
         with self._lock:
-            provisional_operation = self._candidate_provisional_enabled(engine)
+            provisional_operation = self._s1_provisional_enabled()
             operation_settings_generation = self._settings_generation
-            registered_state = clone_similarity_state(identity_stage or self._identity_native)
-        alignment_current = lambda: True
-        obsolete = lambda: (self._cancelled(cancelled) or epoch != self._epoch or not alignment_current()
+        obsolete = lambda: (self._cancelled(cancelled) or epoch != self._epoch
             or structure_current is not None and not structure_current()
             or provisional_operation and operation_settings_generation != self._settings_generation
             or staged_observation is not None and not self._staged_choice_current(staged_observation))
-        def frame_current():
-            if staged_observation is not None:
-                return bool(self._staged_choice_current(staged_observation)
-                    and (frame_id, frame_generation) ==
-                        (staged_observation["frame_id"], staged_observation["generation"]))
-            return (frame_id, frame_generation) == (self._frame_id, self._frame_generation)
+        frame_current = lambda: (self._staged_choice_current(staged_observation)
+            if staged_observation is not None else frame_id == self._frame_id)
         width, height = captured.context.full_client_size
         with self._lock:
             if obsolete() or not frame_current() or floor != self._floor:
@@ -5973,38 +5793,14 @@ class LiveRuntime:
                     observedFloor=observed_floor, targetFloor=str(floor), fitAttempted=False)
             display_generation = getattr(self, "_display_generation", 0)
             group_intent_generation = self._group_intent_generation
-            profile = self._profile
             variant_id = self._settings.get("zhan10CoffinVariantId", "variant-01")
-            material_owner = self._refresh_render_owner()
-
-        def withdraw_changed_display(owner):
-            # Resource proof belongs to this exact consumption, not a newer
-            # material/drag or another member's separately owned source.
-            with self._lock:
-                row = self._render
-                if (epoch == self._epoch and engine is self._engine
-                        and profile == self._profile and floor == self._floor
-                        and display_generation == getattr(self, "_display_generation", 0)
-                        and owner == self._refresh_render_owner()
-                        and (row is None or row["mapId"] == map_id)):
-                    self.invalidate("display-resource-changed", source=action)
-
         # Static reference follows the independently confirmed map and floor;
         # a failed pose solve must not also remove the player's reference map.
-        try:
-            prepared_display = self._display_layer(engine, map_id, floor, profile, variant_id=variant_id)
-        except DisplayResourceChanged:
-            withdraw_changed_display(material_owner)
-            raise
-        # One solve owns its material. Detach only small metadata and the bridge;
-        # neither a provider nor a later publication may rewrite this snapshot.
-        display = {key: value if key in ("pixels", "rgbaPixels") else copy.deepcopy(value)
-            for key, value in prepared_display.items()}
-        display["matrixDisplayToReference"] = np.asarray(display["matrixDisplayToReference"], np.float64)
-        display["matrixDisplayToReference"].setflags(write=False)
-        reference_pixels = _display_rgba(display)
+        display = self._display_layer(engine, map_id, floor, self._profile, variant_id=variant_id)
+        reference_pixels = np.ascontiguousarray(display["pixels"][:, :, [2, 1, 0, 3]])
+        reference_pixels.setflags(write=False)
         with self._lock:
-            if display_generation != getattr(self, "_display_generation", 0) or profile != self._profile:
+            if display_generation != getattr(self, "_display_generation", 0):
                 return self._receipt(action, payload, success=False, reason="stale-display-settings", stale=True)
             if (group_intent_generation != self._group_intent_generation
                     or manual_choice is None and self._group_choice_inflight is not None):
@@ -6013,17 +5809,12 @@ class LiveRuntime:
                 return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
             if capture_generation != self._capture_generation():
                 return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
-            if (self._render is not None and self._render.get("mapId") == map_id
-                    and self._render.get("floor") == floor and self._render.get("profileId") == profile
-                    and self._render.get("resourceIdentity") != display["resourceIdentity"]):
-                withdraw_changed_display(material_owner)
-                return self._receipt(action, payload, success=False, reason="display-resource-changed", stale=True)
             reference_sheet = dict(token=uuid4().hex, pixels=reference_pixels,
-                season=self._season, mode=self._mode, profileId=profile, mapId=map_id, floor=floor, roundId=self._round,
+                season=self._season, mode=self._mode, profileId=self._profile, mapId=map_id, floor=floor, roundId=self._round,
                 variantId=display.get("variantId"), displayGeneration=display_generation,
                 resourceIdentity=display["resourceIdentity"], captureGeneration=capture_generation, engineIdentity=id(engine),
                 referenceAuthorized=self._evidence_kind == "live-client-capture", evidenceKind=self._evidence_kind,
-                preferredProfileId=profile, effectiveProfileId=display.get("effectiveProfileId", display["routeProfileId"]),
+                preferredProfileId=self._profile, effectiveProfileId=display.get("effectiveProfileId", display["routeProfileId"]),
                 displayKind=display["displayKind"], displayLabel=display["displayLabel"],
                 routeProfileId=display["routeProfileId"], authorStatus=display.get("authorStatus", "none"), fallback=display.get("fallback", False),
                 fallbackReason=display.get("fallbackReason", ""), **self._identity_fields())
@@ -6049,288 +5840,33 @@ class LiveRuntime:
             staged_observation=staged_observation)
         with self._lock:
             steady_context = self._steady_context()
-        published_token = None
-        review_core = None
-        observation_scope = (pixel_observation_scope if pixel_observation_scope is not None
-                             else RoundPoseObservationScope(frame))
-
-        def revoke_published(reason):
-            with self._lock:
-                if self._render is not None and self._render["token"] == published_token:
-                    self._retire_material_owner(self._refresh_render_owner(), reason)
-
-        def publish_fit(fit, *, review_pending=False):
-            nonlocal published_token, review_core
-            residual = fit.get("selectedRouteCurrentFrameResidual")
-            if not rendered_profile_residual_is_verified(residual):
-                raise ValueError("current-frame-canonical-verification-required")
-            source_matrix = np.asarray(fit["matrixSourceToClient"], np.float64)
-            basis = engine.qt_adapters.matrix_profile_to_canonical("shared-structure", map_id, floor)
-            if basis is None:
-                raise ValueError("shared-reference-canonical-basis-unavailable")
-            canonical = source_matrix @ np.linalg.inv(np.asarray(basis))
-            render_matrix = source_matrix @ display["matrixDisplayToReference"]
-            try:
-                validate_established_registered_family(engine, registered_state)
-            except (OSError, ValueError) as error:
-                with self._lock:
-                    if obsolete() or not frame_current() or engine is not self._engine:
-                        return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
-                    self.invalidate('registered-group-resource-unavailable', source=action)
-                    return self._receipt(action, payload, success=False, reason='registered-group-resource-unavailable',
-                                         messageDetail=str(error)[:512])
-            with self._lock:
-                proof_owner = self._refresh_render_owner()
-            try:
-                if profile == "shared-structure" and display["displayKind"] == "shared-structure":
-                    from client_route_preferences import shared_structure_display_current
-                    display_current = shared_structure_display_current(engine, map_id, floor, display)
-                else:
-                    # Author/custom selection and structural fallback retain
-                    # their original policy, source and generation checks.
-                    current_display = self._display_layer(engine, map_id, floor, profile, variant_id=variant_id)
-                    display_current = current_display["resourceIdentity"] == display["resourceIdentity"]
-            except DisplayResourceChanged:
-                withdraw_changed_display(proof_owner)
-                raise
-            if not display_current:
-                withdraw_changed_display(proof_owner)
-                return self._receipt(action, payload, success=False, reason="display-resource-changed", stale=True)
-            with self._lock:
-                if registered_family_identity(registered_state) != registered_family_identity(self._identity_native):
-                    return self._receipt(action, payload, success=False, reason='registered-group-context-changed', stale=True)
-                previous_group = copy.deepcopy(group) if group is not None else None
-            target_group = self._stage_round_group_commit(engine, previous_group, map_id, floor, canonical,
-                render_matrix, display, frame, captured, cycle, frame_generation, residual,
-                component_override=fit.get("observationComponent") if self._season == "s1" else None,
-                observation_scope=observation_scope)
-            if target_group is None:
-                reason = "round-group-pose-commit-rejected"
-                self._set_pose_phase("rejected", reason, map_id, floor, frame_id, frame_generation,
-                    staged_observation=staged_observation)
-                return self._receipt(action, payload, success=False, reason=reason)
-            with self._lock:
-                if display_generation != getattr(self, "_display_generation", 0) or profile != self._profile:
-                    return self._receipt(action, payload, success=False, reason="stale-display-settings", stale=True)
-                if (group_intent_generation != self._group_intent_generation
-                        or manual_choice is None and self._group_choice_inflight is not None):
-                    return self._receipt(action, payload, success=False, reason="manual-group-intent-superseded-work", stale=True)
-                if (obsolete() or not frame_current() or cycle != self._cycle or floor != self._floor
-                        or engine is not self._engine):
-                    return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
-                if not self._capture_is_current(captured.context, capture_generation):
-                    self.invalidate("capture-context-changed")
-                    return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
-                source_core = review_core if review_core is not None else self._core
-                core = self._copy_pose_core(source_core) if (review_pending or identity_stage is not None
-                    or provisional_operation and self._render is not None
-                    or self._retained_material_current(self._refresh_render_owner())) else source_core
-                self._seed_group_core(core,group)
-                core.begin_observation(cycle_id=cycle, map_id=map_id, floor=floor,
-                                             frame_generation=frame_generation, frame_signature=(digest,))
-                # This is the full shared-structure sensor result, as in the Tk
-                # consumer. Existing pose presence cannot relabel it as a bounded
-                # translation recovery; the separate refresh path owns that source.
-                candidate = AlignmentCandidate(map_id, floor, canonical,
-                    "initial-structure-v2", frame_generation,
-                    confidence=1.0, anchor_count=1, anchor_kind="global", current_frame_verified=True,
-                    residual_verified=True, global_residual_verified=True,
-                    translation_only=False,
-                    metadata=dict(routeProfileId="shared-structure", independentFloorAnchor=True))
-                decision = core.adjudicate(candidate)
-                if not decision.accepted:
-                    self._set_pose_phase("rejected", decision.reason, map_id, floor, frame_id, frame_generation,
-                        staged_observation=staged_observation)
-                    return self._receipt(action, payload, success=False, reason=decision.reason)
-                token = core.authorize(decision)
-                if token is None or not core.commit(token, persist_pose=not (review_pending or provisional_operation)):
-                    return self._receipt(action, payload, success=False, reason="core-commit-rejected")
-                if not review_pending and not provisional_operation:
-                    self._seed_group_core(core,target_group)
-                rgba = reference_pixels
-                live = self._evidence_kind == "live-client-capture"
-                target_render = dict(token=uuid4().hex, epoch=epoch, authorizationId=token.authorization_id,
-                    season=self._season, mode=self._mode, profileId=profile, mapId=map_id, floor=floor,
-                    roundId=self._round, cycleId=cycle, frameId=frame_id, generation=frame_generation,
-                    matrix=render_matrix.tolist(), canonicalMatrix=canonical.tolist(), pixels=rgba,
-                    routeWidth=rgba.shape[1], routeHeight=rgba.shape[0], clientWidth=width, clientHeight=height,
-                    originX=captured.context.client_screen_bounds[0], originY=captured.context.client_screen_bounds[1],
-                    captureGeneration=capture_generation,
-                    poseReason=fit.get("reason"), poseStrategy=fit.get("strategy", "not-recorded"),
-                    floorSource=self._current_floor_source(), observedFloor=self._observed_floor,
-                    resourceIdentity=display["resourceIdentity"], displayKind=display["displayKind"],
-                    referencePath=display.get("referencePath", ""),
-                    displayLabel=display["displayLabel"], routeProfileId=display["routeProfileId"],
-                    preferredProfileId=profile, effectiveProfileId=display.get("effectiveProfileId", display["routeProfileId"]),
-                    authorStatus=display.get("authorStatus", "none"), fallback=display.get("fallback", False),
-                    fallbackReason=display.get("fallbackReason", ""),
-                    variantId=display.get("variantId"), displayGeneration=display_generation,
-                    liveAuthorization=live, evidenceKind=self._evidence_kind,
-                    reviewStatus="pending" if review_pending else "complete",
-                    poseFinalVerified=not review_pending, **self._identity_fields())
-                render_token = target_render["token"]
-                if not review_pending:
-                    self._register_material_proposal(target_render, frame, fit, captured, target_group,
-                        candidate_only=provisional_operation)
-                if review_pending:
-                    # Only presentation authority advances. Identity, group and
-                    # persistent pose remain with their existing owners until review.
-                    review_core = self._core
-                    self._core, self._render = core, target_render
-                    self._render_capture_context = captured.context
-                    published_token = render_token
-                elif identity_stage is not None:
-                    if manual_choice is None and (self._render is None or not self._display_current(self._render)):
-                        return self._receipt(action, payload, success=False, reason="sibling-source-authorization-expired", stale=True)
-                    self._discard_sibling()
-                    source_token = self._render["token"] if self._render is not None else ""
-                    target_render.update(requiresMaterialAck=True, sourceToken=source_token, sourceMapId=self._map_id,
-                        manualGroupChoice=manual_choice is not None,
-                        provisionalMapId=map_id, provisional=True, identityLocked=False, durableMapId="")
-                    if manual_choice is not None:self._group_member_choice_status="awaiting-material"
-                    self._pending_sibling = dict(scope=self._sibling_scope(), sourceCore=self._core,
-                        sourceToken=source_token, sourceMapId=self._map_id, core=core,
-                        group=target_group, identity=identity_stage, render=target_render,
-                        reference=reference_sheet, captureContext=captured.context, manualChoice=manual_choice,
-                        stagedObservation=staged_observation)
-                else:
-                    self._core = core
-                    if provisional_operation:
-                        self._provisional_display_map_id = map_id
-                        self._identity_source = f"{self._season}-current-structure-hypothesis"
-                        self._gate.select(map_id)
-                        # Neither _map_id nor confirmed_id acquires candidate state.
-                        target_render.update(self._identity_fields())
-                        target_render.update(identitySource=self._identity_source,
-                            identityVerified=False, requiresManualConfirmation=False,
-                            displayAuthorizationScope="current-native-frame-candidate" if live else "current-recorded-frame-candidate",
-                            candidatePurpose=("native-s1-preview" if self._native_s1_candidate_preview else "recorded-s1-preview")
-                                if self._season == "s1" else "current-s0-structure-preview")
-                        self._group, self._render = None, target_render
-                    else:
-                        self._map_id = map_id
-                        self._gate.select(map_id)
-                        self._gate.confirm()
-                        self._group, self._render = target_group, target_render
-                    published_token = render_token
-                    if action == "refresh_map":
-                        payload["_refreshRenderOwner"] = self._refresh_render_owner()
-                    self._fit_reporting.success(self._fit_reporting_scope())
-                    if action == "recover_map_open":
-                        payload["_recoveryRenderOwner"] = self._refresh_render_owner()
-                        payload["_recoveryResultScope"] = self._map_recovery_scope()
-                    self._render_capture_context = captured.context
-                    if provisional_operation:
-                        pool = self._s1_private_pool
-                        reference_sheet.update(self._identity_fields(), candidateReference=True,
-                            s1CandidateReference=self._season == "s1",
-                            s1ReferencePoolIdentity=id(pool) if pool is not None else None,
-                            s1ReferenceRecoveryRevision=pool.recovery_revision if pool is not None else None,
-                            referenceAuthorizationScope="current-candidate-static-reference")
-                    self._reference_sheet = reference_sheet
-                    self._reference_capture_context = captured.context
-                    self._remember_provisional_reference()
-            self._set_pose_phase("provisional" if review_pending else "valid",
-                "current-frame-review-pending" if review_pending else "current-frame-pose-authorized",
-                map_id, floor, frame_id, frame_generation,
-                staged_observation=staged_observation)
-            if identity_stage is not None:
-                self._notify("sibling-material-pending", reason="target-current-pose-awaiting-material", token=render_token,
-                    sourceMapId=self._map_id, targetMapId=map_id)
-                return self._receipt(action, payload, success=True, reason="sibling-material-pending",
-                    renderToken=source_token, pendingSiblingToken=render_token, diagnosticOnly=not live)
-            self._notify("render-ready",
-                reason="current-frame-review-pending" if review_pending else "current-frame-pose-authorized",
-                token=render_token, unchanged=False)
-            if obsolete():
-                return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
-            return self._receipt(action, payload, success=True,
-                                 reason="current-frame-review-pending" if review_pending else "current-frame-pose-authorized",
-                                 renderToken=render_token, diagnosticOnly=not live,
-                                 poseReason=fit.get("reason"), poseStrategy=fit.get("strategy", "not-recorded"))
-
-        def offer_usable_fit(first):
-            # Sibling material handoff and candidate tickets retain their
-            # existing independent acknowledgment/eligibility protocols.
-            if published_token is None and identity_stage is None and not provisional_operation:
-                with self._lock:
-                    if self._retained_material_current(self._refresh_render_owner()):
-                        return  # Keep completed pixels while final review owns the new verdict.
-                publish_fit(first, review_pending=True)
-
-        if coordinate_observation is not None:
-            from common_coordinate_observation import CommonCoordinateObservationWork
-            if (not isinstance(coordinate_observation, CommonCoordinateObservationWork)
-                    or not coordinate_observation.current_fit(engine, frame, map_id, floor,
-                        coordinate_pool_revision)):
-                return self._receipt(action, payload, success=False, reason='stale-common-coordinate-fit', stale=True)
-            # The actual structure lane already fitted this exact frame using
-            # admitted RAM references. Keep the original canonical host methods
-            # for failure evidence; do not prepare typed/fast inputs or fit again.
-            host = _AlignmentHost(coordinate_observation.prepared.observer.engine, group, self._settings)
-            preparation = dict(kind='current-common-coordinate-ram', fixedFitReused=True,
-                resourceReads=0)
-            steady_receipt = None
-            alignment_current = lambda: coordinate_observation.current_fit(
-                engine, frame, map_id, floor, coordinate_pool_revision)
-        else:
-            host, preparation, steady_receipt = _prepare_alignment_host(engine, group, self._settings,
-                map_id, floor, frame=frame, cancelled=obsolete,
-                steady=None if staged_observation is not None else (self._steady, steady_context,
-                lambda context: not obsolete() and self._steady_is_current(context, captured),
-                self._steady_signature(captured)), usable_fit_callback=offer_usable_fit)
-            alignment_current = lambda: _alignment_host_current(engine, host, steady_receipt)
-        if obsolete():
-            return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+        host = _AlignmentHost(engine, group, self._settings, steady=None if staged_observation is not None else (self._steady, steady_context,
+            lambda context: not obsolete() and self._steady_is_current(context, captured),
+            self._steady_signature(captured)), grid_runtime=self.grid_runtime)
         fit_started = time.monotonic()
-        fit_timing = {}
-        try:
-            if coordinate_observation is not None:
-                fit = copy.deepcopy(coordinate_observation.pose)
-                fit_timing.update(elapsedMs=coordinate_observation.fit_ms,
-                    kind='common-coordinate-fixed-in-structure-lane')
-            elif provisional_operation or structure_ticket is not None:
-                # Reuse only the current ticket's already verified fit. All residual,
-                # material, floor, generation and capture checks below still run.
-                with self._lock:
-                    session, ticket = structure_ticket or (self._s1_structure_session, self._s1_structure_ticket)
-                    current_ticket = session is self._s1_structure_session and ticket == self._s1_structure_ticket
-                    choice = session.choose_candidate(map_id, ticket) if current_ticket and session is not None else {}
-                if (not choice.get("success") or choice.get("frameKey") != digest
-                        or choice.get("floor") != str(floor)
-                        or choice.get("season") != self._season or choice.get("mode") != self._mode):
-                    if not provisional_operation:
-                        choice = None  # Entry identity may precede its geometry scan.
-                    else:
-                        return self._receipt(action, payload, success=False, reason="stale-structure-fit", stale=True)
-                if choice is not None:
-                    fit = choice["pose"]
-                else:
-                    fit = _fit_alignment_host(host, frame, map_id, floor, obsolete, entry_candidate,
-                        entry_observation=entry_observation,
-                        on_usable_fit=offer_usable_fit, timing=fit_timing)
-            elif self._season == "s1":
-                fit = _fit_alignment_host(host, frame, map_id, floor, obsolete,
-                    on_usable_fit=offer_usable_fit, timing=fit_timing,
-                    observation_bounds=(0, 0, frame.shape[1], frame.shape[0]))
-            else:
-                fit = _fit_alignment_host(host, frame, map_id, floor, obsolete, entry_candidate,
-                    entry_observation=entry_observation,
-                    on_usable_fit=offer_usable_fit, timing=fit_timing)
-        except BaseException:
-            revoke_published("pose-review-error")
-            raise
+        if provisional_operation:
+            # Reuse only the current ticket's already verified fit. All residual,
+            # material, floor, generation and capture checks below still run.
+            with self._lock:
+                session, ticket = structure_ticket or (self._s1_structure_session, self._s1_structure_ticket)
+                current_ticket = session is self._s1_structure_session and ticket == self._s1_structure_ticket
+                choice = session.choose_candidate(map_id, ticket) if current_ticket and session is not None else {}
+            if not choice.get("success") or choice.get("frameKey") != digest:
+                return self._receipt(action, payload, success=False, reason="stale-structure-fit", stale=True)
+            fit = choice["pose"]
+        elif self._season == "s1":
+            fit = host.fit(frame, map_id, floor, obsolete,
+                observation_bounds=(0, 0, frame.shape[1], frame.shape[0]))
+        else:
+            fit = host.fit(frame, map_id, floor, obsolete, entry_candidate) if entry_candidate is not None else host.fit(frame, map_id, floor, obsolete)
         self._recognition_diagnostic('pose-fit', fit.get('reason', 'reason-not-provided'),
             success=fit.get('success'), fit=fit, solverEvents=host.events,
-            preparation=preparation, calculation=fit_timing,
             elapsedMs=(time.monotonic()-fit_started)*1000,
             inputs=dict(mapId=map_id, floor=floor, frameId=frame_id,
                 cycleId=cycle, captureGeneration=capture_generation, sourceFrameGeneration=frame_generation))
         if obsolete():
-            revoke_published("pose-review-obsolete")
             return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
         if not fit.get("success"):
-            revoke_published("pose-review-rejected")
             reason = str(fit.get("reason", "pose-fit-failed"))
             if reason in ('structure-current-geometry-failed', 'initial-structure-current-geometry-failed', 'current-geometry-failed'):
                 self._automatic_failure_sample(reason, captured=captured, attempt_id=payload.get("_diagnosticAttemptId"),
@@ -6399,14 +5935,141 @@ class LiveRuntime:
                     staged_observation=staged_observation)
                 return self._receipt(action, payload, success=False, reason=reason,
                     identityReopened=reopened, fitReportingDeferred=deferred)
-        try:
-            result = publish_fit(fit)
-        except BaseException:
-            revoke_published("pose-review-error")
-            raise
-        if not result.get("success"):
-            revoke_published("pose-review-rejected")
-        return result
+        residual = fit.get("selectedRouteCurrentFrameResidual")
+        if not rendered_profile_residual_is_verified(residual):
+            raise ValueError("current-frame-canonical-verification-required")
+        source_matrix = np.asarray(fit["matrixSourceToClient"], np.float64)
+        basis = engine.qt_adapters.matrix_profile_to_canonical("shared-structure", map_id, floor)
+        if basis is None:
+            raise ValueError("shared-reference-canonical-basis-unavailable")
+        canonical = source_matrix @ np.linalg.inv(np.asarray(basis))
+        render_matrix = source_matrix @ display["matrixDisplayToReference"]
+        with self._lock:
+            previous_group = copy.deepcopy(group) if group is not None else None
+        target_group = self._stage_round_group_commit(engine, previous_group, map_id, floor, canonical,
+            render_matrix, display, frame, captured, cycle, frame_generation, residual,
+            component_override=fit.get("observationComponent") if self._season == "s1" else None)
+        if target_group is None:
+            reason = "round-group-pose-commit-rejected"
+            self._set_pose_phase("rejected", reason, map_id, floor, frame_id, frame_generation,
+                staged_observation=staged_observation)
+            return self._receipt(action, payload, success=False, reason=reason)
+        with self._lock:
+            if display_generation != getattr(self, "_display_generation", 0):
+                return self._receipt(action, payload, success=False, reason="stale-display-settings", stale=True)
+            if (group_intent_generation != self._group_intent_generation
+                    or manual_choice is None and self._group_choice_inflight is not None):
+                return self._receipt(action, payload, success=False, reason="manual-group-intent-superseded-work", stale=True)
+            if obsolete() or not frame_current() or cycle != self._cycle or floor != self._floor:
+                return self._receipt(action, payload, success=False, reason="stale-context", stale=True)
+            if not self._capture_is_current(captured.context, capture_generation):
+                self.invalidate("capture-context-changed")
+                return self._receipt(action, payload, success=False, reason="capture-context-changed", stale=True)
+            core = self._copy_pose_core(self._core) if identity_stage is not None else self._core
+            self._seed_group_core(core,group)
+            core.begin_observation(cycle_id=cycle, map_id=map_id, floor=floor,
+                                         frame_generation=frame_generation, frame_signature=(digest,))
+            # This is the full shared-structure sensor result, as in the Tk
+            # consumer. Existing pose presence cannot relabel it as a bounded
+            # translation recovery; the separate refresh path owns that source.
+            candidate = AlignmentCandidate(map_id, floor, canonical,
+                "initial-structure-v2", frame_generation,
+                confidence=1.0, anchor_count=1, anchor_kind="global", current_frame_verified=True,
+                residual_verified=True, global_residual_verified=True,
+                translation_only=False,
+                metadata=dict(routeProfileId="shared-structure", independentFloorAnchor=True))
+            decision = core.adjudicate(candidate)
+            if not decision.accepted:
+                self._set_pose_phase("rejected", decision.reason, map_id, floor, frame_id, frame_generation,
+                    staged_observation=staged_observation)
+                return self._receipt(action, payload, success=False, reason=decision.reason)
+            token = core.authorize(decision)
+            if token is None or not core.commit(token):
+                return self._receipt(action, payload, success=False, reason="core-commit-rejected")
+            self._seed_group_core(core,target_group)
+            rgba = np.ascontiguousarray(display["pixels"][:, :, [2, 1, 0, 3]])
+            rgba.setflags(write=False)
+            live = self._evidence_kind == "live-client-capture"
+            target_render = dict(token=uuid4().hex, epoch=epoch, authorizationId=token.authorization_id,
+                season=self._season, mode=self._mode, profileId=self._profile, mapId=map_id, floor=floor,
+                roundId=self._round, cycleId=cycle, frameId=frame_id, generation=frame_generation,
+                matrix=render_matrix.tolist(), canonicalMatrix=canonical.tolist(), pixels=rgba,
+                routeWidth=rgba.shape[1], routeHeight=rgba.shape[0], clientWidth=width, clientHeight=height,
+                originX=captured.context.client_screen_bounds[0], originY=captured.context.client_screen_bounds[1],
+                captureGeneration=capture_generation,
+                poseReason=fit.get("reason"), poseStrategy=fit.get("strategy", "not-recorded"),
+                floorSource=self._current_floor_source(), observedFloor=self._observed_floor,
+                resourceIdentity=display["resourceIdentity"], displayKind=display["displayKind"],
+                referencePath=display.get("referencePath", ""),
+                displayLabel=display["displayLabel"], routeProfileId=display["routeProfileId"],
+                preferredProfileId=self._profile, effectiveProfileId=display.get("effectiveProfileId", display["routeProfileId"]),
+                authorStatus=display.get("authorStatus", "none"), fallback=display.get("fallback", False),
+                fallbackReason=display.get("fallbackReason", ""),
+                variantId=display.get("variantId"), displayGeneration=display_generation,
+                liveAuthorization=live, evidenceKind=self._evidence_kind, **self._identity_fields())
+            render_token = target_render["token"]
+            self._register_material_proposal(target_render, frame, fit, captured, target_group,
+                candidate_only=provisional_operation)
+            if identity_stage is not None:
+                if manual_choice is None and (self._render is None or not self._display_current(self._render)):
+                    return self._receipt(action, payload, success=False, reason="sibling-source-authorization-expired", stale=True)
+                self._discard_sibling()
+                source_token = self._render["token"] if self._render is not None else ""
+                target_render.update(requiresMaterialAck=True, sourceToken=source_token, sourceMapId=self._map_id,
+                    manualGroupChoice=manual_choice is not None,
+                    provisionalMapId=map_id, provisional=True, identityLocked=False, durableMapId="")
+                if manual_choice is not None:self._group_member_choice_status="awaiting-material"
+                self._pending_sibling = dict(scope=self._sibling_scope(), sourceCore=self._core,
+                    sourceToken=source_token, sourceMapId=self._map_id, core=core,
+                    group=target_group, identity=identity_stage, render=target_render,
+                    reference=reference_sheet, captureContext=captured.context, manualChoice=manual_choice,
+                    stagedObservation=staged_observation)
+            else:
+                if provisional_operation:
+                    self._provisional_display_map_id = map_id
+                    self._identity_source = "s1-current-structure-hypothesis"
+                    self._gate.select(map_id)
+                    # Neither _map_id nor confirmed_id acquires candidate state.
+                    target_render.update(self._identity_fields())
+                    target_render.update(identitySource="s1-current-structure-hypothesis",
+                        identityVerified=False, requiresManualConfirmation=False,
+                        displayAuthorizationScope="current-native-frame-candidate" if live else "current-recorded-frame-candidate",
+                        candidatePurpose="native-s1-preview" if self._native_s1_candidate_preview else "recorded-s1-preview")
+                    self._group, self._render = None, target_render
+                else:
+                    self._map_id = map_id
+                    self._gate.select(map_id)
+                    self._gate.confirm()
+                    self._group, self._render = target_group, target_render
+                if action == "refresh_map":
+                    payload["_refreshRenderOwner"] = self._refresh_render_owner()
+                self._fit_reporting.success(self._fit_reporting_scope())
+                if action == "recover_map_open":
+                    payload["_recoveryRenderOwner"] = self._refresh_render_owner()
+                    payload["_recoveryResultScope"] = self._map_recovery_scope()
+                self._render_capture_context = captured.context
+                if provisional_operation:
+                    pool = self._s1_private_pool
+                    reference_sheet.update(self._identity_fields(), s1CandidateReference=True,
+                        s1ReferencePoolIdentity=id(pool) if pool is not None else None,
+                        s1ReferenceRecoveryRevision=pool.recovery_revision if pool is not None else None,
+                        referenceAuthorizationScope="current-candidate-static-reference")
+                self._reference_sheet = reference_sheet
+                self._reference_capture_context = captured.context
+                self._remember_provisional_reference()
+        self._set_pose_phase("valid", "current-frame-pose-authorized", map_id, floor, frame_id, frame_generation,
+            staged_observation=staged_observation)
+        if identity_stage is not None:
+            self._notify("sibling-material-pending", reason="target-current-pose-awaiting-material", token=render_token,
+                sourceMapId=self._map_id, targetMapId=map_id)
+            return self._receipt(action, payload, success=True, reason="sibling-material-pending",
+                renderToken=source_token, pendingSiblingToken=render_token, diagnosticOnly=not live)
+        self._notify("render-ready", reason="current-frame-pose-authorized", token=render_token, unchanged=False)
+        if obsolete():
+            return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+        return self._receipt(action, payload, success=True, reason="current-frame-pose-authorized",
+                             renderToken=render_token, diagnosticOnly=not live,
+                             poseReason=fit.get("reason"), poseStrategy=fit.get("strategy", "not-recorded"))
 
     @staticmethod
     def _full_frame(captured):
@@ -6439,7 +6102,7 @@ class LiveRuntime:
         if self._manual_alignment and self._s1_floor_observer_available(engine):
             from s1_floor_observation import detect_s1_floor
             read = detect_s1_floor(frame, season=self._season, mode=self._mode,
-                                   controls=getattr(engine, 'qt_controls_profile', None))
+                controls=getattr(engine, 'qt_controls_profile', None))
             read = dict(read, rawSelectedFloor=read.get("selectedFloor"),
                         controlGeometryVerified=False, floorSource="current-frame")
             if read.get("automaticFloorEligible") is not True:
@@ -6456,7 +6119,7 @@ class LiveRuntime:
         if self._season == "s1" and self._s1_candidate_available(engine=engine):
             from s1_floor_observation import detect_s1_floor
             floor_read = detect_s1_floor(frame, season=self._season, mode=engine.pack.mode,
-                                         controls=getattr(engine, 'qt_controls_profile', None))
+                controls=getattr(engine, 'qt_controls_profile', None))
             selected = floor_read.get("selectedFloor")
             if selected is not None and (type(selected) is not int or selected not in (-1, -2, -3, -4)
                     or floor_read.get("observedFloorValidated") is not True
@@ -6483,7 +6146,7 @@ class LiveRuntime:
             return dict(detected=False, mapOpen=None, reason=unavailable["reason"]), None, unavailable
         from s0_vertical_controls import observe_s0_map
         result, floor_read = observe_s0_map(frame, engine.pack.mode, settings=settings, season=self._season,
-                                          controls=getattr(engine, 'qt_controls_profile', None))
+            controls=getattr(engine, 'qt_controls_profile', None))
         floor = result.get("floor")
         if result.get("detected") is True:
             self._latest_map_frame = (frame, engine.pack.mode, floor_read)

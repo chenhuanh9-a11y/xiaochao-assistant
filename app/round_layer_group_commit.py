@@ -1,6 +1,4 @@
 """Shared original V2 group ownership/validation commit; UI supplies pure adapters."""
-import copy
-from dataclasses import dataclass
 import time
 import numpy as np
 import cv2
@@ -12,88 +10,6 @@ from nightmare_candidate import visible_map_component, live_stair_screen_candida
 from alignment_observation import rendered_profile_residual_is_verified
 
 SHARED_STRUCTURE_PROFILE_ID = "shared-structure"
-
-
-@dataclass(frozen=True)
-class RoundPoseObservation:
-    """Pixel evidence before any pose, resource or state authorization."""
-
-    reuse_evidence: dict
-    marker_client_point: np.ndarray | None
-    stair_candidates: list[dict]
-
-
-def _round_pose_visible_override(frame, component_override):
-    if isinstance(component_override, dict):
-        bounds = component_override.get("bounds")
-        if isinstance(bounds, (tuple, list)) and len(bounds) == 4:
-            x0, y0, x1, y1 = map(int, bounds)
-            if 0 <= x0 < x1 <= frame.shape[1] and 0 <= y0 < y1 <= frame.shape[0]:
-                return frame[y0:y1, x0:x1], bounds, component_override
-    return None
-
-
-def _prepare_round_pose_observation(frame, visible, map_anchor_focus_point):
-    extracted = map_reuse_evidence(frame, visible_override=visible)
-    marker_client_point = None
-    if visible is not None:
-        marker_component = dict(visible[2], bounds=visible[1])
-        marker_point, marker_detected = map_anchor_focus_point(
-            frame, marker_component, return_detection=True)
-        if marker_detected:
-            marker_client_point = marker_point
-    return RoundPoseObservation(
-        extracted, marker_client_point,
-        live_stair_screen_candidates(frame, visible_override=visible),
-    )
-
-
-def prepare_round_pose_observation(frame, *, component_override=None, map_anchor_focus_point):
-    """Prepare current pixels using the original visible-domain selection."""
-    visible = _round_pose_visible_override(frame, component_override)
-    if visible is None:
-        visible = visible_map_component(frame)
-    return _prepare_round_pose_observation(frame, visible, map_anchor_focus_point)
-
-
-class RoundPoseObservationScope:
-    """Reuse pixel evidence within one observation of an owned read-only frame.
-
-    The actual domain and component geometry participate in reuse. Matrices,
-    resource checks, player projection and state commits remain per result.
-    """
-
-    def __init__(self, frame):
-        if frame.flags.writeable:
-            raise ValueError("round-pose-observation-requires-readonly-frame")
-        self._frame = frame
-        self._default_observed = False
-        self._default_visible = None
-        self._key = None
-        self._observation = None
-
-    def prepare(self, frame, *, component_override=None, map_anchor_focus_point):
-        if frame is not self._frame or frame.flags.writeable:
-            raise ValueError("round-pose-observation-frame-changed")
-        visible = _round_pose_visible_override(frame, component_override)
-        if visible is None:
-            if not self._default_observed:
-                self._default_visible = visible_map_component(frame)
-                self._default_observed = True
-            visible = self._default_visible
-        geometry = None
-        if visible is not None:
-            component = visible[2]
-            geometry = (tuple(visible[1]), tuple(float(value) for value in component["center"]),
-                        int(component["width"]), int(component["height"]), int(component["area"]))
-        key = (geometry, map_anchor_focus_point)
-        if key != self._key:
-            self._observation = _prepare_round_pose_observation(frame, visible, map_anchor_focus_point)
-            self._key = key
-        # Tracking consumers own their mutable evidence; they cannot modify the
-        # preparation reused by a later peer correction.
-        return copy.deepcopy(self._observation)
-
 
 def commit_alignment_v2_round_pose(
         self,
@@ -109,7 +25,6 @@ def commit_alignment_v2_round_pose(
         source: str,
         residual: dict | None,
         component_override: dict | None = None,
-        observation_scope: RoundPoseObservationScope | None = None,
         normalize_route_profile_id, display_environment_signature, map_anchor_focus_point,
     ) -> bool:
         """Commit V2's authorized root without entering a legacy writer."""
@@ -174,17 +89,27 @@ def commit_alignment_v2_round_pose(
         evidence.setdefault("poseVerifiedAgainstCanonicalGeometry", not source_structure_verified)
         evidence.setdefault("verificationSource", "alignment-v2")
         evidence.setdefault("singlePoseOwner", True)
-        prepare = observation_scope.prepare if observation_scope is not None else prepare_round_pose_observation
-        observation = prepare(frame, component_override=component_override,
-                              map_anchor_focus_point=map_anchor_focus_point)
-        extracted = observation.reuse_evidence
+        visible = None
+        if isinstance(component_override, dict):
+            component_bounds = component_override.get('bounds')
+            if isinstance(component_bounds, (tuple, list)) and len(component_bounds) == 4:
+                x0, y0, x1, y1 = map(int, component_bounds)
+                if 0 <= x0 < x1 <= frame.shape[1] and 0 <= y0 < y1 <= frame.shape[0]:
+                    visible = (frame[y0:y1, x0:x1], component_bounds, component_override)
+        if visible is None:
+            visible = visible_map_component(frame)
+        extracted = map_reuse_evidence(frame, visible_override=visible)
         player_author = None
-        if observation.marker_client_point is not None:
-            try:
-                player_author = (np.linalg.inv(render) @ np.asarray(
-                    [*observation.marker_client_point, 1.0], dtype=np.float64))[:2]
-            except np.linalg.LinAlgError:
-                pass
+        if visible is not None:
+            marker_component = dict(visible[2], bounds=visible[1])
+            marker_point, marker_detected = map_anchor_focus_point(
+                frame, marker_component, return_detection=True)
+            if marker_detected:
+                try:
+                    player_author = (np.linalg.inv(render) @ np.asarray(
+                        [marker_point[0], marker_point[1], 1.0], dtype=np.float64))[:2]
+                except np.linalg.LinAlgError:
+                    pass
         tracking = {
             "component": extracted.get("component"),
             "componentShape": extracted.get("componentShape"),
@@ -202,7 +127,7 @@ def commit_alignment_v2_round_pose(
             "poseVerifiedAgainstLiveGeometry": bool(source_structure_verified or evidence.get('poseVerifiedAgainstCanonicalGeometry')),
             "renderedProfileResidual": evidence,
             "poseOrigin": str(group.pose_origin),
-            "liveStairCandidates": observation.stair_candidates,
+            "liveStairCandidates": live_stair_screen_candidates(frame, visible_override=visible),
             "verifiedPlayerAuthorPoint": (
                 player_author.tolist() if player_author is not None else None
             ),

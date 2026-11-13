@@ -66,6 +66,56 @@ def deduplicate_payload(output, inventory, support_root):
                         originalProgramFiles=len(inventory["files"]))
 
 
+def build_upgrade_bootstrap(helper_root, packages, config, native_setup, ifw_bin):
+    """Stage the native fresh installer and the locally available QtIFW updater."""
+    helper_root, packages, config = map(Path, (helper_root, packages, config))
+    ifw_bin = Path(ifw_bin)
+    boot = helper_root / "boot"
+    boot.mkdir()
+    shutil.copy2(native_setup, boot / "native-setup.exe")
+    shutil.copy2(ifw_bin / "installerbase.exe", boot / "installerbase.exe")
+    shutil.copy2(config / "xingtu.ico", boot / "xingtu.ico")
+    shutil.copy2(config / "controller.js", boot / "upgrade-controller.js")
+    repository = boot / "repository"
+    subprocess.run([str(ifw_bin / "repogen.exe"), "-p", str(packages), str(repository)],
+        check=True)
+    # QtIFW's -rcc replaces its default resource segment; it does not merge
+    # extra --resources QRC entries. The persistent controller is updated via
+    # the native component package and resolves helper support from its owner.
+    subprocess.run([str(ifw_bin / "binarycreator.exe"), "-c", str(config / "config.xml"),
+        "-p", str(packages), "-rcc"], cwd=boot, check=True)
+    if not (boot / "update.rcc").is_file():
+        raise ValueError("QtIFW binarycreator completed without update.rcc")
+    return dict(path="boot/native-setup.exe", bytes=(boot / "native-setup.exe").stat().st_size,
+        sha256=build.sha256(boot / "native-setup.exe"), repository="boot/repository",
+        updateResource="boot/update.rcc", controller="boot/upgrade-controller.js",
+        installerBase="boot/installerbase.exe")
+
+
+def compile_upgrade_wrapper(iscc, helper_root, output, version, *, log_path=None):
+    """Compile the final Inno wrapper around the complete helper support tree."""
+    output = Path(output)
+    setup_name = "星图-" + version["version"] + "-Setup"
+    compiler = Path(iscc).resolve()
+    if not compiler.is_file() or compiler.name.lower() != "iscc.exe":
+        raise ValueError("--iscc must name an existing Inno Setup compiler")
+    command = [str(compiler), f"/DHelperRoot={Path(helper_root).resolve()}",
+        f"/DSetupOutputDir={output.resolve()}", f"/DSetupName={setup_name}",
+        f"/DDisplayVersion={version.get('displayVersion', version['version'])}",
+        f"/DNumericVersion={version['numericVersion']}",
+        str(ROOT / "tools/qtifw-bootstrap.iss")]
+    if log_path:
+        with Path(log_path).open("wb") as log:
+            subprocess.run(command, cwd=ROOT, check=True, timeout=120,
+                stdout=log, stderr=subprocess.STDOUT)
+    else:
+        subprocess.run(command, cwd=ROOT, check=True, timeout=120)
+    setup = output / (setup_name + ".exe")
+    if not setup.is_file():
+        raise ValueError("Inno completed without the expected bootstrap Setup artifact")
+    return setup
+
+
 def stage_payload(stage, record, output, *, payload_stage=None, archive_from=None, ifw_bin=None):
     """Use the original installed inventory; exclude every active data plane."""
     from managed_base_resources import CANDIDATE
@@ -120,7 +170,16 @@ def main():
     parser.add_argument("--release", action="store_true", help="Portable distribution; no build-machine scope dependency")
     parser.add_argument("--payload-stage", type=Path, help="Reuse verified read-only staged build inputs on the same volume")
     parser.add_argument("--reuse-archive-from", type=Path, help="Reuse program archive from a hash-verified prior trial Setup; rebuild scripts/helper")
+    parser.add_argument("--upgrade-capable", action="store_true",
+        help="For --release, wrap the QtIFW fresh installer with an offline maintenance-upgrade bootstrap")
+    parser.add_argument("--iscc", type=Path, help="Inno Setup 6 compiler; required with --upgrade-capable")
     args = parser.parse_args()
+    if args.upgrade_capable and not args.release:
+        parser.error("--upgrade-capable requires --release")
+    if args.upgrade_capable and not args.iscc:
+        parser.error("--upgrade-capable requires --iscc")
+    if args.iscc and not args.upgrade_capable:
+        parser.error("--iscc is only used with --upgrade-capable")
     if args.release and args.reuse_archive_from:
         parser.error("Release payload deduplication requires the original freeze or --payload-stage; compressed archive reuse is trial-only")
     if build._git("status", "--porcelain").strip():
@@ -146,6 +205,8 @@ def main():
     if args.release:
         policy.pop("scope")
     policy_path = output / "qtifw-trial-policy.json"
+    if args.upgrade_capable:
+        policy.update(upgradeCapable=True, targetVersion=record["version"])
     policy_path.write_text(json.dumps(policy, ensure_ascii=False), encoding="utf-8")
     # Small asInvoker helper, independent of the application's administrator EXE.
     exclusions = ["--exclude-module", "numpy", "--exclude-module", "cv2"]
@@ -193,8 +254,9 @@ def main():
             text = text.replace("安装器试用向导", "安装向导").replace("本测试安装", "星图")
             text = text.replace("本试用版", "星图")
             path.write_text(text, encoding="utf-8")
+    component_version = record["version"]["version"] if args.upgrade_capable else "1.0.0"
     write_xml(meta / "package.xml", "Package", dict(DisplayName="星图",
-        Description="星图桌面程序。", Version="1.0.0", ReleaseDate="2026-11-08",
+        Description="星图桌面程序。", Version=component_version, ReleaseDate="2026-11-08",
         Default="true", Script="component.js", Dependencies=DATA_PACKAGE))
     package_tree = ET.parse(meta / "package.xml")
     interfaces = ET.SubElement(package_tree.getroot(), "UserInterfaces")
@@ -206,7 +268,7 @@ def main():
     data_script = (scripts / "data-component.js").read_text(encoding="utf-8")
     (data_meta / "data-component.js").write_text(data_script.replace("__SUPPORT_FILES__", json.dumps(support_files)), encoding="utf-8")
     write_xml(data_meta / "package.xml", "Package", dict(DisplayName="卸载清理",
-        Description="彻底卸载时清理安装目录。", Version="1.0.0", Virtual="true",
+        Description="彻底卸载时清理安装目录。", Version=component_version, Virtual="true",
         ReleaseDate="2026-11-08", Script="data-component.js"))
     write_xml(config / "config.xml", "Installer", dict(Name="星图安装器隔离试用 " + instance,
         Version="1.0.0", Title="星图（试用版）", Publisher="星图开发试用",
@@ -229,11 +291,18 @@ def main():
     ET.indent(tree)
     tree.write(config / "config.xml", encoding="utf-8", xml_declaration=True)
     setup = output / ("星图-" + record["version"]["version"] + "-Setup.exe" if args.release else "Xingtu-QtIFW-Local-Trial-Setup.exe")
+    native_setup = output / "qtifw-native-setup.exe" if args.upgrade_capable else setup
     with (output / "binarycreator.log").open("wb") as log:
         subprocess.run([str(args.ifw_bin / "binarycreator.exe"), "--offline-only", "--compression", "9" if args.release else "3",
             "--resources", str(qrc), "-t", str(args.ifw_bin / "installerbase.exe"),
-            "-c", str(config / "config.xml"), "-p", str(output / "packages"), str(setup)],
+            "-c", str(config / "config.xml"), "-p", str(output / "packages"), str(native_setup)],
             stdout=log, stderr=subprocess.STDOUT, check=True)
+    native_setup_record = None
+    if args.upgrade_capable:
+        native_setup_record = build_upgrade_bootstrap(helper_root, output / "packages", config,
+            native_setup, args.ifw_bin)
+        native_setup.unlink()
+        setup = compile_upgrade_wrapper(args.iscc, helper_root, output, record["version"])
     if build.source_identity(installer_source["commit"]) != installer_source:
         raise ValueError("Source changed during QtIFW build; preserve the candidate for inspection")
     result = dict(installerSource=installer_source["commit"], payloadSource=compiled,
@@ -243,6 +312,10 @@ def main():
         compression=9 if args.release else 3, deduplication=deduplication, programCopies=program_copies,
         mapPackages=packages,
         runtimeEntry="Use --self-check or isolated --probe-output only; production IPC identity is unchanged")
+    if args.upgrade_capable:
+        result.update(nativeSetup=native_setup_record,
+            bridgeMode="inno-wrapper-qtifw-offline-maintenance-upgrade",
+            setupType="Inno Setup wrapper containing QtIFW fresh Setup and offline upgrade support")
     (output / "qtifw-build-record.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(json.dumps(result, indent=2))
 
