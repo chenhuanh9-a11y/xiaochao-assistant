@@ -117,6 +117,7 @@ class ImportedResourceService(QObject):
         self._automatic_import = False
         self._activation_plan, self._activation_choices = None, {}
         self._activation_plan_id = ''
+        self._removal_plan, self._removal_plan_id = None, ''
 
     packageModel = Property(QObject, lambda s: s.model, constant=True)
     packageRows = Property('QVariantList', lambda s: deepcopy(s._rows), notify=inventoryChanged)
@@ -131,17 +132,21 @@ class ImportedResourceService(QObject):
     operationGeneration = Property(int, lambda s: s._token, notify=changed)
     message = Property(str, lambda s: '\n'.join(filter(None, (s._startup_notice, s._message))), notify=changed)
     canCancel = Property(bool, lambda s: s._busy and s._kind != 'recover' and not s._cancel.is_set(), notify=changed)
-    pendingWrites = Property(bool, lambda s: s._busy and s._kind in {'save', 'activate', 'recover'}, notify=changed)
-    recoveryRequired = Property(bool, lambda s: s._catalog_issue == 'resource-catalog-recovery-required', notify=changed)
+    pendingWrites = Property(bool, lambda s: s._busy and s._kind in {'save', 'activate', 'remove', 'recover'}, notify=changed)
+    recoveryRequired = Property(bool, lambda s: s._catalog_issue in {
+        'resource-catalog-recovery-required', 'resource-removal-recovery-required'}, notify=changed)
     activationPlanModel = Property(QObject, lambda s: s._activation_model, constant=True)
     activationPlanId = Property(str, lambda s: s._activation_plan_id, notify=changed)
     activationPlanOpen = Property(bool, lambda s: s._activation_plan is not None, notify=changed)
     activationPlanTitle = Property(str, lambda s: s._plan_title(), notify=changed)
     activationPlanSummary = Property(str, lambda s: s._plan_summary(), notify=changed)
     canCommitActivationPlan = Property(bool, lambda s: s._plan_complete() and not s._busy, notify=changed)
+    removalPlanOpen = Property(bool, lambda s: s._removal_plan is not None, notify=changed)
+    removalPlanId = Property(str, lambda s: s._removal_plan_id, notify=changed)
+    removalPlanSummary = Property(str, lambda s: s._removal_summary(), notify=changed)
 
     def setLeaseProvider(self, provider):
-        if self._busy or self._lease or self._activation_plan is not None:
+        if self._busy or self._lease or self._activation_plan is not None or self._removal_plan is not None:
             raise RuntimeError('Cannot replace an active resource lease provider')
         self._lease_provider = provider
 
@@ -162,7 +167,8 @@ class ImportedResourceService(QObject):
         self.changed.emit()
 
     def _begin(self, kind, function):
-        if self._closed or self._busy or (self._activation_plan is not None and kind != 'activate'):
+        if (self._closed or self._busy or (self._activation_plan is not None and kind != 'activate')
+                or (self._removal_plan is not None and kind != 'remove')):
             return False
         self._token += 1
         self._busy, self._kind = True, kind
@@ -171,6 +177,8 @@ class ImportedResourceService(QObject):
                          'save': '正在校验并导入资源包…',
                          'activate': '正在校验并启用所选资源…',
                          'plan': '正在核对基础版本与已选作者的配套关系…',
+                         'inspect-remove': '正在核对删除范围与受影响资源…',
+                         'remove': '正在删除已确认的资源文件…',
                          'recover': '正在处理未完成的资源切换…'}[kind]
         job = _Work(self._token, lambda: function(self._cancel.is_set))
         self._jobs[self._token] = job
@@ -235,6 +243,8 @@ class ImportedResourceService(QObject):
             from imported_resource_archive import inspect_archive, save_archive
             from client_imported_admission import admit_import
             from imported_resource_catalog import ResourceCatalogError
+            from imported_resource_removal import assert_removal_ready
+            assert_removal_ready(self.resolver.root)
             sha = None
             if expected is not None:
                 if (set(expected) != {'packageId', 'bytes', 'sha256'}
@@ -248,9 +258,16 @@ class ImportedResourceService(QObject):
                     raise ResourceCatalogError('resource-download-binding-invalid')
             admission = {}
             def validate_components(views):
-                from resource_package_types import validate_package_filename
-                validate_package_filename(path, [view.component for view in views])
+                assert_removal_ready(self.resolver.root)
+                from resource_package_types import infer_package_suffix, validate_package_filename
+                components = [view.component for view in views]
+                # ZIP remains an accepted transport name, but imports still
+                # have one base/route role and one automatic activation path.
+                infer_package_suffix(components)
+                validate_package_filename(path, components)
                 admission['contexts'] = admit_import(views, self.resolver, cancelled=cancelled)
+                admission['displayRefs'] = tuple(view.component_ref for view in views
+                                                 if view.component['type'] == 'display')
             summary = save_archive(path, self.resolver.root, expected_archive_sha256=sha, cancelled=cancelled,
                                    validate_components=validate_components)
             # A completed save is reported even if a cancellation arrives during
@@ -259,7 +276,8 @@ class ImportedResourceService(QObject):
                 inventory = self._read_inventory()
             except (OSError, ValueError, RuntimeError):
                 inventory = dict(inventory=None, availableContexts=())
-            return dict(summary=summary, baseContexts=admission['contexts'], **inventory)
+            return dict(summary=summary, baseContexts=admission['contexts'],
+                        displayRefs=admission['displayRefs'], **inventory)
         return self._begin('save', save)
 
     @Slot(str, str, str, result=bool)
@@ -288,7 +306,7 @@ class ImportedResourceService(QObject):
             self.importCompleted.emit('基础资源未启用', self._message)
             self.changed.emit()
             return
-        self._automatic_import = True
+        self._automatic_import = 'base'
         def prepare(cancelled):
             from client_imported_activation_plan import plan_context_activations
             return plan_context_activations(self.resolver, contexts, cancelled=cancelled)
@@ -297,11 +315,20 @@ class ImportedResourceService(QObject):
 
     def _finish_automatic_import(self, success):
         if self._automatic_import:
+            name = '作者路线' if self._automatic_import == 'display' else '基础资源'
             self._automatic_import = False
             if not success:
                 self._message = '新导入版本已保存，但未启用。' + self._message
-            self.importCompleted.emit('基础资源已启用' if success else '基础资源未启用', self._message)
+            self.importCompleted.emit(name + ('已启用' if success else '未启用'), self._message)
             self.changed.emit()
+
+    def _activate_imported_displays(self, refs):
+        self._automatic_import = 'display'
+        def activate(cancelled):
+            from client_imported_activation import activate_displays
+            return activate_displays(self.resolver, self.paths, refs, cancelled=cancelled)
+        if not self._activate(activate, 'display'):
+            self._finish_automatic_import(False)
 
     def _plan_title(self):
         plan = self._activation_plan
@@ -427,20 +454,27 @@ class ImportedResourceService(QObject):
         return self._activate(activate, 'display')
 
     def _activate(self, operation, role):
+        return self._mutate(operation, 'activate', role)
+
+    def _mutate(self, operation, kind, role=''):
+        if self._closed or self._busy:
+            return False
         if self.paths is None or self._lease_provider is None:
             self._problem('resource-activation-unavailable')
             return False
         self._lease = self._lease_provider.acquireResourceLease()
         if not self._lease:
-            self._message = '请先结束本局，并等待后台任务完成，再启用资源。'
+            self._message = '请先结束本局，并等待后台任务完成，再修改资源。'
             self.changed.emit()
             return False
 
         def activate(cancelled):
             outcome, failure, retry = None, None, False
             try:
+                from imported_resource_removal import assert_removal_ready
+                assert_removal_ready(self.resolver.root)
                 outcome = operation(cancelled)
-                if outcome['status'] == 'already-active' and self._engine_factories is not None:
+                if kind == 'activate' and outcome['status'] == 'already-active' and self._engine_factories is not None:
                     keys = outcome.get('contexts') or [outcome['context']]
                     retry = any(self._engine_factories.needs_display_revalidation(key.split(':')[1],
                         season=key.split(':')[0]) for key in keys)
@@ -456,14 +490,74 @@ class ImportedResourceService(QObject):
             return dict(activated=outcome, activationRole=role, retryPreparation=retry,
                         operationError=failure, **inventory)
 
-        if self._begin('activate', activate):
+        if self._begin(kind, activate):
             return True
         self._release_lease()
         return False
 
+    @Slot(str, result=bool)
+    def requestRemoval(self, key):
+        if self._closed or self._busy or self._activation_plan is not None or self._removal_plan is not None:
+            return False
+        row = next((row for row in self._rows if row['key'] == key), None)
+        if row is None or not row.get('canInspectRemoval') or self.recoveryRequired:
+            self._problem('resource-removal-unavailable')
+            return False
+        def inspect(cancelled):
+            from imported_resource_removal import inspect_saved_version_removal
+            return inspect_saved_version_removal(self.resolver, row['packageId'],
+                row['resourceVersion'], row['manifestSha256'], cancelled=cancelled)
+        return self._begin('inspect-remove', inspect)
+
+    def _removal_summary(self):
+        plan = self._removal_plan
+        if plan is None:
+            return ''
+        lines = [f"{plan['packageId']} · 版本 {plan['resourceVersion']}",
+                 f"将删除 {plan['fileCount']} 个文件，合计 {plan['bytes'] / 1048576:.2f} MiB。"]
+        if plan['affectedContexts']:
+            names = [key.split(':')[0].upper() + (' 困难' if key.endswith(':difficult') else ' 噩梦')
+                     for key in plan['affectedContexts']]
+            lines.append('将停用对应模式：' + '、'.join(names) + '；重新导入基础结构后可恢复使用。')
+        if plan['removedDisplays']:
+            lines.append(f"将停用 {len(plan['removedDisplays'])} 个作者显示组件。其他作者包文件会保留。")
+        if plan['preserved']:
+            lines.append(f"将保留 {len(plan['preserved'])} 个未知或已改动的项目，不会删除源资源包。")
+        return '\n'.join(lines)
+
+    @Slot(str, result=bool)
+    def confirmRemoval(self, plan_id):
+        if (self._closed or self._busy or self._removal_plan is None
+                or plan_id != self._removal_plan_id):
+            return False
+        plan = self._removal_plan
+        def remove(cancelled):
+            from imported_resource_removal import remove_saved_version
+            from client_imported_activation import validate_selected_resources
+            return remove_saved_version(self.resolver, plan, cancelled=cancelled,
+                validate_selection=lambda document: validate_selected_resources(
+                    self.resolver, self.paths, document, cancelled=cancelled))
+        if not self._mutate(remove, 'remove'):
+            return False
+        self._clear_removal_plan()
+        self.changed.emit()
+        return True
+
+    def _clear_removal_plan(self):
+        self._removal_plan, self._removal_plan_id = None, ''
+
+    @Slot(str, result=bool)
+    def cancelRemoval(self, plan_id):
+        if self._removal_plan is None or plan_id != self._removal_plan_id:
+            return False
+        self._clear_removal_plan()
+        self._message = '已取消删除，资源文件和启用状态未改变。'
+        self.changed.emit()
+        return True
+
     @Slot()
     def requestRecovery(self):
-        if (self._closed or self._busy or self._activation_plan is not None
+        if (self._closed or self._busy or self._activation_plan is not None or self._removal_plan is not None
                 or not self.recoveryRequired or self._lease_provider is None):
             return
         self._lease = self._lease_provider.acquireResourceLease()
@@ -474,8 +568,11 @@ class ImportedResourceService(QObject):
         def recover(cancelled):
             from resource_transaction import resource_write_lock
             from imported_resource_activation import recover_catalog_locked
+            from imported_resource_removal import recover_saved_version_removal_locked, removal_recovery_required
             with resource_write_lock(self.resolver.root):
-                outcome = recover_catalog_locked(self.resolver.root)
+                outcome = (recover_saved_version_removal_locked(self.resolver.root)
+                           if removal_recovery_required(self.resolver.root)
+                           else recover_catalog_locked(self.resolver.root))
             return dict(recovered=outcome, **self._read_inventory())
         if not self._begin('recover', recover):
             self._release_lease()
@@ -512,6 +609,16 @@ class ImportedResourceService(QObject):
             else:
                 self._submit_activation_plan(value, {})
             return
+        if kind == 'inspect-remove':
+            if self._cancel.is_set():
+                self._message = '已取消删除核对，资源文件未改变。'
+            elif error:
+                self._problem(error['code'])
+            else:
+                self._removal_plan, self._removal_plan_id = value, str(token)
+                self._message = '请核对删除范围；确认前不会改变资源。'
+            self.changed.emit()
+            return
         if value is not None:
             inventory = value['inventory']
             self._inventory_loaded = inventory is not None
@@ -532,13 +639,16 @@ class ImportedResourceService(QObject):
             summary = value.get('summary')
             if summary is not None:
                 contexts = value.get('baseContexts', ())
-                if contexts:
+                display_refs = value.get('displayRefs', ())
+                if contexts or display_refs:
                     if self._cancel.is_set():
                         self._message = '资源版本已保存；已取消启用，当前资源选择未改变。'
                         self.importCompleted.emit('启用已取消', self._message)
                         self.changed.emit()
-                    else:
+                    elif contexts:
                         self._activate_imported_base(contexts)
+                    else:
+                        self._activate_imported_displays(display_refs)
                     return
                 duplicate = summary.status == 'already-saved'
                 self._message = ('该版本已经保存，启用状态未改变。' if duplicate else
@@ -548,6 +658,14 @@ class ImportedResourceService(QObject):
                 self.importCompleted.emit('版本已保存', self._message)
             if kind == 'recover':
                 self._message = '未完成的资源切换已处理，请重新核对可用资源。'
+                self.resourcesChanged.emit()
+            if kind == 'remove':
+                outcome = value['activated']
+                self._message = ('资源包已部分删除；未知或改动过的文件已保留。'
+                                 if outcome['status'] == 'version-partially-removed'
+                                 else '资源包已删除。')
+                if inventory is None:
+                    self._message += ' 列表暂时无法读取，请重新核对。'
                 self.resourcesChanged.emit()
             if kind == 'activate':
                 outcome = value['activated']
@@ -579,6 +697,8 @@ class ImportedResourceService(QObject):
                 self._finish_automatic_import(True)
         if error and kind == 'activate':
             self._finish_automatic_import(False)
+        if error and kind in {'activate', 'remove', 'recover'} and self.recoveryRequired:
+            self.resourcesChanged.emit()
         self.changed.emit()
 
     def _set_rows(self, rows):
@@ -613,6 +733,8 @@ class ImportedResourceService(QObject):
                          '原作者版本的声明无法读取，暂不能确认替换范围；当前选择已保留。' if code == 'resource-previous-display-metadata-unavailable' else
                          '当前模式已有同名作者显示，暂不能同时启用；当前选择已保留。' if code == 'resource-display-profile-conflict' else
                          '此资源尚不能在当前版本启用，请获取对应的基础结构与楼层控件包。' if code == 'resource-activation-unavailable' else
+                         '此版本暂无可核对的删除记录，请检查资源清单。' if code == 'resource-removal-unavailable' else
+                         '资源删除尚未完成，请先处理未完成的操作。' if code == 'resource-removal-recovery-required' else
                          '操作已取消；若版本已经保存，可在列表中重新核对。' if code.endswith('-cancelled') else
                          '资源操作未完成，请检查资源包或重新核对本地版本。')
         self.errorReported.emit(dict(title='资源操作未完成', summary=self._message,
@@ -630,4 +752,5 @@ class ImportedResourceService(QObject):
     def shutdown(self):
         self._closed = True
         self._clear_activation_plan()
+        self._clear_removal_plan()
         self.cancel()

@@ -10,21 +10,40 @@ Item {
     property bool refreshAllowed: true
     property bool refreshPending: false
     signal importSelectionCancelled()
-    readonly property bool operationPending: archiveDialog.visible || resourceService.busy || resourceService.activationPlanOpen
+    readonly property bool operationPending: archiveDialog.visible || resourceService.busy || resourceService.activationPlanOpen || resourceService.removalPlanOpen
     readonly property bool recoveryPending: resourceService.recoveryRequired
     readonly property var hostWindow: Window.window
     readonly property bool planVisible: active && hostWindow !== null && hostWindow.visible
                                         && hostWindow.visibility !== Window.Minimized
-    readonly property var packageManager: null
+    readonly property bool importedPackages: true
+    readonly property var packageManager: resourceService
+    function removePackage(key) {
+        if (!operationPending && !recoveryPending) resourceService.requestRemoval(key)
+    }
     onActiveChanged: {
         if (active) refreshPending = true
         else resourceService.dismissActivationPlan()
     }
-    onPlanVisibleChanged: syncActivationDialog()
+    onPlanVisibleChanged: { syncActivationDialog(); syncRemovalDialog() }
     function syncActivationDialog() {
         if (resourceService.activationPlanOpen && planVisible) {
             if (!activationDialog.visible) activationDialog.open()
         } else if (activationDialog.visible) activationDialog.close()
+    }
+    function syncRemovalDialog() {
+        if (resourceService.removalPlanOpen && hostWindow !== null && hostWindow.visible
+                && hostWindow.visibility !== Window.Minimized) {
+            if (!removalDialog.visible) removalDialog.open()
+        } else if (removalDialog.visible) removalDialog.close()
+    }
+    Connections {
+        target: resourceService
+        function onChanged() { panel.syncRemovalDialog() }
+    }
+    Connections {
+        target: panel.hostWindow
+        function onVisibleChanged() { panel.syncRemovalDialog() }
+        function onVisibilityChanged() { panel.syncRemovalDialog() }
     }
     function openImport(season) {
         if (!operationPending) archiveDialog.open()
@@ -48,7 +67,7 @@ Item {
         Label { text: "本地资源"; color: "#142b4b"; font.pixelSize: 18; font.bold: true }
         Label {
             Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#354f75"; font.pixelSize: 14
-            text: "结构包（.xingtu-base）包含楼层控件，导入后自动启用对应模式。请先导入结构包，再导入该模式的作者路线包（.xingtu-route）。"
+            text: "结构包（.xingtu-base）包含楼层控件，导入后自动启用对应模式。请先导入结构包，再导入作者路线包（.xingtu-route）；路线导入后会自动加入地图资源，可直接预览和选择作者。"
         }
         RowLayout {
             spacing: 8; Layout.fillWidth: true
@@ -127,6 +146,13 @@ Item {
                                 }
                             }
                         }
+                        AppButton {
+                            objectName: "removePackageButton-" + packageDelegate.modelData.key
+                            text: "删除此资源包"
+                            enabled: packageDelegate.modelData.canInspectRemoval && panel.refreshAllowed
+                                && !panel.operationPending && !panel.recoveryPending
+                            onClicked: panel.removePackage(packageDelegate.modelData.key)
+                        }
                     }
                     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#edf1f7"; visible: index < packages.count - 1 }
                 }
@@ -151,6 +177,48 @@ Item {
                       "星图结构包 (*.xingtu-base)", "作者路线包 (*.xingtu-route)"]
         onAccepted: resourceService.importArchive(selectedFile.toString())
         onRejected: panel.importSelectionCancelled()
+    }
+    Dialog {
+        id: removalDialog; objectName: "resourceRemovalPlanDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(540, parent.width - 32)
+        height: Math.min(implicitHeight, parent.height - 32)
+        title: "删除资源包"
+        modal: true; closePolicy: Popup.CloseOnEscape
+        property string displayedPlanId: ""
+        onOpened: displayedPlanId = resourceService.removalPlanId
+        onRejected: resourceService.cancelRemoval(displayedPlanId)
+        contentItem: Flickable {
+            implicitHeight: Math.min(removalContent.implicitHeight, 400)
+            contentHeight: removalContent.implicitHeight; clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar {}
+            ColumnLayout {
+                id: removalContent
+                width: parent.width; spacing: 12
+                Label {
+                    Layout.fillWidth: true; wrapMode: Text.Wrap; textFormat: Text.PlainText
+                    text: resourceService.removalPlanSummary; color: "#354f75"
+                }
+                Label {
+                    Layout.fillWidth: true; wrapMode: Text.Wrap
+                    text: "确认后将删除此版本的本地文件。原始导入包会保留；需要时可重新导入。"
+                    color: "#526785"
+                }
+            }
+        }
+        footer: DialogButtonBox {
+            AppButton {
+                objectName: "cancelRemovalPlanButton"; text: "取消"
+                onClicked: resourceService.cancelRemoval(removalDialog.displayedPlanId)
+            }
+            AppButton {
+                objectName: "confirmRemovalPlanButton"; text: "删除此版本"
+                enabled: !resourceService.busy && panel.refreshAllowed
+                onClicked: resourceService.confirmRemoval(removalDialog.displayedPlanId)
+            }
+        }
     }
     Dialog {
         id: activationDialog; objectName: "resourceActivationPlanDialog"

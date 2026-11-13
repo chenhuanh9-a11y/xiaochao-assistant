@@ -66,6 +66,23 @@ class _AuthorSelectionFixture(_AuthorDisplayFixture):
 
 
 class ClientImportedAuthorSelectionTests(_AuthorSelectionFixture):
+    def test_imported_displays_publish_together_and_conflict_preserves_selection(self):
+        self.seed()
+        first, _, _ = self.package(package_id='batch-author-a')
+        second, _, _ = self.package(package_id='batch-author-b', profile_id='author-batch-b')
+        before = (self.resources / 'catalog.json').read_bytes()
+        conflict, _, _ = self.package(package_id='batch-author-conflict')
+        with resource_runtime_lease(self.resources):
+            with self.assertRaisesRegex(ResourceCatalogError, 'display-profile-conflict'):
+                activation.activate_displays(self.resolver(), self.paths,
+                    (first.component_ref, conflict.component_ref))
+        self.assertEqual((self.resources / 'catalog.json').read_bytes(), before)
+        with resource_runtime_lease(self.resources):
+            outcome = activation.activate_displays(self.resolver(), self.paths,
+                (first.component_ref, second.component_ref))
+        self.assertEqual(outcome['status'], 'catalog-activated')
+        self.assertEqual(self.resolver().snapshot().displays, (first.component_ref, second.component_ref))
+
     def test_add_replace_and_repeat_preserve_other_selection_and_show_new_pixels(self):
         dormant = _inert_component(self.resources, 'display', 'display')
         self.seed(displays=[dormant])

@@ -54,6 +54,7 @@ class ImportedBrowseAssets:
 @dataclass(frozen=True)
 class ImportedBrowseContext(BrowseContext):
     assets: ImportedBrowseAssets | None = None
+    package_keys: object = None
 
 
 def load_imported_browse_context(resolver, mode, *, season='s0', cancelled=lambda: False):
@@ -92,7 +93,7 @@ def load_imported_browse_context(resolver, mode, *, season='s0', cancelled=lambd
                 check()
                 unavailable = True
         displays = ImportedAuthorDisplays(views, base, provider, check_current=check)
-        profiles, stamps, layers = [], {}, {}
+        profiles, stamps, layers, package_keys = [], {}, {}, {}
         structure_id = 's1-native-structure' if season == 's1' else 'shared-structure'
         maps, first, count = [], None, 0
         for item in base.pack.maps:
@@ -120,6 +121,7 @@ def load_imported_browse_context(resolver, mode, *, season='s0', cancelled=lambd
         profiles.append(ProfileSummary(structure_id, '结构底图', base.component_ref.package_id,
             total, len(maps), total - len(maps), expected_layers - count,
             expected_layers, count, first, tuple(maps)))
+        package_keys[structure_id] = f'{base.component_ref.package_id}/{base.component_ref.resource_version}'
         for profile_id, profile in displays.catalog.profiles.items():
             maps, first, count, package_id = [], None, 0, None
             for map_id, variants in profile.maps.items():
@@ -140,6 +142,8 @@ def load_imported_browse_context(resolver, mode, *, season='s0', cancelled=lambd
                         count += 1
                         first = first or (map_id, floor, path)
                         package_id = binding['package'].component_ref.package_id
+                        ref = binding['package'].component_ref
+                        package_keys[profile_id] = f'{ref.package_id}/{ref.resource_version}'
                     if paths:
                         available.append(ResourceVariant(variant.id, variant.display_name, paths))
                 if available:
@@ -159,7 +163,7 @@ def load_imported_browse_context(resolver, mode, *, season='s0', cancelled=lambd
             label=f'B{abs(int(floor))}' if season == 's1' else floor_label(str(floor)))) for floor in base.pack.floors})
         return ImportedBrowseContext(mode, resolver.root, base.pack, displays.catalog, None,
             tuple(profiles), MappingProxyType(stamps), warnings=warnings, season=season,
-            floor_metadata=floors, assets=assets)
+            floor_metadata=floors, assets=assets, package_keys=MappingProxyType(package_keys))
     check()
     return ImportedBrowseContext(mode, resolver.root, None, None, None, (), MappingProxyType({}),
                                  warnings=(message,), season=season)

@@ -20,6 +20,7 @@ CONTEXTS = frozenset(f'{season}:{mode}' for season in ('s0', 's1')
 ROLES = {'recognitionBase': 'recognition-base', 'controls': 'controls-profile',
          'reviewedGroups': 'reviewed-group-registry'}
 PENDING_CATALOG = 'transactions/pending-catalog.json'
+PENDING_REMOVAL = 'transactions/pending-removal.json'
 
 
 class ResourceCatalogError(ValueError):
@@ -29,6 +30,8 @@ class ResourceCatalogError(ValueError):
 
 
 def assert_catalog_ready(root):
+    if files._target(Path(root), PENDING_REMOVAL).exists():
+        raise ResourceCatalogError('resource-removal-recovery-required')
     if files._target(Path(root), PENDING_CATALOG).exists():
         raise ResourceCatalogError('resource-catalog-recovery-required')
 
