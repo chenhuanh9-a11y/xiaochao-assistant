@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 class CommonCoordinateFilter:
-    def __init__(self, provider, index, *, mode, resource_key):
+    def __init__(self, provider, index, *, mode, resource_key, max_cache_bytes=512 * 1024 * 1024):
         self.provider = provider  # provider(map_id, floor) -> typed reference
         self.index = json.loads(Path(index).read_text('utf-8')) if isinstance(index,(str,Path)) else index
         if self.index.get('schema')!='s1-common-entrance-coordinate-index-v1':raise ValueError('coordinate-index-schema')
@@ -18,8 +18,49 @@ class CommonCoordinateFilter:
         self.entries=self.index['maps'][mode]
         self._cache=OrderedDict()
         self._pool_pending=OrderedDict()
+        if type(max_cache_bytes) is not int or max_cache_bytes < 0:
+            raise ValueError('coordinate-pool-cache-byte-budget')
+        self.max_cache_bytes = max_cache_bytes
+
+    @property
+    def retained_pool_bytes(self):
+        """Actual retained array storage across complete and partial pools."""
+        seen = set()
+        def size(value):
+            if isinstance(value, np.ndarray):
+                owner = value
+                while isinstance(owner.base, np.ndarray):
+                    owner = owner.base
+                key = id(owner.base) if owner.base is not None else id(owner)
+                if key in seen:
+                    return 0
+                seen.add(key)
+                return owner.nbytes
+            if isinstance(value, dict):
+                return sum(size(item) for item in value.values())
+            if isinstance(value, (list, tuple)):
+                return sum(size(item) for item in value)
+            if hasattr(value, '__dict__'):
+                return size(vars(value))
+            return 0
+        return size((self._cache, self._pool_pending))
 
     def _pool(self, ids, floor, cancelled):
+        try:
+            return self._build_pool(ids, floor, cancelled)
+        finally:
+            # A large single result is still computed and returned to this
+            # caller, but is not retained. Cancelled partial work may likewise
+            # be discarded; no candidate is omitted from the next evaluation.
+            while self.retained_pool_bytes > self.max_cache_bytes:
+                if self._pool_pending:
+                    self._pool_pending.popitem(last=False)
+                elif self._cache:
+                    self._cache.popitem(last=False)
+                else:
+                    break
+
+    def _build_pool(self, ids, floor, cancelled):
         """Resume only immutable resource work; no frame/pose/evidence is cached.
 
         The runtime owns the single solver lane. Pending jobs are private and
@@ -154,7 +195,8 @@ class CommonCoordinateFilter:
             return None
         if 'difference' not in job:
             job['difference'] = cv2.dilate((job['union_mask'] != common).astype(np.uint8), np.ones((31, 31), np.uint8))
-        data = dict(ids=tuple(ids), floor=floor, origin=lo, shape=shape,
+        data = dict(ids=tuple(ids), floor=floor, resourceKey=self.resource_key,
+                    sourceProvider=self.provider, sourceIndex=self.index, origin=lo, shape=shape,
                     prepared=PreparedStructure(job['distance'], prepared.chains[job['keep']], prepared.rays[job['keep']], prepared.pitch, prepared.shape),
                     fields=fields, unionChains=np.asarray(job['union_chains']).reshape(-1, 3, 2),
                     unionRays=np.asarray(job['union_rays']).reshape(-1, 2, 2), difference=job['difference'])
@@ -350,7 +392,7 @@ class CommonCoordinateFilter:
         return hyp, matrix, evidence
 
     def evaluate(self, frame, contexts, pool_ids, floor, *, anchor=None, scale_range=None,
-                 scale_basis=None, cancelled=lambda:False):
+                 scale_basis=None, cancelled=lambda:False, prepared_pool=None):
         """Return contradiction IDs, never infer a new round or silently reset.
         contexts: production current_geometry dictionaries, already current-frame.
         anchor: optional {'center':[x,y], 'uncertaintyPx':3}; supplies no zoom.
@@ -365,10 +407,15 @@ class CommonCoordinateFilter:
                         elapsedMs=(time.perf_counter()-start)*1000,**kw)
         if not ids or any(mid not in self.entries for mid in ids) or floor not in ('-1','-2','-3','-4'):return result('coordinate-scope-invalid')
         if cancelled():return result('coordinate-work-obsolete')
-        try:data=self._pool(ids,floor,cancelled)
+        try:
+            data = self._pool(ids,floor,cancelled) if prepared_pool is None else prepared_pool
+            if prepared_pool is not None and (data.get('ids') != ids or data.get('floor') != floor
+                    or data.get('resourceKey') != self.resource_key
+                    or data.get('sourceProvider') is not self.provider or data.get('sourceIndex') is not self.index):
+                return result('coordinate-resources-unavailable', detail='prepared-pool-context-mismatch')
         except (KeyError,TypeError,ValueError,OSError) as e:return result('coordinate-resources-unavailable',detail=str(e))
         if data is None or cancelled():return result('coordinate-work-obsolete')
-        from single_map_structure import current_part
+        from structure_observation import observed_wall_fragment_edges
         from fast_structure_alignment import sample_edges
         solutions=[]
         for ctx in contexts:
@@ -404,7 +451,7 @@ class CommonCoordinateFilter:
         hyp=np.unique(np.concatenate([solution[1] for solution in solutions]),axis=0)
         if len(hyp)>120000:return result('current-common-coordinate-budget-exhausted')
         evidence=dict(evidence,validatedCommonDomains=len(solutions))
-        edge=current_part(frame,ctx,'observed').copy()
+        edge=observed_wall_fragment_edges(frame,ctx)
         if anchor is not None:
             x,y=map(lambda v:int(round(v)),anchor['center']);edge[max(0,y-20):y+21,max(0,x-20):x+21]=False
         points=sample_edges(edge,500)

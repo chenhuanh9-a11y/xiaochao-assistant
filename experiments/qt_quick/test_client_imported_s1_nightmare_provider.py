@@ -9,7 +9,8 @@ import time
 import unittest
 
 import numpy as np
-from PySide6.QtCore import QCoreApplication, QUrl
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QGuiApplication
 
 from client_imported_providers import (
     SUPPORTED_CAPABILITIES, ImportedProviderUnavailable, build_imported_engine_factories, build_native_engine,
@@ -30,7 +31,9 @@ import test_imported_s1_controls_profile as controls_fixture
 class ImportedS1NightmareProviderTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = QCoreApplication.instance() or QCoreApplication([])
+        # This service fixture shares a process with the QML activation tests.
+        # A QCoreApplication singleton cannot later host fonts or QQuickView.
+        cls.app = QGuiApplication.instance() or QGuiApplication([])
         temporary = tempfile.TemporaryDirectory(prefix='s1-nightmare-provider-source-')
         cls.addClassCleanup(temporary.cleanup)
         cls.source = source_fixture.S1NativeBaseSourceFixture(
@@ -102,7 +105,8 @@ class ImportedS1NightmareProviderTests(unittest.TestCase):
         report = self.factories.capabilities('s1')['nightmare']
         self.assertTrue(report['available'], report)
         self.assertFalse(report['liveReady'])
-        self.assertFalse(report['candidateObservation']['candidateReady'])
+        self.assertTrue(report['candidateObservation']['candidateReady'])
+        self.assertFalse(report['candidateObservation']['liveValidated'])
         self.assertEqual(set(engine.pack.by_id), MODE_LAYOUTS['nightmare'])
         self.assertFalse(set(engine.pack.by_id) & MODE_LAYOUTS['difficult'])
         self.assertEqual(report['inventory']['typedLayers'], 60)

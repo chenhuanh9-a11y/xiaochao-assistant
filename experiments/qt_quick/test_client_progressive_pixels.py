@@ -21,15 +21,17 @@ PROBE_PREFIX = "PROGRESSIVE_PIXELS_JSON="
 
 
 class ProgressiveClientPixels(unittest.TestCase):
-    def run_probe(self, verdict):
+    def run_probe(self, verdict, *, scheduler_control=False):
         task_tmp = str(HERE.parents[1] / "work" / "tmp")
         env = dict(os.environ, TMP=task_tmp, TEMP=task_tmp,
                    QT_QPA_PLATFORM="offscreen", QT_QUICK_BACKEND="software",
                    QSG_RENDER_LOOP="basic",
                    QT_LOGGING_RULES="qt.scenegraph.time.texture=true;qt.scenegraph.general=true;qt.rhi.*=true",
                    PYTHONDONTWRITEBYTECODE="1")
-        process = subprocess.run([sys.executable, "-B", str(Path(__file__).resolve()),
-                                  "--probe", verdict], cwd=HERE, env=env,
+        command = [sys.executable, "-B", str(Path(__file__).resolve()), "--probe", verdict]
+        if scheduler_control:
+            command.append("--scheduler-control")
+        process = subprocess.run(command, cwd=HERE, env=env,
                                  capture_output=True, text=True, timeout=45)
         self.assertEqual(process.returncode, 0, process.stdout + "\n" + process.stderr)
         rows = [line[len(PROBE_PREFIX):] for line in process.stdout.splitlines()
@@ -79,6 +81,15 @@ class ProgressiveClientPixels(unittest.TestCase):
         self.assertGreaterEqual(row["qsgTextureDestroyedCount"], 1)
         self.assertEqual(row["qsgTextureLifecycle"][0]["pointer"], row["pendingTexture"]["pointer"])
 
+    def test_gui_wait_allows_delayed_worker_to_reach_the_original_pixel_proof(self):
+        row = self.run_probe("corrected", scheduler_control=True)
+        self.assertTrue(row["schedulerControl"])
+        self.assertTrue(row["workerResult"]["success"])
+        self.assertTrue(row["pendingVisible"])
+        self.assertEqual(row["pendingPixelSamples"], row["expectedInitialSamples"])
+        self.assertEqual(row["finalPixelSamples"], row["expectedCorrectedSamples"])
+        self.assertGreaterEqual(row["injectedToPendingGrabMs"], 5000.)
+
     def test_corrected_pixel_assertion_rejects_stale_coordinator_matrix(self):
         row = self.run_probe("stale_matrix")
         self.assertTrue(row["staleMatrixControlApplied"])
@@ -93,7 +104,7 @@ class ProgressiveClientPixels(unittest.TestCase):
         self.assertTrue(row["finalMaterialAckSuccess"])
 
 
-def _probe(verdict):
+def _probe(verdict, *, scheduler_control=False):
     import numpy as np
     from unittest.mock import Mock, patch
 
@@ -119,6 +130,8 @@ def _probe(verdict):
     runtime = None
     coordinator_fixture = None
     coordinator_cleaned = False
+    worker = allow_review = fixture_fit_patch = start_gate = None
+    switch_interval = None
     try:
         # Keep the fixture's real observation/floor adapters, but replace its
         # single-fit shortcut so this probe reaches the production host callback.
@@ -149,8 +162,9 @@ def _probe(verdict):
         runtime = LiveRuntime(engine_factories={"nightmare": lambda: fixture.engine,
             "difficult": lambda: fixture_engine_difficult(fixture.engine)},
             capture_provider=capture, evidence_kind="live-client-capture", clock=time.monotonic)
+        from shared_structure_display import structure_display_identity
         display = dict(pixels=pixels_bgra, matrixDisplayToReference=np.eye(3),
-            resourceIdentity="progressive-rgba-fixture", displayKind="shared-structure",
+            resourceIdentity=structure_display_identity(reference), displayKind="shared-structure",
             displayLabel="synthetic pixels", routeProfileId="shared-structure",
             effectiveProfileId="shared-structure", fallback=False, authorStatus="none")
         runtime._display_layer = lambda *args, **kwargs: display
@@ -297,18 +311,32 @@ def _probe(verdict):
         fixture_fit_patch = patch.object(_AlignmentHost, "fit", gated_fit)
         fixture_fit_patch.start()
         injected_at = time.monotonic()
+        start_gate = threading.Event() if scheduler_control else None
+        if scheduler_control:
+            # Isolated subprocess control: make implicit GIL handoff too slow,
+            # while the same five-second capture delay stays below the probe's
+            # unchanged eight-second first-offer deadline.
+            switch_interval = sys.getswitchinterval()
+            sys.setswitchinterval(10.0)
         def run_capture():
             try:
+                if start_gate is not None:
+                    start_gate.wait()
+                    time.sleep(5.0)
                 worker_result.update(dispatch("capture_now"))
             except BaseException as error:
                 worker_error.append(error)
         worker = threading.Thread(target=run_capture, name="progressive-fit-probe", daemon=True)
         worker.start()
+        if start_gate is not None:
+            start_gate.set()
 
         deadline = time.monotonic() + 8.0
         while time.monotonic() < deadline and not pending_offered.is_set():
             app.processEvents()
-            QTest.qWait(5)
+            # Qt's native polling can retain the GIL while the Python worker
+            # needs to advance. Pump Qt, then explicitly yield to that worker.
+            time.sleep(0.005)
         if not pending_offered.is_set():
             worker.join(1.0)
             raise AssertionError("host did not offer its first usable fit: " + repr({
@@ -322,7 +350,7 @@ def _probe(verdict):
                 app.processEvents()
                 if predicate():
                     return True
-                QTest.qWait(5)
+                time.sleep(0.005)
             app.processEvents()
             return bool(predicate())
 
@@ -336,7 +364,8 @@ def _probe(verdict):
         if not pump_until(has_pending_pixels):
             raise AssertionError("pending QML material was not visible/ready: " + repr({
                 "render": runtime.snapshot().get("render"), "aligned": coordinator.alignedData,
-                "traces": aligned_surfaces(), "provider": images.requests, "warnings": warnings}))
+                "traces": aligned_surfaces(), "provider": images.requests, "warnings": warnings,
+                "solverTimes": solver_times, "runtimeEvents": runtime_events[-12:]}))
         hidden_at_pending_visibility = sum(name == "aligned" for name in hidden)
 
         pixel_points = ((11, 11), (35, 26), (51, 11), (75, 26),
@@ -625,7 +654,8 @@ def _probe(verdict):
         runtime.shutdown()
         coordinator_fixture.doCleanups()
 
-        report = dict(case=verdict, backend="software/offscreen", capture="synthetic 1280x720",
+        report = dict(case=verdict, schedulerControl=scheduler_control,
+            backend="software/offscreen", capture="synthetic 1280x720",
             fit="controlled host.fit; actual _offer_usable_fit helper and runtime callback; synthetic residual evidence",
             peerReview="controlled blocking verdict", pendingVisible=True,
             pendingReviewStatus="pending", pendingToken=pending_token,
@@ -691,17 +721,32 @@ def _probe(verdict):
                 runtime.shutdown()
             except Exception:
                 pass
+        if start_gate is not None:
+            start_gate.set()
+        if allow_review is not None:
+            allow_review.set()
+        if worker is not None:
+            worker.join(8.0)
+            if worker.is_alive():
+                raise AssertionError("probe worker remained active before QML teardown")
+        if switch_interval is not None:
+            sys.setswitchinterval(switch_interval)
+        if fixture_fit_patch is not None:
+            fixture_fit_patch.stop()
+        # Drain queued runtime notifications while their QML windows and
+        # coordinator still exist, including after an early probe failure.
+        app.processEvents()
+        if coordinator_fixture is not None and not coordinator_cleaned:
+            try:
+                coordinator_fixture.tearDown()
+                coordinator_fixture.doCleanups()
+            except Exception:
+                pass
         if engine is not None:
             try:
                 engine.deleteLater()
                 QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
                 app.processEvents()
-            except Exception:
-                pass
-        if coordinator_fixture is not None and not coordinator_cleaned:
-            try:
-                coordinator_fixture.tearDown()
-                coordinator_fixture.doCleanups()
             except Exception:
                 pass
         fixture.doCleanups()
@@ -715,6 +760,6 @@ def fixture_engine_difficult(engine):
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--probe":
-        _probe(sys.argv[2])
+        _probe(sys.argv[2], scheduler_control="--scheduler-control" in sys.argv[3:])
     else:
         unittest.main()

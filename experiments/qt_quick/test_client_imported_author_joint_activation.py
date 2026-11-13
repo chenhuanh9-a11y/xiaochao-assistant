@@ -8,6 +8,7 @@ import numpy as np
 import client_imported_activation as activation
 from client_imported_providers import build_imported_engine_factories
 from client_route_preferences import prepare_display_layer
+from client_providers import DisplayResourceChanged
 from imported_author_display import decode_author_display
 from imported_resource_archive import save_archive
 from imported_resource_catalog import ResourceCatalogError
@@ -71,8 +72,9 @@ class ClientImportedAuthorJointActivationTests(_AuthorSelectionFixture):
         self.assertEqual(selected.contexts['s0:nightmare'], original.contexts['s0:nightmare'])
         self.assertEqual(selected.contexts['s1:difficult']['reviewedGroups'],
                          original.contexts['s1:difficult']['reviewedGroups'])
-        with self.assertRaises(ResourceCatalogError):
+        with self.assertRaisesRegex(DisplayResourceChanged, 'resource-catalog-superseded') as rejected:
             prepare_display_layer(old_engine, self.source.ids[0], '-4', 'author-fixture')
+        self.assertIsInstance(rejected.exception.__cause__, ResourceCatalogError)
         engine = factory.get_engine('difficult', season='s1')
         layer = prepare_display_layer(engine, self.source.ids[0], '-4', 'author-fixture')
         self.assertEqual(engine.qt_native_base.component_ref, next_refs['base'])

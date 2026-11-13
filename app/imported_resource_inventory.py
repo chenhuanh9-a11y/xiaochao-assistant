@@ -251,6 +251,12 @@ def _read_version(root, package_id, version, *, verify, budget):
             component_id: ComponentRef(package_id, version, component_id, manifest_sha)
             for component_id in components
         }
+        row.update(manifestSha256=manifest_sha,
+            displayName=manifest.get('displayName'), title=manifest.get('displayName') or package_id,
+            components=[dict(componentId=item['componentId'], type=item['type'],
+                             contexts=[f"{context['season']}:{context['mode']}" for context in item['contexts']])
+                        for item in components.values()],
+            _componentRefs=tuple(refs.values()), canInspectRemoval=True)
         if verify:
             budget.check()
             PackageView(root, refs[first_id]).validate_inventory()
@@ -260,15 +266,7 @@ def _read_version(root, package_id, version, *, verify, budget):
                 budget.check()
                 _entrypoint_check(root, package_id, version, component)
         row.update(
-            manifestSha256=manifest_sha,
-            displayName=manifest.get('displayName'),
-            title=manifest.get('displayName') or package_id,
-            components=[dict(componentId=item['componentId'], type=item['type'],
-                             contexts=[f"{context['season']}:{context['mode']}"
-                                       for context in item['contexts']])
-                        for item in components.values()],
             status='saved' if verify else 'saved-unverified',
-            _componentRefs=tuple(refs.values()),
         )
         return row
     except (files.ImportRejected, OSError, ValueError, TypeError, KeyError) as error:

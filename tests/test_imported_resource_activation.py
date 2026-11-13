@@ -191,6 +191,25 @@ class ActivationTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(CatalogSnapshot(self.root).catalog_stamp, stamp)
 
+    def test_retained_outcome_keeps_exact_witness_after_pending_retirement(self):
+        _, stamp = self.old()
+        with resource_write_lock(self.root):
+            result = activation.activate_catalog_locked(self.root, document(),
+                expected_catalog_stamp=stamp, validate=parse_catalog)
+            directory = self.root / 'transactions' / result['transactionId']
+            journal_stamp = activation._stamp(directory / 'journal.json')
+            outcome = activation.retained_catalog_outcome_locked(self.root, directory.name,
+                expected_journal_stamp=journal_stamp)
+            self.assertTrue(outcome['committed'])
+            self.assertFalse((self.root / PENDING_CATALOG).exists())
+            marker = directory / 'committed.json'
+            raw = marker.read_bytes()
+            marker.rename(directory / 'foreign-original-witness')
+            marker.write_bytes(raw)
+            with self.assertRaises(ValueError):
+                activation.retained_catalog_outcome_locked(self.root, directory.name,
+                    expected_journal_stamp=journal_stamp)
+
     def test_staging_edit_or_same_byte_replacement_is_not_recaptured_as_owned(self):
         for replace in (False, True):
             with self.subTest(replace=replace):

@@ -165,6 +165,49 @@ class ImportedS0ObservationTests(unittest.TestCase):
         self.assertFalse(observation["detected"])
         self.assertEqual(read["reason"], "controls-profile-context-unavailable")
 
+    def test_one_observation_reuses_parameters_and_next_observation_rechecks_resources(self):
+        _package, controls = self.profile(fixed=(.75, .60, .08, .33))
+        for mode, order in (("nightmare", (2, 1, -1)), ("difficult", (2, 1))):
+            with self.subTest(mode=mode):
+                frame = _board(mode, order, 1, center_x=1500)
+                with patch.object(controls, 'assert_current', wraps=controls.assert_current) as current:
+                    for count in (2, 4):
+                        observation, read = observe_s0_map(frame, mode, controls=controls)
+                        self.assertTrue(observation['detected'], (observation, read))
+                        self.assertEqual(read['selectedFloor'], 1)
+                        self.assertEqual(current.call_count, count)
+
+    def test_changed_manifest_after_pixels_cannot_return_a_map_observation(self):
+        import s0_vertical_controls as detector
+        package, controls = self.profile(fixed=(.75, .60, .08, .33))
+        frame = _board('nightmare', (2, 1, -1), 1, center_x=1500)
+        original = detector._observe_s0_map_geometry
+        def replace_after_geometry(*args, **kwargs):
+            result = original(*args, **kwargs)
+            self.assertTrue(result['detected'], result)
+            manifest = package.package_root / 'manifest.json'
+            replacement = manifest.with_suffix('.replacement')
+            replacement.write_bytes(manifest.read_bytes())
+            replacement.replace(manifest)
+            return result
+        with patch.object(detector, '_observe_s0_map_geometry', side_effect=replace_after_geometry):
+            with self.assertRaisesRegex(ValueError, 'manifest-replaced'):
+                observe_s0_map(frame, 'nightmare', controls=controls)
+
+    def test_expired_profile_fails_before_pixels_and_saved_clicks_recheck_it(self):
+        package, controls = self.profile(fixed=(.75, .60, .08, .33))
+        frame = _board('nightmare', (2, 1, -1), 1, center_x=1500)
+        observation, read = observe_s0_map(frame, 'nightmare', controls=controls)
+        self.assertTrue(observation['detected'], (observation, read))
+        manifest = package.package_root / 'manifest.json'
+        manifest.write_bytes(manifest.read_bytes() + b' ')
+        with patch('floor_control_region.locate_vertical_floor_controls',
+                   side_effect=AssertionError('expired profile reached pixels')):
+            with self.assertRaisesRegex(ValueError, 'manifest-changed'):
+                observe_s0_map(frame, 'nightmare', controls=controls)
+        self.assertIsNone(validated_control_rects(read, controls=controls))
+        self.assertIsNone(control_hit((1500, 820), (0, 0, 1920, 1200), read, controls=controls))
+
     def test_external_signed_labels_reject_missing_minus_wrong_glyph_and_ambiguous_columns(self):
         _package, controls = self.profile()
         cases = (

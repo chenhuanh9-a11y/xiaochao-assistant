@@ -57,6 +57,22 @@ class ImportedControlsContext:
     visual_order: tuple[int, ...]
 
 
+@dataclass(frozen=True)
+class _S0ObservationControls:
+    """Decoded parameters for one synchronous observation, not a live profile."""
+
+    context: ImportedControlsContext | None
+    templates: TemplateBank
+    fixed_search_region: tuple[float, ...]
+    expanded_search_region: tuple[float, ...]
+
+    def for_context(self, season, mode):
+        if (isinstance(season, str) and isinstance(mode, str)
+                and self.context is not None and self.context.key == f'{season}:{mode}'):
+            return self.context
+        return None
+
+
 def _s0_contexts(component):
     if not isinstance(component, dict) or component.get('type') != 'controls-profile':
         _reject('component-type-unsupported')
@@ -257,3 +273,8 @@ class S0ControlsProfile:
         if contract is None:
             return None
         return ImportedControlsContext(key, contract, self.visual_orders[key])
+
+    def observation_parameters(self, season, mode):
+        """Caller must check this profile again before returning pixel evidence."""
+        return _S0ObservationControls(self.for_context(season, mode), self.templates,
+                                      self.fixed_search_region, self.expanded_search_region)

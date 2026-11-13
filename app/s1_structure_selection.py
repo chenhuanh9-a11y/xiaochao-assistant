@@ -18,6 +18,9 @@ import uuid
 
 import numpy as np
 
+from entry_evidence_work import EntryEvidenceWork, FrameSnapshot, ObservationWorkScheduler
+from entry_pose_proposals import current_entry_pose_seeds
+
 
 @dataclass(frozen=True)
 class StructureCatalog:
@@ -82,6 +85,107 @@ def verified_pose(fit):
         return False
 
 
+class _StructureFitWork(EntryEvidenceWork):
+    """Canonical fit kernels using the same job lifecycle as entry evidence."""
+    def __init__(self, snapshot, order, floor, fit, cancelled, bounds, preferred):
+        self.order, self.floor, self.fit = order, floor, fit
+        self.cancelled, self.bounds, self.preferred = cancelled, bounds, preferred
+        self.last_fit = None
+        self.entry_proposals = {}
+        self.completed = set()
+        self.preview_attempts = {}
+        super().__init__(snapshot)
+
+    def accept_entry_proposals(self, rows):
+        proposals = current_entry_pose_seeds(rows or (), self.floor)
+        self.entry_proposals = copy.deepcopy({mid: entry for mid, entry in proposals.items() if mid in self.order})
+        priority = ([self.preferred] if self.preferred in self.order else [])
+        priority.extend(mid for mid in self.entry_proposals if mid not in priority)
+        self.order = tuple(priority) + tuple(mid for mid in self.order if mid not in priority)
+
+    def _fit(self, map_id, *, proposal_only=False):
+        proposal = self.entry_proposals.get(map_id)
+        if proposal_only:
+            self.preview_attempts[map_id] = copy.deepcopy(proposal)
+        try:
+            fit = self.fit(self.frame, map_id, self.floor, self.cancelled, observation_bounds=self.bounds,
+                **(dict(entry_candidate=proposal) if proposal is not None else {}),
+                **(dict(entry_observation=None) if proposal_only else {}))
+        except MemoryError:
+            raise
+        except Exception as error:
+            if proposal_only:
+                fit = dict(success=False, reason='entry-preview-fit-unresolved',
+                    error=type(error).__name__ + ':' + str(error))
+            elif map_id != self.preferred:
+                raise
+            else:
+                fit = dict(success=False, reason="preferred-fit-unresolved")
+        if not isinstance(fit, dict) and proposal_only:
+            fit = dict(success=False, reason='entry-preview-fit-unresolved')
+        elif not isinstance(fit, dict) and map_id == self.preferred:
+            fit = dict(success=False, reason="preferred-fit-unresolved")
+        self.last_fit = fit
+        # A prefix miss remains UNKNOWN. A later seed or the completed work's
+        # qualified fixed-H path can still succeed; successful poses are reused.
+        if not proposal_only or verified_pose(fit):
+            self.completed.add(map_id)
+
+    def needs_preview(self, map_id):
+        return (map_id not in self.completed and
+            (map_id not in self.preview_attempts or not _same_evidence(
+                self.preview_attempts[map_id], self.entry_proposals.get(map_id))))
+
+    def _jobs(self):
+        for map_id in self.order:
+            if map_id not in self.completed:
+                yield self._job(map_id, 'canonical-fit', lambda map_id=map_id: self._fit(map_id))
+
+
+class _ObservationWork(EntryEvidenceWork):
+    """Dependencies and canonical poses share one driver, frame and deadline."""
+    def __init__(self, snapshot, entry, fit, *, preview_enabled=False):
+        if entry is not None and entry.frame_snapshot is not snapshot:
+            entry.close()
+            fit.close()
+            raise ValueError('entry-frame-snapshot-mismatch')
+        self.entry, self.fit, self.entry_rows = entry, fit, None
+        self.preview_enabled, self.material_stop = preview_enabled, None
+        super().__init__(snapshot)
+
+    def _delegate(self, work):
+        try:
+            while (job := work.next_job()) is not None:
+                yield self._job(job.map_id, job.phase, job.run)
+        finally:
+            work.close()
+
+    def _jobs(self):
+        try:
+            if self.entry is not None:
+                try:
+                    while (job := self.entry.next_job()) is not None:
+                        yield self._job(job.map_id, job.phase, job.run)
+                        if (job.phase == 'entry-pose-proposals' and self.preview_enabled
+                                and self.material_stop is None):
+                            self.fit.accept_entry_proposals(self.entry.pose_proposal_rows)
+                            for map_id in self.fit.order:
+                                if self.material_stop is not None:
+                                    break
+                                if (self.fit.needs_preview(map_id)
+                                        and (map_id in self.fit.entry_proposals or map_id == self.fit.preferred)):
+                                    yield self._job(map_id, 'canonical-fit',
+                                        lambda map_id=map_id: self.fit._fit(map_id, proposal_only=True))
+                finally:
+                    self.entry_rows = self.entry.finish()
+                yield self._job(None, 'entry-evidence', lambda: None)
+                self.fit.accept_entry_proposals(self.entry_rows)
+            if self.material_stop is None:
+                yield from self._delegate(self.fit)
+        finally:
+            self.fit.close()
+
+
 def _same_evidence(left, right):
     """Exact nested evidence equality, including NumPy pose arrays."""
     if isinstance(left, np.ndarray) or isinstance(right, np.ndarray):
@@ -104,22 +208,63 @@ class StructureCandidateScanner:
     def __init__(self, catalog, fit, *, clock=time.monotonic, prepare_fit=None):
         self.catalog, self.fit, self.clock = catalog, fit, clock
         self.prepare_fit = prepare_fit
+        self._pending_progress = None
+
+    def unresolved_report(self, snapshot, floor, floor_source, *, previous=None, elapsed_seconds=0.,
+                          include_pending=False):
+        """The completed race may stop a candidate before its next callback.
+
+        An identity winner may also collect this scan's completed pose whose
+        progress callback is still queued. Other retirement paths use only
+        consumed progress. Entry identity keeps its independent owner/ledger.
+        """
+        if include_pending and (previous is None or previous.get('status') == 'partial'):
+            pending = self._pending_progress
+            if (pending is not None and pending[0] is snapshot
+                    and (pending[1]['floor'], pending[1]['floorSource'], pending[1]['resourceKey'])
+                        == (floor, floor_source, self.catalog.resource_key)
+                    and pending[1]['status'] == 'partial'
+                    and pending[1]['updateSeq'] > (previous or {}).get('updateSeq', 0)):
+                previous = pending[1]
+        report = copy.deepcopy(previous) if previous is not None else dict(
+            schemaVersion=1, season=self.catalog.season, mode=self.catalog.mode,
+            resourceKey=self.catalog.resource_key, floor=floor, floorSource=floor_source,
+            observedFloor=floor if floor_source == 'current-frame-verified' else '',
+            frameKey=snapshot.frame_key, updateSeq=0, expectedMapIds=list(self.catalog.map_ids),
+            checkedMapIds=[], unscannedMapIds=list(self.catalog.map_ids), supportedMapIds=[],
+            unknownMapIds=list(self.catalog.map_ids), firstVerifiedPoseElapsedSeconds=None,
+            excludedMapIds=[], poses={}, outcomes=[], competitionComplete=False,
+            uniqueIdentityVerified=False, identityHardGatePassed=False,
+            automaticSelectionAuthorized=False, liveAuthorization=False,
+            reason='supported-geometry-is-not-complete-identity-competition')
+        report.update(status='subset-unresolved', scanComplete=False,
+            updateSeq=report['updateSeq']+1, elapsedSeconds=elapsed_seconds,
+            candidateReuse='none', scanSkipped=False)
+        return report
 
     def scan(self, frame, *, floor, floor_source, cancelled=None, budget_seconds=None,
              on_progress=None, candidate_order=None, preferred_map_id=None,
-             preferred_material_committed=None, planned_map_ids=None, first_material_committed=None):
+             preferred_material_committed=None, planned_map_ids=None, first_material_committed=None,
+             prepare_entry=None, on_entry_evidence=None, deadline=None, frame_snapshot=None):
+        self._pending_progress = None
         if floor not in self.catalog.floors or floor_source not in ("operator-declared", "current-frame-verified"):
             raise ValueError("s1-structure-floor-evidence-required")
         if not isinstance(frame, np.ndarray) or frame.ndim != 3 or frame.shape[2] != 3 or frame.dtype != np.uint8:
             raise ValueError("s1-structure-frame-invalid")
         if budget_seconds is not None and (not math.isfinite(budget_seconds) or budget_seconds < 0):
             raise ValueError("s1-structure-budget-invalid")
+        if deadline is not None and not math.isfinite(deadline):
+            raise ValueError('observation-deadline-invalid')
         cancelled = cancelled or (lambda: False)
         started = self.clock()
         # Own immutable bytes. Neither callers nor fit helpers can turn this
         # view writable and change the frame after a partial has been issued.
-        frame = np.frombuffer(frame.tobytes(order="C"), dtype=np.uint8).reshape(frame.shape)
-        frame_key = hashlib.sha256(frame.tobytes()).hexdigest()
+        if frame_snapshot is not None and (not isinstance(frame_snapshot, FrameSnapshot)
+                or frame_snapshot.pixels is not frame):
+            raise ValueError('structure-scan-frame-snapshot-mismatch')
+        snapshot = frame_snapshot if frame_snapshot is not None else FrameSnapshot(frame)
+        frame = snapshot.pixels
+        frame_key = snapshot.frame_key
         bounds = (0, 0, frame.shape[1], frame.shape[0])
         fit_one = self.prepare_fit(frame, bounds) if self.prepare_fit else self.fit
         order = self.catalog.map_ids
@@ -165,31 +310,36 @@ class StructureCandidateScanner:
                 scanSkipped=status in ("preferred-material-committed", "first-material-committed"),
                 reason="supported-geometry-is-not-complete-identity-competition")
 
-        status = "complete" if set(order) == set(self.catalog.map_ids) else "subset-unresolved"
-        for map_id in order:
-            if cancelled():
-                status = "cancelled"
-                break
-            if budget_seconds is not None and self.clock() - started >= budget_seconds:
-                status = "budget-unresolved"
-                break
-            try:
-                fit = fit_one(frame, map_id, floor, cancelled, observation_bounds=bounds)
-            except MemoryError:
-                raise
-            except Exception:
-                if map_id != preferred:
-                    raise
-                fit = dict(success=False, reason="preferred-fit-unresolved")
-            if not isinstance(fit, dict) and map_id == preferred:
-                fit = dict(success=False, reason="preferred-fit-unresolved")
-            if cancelled() or "obsolete" in str(fit.get("reason", "")):
-                status = "cancelled"
-                break
-            checked.append(map_id)
+        fit_work = _StructureFitWork(snapshot, order, floor, fit_one, cancelled, bounds, preferred)
+        deadline = min(deadline if deadline is not None else float('inf'),
+            started+budget_seconds if budget_seconds is not None else float('inf'))
+        entry = prepare_entry(snapshot, floor, deadline=deadline) if prepare_entry is not None else None
+        work = _ObservationWork(snapshot, entry, fit_work, preview_enabled=on_progress is not None)
+
+        def entry_evidence():
+            return dict(frameKey=frame_key, resourceKey=self.catalog.resource_key, floor=floor,
+                role='identity-entry', rows=copy.deepcopy(work.entry_rows or []))
+
+        def accept_fit(job):
+            nonlocal first_verified_pose_elapsed
+            if job.phase == 'entry-evidence':
+                if on_entry_evidence is not None and on_entry_evidence(entry_evidence()) is True:
+                    return 'subset-unresolved'
+                return None
+            if job.phase != 'canonical-fit':
+                return None
+            map_id, fit = job.map_id, fit_work.last_fit
+            if "obsolete" in str(fit.get("reason", "")):
+                return "cancelled"
+            if map_id not in checked:
+                checked.append(map_id)
             ok = verified_pose(fit)
-            outcomes.append(dict(mapId=map_id, outcome="supported" if ok else "unknown",
-                                 reason=str(fit.get("reason", ""))))
+            outcome = dict(mapId=map_id, outcome="supported" if ok else "unknown",
+                           reason=str(fit.get("reason", "")))
+            if any(row['mapId'] == map_id for row in outcomes):
+                outcomes[next(i for i, row in enumerate(outcomes) if row['mapId'] == map_id)] = outcome
+            else:
+                outcomes.append(outcome)
             if ok:
                 if on_progress is not None and first_verified_pose_elapsed is None:
                     first_verified_pose_elapsed = self.clock() - started
@@ -197,7 +347,9 @@ class StructureCandidateScanner:
                 if on_progress is not None:
                     # This executes on the scanning worker. Consumers must queue
                     # UI work, and own cancellation/exception render withdrawal.
-                    on_progress(report("partial"))
+                    partial = report("partial")
+                    self._pending_progress = (snapshot, partial)
+                    on_progress(partial)
                 if callable(first_material_committed):
                     try:
                         material_committed = first_material_committed(map_id) is True
@@ -206,8 +358,10 @@ class StructureCandidateScanner:
                     except Exception:
                         material_committed = False
                     if material_committed:
-                        status = "first-material-committed"
-                        break
+                        if entry is not None and work.entry_rows is None:
+                            work.material_stop = 'first-material-committed'
+                            return None  # Only stop fitting; finish candidate identity jobs.
+                        return "first-material-committed"
                 if map_id == preferred and callable(preferred_material_committed):
                     # Not cancellation: preserve this ticket's accepted pose and
                     # pixels. Unknown/unscanned alternatives stay in the report.
@@ -218,11 +372,25 @@ class StructureCandidateScanner:
                     except Exception:
                         material_committed = False
                     if material_committed:
-                        status = "preferred-material-committed"
-                        break
-        if cancelled():
-            status = "cancelled"
-        return report(status)
+                        stopped = ('preferred-material-committed' if checked == [preferred]
+                                   else 'first-material-committed')
+                        if entry is not None and work.entry_rows is None:
+                            work.material_stop = stopped
+                            return None
+                        return stopped
+            return None
+
+        status = ObservationWorkScheduler(clock=self.clock).drive(work,
+            deadline=deadline,
+            cancelled=cancelled, on_job_finished=accept_fit)
+        if status == 'complete' and work.material_stop is not None:
+            status = work.material_stop
+        if status == "complete" and set(order) != set(self.catalog.map_ids):
+            status = "subset-unresolved"
+        result = report(status)
+        if entry is not None and status != 'cancelled':
+            result['entryEvidence'] = entry_evidence()
+        return result
 
     @staticmethod
     def rank_rows(report, pack):
@@ -267,14 +435,38 @@ class StructureEvidenceSession:
         self._priority_history = OrderedDict()
         self._committed_generation = None
         self._session_id, self._ticket = uuid.uuid4().hex, None
+        self._entry_evidence = {}
 
     def begin_observation(self, floor):
         if self._ended or floor not in self.catalog.floors:
             raise ValueError("s1-structure-session-unavailable")
         self.generation += 1
         self._current, self._floor = None, floor
+        self._entry_evidence = {}
         self._ticket = ObservationTicket(self._session_id, self.round_key, self.generation, floor)
         return self._ticket
+
+    def commit_entry_evidence(self, report, ticket, *, channel='candidate'):
+        """Independent entry channel; a canonical terminal does not retire it.
+
+        Only observation retirement invalidates its ticket. Storing source rows
+        never revives canonical candidates or adjudicates their identity.
+        """
+        if (self._ended or ticket != self._ticket
+                or self.catalog.season != 's0' or channel not in ('candidate', 'structure')
+                or channel in self._entry_evidence
+                or not isinstance(report, dict) or report.get('role') != 'identity-entry'
+                or report.get('resourceKey') != self.catalog.resource_key
+                or report.get('floor') != self._floor
+                or not isinstance(report.get('frameKey'), str) or len(report['frameKey']) != 64
+                or not isinstance(report.get('rows'), list)
+                or any(not isinstance(row, dict) or row.get('mapId') not in self.catalog.map_ids
+                       for row in report['rows'])
+                or self._current is not None and self._current['frameKey'] != report['frameKey']
+                or any(row['frameKey'] != report['frameKey'] for row in self._entry_evidence.values())):
+            return False
+        self._entry_evidence[channel] = copy.deepcopy(report)
+        return True
 
     def commit(self, report, ticket):
         """Accept monotonic updates of ONE observation, never independent votes.
@@ -326,6 +518,8 @@ class StructureEvidenceSession:
                 or any(not verified_pose(report.get("poses", {}).get(mid)) for mid in supported)):
             return False
         previous = self._current
+        if any(row['frameKey'] != report['frameKey'] for row in self._entry_evidence.values()):
+            return False
         if previous is not None:
             if (seq <= previous.get("updateSeq", 1) or report["frameKey"] != previous["frameKey"]
                     or report.get("floorSource") != previous.get("floorSource")
@@ -430,10 +624,12 @@ class StructureEvidenceSession:
         """Withdraw current-frame choices without inventing negative evidence."""
         self.generation += 1
         self._current, self._floor, self._ticket = None, None, None
+        self._entry_evidence = {}
 
     def end_round(self):
         self.generation += 1
         self._history.clear()
         self._priority_history.clear()
         self._ticket = None
+        self._entry_evidence = {}
         self._current, self._floor, self._ended = None, None, True

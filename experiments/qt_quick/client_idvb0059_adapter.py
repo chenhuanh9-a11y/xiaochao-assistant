@@ -75,6 +75,48 @@ class Idvb0059Adapter:
                 return True
         return not is_current(context)
 
+    def generation_current(self, generation):
+        """Outer owner receipt check; never passed into numerical computation."""
+        with self._lock:
+            return type(generation) is int and generation == self._generation
+
+    def capture_prepared_input(self, host, frame, map_id, floor, *, context, is_current,
+                               cancelled=None, display_signature=None, enabled=True):
+        """Capture numerical values using the existing live owner checks.
+
+        The returned generation is the adapter's existing reset generation.
+        Runtime keeps it and its request/context checks outside the data object.
+        No frame-specific prior belongs in a static resource cache.
+        """
+        if not enabled or not original.enabled():
+            with self._lock:
+                return None, self._generation
+        generation, _, owner = self._capture(host, display_signature)
+        if self._obsolete(generation, context, is_current, cancelled):
+            return None, generation
+        prior = original._alignment_prior(owner, frame, map_id, str(floor))
+        if prior is None:
+            return None, generation
+        reference, row, group = prior
+        # The shared branch's bridge metadata is static. Its actual solved
+        # matrix still gets the original finite-matrix check in the pure path.
+        spec = owner._route_profile_validation_spec(
+            "shared-structure", map_id, str(floor), np.eye(3), reference.clean_mask)
+        if (not original._usable_spec(spec)
+                or not isinstance(spec["coordinatePackId"], str)
+                or spec.get("sharedReference") is not reference):
+            return None, generation
+        data = original.PreparedIdvb0059Input(str(map_id), str(floor), tuple(frame.shape[:2]),
+            reference, float(row["scale"]), original._freeze_coverage(row["coverage"]),
+            spec["coordinatePackId"])
+        if (owner._active_round_layer_group(map_id) is not group
+                or str(floor) not in group.canonical_geometry_verified_floors
+                or owner._shared_structure_reference("shared-structure", map_id, str(floor)) is not reference
+                or self._obsolete(generation, context, is_current, cancelled)
+                or not self.generation_current(generation)):
+            return None, generation
+        return data, generation
+
     def try_alignment(self, host, frame, map_id, floor, *, context, is_current,
                       cancelled=None, display_signature=None, enabled=True):
         """Run before original fast/recovery; None retains that original fallback.

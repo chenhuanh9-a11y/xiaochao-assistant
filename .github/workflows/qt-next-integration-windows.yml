@@ -2,7 +2,7 @@ name: Qt next candidate joint Windows regression
 
 on:
   push:
-    branches: [integration/qt-next-20261102, integration/qt-pr84-88-20261103, codex/pr133-p3-p4-p5-integration-20261111]
+    branches: [integration/qt-next-20261102, integration/qt-pr84-88-20261103, codex/pr133-p3-p4-p5-integration-20261111, codex/pr133-shared-observation-stream-20261111]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [features, core, diagnostics, packaging, packaging-imported-data, packaging-imported-runtime, packaging-imported-display-data, packaging-imported-display, packaging-imported-display-integration, tutorials, map-defaults, season-ui, next-version-contracts, author-snapshots, installer-reset, fit-simulation, main-baseline, released-baseline]
+        group: [features, core, diagnostics, packaging, packaging-imported-data, packaging-imported-runtime, packaging-imported-activation, packaging-imported-display-data, packaging-imported-display, packaging-imported-display-integration, tutorials, map-defaults, season-ui, next-version-contracts, author-snapshots, installer-reset, fit-simulation, main-baseline, released-baseline]
     env:
       PYTHONPATH: 'app;tests;tools;experiments/qt_quick'
       QT_QPA_PLATFORM: offscreen
@@ -227,13 +227,18 @@ jobs:
                 'test_imported_s0_observation', 'test_identity_metadata_package_io',
                 'test_shared_structure_package_io', 'test_shared_version_package_io',
                 'test_entry_resource_io', 'test_main_entry_jobs', 'test_passport_entry_jobs', 'test_side_entry_jobs',
+                'test_local_structure_index', 'test_shared_observation_dependencies',
+                'test_s1_common_wall_evidence',
                 'test_side_pose_recovery_jobs',
+                'test_observation_work_scheduler', 'test_map_local_structure_work',
+                'test_source_structure_jobs', 'test_native_condition_jobs',
                 'test_export_native_base_package',
                 'test_export_s0_difficult_native_base_package',
                 'test_export_s1_native_base_package', 'test_export_s1_nightmare_base_package',
-                'test_imported_native_base',
+                'test_imported_native_base', 'test_imported_native_admission_scope',
                 'test_imported_group_registry',
                 'test_imported_s1_native_base', 'test_imported_s1_controls_profile',
+                'test_s1_imported_controls_equivalence',
                 'test_entry_semantic_capability', 'test_imported_s1_native_context',
                 'test_imported_difficult_native_context',
                 # 6da runtime reached 25m; these complete modules used 6m31s.
@@ -245,9 +250,17 @@ jobs:
             'packaging-imported-runtime' {
               $modules = @(
                 'test_s1_floor_observation', 'test_s1_map_ui_geometry',
-                'test_client_shared_reference_context', 'test_client_structure_unification', 'test_group_review_lifecycle',
+                'test_client_shared_reference_context', 'test_client_structure_unification', 'test_client_local_identity_commit', 'test_group_review_lifecycle',
                 'test_client_imported_providers', 'test_client_native_base_provider',
-                'test_client_imported_s1_provider',
+                'test_client_direct_structure_recognition', 'test_client_local_structure_recognition', 'test_client_prepared_alignment', 'test_client_known_floor_recovery',
+                'test_client_imported_s1_provider', 'test_client_s1_coordinate_recognition', 'test_client_common_coordinate_race', 'test_client_recognition_shutdown'
+              )
+            }
+            # 7ef reached the unchanged 25m cap during the final S1 activation
+            # UI module. Preserve every module and its separate process, with
+            # provider/fit and activation/lifecycle work in separate jobs.
+            'packaging-imported-activation' {
+              $modules = @(
                 'test_client_imported_difficult_provider', 'test_client_imported_difficult_activation_ui',
                 'test_client_imported_group_registry', 'test_client_imported_group_runtime',
                 'test_client_imported_admission',
@@ -272,6 +285,8 @@ jobs:
             'packaging-imported-display' {
               $modules = @(
                 'test_client_progressive_display', 'test_client_progressive_pixels',
+                'test_client_display_guard_consumption', 'test_client_formal_material_retention', 'test_client_s1_display_ram',
+                'test_client_similarity_protocol',
                 'test_imported_author_displays',
                 'test_client_imported_author_activation', 'test_client_imported_author_selection'
               )
@@ -290,7 +305,26 @@ jobs:
             # registry mutation, user installation, or game operation in CI.
             'installer-reset' { $modules = @('test_addition_prepublication_recovery', 'test_linkless_package_publication', 'test_linkless_package_removal', 'test_linkless_download_adoption', 'test_download_cache_recovery', 'test_linkless_upgrade_reset', 'test_linkless_base_resources', 'test_resource_upgrade_reset', 'test_resource_reset_installer', 'test_resource_reset_snapshots', 'test_resource_reset_directory_history', 'test_resource_reset_legacy_protocol', 'test_upgrade_retirement', 'test_installer_committed_projection', 'test_installer_upgrade_journal', 'test_installer_upgrade_coordinator', 'test_installer_program_only', 'test_installer_coordinator_guards', 'test_installer_native_observation', 'test_installer_native_formats', 'test_installer_program_inventory', 'test_native_evidence_budget', 'test_resource_transaction', 'test_managed_base_absent_rollback', 'test_qt_installer_directory', 'test_qt_installer_reuse_guard', 'test_qt_installer_projection', 'test_qt_game_watcher_packaging', 'test_uninstall_data_wizard', 'test_qt_startup_failures', 'test_qt_startup_user_messages', 'test_client_resource_startup', 'test_client_resource_startup_recovery', 'test_client_author_snapshot_recovery') }
             # Generated pixels exercise real S0/S1 geometry; not real-game or end-to-end timing.
-            'fit-simulation' { $modules = @('test_observation_residual_reuse', 'test_structure_cache_memory', 'test_idvb0059_runtime', 'test_idvb0059_retained_display', 'test_client_idvb0059_adapter', 'test_client_providers', 'test_feature_test_round_lock', 'test_s1_playtest_round_lock', 'test_s1_playtest_round_lock_qml', 'test_s1_formal_round_lock', 'test_s1_resources_changed_chain', 'test_s1_native_candidate_preview', 'test_wall_raster_local_distances', 'test_marker_implicit_domain', 'test_marker_occluded_structure', 'test_explicit_component_alignment', 'test_s1_scan_observation_reuse', 'test_s1_fit_diagnostics', 'test_s1_manual_alignment', 'test_s1_structure_selection', 'test_pose_prior_contract', 'test_s1_runtime_pose_prior', 'test_shared_recovery_residual_contract', 'test_diagnostic_redaction', 'test_diagnostic_evidence', 'test_g_cycle_replay', 'test_client_live_runtime') }
+            'fit-simulation' { $modules = @(
+                'test_observation_residual_reuse', 'test_structure_cache_memory',
+                'test_idvb0059_runtime', 'test_idvb0059_retained_display', 'test_client_idvb0059_adapter',
+                'test_prepared_idvb0059_input', 'test_structure_pose_inputs', 'test_structure_pose_common_models', 'test_structure_pose_static_payloads', 'test_structure_pose_preparation_context', 'test_prepared_structure_pose_solver',
+                'test_entry_evidence_after_scan', 'test_qualified_entry_pose_reuse', 'test_common_coordinate_observation',
+                'test_recognition_race', 'test_structure_identity_index', 'test_structure_identity_floor_partition', 'test_structure_identity_resources',
+                'test_structure_identity_resource_batch', 'test_structure_identity_read_operation',
+                'test_structure_identity_observation', 'test_structure_identity_recognition',
+                'test_structure_identity_corner_centre',
+                'test_structure_identity_fixed_pose',
+                'test_client_providers', 'test_feature_test_round_lock', 'test_s1_playtest_round_lock',
+                'test_s1_playtest_round_lock_qml', 'test_s1_formal_round_lock', 'test_s1_resources_changed_chain',
+                'test_s1_native_candidate_preview', 'test_wall_raster_local_distances', 'test_marker_implicit_domain',
+                'test_marker_occluded_structure', 'test_explicit_component_alignment', 'test_structure_pose_resources',
+                'test_s1_scan_observation_reuse', 'test_s1_fit_diagnostics', 'test_s1_manual_alignment',
+                'test_s1_structure_selection', 'test_pose_prior_contract', 'test_s1_runtime_pose_prior',
+                'test_shared_recovery_residual_contract', 'test_diagnostic_redaction', 'test_diagnostic_evidence',
+                'test_g_cycle_replay', 'test_client_live_runtime'
+              )
+            }
             'next-version-contracts' { $modules = @('test_g_cycle_evidence', 'test_g_cycle_replay', 'test_client_g_cycle_evidence', 'test_client_g_cycle_solver_input', 'test_client_g_cycle_reporter', 'test_client_g_cycle_recovery', 'test_client_g_cycle_admission', 'test_client_g_cycle_composition', 'test_managed_base_absent_rollback', 'test_legacy_receipt_startup_retention', 'test_managed_base_resources', 'test_s1_normal_resource_retirement.NormalRetirementTests', 'test_resource_compatibility', 'test_game_startup', 'test_game_startup_service', 'test_game_startup_control', 'test_qt_startup_state', 'test_qt_startup_splash', 'test_client_startup_splash', 'test_client_lazy_pages', 'test_client_performance', 'test_client_package_progress', 'test_qt_game_watcher_packaging', 'test_qt_installer_reuse_guard', 'test_qt_installer_projection', 'test_uninstall_data_wizard', 'test_mixed_retired_author_package') }
             # Synthetic contracts only; unittest -v preserves each genuine skip reason.
             'map-defaults' { $modules = @('test_bundled_author_resources', 'test_package_profiles', 'test_client_paths', 'test_client_editor_upgrade', 'test_map_resource_context', 'test_qt_installer_projection') }

@@ -9,7 +9,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
-import numpy as np
+from entry_evidence_work import FrameSnapshot
 
 INDEX_SHA256 = '96e9047ad6b14763a6a1ccb2473e4ba1e7ffdfa82ba73c63b34a93ff782a61dd'
 FREEZE_SHA256 = '9d25997053802766cdf83d745b533e9c5175d168727b61ad72944f204f309c59'
@@ -59,32 +59,6 @@ class Scope:
 class Candidate:
     map_id: str
     resource_path: Path
-
-
-@dataclass(frozen=True, init=False)
-class FrameSnapshot:
-    """Independent immutable bytes, including when caller used shared memory.
-
-    A read-only owned ndarray alone is insufficient: setflags(write=True) can
-    re-enable mutation. Here views are backed by immutable, copied bytes.
-    Capture must be synchronized by the caller while this copy is made.
-    """
-    _pixels: bytes
-    shape: tuple
-    sha256: str
-
-    def __init__(self, frame):
-        _require(isinstance(frame, np.ndarray) and frame.dtype == np.uint8
-                 and frame.ndim in (2, 3) and frame.size > 0, 'invalid-frame')
-        _require(frame.ndim == 2 or frame.shape[2] in (1, 3, 4), 'invalid-channels')
-        pixels = frame.tobytes(order='C')
-        object.__setattr__(self, '_pixels', pixels)
-        object.__setattr__(self, 'shape', tuple(frame.shape))
-        object.__setattr__(self, 'sha256', sha(json.dumps(tuple(frame.shape)).encode() + b'\0uint8\0' + pixels))
-
-    @property
-    def pixels(self):
-        return np.frombuffer(self._pixels, dtype=np.uint8).reshape(self.shape)
 
 
 @dataclass(frozen=True)

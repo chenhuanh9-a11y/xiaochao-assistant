@@ -142,7 +142,7 @@ class ImportedResourceInventoryTests(unittest.TestCase):
         self.assertEqual(rows['history/2']['selectedContexts'], [])
         for row in snapshot.rows:
             self.assertFalse(row['canRemove'])
-            self.assertFalse(row['canInspectRemoval'])
+            self.assertTrue(row['canInspectRemoval'])
             self.assertEqual(row['storageFormat'], '')
 
     def test_self_declared_reviewed_group_does_not_count_as_selected(self):

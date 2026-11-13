@@ -1,4 +1,5 @@
 """Actual producer ZIP/store consumers with small, synthetic structure pixels."""
+from collections import Counter
 from io import BytesIO
 import hashlib
 import json
@@ -101,6 +102,46 @@ class ImportedNativeBaseTests(unittest.TestCase):
                     with self.assertRaisesRegex(files.ImportRejected, 'entry-loader-invalid'):
                         native.decode_native_base(view)
                 self.assertGreaterEqual(len(reads), 2)
+
+    def test_typed_declarations_do_not_revalidate_identical_file_references_per_field(self):
+        from imported_resource_reader import ComponentResourceReader
+        view = self.view()
+        reader = ComponentResourceReader(view)
+        paths = producer.INTERFACES
+        for name in ('identityPack', 'typedIndex', 'coordinatePack', 'neutralDisplay'):
+            native._reference(view, paths[name], '.json')
+        identity = reader.json(paths['identityPack'])
+        expected = {(row['id'], floor) for row in identity['maps'] for floor in producer.FLOORS}
+        original_typed = reader.json(paths['typedIndex'])['entries']
+        with patch.object(view, 'path', wraps=view.path) as physical_paths:
+            typed, _, neutral, _ = native._typed_declarations(
+                view, reader, paths, expected, native.PROFILE, identity['maps'])
+        self.assertEqual(set(typed), expected)
+        self.assertEqual(list(typed.values()), original_typed)
+        self.assertEqual(neutral['indexPath'], paths['typedIndex'])
+        counts = Counter(call.args[0] for call in physical_paths.call_args_list)
+        for row in original_typed:
+            self.assertEqual(counts[row['resourcePath']], 1, counts)
+
+    def test_checked_aliases_still_reject_actual_payload_changes_before_consumption(self):
+        from imported_resource_reader import ComponentResourceReader
+        view = self.view()
+        original_json = ComponentResourceReader.json
+        changed = []
+
+        def read(reader, relative):
+            document = original_json(reader, relative)
+            if relative == producer.NEUTRAL and not changed:
+                target = reader.root / document['entries'][0]['referenceResource']
+                raw = target.read_bytes()
+                target.write_bytes(bytes((raw[0] ^ 1,)) + raw[1:])
+                changed.append(target)
+            return document
+
+        with patch.object(ComponentResourceReader, 'json', read):
+            with self.assertRaises(files.ImportRejected):
+                native.decode_native_base(view)
+        self.assertEqual(len(changed), 1)
 
     def test_actual_producer_zip_decodes_all_declared_resources_without_other_roles(self):
         view = self.view()

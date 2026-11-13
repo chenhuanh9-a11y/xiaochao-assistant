@@ -17,15 +17,16 @@ from test_s1_preparation_robustness import bright_frame
 
 
 def document(modes=('difficult', 'nightmare')):
-    # Literal reviewed data, independent of the production parameter constants.
+    # Literal reviewed data, independent of production constants. These xywh
+    # floats reconstruct the exact reviewed endpoints (not nearby decimals).
     return dict(schema=SCHEMA, detectorId=DETECTOR_ID,
         contexts={f's1:{mode}': dict(
             floors=[dict(observedValue=value, floorId=str(value)) for value in (-1, -2, -3, -4)],
             visualOrder=[-1, -2, -3, -4]) for mode in modes},
         fixedSearchRegion=[.80, .12, .12, .44],
-        expandedSearchRegion=[.55, .04, .435, .89],
+        expandedSearchRegion=[.55, .04, .43499999999999994, .89],
         mapUi=dict(searchRegions=dict(close=[.92, .02, .07, .16],
-            plus=[.92, .25, .07, .21], minus=[.92, .66, .07, .20]),
+            plus=[.92, .25, .07, .21000000000000002], minus=[.92, .66, .07, .19999999999999996]),
             sizes=[.024, .026, .028, .030, .032, .034, .036, .038],
             minimumCorrelation=dict(close=.62, plus=.65, minus=.65)))
 
@@ -101,12 +102,25 @@ class ImportedS1Controls(unittest.TestCase):
                     result = self.observe(frame, controls, mode)
                     self.assertEqual(result['selectedFloor'], floor, result)
                     self.assertEqual(result['observedOrder'], [-1, -2, -3, -4])
-                    self.assertEqual(result['validationScope'], 'external-controls-unreviewed')
-                    self.assertFalse(result['observedFloorValidated'])
-                    self.assertFalse(result['automaticFloorEligible'])
+                    self.assertEqual(result['validationScope'], 'source-image-replay')
+                    self.assertTrue(result['observedFloorValidated'])
+                    self.assertTrue(result['automaticFloorEligible'])
                     self.assertTrue(result['mapOpen'])
                     np.testing.assert_array_equal(frame, original)
         self.assertEqual(detector.SOURCE_REPLAY_FLOORS, before_floors)
+
+    def test_open_map_with_unverified_independent_ui_reports_that_failure(self):
+        value = document()
+        value['mapUi']['minimumCorrelation']['close'] = .63
+        result = self.observe(mathematical_frame((-2,)), self.profile(value))
+        self.assertTrue(result['mapOpen'], result)
+        self.assertIsNone(result['selectedFloor'])
+        self.assertEqual(result['reason'], 's1-floor-independent-ui-unverified')
+        self.assertFalse(result['observedFloorValidated'])
+        from diagnostic_privacy import safe_record
+        safe = safe_record(dict(floorRead=result, username='MapUiPrivateFixture'))
+        self.assertEqual(safe['floorRead']['reason'], result['reason'])
+        self.assertNotIn('MapUiPrivateFixture', json.dumps(safe))
 
     def test_fixed_and_expanded_regions_are_both_consumed_without_constant_fallback(self):
         frame = bright_frame((-3,))
@@ -155,15 +169,18 @@ class ImportedS1Controls(unittest.TestCase):
                 self.assertFalse(result['observedFloorValidated'])
                 self.assertFalse(result['automaticFloorEligible'])
 
-    def test_external_default_and_changed_parameters_do_not_inherit_source_replay_authority(self):
-        for fixed in ([.80, .12, .12, .44], [.82, .10, .10, .50]):
-            value = document()
-            value['fixedSearchRegion'] = fixed
-            result = self.observe(bright_frame((-3,)), self.profile(value))
-            self.assertEqual(result['selectedFloor'], -3, result)
-            self.assertFalse(result['observedFloorValidated'])
-            self.assertFalse(result['automaticFloorEligible'])
-            self.assertEqual(result['validationScope'], 'external-controls-unreviewed')
+    def test_equivalent_parameters_reuse_source_replay_but_changed_parameters_do_not(self):
+        equivalent = self.observe(bright_frame((-3,)), self.profile())
+        self.assertTrue(equivalent['observedFloorValidated'])
+        self.assertTrue(equivalent['automaticFloorEligible'])
+        value = document()
+        value['fixedSearchRegion'] = [.82, .10, .10, .50]
+        result = self.observe(bright_frame((-3,)), self.profile(value))
+        self.assertEqual(result['selectedFloor'], -3, result)
+        self.assertFalse(result['observedFloorValidated'])
+        self.assertFalse(result['automaticFloorEligible'])
+        self.assertEqual(result['validationScope'], 'external-controls-unreviewed')
+        self.assertIn('s1-controls-fixed-search-region-not-source-replay-equivalent', result['qualificationGaps'])
         trusted = detector.detect_s1_floor(bright_frame((-3,)), season='s1', mode='nightmare')
         self.assertTrue(trusted['observedFloorValidated'])
         self.assertTrue(trusted['automaticFloorEligible'])
@@ -193,16 +210,24 @@ class ImportedS1Controls(unittest.TestCase):
         value['fixedSearchRegion'] = [.82, .10, .10, .50]
         controls = self.profile(value)
         frame = bright_frame((-4,))
-        original = detector.observe_s1_map_ui_geometry
+        import independent_map_ui as shared_ui
+        original = shared_ui.observe_s1_map_ui_geometry
         masked = []
         def geometry(image, **kwargs):
             self.assertIs(kwargs['parameters'], controls.map_ui)
             self.assertAlmostEqual(kwargs['floor_search_right'], .92)
-            # The second corroboration receives an actual localized floor
-            # mask. Delegate every solver decision to the real shape observer.
-            masked.append(int(image[250:540, 1660:1710].max()) == 0)
-            return original(image, **kwargs)
-        with patch.object(detector, 'observe_s1_map_ui_geometry', side_effect=geometry):
+            # Exclusions now apply inside narrow-band preprocessing. Prove
+            # that even changing their source pixels cannot change evidence.
+            exclusions = kwargs['excluded_bounds']
+            masked.append(any(x0 <= 1660 and y0 <= 250 and x1 >= 1710 and y1 >= 540
+                              for x0, y0, x1, y1 in exclusions))
+            result = original(image, **kwargs)
+            changed = image.copy()
+            for x0, y0, x1, y1 in exclusions:
+                changed[y0:y1, x0:x1] = 255
+            self.assertEqual(original(changed, **kwargs), result)
+            return result
+        with patch.object(shared_ui, 'observe_s1_map_ui_geometry', side_effect=geometry):
             result = self.observe(frame, controls)
         self.assertEqual(result['selectedFloor'], -4, result)
         self.assertTrue(any(masked))
@@ -285,6 +310,19 @@ class ImportedS1Controls(unittest.TestCase):
         with patch.object(detector, '_observe_signed_column', side_effect=expire):
             with self.assertRaisesRegex(ValueError, 'resource-catalog-superseded'):
                 self.observe(bright_frame(), controls)
+
+    def test_one_observation_reads_parameters_between_two_current_view_checks(self):
+        controls = self.profile()
+        frame = bright_frame((-2,))
+        for mode in ('difficult', 'nightmare'):
+            with self.subTest(mode=mode), \
+                 patch.object(controls, 'assert_current', wraps=controls.assert_current) as current:
+                for count in (2, 4):
+                    result = self.observe(frame, controls, mode)
+                    self.assertEqual(result['selectedFloor'], -2, result)
+                    self.assertTrue(result['observedFloorValidated'])
+                    self.assertTrue(result['automaticFloorEligible'])
+                    self.assertEqual(current.call_count, count)
 
     def test_package_manifest_and_payload_integrity_are_not_bypassed(self):
         package = self.package()

@@ -292,3 +292,39 @@ def activate_display(resolver, paths, display_ref, *, cancelled=None):
         outcome = _activate_locked(root, snapshot, paths, resolver, season=identity.season,
             mode=identity.mode, display_refs=(display_ref,), cancelled=cancelled)
         return dict(outcome, context=f'{identity.season}:{identity.mode}', profileId=identity.profile_id)
+
+
+def activate_displays(resolver, paths, display_refs, *, cancelled=None):
+    """Admit every display in an imported archive in one selection change."""
+    from imported_author_display import read_display_identity
+    display_refs = tuple(display_refs)
+    if not display_refs or any(not isinstance(ref, ComponentRef) for ref in display_refs):
+        raise catalog.ResourceCatalogError('resource-catalog-reference-invalid')
+    root = _resolved_root(resolver, paths)
+    with resource_write_lock(root, wait=True, cancelled=cancelled):
+        snapshot = _snapshot_for_root(resolver, root)
+        contexts = {}
+        for ref in display_refs:
+            files._check_cancelled(cancelled)
+            view = PackageView(root, ref, assert_current=lambda: files._check_cancelled(cancelled))
+            identity = read_display_identity(view)
+            key = f'{identity.season}:{identity.mode}'
+            current = snapshot.contexts.get(key)
+            if current is None or current['recognitionBase'] is None or current['controls'] is None:
+                raise catalog.ResourceCatalogError('resource-display-base-context-not-active')
+            contexts[key] = (identity.season, identity.mode, current['recognitionBase'], current['controls'])
+        return _activate_contexts_locked(root, snapshot, paths, resolver, tuple(contexts.values()),
+            display_refs=display_refs, cancelled=cancelled)
+
+
+def validate_selected_resources(resolver, paths, document, *, cancelled=None):
+    """Validate the remaining selection during a saved-version removal."""
+    root = _resolved_root(resolver, paths)
+    inspected = selection.inspect_selection(root, document,
+        supported_capabilities=resolver.supported_capabilities,
+        project_registry_refs=resolver.project_registry_refs, cancelled=cancelled)
+    for key, row in inspected.contexts.items():
+        if row['recognitionBase'] is not None and row['controls'] is not None:
+            season, mode = key.split(':')
+            _validate_proposal(root, paths, resolver, row['recognitionBase'], row['controls'],
+                season=season, mode=mode, cancelled=cancelled)(document)

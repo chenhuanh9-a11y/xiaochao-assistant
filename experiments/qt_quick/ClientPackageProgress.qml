@@ -22,7 +22,8 @@ Rectangle {
         if (localActive) {
             const labels = {"save": "校验并保存资源版本", "inspect": "校验图包", "install": "解压并导入", "refresh-after-write": "核对安装结果",
                 "launch-import": "准备退出后导入", "cancelling": "正在取消",
-                "list": "读取本地图包清单", "refresh": "核对本地资源", "inspect-remove": "核对移除范围",
+                "list": "读取本地图包清单", "refresh": "核对本地资源", "inspect-remove": "核对移除范围", "remove": "删除资源文件",
+                "activate": "校验并启用资源", "plan": "核对资源配套关系",
                 "recovery-history": "读取恢复记录", "inspect-recovery": "核对恢复范围", "recover": "恢复本地资源",
                 "manage-refresh": "读取已安装图包", "manage-inspect": "核对删除范围", "manage-remove": "删除图包并清理临时文件",
                 "manage-refresh-after-remove": "核对删除结果"}

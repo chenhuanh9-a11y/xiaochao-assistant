@@ -1,4 +1,4 @@
-"""S1D resource-page data activation without automatic floor authorization."""
+"""S1D resource-page activation without general live authorization."""
 import os
 from pathlib import Path
 import tempfile
@@ -24,7 +24,10 @@ import test_export_s1_native_base_package as source_fixture
 class ImportedS1ActivationUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = QGuiApplication.instance() or QGuiApplication([])
+        existing = QGuiApplication.instance()
+        if existing is not None and not isinstance(existing, QGuiApplication):
+            raise RuntimeError('QML activation tests require a QGuiApplication singleton')
+        cls.app = existing or QGuiApplication([])
         temporary = tempfile.TemporaryDirectory(prefix='s1-activation-ui-source-')
         cls.addClassCleanup(temporary.cleanup)
         cls.source = source_fixture.S1NativeBaseSourceFixture(Path(temporary.name).resolve())
@@ -153,7 +156,8 @@ class ImportedS1ActivationUiTests(unittest.TestCase):
         engine = self.factories.get_engine('difficult', season='s1')
         self.assertEqual(len(engine.pack.maps), 14)
         self.assertFalse(engine.qt_live_ready)
-        self.assertFalse(engine.qt_native_context.structure_candidate_capability['candidateReady'])
+        self.assertTrue(engine.qt_native_context.structure_candidate_capability['candidateReady'])
+        self.assertFalse(engine.qt_native_context.structure_candidate_capability['liveValidated'])
         self.assertFalse(engine.memory_store.root.exists())
         before = (self.resolver.root / 'catalog.json').read_bytes()
         self.assertTrue(self.service.activatePackage(key, 's1', 'difficult'))

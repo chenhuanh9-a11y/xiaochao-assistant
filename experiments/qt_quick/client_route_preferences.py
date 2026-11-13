@@ -1,9 +1,23 @@
 """Display preferences using the existing catalog and coordinate declarations."""
+from functools import wraps
 from pathlib import Path
 
 
 COFFIN_CONTEXT = ("zhan10-coffin", "nightmare-01", "1")
 COFFIN_VARIANTS = (("variant-01", "一号路线"), ("variant-02", "二号路线"))
+
+
+def _display_resource_boundary(consumer):
+    @wraps(consumer)
+    def consume(*args, **kwargs):
+        try:
+            return consumer(*args, **kwargs)
+        except (OSError, ValueError) as error:
+            from client_providers import DisplayResourceChanged, _is_proven_display_resource_change
+            if not isinstance(error, DisplayResourceChanged) and _is_proven_display_resource_change(error):
+                raise DisplayResourceChanged(str(error)) from error
+            raise
+    return consume
 
 
 def _coffin_binding(engine, map_id, floor, profile, variant_id):
@@ -103,6 +117,125 @@ class _DisplaySelection:
         return SharedAuthorDisplayPolicy._effective_route_profile(self, map_id, floor)
 
 
+def _display_reference(engine, map_id, floor):
+    """Original guarded provider read, shared by preparation and publication."""
+    def check_current():
+        check = getattr(engine, 'qt_assert_resource_current', None)
+        if callable(check):
+            check()
+
+    check_current()
+    reference = engine.qt_shared_provider("shared-structure", map_id, floor)
+    if reference is None:
+        raise ValueError("display-reference-unavailable")
+    return reference, check_current
+
+
+def _consume_owned_shared_display(engine, map_id, floor, consume):
+    from client_providers import SharedReferenceProvider
+    provider = getattr(engine, 'qt_shared_provider', None)
+    if type(provider) is not SharedReferenceProvider:
+        return NotImplemented
+    return SharedReferenceProvider._consume_display_reference(provider, engine, map_id, floor, consume)
+
+
+def _owned_s1_display_reference(engine, map_id, floor):
+    """Reuse the factory's actual admitted S1 reference, not an ordinary cache.
+
+    The static payload records the coordinate reference source independently.
+    Unknown readers and independent selection guards retain the original read.
+    Original consumers receive these masks with detached JSON metadata below.
+    """
+    if getattr(engine, 'qt_season', None) != 's1':
+        return NotImplemented
+    from client_providers import DisplayResourceChanged, SharedReferenceProvider
+    from client_s1_coordinate_recognition import PreparedS1CoordinateRecognition
+    from structure_pose_inputs import (PoseInputsUnavailable, PreparedStructureStaticPayloads,
+        _original_native_loaders)
+
+    provider = getattr(engine, 'qt_shared_provider', None)
+    coordinate = getattr(engine, 'qt_s1_coordinate_recognition', None)
+    static = getattr(engine, 'qt_pose_static_payloads', None)
+    if (type(provider) is not SharedReferenceProvider
+            or type(coordinate) is not PreparedS1CoordinateRecognition
+            or type(static) is not PreparedStructureStaticPayloads
+            or static._coordinate is not coordinate or coordinate.engine is not engine):
+        return NotImplemented
+    if not provider._assert_managed_display_current(engine):
+        return NotImplemented
+    if not _original_native_loaders(static.common):
+        return NotImplemented
+    key, revision = (str(map_id), str(floor)), engine.qt_resource_revision
+    reference = static.references.get(key)
+    if reference is None:
+        return NotImplemented
+
+    def check_current():
+        if (getattr(engine, 'qt_pose_static_payloads', None) is not static
+                or getattr(engine, 'qt_s1_coordinate_recognition', None) is not coordinate
+                or not _original_native_loaders(static.common)
+                or coordinate.references.get(key) is not reference):
+            raise DisplayResourceChanged('display-resource-owner-changed')
+        try:
+            static.assert_current(engine, revision, None)
+        except PoseInputsUnavailable as error:
+            raise DisplayResourceChanged(str(error)) from error
+        provider._assert_managed_display_current(engine)
+
+    check_current()
+    # The existing material LRU accepts only its own immutable reference type.
+    # Convert at most three actual source references; color buffers remain in
+    # that same existing LRU, with no second color/material cache.
+    from collections import OrderedDict
+    from native_structure_display_material import freeze_native_reference
+    with provider._lock:
+        references = getattr(provider, '_s1_display_references', None)
+        if references is None:
+            references = provider._s1_display_references = OrderedDict()
+        item = references.get(key)
+        if item is None or item[0] is not reference:
+            if item is not None:
+                provider._display_materials.discard(item[1])
+            owned = freeze_native_reference(reference, provider)
+            retained = sum(array.nbytes for name in ('clean_mask', 'validation_mask', 'known_boundary', 'unknown_mask')
+                if (array := getattr(owned, name)) is not None)
+            item = reference, owned, retained
+            references[key] = item
+        references.move_to_end(key)
+        while references and (len(references) > 3
+                or sum(row[2] for row in references.values()) > provider._display_materials.max_bytes):
+            _, removed = references.popitem(last=False)
+            provider._display_materials.discard(removed[1])
+        check_current()
+        return item[1], check_current
+
+
+def _display_metadata(layer, preferred, *, author_status='none', fallback_reason=''):
+    actual = 'shared-structure' if preferred.startswith('custom:') else layer['routeProfileId']
+    return dict(layer, preferredProfileId=preferred, effectiveProfileId=actual,
+        authorStatus=author_status, fallback=bool(preferred != actual and not preferred.startswith('custom:')),
+        fallbackReason=fallback_reason)
+
+
+@_display_resource_boundary
+def shared_structure_display_current(engine, map_id, floor, prepared):
+    """Recheck the actual source without rebuilding its already owned pixels.
+
+    binding_metadata describes the expected versions table. The actual guarded
+    provider source is required: its cached metadata can differ. A formally
+    managed, prepared native source is consumed from RAM in its current context.
+    """
+    from shared_structure_display import structure_display_identity
+    identity = _consume_owned_shared_display(engine, map_id, floor, structure_display_identity)
+    if identity is not NotImplemented:
+        return identity == prepared['resourceIdentity']
+    reference, check_current = _display_reference(engine, map_id, floor)
+    identity = structure_display_identity(reference)
+    check_current()
+    return identity == prepared["resourceIdentity"]
+
+
+@_display_resource_boundary
 def prepare_display_layer(engine, map_id, floor, preferred, *, variant_id="variant-01"):
     """Original author -> custom/base (missing only) -> structural display chain.
 
@@ -115,22 +248,27 @@ def prepare_display_layer(engine, map_id, floor, preferred, *, variant_id="varia
     from nightmare_candidate import imread_unicode
     from shared_structure_display import structure_display_layer
 
-    def check_current():
-        check = getattr(engine, 'qt_assert_resource_current', None)
-        if callable(check):
-            check()
-
-    check_current()
-    reference = engine.qt_shared_provider("shared-structure", map_id, floor)
-    if reference is None:
-        raise ValueError("display-reference-unavailable")
+    if preferred == 'shared-structure':
+        provider = getattr(engine, 'qt_shared_provider', None)
+        layer = _consume_owned_shared_display(engine, map_id, floor,
+            lambda reference: provider.native_display_layer(reference, variant_id=variant_id))
+        if layer is not NotImplemented:
+            return _display_metadata(layer, preferred)
+    owned = _owned_s1_display_reference(engine, map_id, floor) if preferred == '' else NotImplemented
+    reference, check_current = (_display_reference(engine, map_id, floor)
+        if owned is NotImplemented else owned)
+    if owned is not NotImplemented:
+        from dataclasses import replace
+        from structure_pose_inputs import _reference_decode_metadata
+        # Coordinate snapshots freeze JSON arrays/dicts. Original display
+        # consumers require the loader's list/dict shape and may annotate it.
+        # Keep their small mutable view separate from the owned material source.
+        reference = replace(reference, metadata=_reference_decode_metadata(reference.metadata),
+            native_wall_segments=_reference_decode_metadata(reference.native_wall_segments))
 
     def metadata(layer, *, author_status="none", fallback_reason=""):
         check_current()
-        actual = "shared-structure" if preferred.startswith("custom:") else layer["routeProfileId"]
-        return dict(layer, preferredProfileId=preferred, effectiveProfileId=actual,
-            authorStatus=author_status, fallback=bool(preferred != actual and not preferred.startswith("custom:")),
-            fallbackReason=fallback_reason)
+        return _display_metadata(layer, preferred, author_status=author_status, fallback_reason=fallback_reason)
 
     if preferred == "shared-structure":
         return metadata(structure_display_layer(reference))
@@ -210,7 +348,16 @@ def prepare_display_layer(engine, map_id, floor, preferred, *, variant_id="varia
         if result.layer is not None:
             return metadata(result.layer, author_status=status, fallback_reason=failure)
         failure = result.reason or "s1-native-display-unavailable"
-    layer = structure_display_layer(reference)
+    if owned is NotImplemented:
+        layer = structure_display_layer(reference)
+    else:
+        check_current()
+        provider = engine.qt_shared_provider
+        with provider._lock:
+            check_current()
+            layer = provider.native_display_layer(owned[0], variant_id=variant_id)
+            check_current()
+        layer['resourceIdentity'] = _reference_decode_metadata(layer['resourceIdentity'])
     layer['displayLabel'] += ("（作者路线版本不匹配）"
             if version.get("authorError") == "author-structure-version-or-base-snapshot-mismatch"
             else "（作者路线不可用）")

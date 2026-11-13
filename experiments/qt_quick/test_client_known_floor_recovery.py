@@ -63,6 +63,28 @@ class KnownFloorRecoveryTests(unittest.TestCase):
         self.assertTrue(result["difficultEntryValidation"]["residual"]["verified"])
         self.assertEqual(self.host.selected_member, MAP)
 
+    def test_proposal_only_component_goes_directly_to_eligible_local_geometry(self):
+        import test_entry_resource_io as fixture_io
+        fixture = fixture_io.EntryResourceIOTests('runTest')
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        for purpose in (dict(proposalOnly=True), dict(authorizesPose=False)):
+            with self.subTest(purpose=purpose):
+                item = dict(fixture.main['entries'][0], mapId=MAP, floor='1', **purpose)
+                fixture.files[fixture_io.ENTRY_ROOT + '/entries.json'] = fixture_io.encoded(
+                    dict(schemaVersion=1, entries=[item]))
+                fixture.package()
+                front = fixture.front()
+                self.assertIsNone(front.error)
+                front.rank = Mock(side_effect=AssertionError('ineligible-main-fit-was-run'))
+                self.engine.entry_identity = front
+                self.side.rank.return_value = ([candidate()], dict(
+                    complete=True, verificationComplete=True, competitiveHypotheses=1))
+                result = self.recover()
+                self.assertEqual(result['reason'], 'registered-floor-local-geometry')
+                front.rank.assert_not_called()
+                self.assertEqual(self.host.selected_member, MAP)
+
     def test_incomplete_or_same_map_ambiguous_pose_never_becomes_a_fit(self):
         self.side.rank.return_value = ([candidate()], dict(
             complete=False, verificationComplete=True, competitiveHypotheses=1))
@@ -90,6 +112,16 @@ class KnownFloorRecoveryTests(unittest.TestCase):
         self.side.refine_candidate.return_value = foreign
         self.assertEqual(self.recover()["reason"], "registered-floor-candidate-scope-mismatch")
         self.assertEqual(self.host.selected_member, MAP)
+
+    def test_cancellation_after_ineligible_main_does_not_start_local_work(self):
+        cancelled = [False]
+        def pose_source(map_id, floor):
+            cancelled[0] = True
+            return False
+        self.engine.entry_identity.has_pose_eligible_source = pose_source
+        self.assertEqual(self.recover(lambda: cancelled[0])['reason'], 'structure-work-obsolete')
+        self.main.assert_not_called()
+        self.side.rank.assert_not_called()
 
     def test_no_recovery_for_verified_target_unregistered_or_non_entry_first(self):
         self.group.verified_floors.add("1")

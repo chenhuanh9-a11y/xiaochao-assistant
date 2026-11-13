@@ -24,8 +24,14 @@ Item {
         return ({id: "", name: "选择一个图包", packageId: "", available: 0, availableMaps: 0, mapCount: 0})
     }
     readonly property var selectedPackage: {
-        if (!packageActions || !packageActions.packageManager || backend.busy || backend.season !== "s0" || !selectedProfile.packageId) return null
+        if (!packageActions || !packageActions.packageManager || backend.busy || !selectedProfile.packageId) return null
         var rows = packageActions.packageManager.packageRows
+        if (packageActions.importedPackages === true) {
+            for (var i = 0; i < rows.length; i++)
+                if (rows[i].key === selectedProfile.packageKey) return rows[i]
+            return null
+        }
+        if (backend.season !== "s0") return null
         for (var n = 0; n < rows.length; n++)
             if (rows[n].packageId === selectedProfile.packageId && rows[n].mode === backend.mode) return rows[n]
         return null
@@ -39,7 +45,7 @@ Item {
     function removeSelectedPackage() {
         if (!canRemovePackage) return
         packageStatusOwner = packageActions.packageManager
-        packageActions.removePackage(selectedPackage.packageId)
+        packageActions.removePackage(packageActions.importedPackages === true ? selectedPackage.key : selectedPackage.packageId)
     }
     readonly property bool sameMode: backend.mode === session.currentMode && backend.season === session.currentSeason
     readonly property string selectedRuntimeProfile: selectedProfile.runtimeProfileId || selectedProfile.id || ""

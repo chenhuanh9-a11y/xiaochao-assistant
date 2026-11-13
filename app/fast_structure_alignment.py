@@ -30,6 +30,27 @@ class PreparedStructure:
     shape: tuple
 
 
+@dataclass(frozen=True)
+class ImportedPreparedUse:
+    """An acquired input; its owner checks it before offers and final results.
+
+    Numerical work may reuse the value within that operation. This object is
+    not an independent array publication or a resource-currentness grant.
+    """
+
+    reference: object
+    prepared: PreparedStructure | None
+    source: object
+    identity: tuple | None
+
+    def check_current(self):
+        # Revalidate actual index/reference/prepared bytes without retrieving
+        # arrays or depending on the lifetime of the global prepared cache.
+        current = self.source.read(self.reference)
+        if self.prepared is not None and (current is None or current[1] != self.identity):
+            raise ValueError('structure-fit-preparation-changed')
+
+
 _prepared = OrderedDict()
 _prepared_lock = threading.Lock()
 PREPARED_CACHE_MAX_BYTES = 512 * 1024 * 1024
@@ -134,9 +155,23 @@ def load_prepared(reference, *, source=None, cancelled=None):
 
 
 def _load_imported_prepared(reference, source, cancelled):
+    use = _acquire_imported_prepared(reference, source, cancelled)
+    if use.prepared is None:
+        return None
+    # Independent consumers have no fit owner to check an acquired use.
+    # Keep their post-lookup proof and the optional-preparation fallback.
+    current = source.read(reference, cancelled=cancelled)
+    if current is None:
+        return None
+    if current[1] != use.identity:
+        raise ValueError('structure-fit-preparation-changed')
+    return use.prepared
+
+
+def _acquire_imported_prepared(reference, source, cancelled):
     payload = source.read(reference, cancelled=cancelled)
     if payload is None:
-        return None
+        return ImportedPreparedUse(reference, None, source, None)
     raw, identity = payload
     key = ('imported', identity)
     with _prepared_lock:
@@ -144,16 +179,23 @@ def _load_imported_prepared(reference, source, cancelled):
         if entry is not None:
             _prepared.move_to_end(key)
     result = entry[1] if entry is not None else None
-    if result is None:
-        try:
-            result = source.decode(raw, reference)
-        except (OSError, ValueError):
-            # Optional arrays can be unavailable, but their owner/reference
-            # must still be current before returning to the normal solver.
-            source.read(reference, cancelled=cancelled)
-            return None
-    if source.read(reference, cancelled=cancelled) is None:
-        return None
+    if result is not None:
+        # The actual payload was read above. A warm use needs no decode;
+        # the owning fit checks it again at its offer/return boundaries.
+        source.assert_current(cancelled)
+        return ImportedPreparedUse(reference, result, source, identity)
+    try:
+        result = source.decode(raw, reference)
+    except (OSError, ValueError):
+        # Optional arrays can be unavailable, but their owner/reference
+        # must still be current before returning to the normal solver.
+        source.read(reference, cancelled=cancelled)
+        return ImportedPreparedUse(reference, None, source, None)
+    current = source.read(reference, cancelled=cancelled)
+    if current is None:
+        return ImportedPreparedUse(reference, None, source, None)
+    if current[1] != identity:
+        raise ValueError('structure-fit-preparation-changed')
     published = None
     if entry is None:
         with _prepared_lock:
@@ -170,7 +212,7 @@ def _load_imported_prepared(reference, source, cancelled):
                 if _prepared.get(key) is published:
                     _prepared.pop(key)
         raise
-    return result
+    return ImportedPreparedUse(reference, result, source, identity)
 
 
 def sample_edges(edge, limit):
@@ -504,8 +546,15 @@ def _try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_see
     reference = assistant._shared_structure_reference('shared-structure', map_id, floor)
     if reference is None:
         return None
+    if getattr(reference, 'metadata', {}).get('authorizesStructureValidation') is False:
+        if getattr(assistant, 'collect_fit_diagnostics', False):
+            assistant._log('experimental-fast-alignment', mapId=map_id, floor=floor,
+                           reason='fast-structure-validation-unavailable', accepted=False)
+        return None
     source = getattr(getattr(assistant, 'engine', None), 'qt_fast_structure_source', None)
-    prepared = (load_prepared(reference) if source is None else
+    loader = getattr(assistant, '_load_fast_structure_prepared', None)
+    prepared = (loader(reference, cancelled=cancelled) if loader is not None else
+                load_prepared(reference) if source is None else
                 load_prepared(reference, source=source, cancelled=cancelled))
     if prepared is None:
         if getattr(assistant, 'collect_fit_diagnostics', False):

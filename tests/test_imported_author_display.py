@@ -66,7 +66,7 @@ class _AuthorDisplayFixture(unittest.TestCase):
     def layer(self, floor='-4', path='images/route.png'):
         mid = self.source.ids[0]
         reference = self.provider('shared-structure', mid, floor)
-        relative = reference.path.relative_to(self.base_view.root).as_posix()
+        relative = self.base.reader.relative_path(reference.path)
         return dict(mapId=mid, floor=floor, displayPath=path, displayShapeHW=[3,5],
             referenceResource=relative, referenceShapeHW=list(reference.shape),
             coordinateSpace=reference.metadata['canvas']['coordinateSpace'],
@@ -207,7 +207,7 @@ class ImportedAuthorDisplayTests(_AuthorDisplayFixture):
         controls = S0ControlsProfile(PackageView(self.resources, refs['controls']))
         native = ImportedDifficultNativeContext(self.base_view, self.base, controls)
         self.provider = SharedReferenceProvider(self.base_view.root, self.base.resources, self.base.versions,
-            native=native, check_current=native.assert_current)
+            legacy_reference_loader=native.legacy_reference, check_current=native.assert_current)
         reference = self.provider('shared-structure', difficult_fixture.LEGACY, '1')
         row = dict(mapId=difficult_fixture.LEGACY, floor='1', displayPath='images/route.png',
             displayShapeHW=[3,5], referenceShapeHW=list(reference.shape),

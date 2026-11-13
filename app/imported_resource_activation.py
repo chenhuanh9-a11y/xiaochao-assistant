@@ -65,8 +65,19 @@ def _load(root):
     if set(pointer) != {'schema', 'transactionId', 'journal'} or pointer['schema'] != SCHEMA:
         _reject('invalid-pending')
     transaction_id = publication._transaction_id(pointer['transactionId'])
+    directory, journal, committed = _load_retained(root, transaction_id, pointer['journal'])
+    pin = directory / 'pending-pointer.json'
+    if _read(pin)[0] != _encoded(pointer):
+        _reject('pending-changed')
+    publication._metadata_publication_identity(pin, pending, journal['publicationMode'])
+    return directory, journal, committed
+
+
+def _load_retained(root, transaction_id, journal_stamp):
+    """Read the original journal/witness, including after pending is retired."""
+    transaction_id = publication._transaction_id(transaction_id)
     directory = files._target(root, 'transactions/' + transaction_id)
-    journal_stamp = _object(pointer['journal'], 'journal.json')
+    journal_stamp = _object(journal_stamp, 'journal.json')
     raw_journal, actual_stamp = _read(directory / 'journal.json')
     if actual_stamp != journal_stamp:
         _reject('journal-changed')
@@ -83,10 +94,6 @@ def _load(root):
     if ((new['bytes'], new['sha256']) != (retained['bytes'], retained['sha256'])
             or not _same(directory / 'new-catalog.json', retained)):
         _reject('retained-catalog-changed')
-    pin = directory / 'pending-pointer.json'
-    if _read(pin)[0] != _encoded(pointer):
-        _reject('pending-changed')
-    publication._metadata_publication_identity(pin, pending, mode)
     committed = files._target(directory, 'committed.json')
     is_committed = committed.exists()
     if not is_committed:
@@ -106,6 +113,21 @@ def _load(root):
             _reject('commit-outcome-changed')
         publication._metadata_publication_identity(commit_pin, committed, mode)
     return directory, journal, is_committed
+
+
+def retained_catalog_outcome_locked(resource_root, transaction_id, *, expected_journal_stamp):
+    """Inspect a bound retained transaction without adopting a new pending file.
+
+    The caller holds the resource write lock. This does not recover anything or
+    authorize rollback when a commit witness is missing/uncertain. A removal
+    operation uses the exact journal stamp captured under the original pending
+    marker, so normal catalog pending retirement does not lose its decision.
+    """
+    root = locks._safe(Path(resource_root).absolute())
+    directory, journal, committed = _load_retained(root, transaction_id, expected_journal_stamp)
+    _preflight(root, directory, journal, committed)
+    return dict(transactionId=directory.name, committed=committed,
+                old=journal['old'], new=journal['new'], publicationMode=journal['publicationMode'])
 
 
 def _clear_pending(root, directory):

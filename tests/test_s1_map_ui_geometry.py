@@ -9,6 +9,59 @@ from test_s1_preparation_robustness import bright_frame
 
 
 class S1MapUiGeometry(unittest.TestCase):
+    def test_exclusion_preprocessing_matches_zeroed_pixels_and_preserves_input(self):
+        frame = bright_frame()
+        before = frame.copy()
+        for bounds in ((1760, 0, 1790, 1200), (1780, 115, 1850, 185),
+                       (1790, 500, 1840, 883)):
+            with self.subTest(bounds=bounds):
+                expected_frame = frame.copy()
+                x0, y0, x1, y1 = bounds
+                expected_frame[y0:y1, x0:x1] = 0
+                expected = self.verify(expected_frame)
+                actual = observe_s1_map_ui_geometry(frame, excluded_bounds=(bounds,))
+                self.assertEqual(actual, expected)
+                changed = frame.copy()
+                changed[y0:y1, x0:x1] = 255
+                self.assertEqual(observe_s1_map_ui_geometry(changed, excluded_bounds=(bounds,)), actual)
+        np.testing.assert_array_equal(frame, before)
+
+    def test_sampled_exclusions_and_gain_equal_whole_frame_operations(self):
+        from map_interface_observation import MAP_REGIONS, neutral_ratio, backdrop_ratio
+        rng = np.random.default_rng(472)
+        for height, width in ((800, 1000), (1080, 1920), (1417, 2560)):
+            frame = rng.integers(0, 256, (height, width, 3), dtype=np.uint8)
+            before = frame.copy()
+            masks = ((width//2+1, height//3+1, width-17, height-13),
+                     (width*4//5, 0, width*9//10+1, height))
+            masked = frame.copy()
+            for x0, y0, x1, y1 in masks:
+                masked[y0:y1, x0:x1] = 0
+            for gain in (1., 2./3., 1.5):
+                reference = masked if gain == 1. else cv2.convertScaleAbs(masked, alpha=gain)
+                with self.subTest(size=(width, height), gain=gain):
+                    for region in MAP_REGIONS.values():
+                        for tinted in (False, True):
+                            self.assertEqual(neutral_ratio(frame, region, tinted,
+                                excluded_bounds=masks, exposure=gain), neutral_ratio(reference, region, tinted))
+                    self.assertEqual(backdrop_ratio(frame, excluded_bounds=masks, exposure=gain),
+                                     backdrop_ratio(reference))
+            np.testing.assert_array_equal(frame, before)
+
+    def test_both_seasons_use_the_shared_independent_ui_producer(self):
+        from unittest.mock import patch
+        import independent_map_ui as shared
+        from s0_vertical_controls import observe_s0_map
+        from test_s0_map_geometry_proof import s0_bright
+        with patch.object(shared, 'observe_independent_map_ui', wraps=shared.observe_independent_map_ui) as observed:
+            observation, read = observe_s0_map(s0_bright('nightmare'), 'nightmare')
+            self.assertTrue(observation['detected'], (observation, read))
+            s0_calls = observed.call_count
+            self.assertGreater(s0_calls, 0)
+            result = detect_s1_floor(bright_frame(), season='s1', mode='nightmare')
+            self.assertEqual(result['selectedFloor'], -1, result)
+            self.assertGreater(observed.call_count, s0_calls)
+
     def verify(self,frame):
         return observe_s1_map_ui_geometry(frame)
 
@@ -89,6 +142,14 @@ class S1MapUiGeometry(unittest.TestCase):
     def test_shape_observer_does_not_mutate_input(self):
         frame=bright_frame();before=frame.copy();self.verify(frame)
         np.testing.assert_array_equal(frame,before)
+
+    def test_exclusions_accept_owned_readonly_pixels(self):
+        source = bright_frame()
+        frame = np.frombuffer(source.tobytes(), dtype=np.uint8).reshape(source.shape)
+        self.assertFalse(frame.flags.writeable)
+        result = observe_s1_map_ui_geometry(frame, excluded_bounds=((1630, 200, 1730, 600),))
+        self.assertTrue(result['verified'], result)
+        np.testing.assert_array_equal(frame, source)
 
     def test_bad_type_size_and_uniform_frames_fail_closed(self):
         for f in (None,[],np.zeros((300,300,3),np.uint8),np.zeros((1200,1920),np.uint8),

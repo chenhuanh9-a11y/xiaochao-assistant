@@ -68,6 +68,33 @@ class ComponentResourceReaderTests(unittest.TestCase):
         np.testing.assert_array_equal(reference.clean_mask, self.fixture.mask)
         self.assertEqual(reference.path, view.path(fixture_module.PRODUCT))
 
+    def test_batch_keeps_content_preflight_and_component_namespace(self):
+        view, relative = self.add_file(b'{"key":1,"key":2}')
+        reader = ComponentResourceReader(view)
+        with self.assertRaisesRegex(files.ImportRejected, 'json-invalid'):
+            reader.read_many((view.root / fixture_module.PRODUCT, view.root / relative))
+        outside = view.root.parent / relative
+        outside.write_bytes(b'{}')
+        with self.assertRaisesRegex(files.ImportRejected, 'path-outside-component'):
+            reader.read_many((view.root / fixture_module.PRODUCT, outside))
+        stream = BytesIO()
+        with zipfile.ZipFile(stream, 'w') as archive:
+            archive.writestr('a.npy', np.lib.format.magic(2, 0) + struct.pack('<I', 2**32 - 1))
+        view, relative = self.add_file(stream.getvalue(), 'broken.NPZ')
+        with patch('numpy.load', side_effect=AssertionError('unbounded allocation entered')):
+            with self.assertRaisesRegex(files.ImportRejected, 'header-size'):
+                ComponentResourceReader(view).read_many((view.root / relative,))
+
+    def test_batch_accepts_actual_short_and_long_component_aliases(self):
+        view = self.fixture.write_package()
+        alias = self.short_path_alias(self.fixture.resource_root)
+        aliased_view = PackageView(alias, view.component_ref)
+        reader = ComponentResourceReader(aliased_view)
+        long_path = view.root / fixture_module.PRODUCT
+        short_path = aliased_view.root / fixture_module.PRODUCT
+        self.assertEqual(reader.read_many((short_path, long_path)),
+                         (self.fixture.npz_bytes, self.fixture.npz_bytes))
+
     def test_invalid_array_header_never_enters_numpy_loader(self):
         stream = BytesIO()
         with zipfile.ZipFile(stream, 'w') as archive:

@@ -791,6 +791,14 @@ class CoordinatorTests(unittest.TestCase):
         self.assertIsNone(self.coordinator._last_render_token)
         self.windows.hide.assert_called_once_with("aligned")
 
+    def test_s0_candidate_tracking_uses_same_opening_probe(self):
+        self.session.snapshot.update(season='s0', candidateProvisionalDisplayEnabled=True,
+            candidateStreamingEnabled=True, nativeCandidatePreviewAvailable=False,
+            availableCommands=['refresh_map', 'observe_candidate_floor'])
+        self.coordinator._last_manual_floor_observation_at = 0
+        self.coordinator._track_map()
+        self.session.dispatch.assert_called_once_with('observe_candidate_floor')
+
     def test_material_ack_is_exact_and_never_changes_session_transaction(self):
         """A queued Image callback cannot acknowledge a later target or job."""
         self.session.busy = True

@@ -12,7 +12,7 @@ def _reject(reason):
 
 
 class ImportedDifficultNativeContext(ImportedNativeContext):
-    """Adapt references for data/display consumers without admitting ranking."""
+    """Supply current-frame structure candidates without admitting ranking."""
 
     def __init__(self, base_view, bundle, controls):
         super().__init__(base_view, bundle, controls, season='s0', modes=('difficult',),
@@ -41,8 +41,8 @@ class ImportedDifficultNativeContext(ImportedNativeContext):
     def structure_candidate_capability(self):
         self.assert_current()
         return dict(dataFloors=list(self._floor_ids), contractFloors=list(self._observed_values),
-            operatorDeclaredScanReady=False, candidateReady=False,
-            validationScope='data-only', liveValidated=False)
+            operatorDeclaredScanReady=True, candidateReady=True,
+            validationScope='current-frame-structure-candidates', liveValidated=False)
 
     def local(self, relative):
         self.assert_current()

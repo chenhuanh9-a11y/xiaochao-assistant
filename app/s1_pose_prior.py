@@ -60,8 +60,9 @@ class PosePrior:
 
 
 class CoordinatePriorIndex:
-    def __init__(self, index_path, *, expected_sha256, mode, resource_key, provider):
-        data = Path(index_path).read_bytes()
+    def __init__(self, index_path, *, expected_sha256, mode, resource_key, provider, read_resource=None):
+        path = Path(index_path)
+        data = path.read_bytes() if read_resource is None else read_resource(path)
         digest = hashlib.sha256(data).hexdigest()
         if not expected_sha256 or digest != expected_sha256:
             raise ValueError('pose-prior-index-digest-mismatch')

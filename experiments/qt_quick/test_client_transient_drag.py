@@ -5,6 +5,7 @@ from unittest.mock import patch
 import numpy as np
 import test_client_live_runtime as fixtures
 from client_live_runtime import _AlignmentHost
+from s0_test_fixtures import synthetic_read
 
 class TransientDragTests(unittest.TestCase):
     setUp = fixtures.LiveRuntimeContracts.setUp
@@ -95,7 +96,9 @@ class TransientDragTests(unittest.TestCase):
         self.begin_and_capture()
         if both_verified:
             for floor in (2,1):
-                with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=floor)):
+                # Replace only the controls observation input. Production now
+                # reads the vertical controls, not the legacy horizontal sensor.
+                with patch("floor_control_region.locate_vertical_floor_controls",return_value=synthetic_read(selected=floor)):
                     result=self.dispatch("set_floor",floor=str(floor))
                 self.assertTrue(result["success"],result)
         self.context=self.runtime.game_floor_click_context()
@@ -109,7 +112,7 @@ class TransientDragTests(unittest.TestCase):
         poses=copy.deepcopy(core.snapshot()["poses"])
         identity=self.runtime.snapshot()["mapId"]
         self.assertNotIn("2",group.canonical_geometry_verified_floors)
-        with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=2)), \
+        with patch("floor_control_region.locate_vertical_floor_controls",return_value=synthetic_read(selected=2)), \
              patch.object(_AlignmentHost,"fit",side_effect=AssertionError("transient must not fit")):
             result=self.dispatch("set_floor",floor="2")
         self.assertTrue(result["success"],result);token=result["pendingSiblingToken"]
@@ -133,7 +136,7 @@ class TransientDragTests(unittest.TestCase):
         self.prepare_relation_drag(both_verified=True,search_only=False)
         group=self.runtime._group;root=group.root_pose.copy();poses=copy.deepcopy(self.runtime._core.snapshot()["poses"])
         for floor in (2,1):
-            with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=floor)), \
+            with patch("floor_control_region.locate_vertical_floor_controls",return_value=synthetic_read(selected=floor)), \
                  patch.object(_AlignmentHost,"fit",side_effect=AssertionError("projection cannot fit")):
                 result=self.dispatch("set_floor",floor=str(floor))
             self.assertTrue(result["success"],result)
@@ -148,10 +151,10 @@ class TransientDragTests(unittest.TestCase):
     def test_search_only_projection_cannot_become_the_next_hops_verified_current_source(self):
         self.prepare_relation_drag(both_verified=True,search_only=True)
         group=self.runtime._group;root=group.root_pose.copy()
-        with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=2)):
+        with patch("floor_control_region.locate_vertical_floor_controls",return_value=synthetic_read(selected=2)):
             result=self.dispatch("set_floor",floor="2")
         self.assertTrue(self.runtime.acknowledge_sibling(result["pendingSiblingToken"],True)["success"])
-        with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=1)), \
+        with patch("floor_control_region.locate_vertical_floor_controls",return_value=synthetic_read(selected=1)), \
              patch.object(_AlignmentHost,"fit",side_effect=AssertionError("provisional source must not fit")):
             rejected=self.dispatch("set_floor",floor="1")
         self.assertFalse(rejected["success"])
@@ -161,7 +164,7 @@ class TransientDragTests(unittest.TestCase):
     def test_projection_material_error_and_unknown_or_b1_relation_do_not_create_target_pose(self):
         self.prepare_relation_drag()
         group=self.runtime._group;root=group.root_pose.copy();core=self.runtime._core
-        with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=2)):
+        with patch("floor_control_region.locate_vertical_floor_controls",return_value=synthetic_read(selected=2)):
             result=self.dispatch("set_floor",floor="2")
         token=result["pendingSiblingToken"]
         self.assertFalse(self.runtime.acknowledge_sibling(token,False,"Image.Error")["success"])
@@ -169,7 +172,7 @@ class TransientDragTests(unittest.TestCase):
         self.assertIsNone(self.runtime.render_payload(token))
         # Even a supplied B1 relation is not a normal-floor projection permit.
         group.set_relation("B1",np.eye(3));group.canonical_geometry_verified_floors.add("B1")
-        with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=-1)), \
+        with patch("floor_control_region.locate_vertical_floor_controls",return_value=synthetic_read(selected=-1)), \
              patch.object(_AlignmentHost,"fit",side_effect=AssertionError("B1 must not fall through to fit")):
             rejected=self.dispatch("set_floor",floor="B1")
         self.assertFalse(rejected["success"]);self.assertEqual(rejected["reason"],"transient-projection-unavailable")
@@ -183,7 +186,7 @@ class TransientDragTests(unittest.TestCase):
                 group=self.runtime._group;root=group.root_pose.copy()
                 if condition=="missing-relation":group.relations.pop("2")
                 else:group.canonical_geometry_verified_floors.clear()
-                with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=2)), \
+                with patch("floor_control_region.locate_vertical_floor_controls",return_value=synthetic_read(selected=2)), \
                      patch.object(_AlignmentHost,"fit",side_effect=AssertionError("projection rejection cannot fit")):
                     rejected=self.dispatch("set_floor",floor="2")
                 self.assertFalse(rejected["success"])
@@ -193,7 +196,7 @@ class TransientDragTests(unittest.TestCase):
     def test_passive_probe_can_stage_actual_stable_new_floor_and_late_material_after_end_is_rejected(self):
         self.prepare_relation_drag()
         result={}
-        with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=2)), \
+        with patch("floor_control_region.locate_vertical_floor_controls",return_value=synthetic_read(selected=2)), \
              patch.object(_AlignmentHost,"fit",side_effect=AssertionError("passive transition must not fit")):
             for _ in range(3):
                 result=self.dispatch("refresh_map")
@@ -227,7 +230,7 @@ class TransientDragTests(unittest.TestCase):
         self.assertTrue(changed["success"],changed)
         expected=base.copy();expected[:2,2]+=[12.,6.]
         np.testing.assert_allclose(self.runtime._render["matrix"],expected)
-        with patch("map_interface_observation.detect_selected_floor",return_value=dict(selectedFloor=2)), \
+        with patch("floor_control_region.locate_vertical_floor_controls",return_value=synthetic_read(selected=2)), \
              patch.object(_AlignmentHost,"fit",side_effect=AssertionError("conflicting probe must not fit")):
             result=self.dispatch("refresh_map")
         self.assertFalse(result["success"])

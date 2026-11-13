@@ -118,6 +118,15 @@ class MapLocalEntryIdentity:
         return (str(map_id),str(floor)) in self.registered_floors
 
     def _entry_observations(self, frame, *, context=None):
+        shared = getattr(self, 'observation_dependencies', None)
+        if shared is not None and shared.owns(frame):
+            bounds = context.get('observationBounds') if context is not None else None
+            return shared.get(('exit-observations', None if bounds is None else tuple(bounds)),
+                lambda: self._entry_observations_uncached(frame, context=context),
+                cancelled=getattr(self, 'observation_cancelled', None))
+        return self._entry_observations_uncached(frame, context=context)
+
+    def _entry_observations_uncached(self, frame, *, context=None):
         """Reuse actual exit/rectangle primitives without altering nightmare."""
         if not self.semantic_side_entries:
             return []
@@ -381,6 +390,13 @@ class MapLocalEntryIdentity:
         return entry_geometry(frame)
 
     def _observe(self, frame):
+        shared = getattr(self, 'observation_dependencies', None)
+        if shared is not None and shared.owns(frame):
+            return shared.get(('side-observation',), lambda: self._observe_uncached(frame),
+                              cancelled=getattr(self, 'observation_cancelled', None))
+        return self._observe_uncached(frame)
+
+    def _observe_uncached(self, frame):
         from single_map_structure import current_part
         context = self._geometry(frame)
         if context is None:
@@ -417,10 +433,11 @@ class MapLocalEntryIdentity:
             job.run()
         return work.finish(elapsed_ms=(time.perf_counter() - started) * 1000)
 
-    def prepare_rank(self, frame, floor=None, *, map_id=None, deadline=None, candidate_map_ids=None):
+    def prepare_rank(self, frame, floor=None, *, map_id=None, deadline=None, candidate_map_ids=None,
+                     prepared_index=None):
         from side_entry_evidence import SideEntryEvidence
         return SideEntryEvidence(self, frame, floor, map_id=map_id, deadline=deadline,
-                                  candidate_map_ids=candidate_map_ids)
+                                  candidate_map_ids=candidate_map_ids, prepared_index=prepared_index)
 
     def _load_route(self, profile_id, map_id, floor, resource, cache=None):
         from nightmare_candidate import imread_unicode
@@ -474,6 +491,13 @@ class MapLocalEntryIdentity:
                     scope='all current observed fragments, not only fitted passport planes')
 
     def refine_candidate(self, frame, row):
+        shared = getattr(self, 'observation_dependencies', None)
+        if shared is not None and shared.owns(frame):
+            return shared.get(('side-refine', id(self.shared_reference_provider), shared.value_key(row)),
+                lambda: self._refine_candidate_uncached(frame, row))
+        return self._refine_candidate_uncached(frame, row)
+
+    def _refine_candidate_uncached(self, frame, row):
         """Refine a unique registered-floor proposal, then run the same validator."""
         from single_map_structure import partial_wall_geometry
         started=time.perf_counter()
@@ -501,6 +525,17 @@ class MapLocalEntryIdentity:
         return candidate
 
     def verify(self, frame, row, *, context=None, _route_cache=None):
+        shared = getattr(self, 'observation_dependencies', None)
+        if shared is not None and shared.owns(frame):
+            actual_context = self._geometry(frame) if context is None else context
+            key = ('side-verify', id(self.shared_reference_provider), shared.value_key(row),
+                   shared.value_key(None if actual_context is None else
+                       {name: actual_context.get(name) for name in ('query', 'observationBounds')}))
+            return shared.get(key, lambda: self._verify_uncached(frame, row,
+                context=actual_context, _route_cache=_route_cache))
+        return self._verify_uncached(frame, row, context=context, _route_cache=_route_cache)
+
+    def _verify_uncached(self, frame, row, *, context=None, _route_cache=None):
         """Current-frame evidence only; the shared consumer must authorize display."""
         if self._side_door_contradicted(row):
             return dict(success=False, reason='side-door-boundary-contradiction')

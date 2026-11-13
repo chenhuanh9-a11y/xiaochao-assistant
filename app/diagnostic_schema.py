@@ -1371,6 +1371,7 @@ zhan10-speed zhan10-transport-human-reviewed zhan10_coffin_variant_id zoomed
 """.split())
 
 MODULES = frozenset("""
+independent_map_ui.py
 alignment_core_v2.py alignment_observation.py alignment_pose_transaction.py alignment_structure_dispatch.py async_event_log.py author_display_policy.py author_package_management.py author_route_catalog.py
 author_structure_resources.py b1_relocalization.py base_display_integration.py base_map_display.py calibration_memory.py chest_auto_tap.py client_capture.py client_capture_exclusion.py
 client_chest_auto_tap.py client_control_layout.py client_control_snap.py client_coordinator.py client_custom_display.py client_custom_gallery.py client_downloads.py client_engine.py
@@ -1480,7 +1481,7 @@ CODES = CODES | frozenset({'detector-control-band-unavailable'})
 FIELDS = FIELDS | frozenset({'automaticFloorEligible', 'observedFloorValidated',
     'validationScope', 'rawSelectedFloor', 'sourceReplayFloors', 'syntheticOnlyFloors'})
 CODES = CODES | frozenset({'s1-floor-context-unsupported', 's1-floor-stale-frame',
-    's1-floor-frame-type', 's1-floor-frame-size', 's1-floor-map-not-open',
+    's1-floor-frame-type', 's1-floor-frame-size', 's1-floor-map-not-open', 's1-floor-independent-ui-unverified',
     's1-floor-empty-roi', 's1-floor-signed-labels-incomplete', 's1-floor-column-ambiguous',
     's1-floor-column-unverified', 's1-floor-observed', 'source-image-replay', 'synthetic-only',
     'automatic-current-frame', 's1-signed-pixel-column', 'private-test-four-floor-contract', 'B2', 'B3', 'B4',

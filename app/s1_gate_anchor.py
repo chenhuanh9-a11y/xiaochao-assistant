@@ -72,11 +72,12 @@ class GateAnchorLocator:
     OpenCV thread settings are left to the host, not changed globally here.
     """
     def __init__(self, config: LocatorConfig | None = None,
-                 asset_dir: str | Path = HERE / 'assets'):
+                 asset_dir: str | Path = HERE / 'assets', *, read_resource=None):
         self.config = config or LocatorConfig()
         asset_dir = Path(asset_dir)
-        manifest = json.loads((asset_dir / 'template_manifest.json').read_text())
-        data = (asset_dir / 'native_glyph_template.png').read_bytes()
+        read = Path.read_bytes if read_resource is None else read_resource
+        manifest = json.loads(read(asset_dir / 'template_manifest.json'))
+        data = read(asset_dir / 'native_glyph_template.png')
         self.template_sha256 = hashlib.sha256(data).hexdigest()
         if self.template_sha256 != manifest['template_sha256']:
             raise ValueError('Glyph template digest does not match offline provenance')

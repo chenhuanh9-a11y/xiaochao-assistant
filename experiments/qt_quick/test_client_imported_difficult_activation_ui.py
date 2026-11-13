@@ -128,9 +128,9 @@ class ImportedS0DifficultActivationUiTests(unittest.TestCase):
         self.assertEqual(row['activatableContexts'], ['s0:difficult'])
         option = next(item for item in self.service.activationOptions
                       if item['context'] == 's0:difficult')
-        self.assertEqual(option['label'], '启用 S0 困难数据')
+        self.assertEqual(option['label'], '启用 S0 困难')
         self.assertEqual(option['objectSuffix'], '-s0-difficult')
-        self.assertEqual(option['notice'], '识别功能尚未开放，启用后仍不能开始识别。')
+        self.assertEqual(option['notice'], '可扫描结构候选，地图需手动确认。')
 
         if os.name == 'nt':
             for name in ('msyh.ttc', 'msyhbd.ttc'):
@@ -226,8 +226,8 @@ class ImportedS0DifficultActivationUiTests(unittest.TestCase):
         self.assertIs(self.find(view.rootObject(), button_name), button,
                       'the package action should keep its QML item instance after selection')
         self.assertIn('S0 困难', self.service.message)
-        self.assertIn('识别功能尚未开放', self.service.message)
-        self.assertIn('暂不能开始识别', self.service.message)
+        self.assertIn('可扫描结构候选', self.service.message)
+        self.assertIn('地图需手动确认', self.service.message)
 
         catalog_path = self.resolver.root / 'catalog.json'
         selected_catalog = catalog_path.read_bytes()
@@ -244,7 +244,7 @@ class ImportedS0DifficultActivationUiTests(unittest.TestCase):
         self.assertFalse(report['liveReady'], report)
         self.assertFalse(engine.qt_rank_ready)
         self.assertFalse(engine.qt_live_ready)
-        self.assertFalse(engine.qt_native_context.structure_candidate_capability['candidateReady'])
+        self.assertTrue(engine.qt_native_context.structure_candidate_capability['candidateReady'])
         self.assertFalse(engine.memory_store.root.exists())
 
         # The optional real-package receipt records the decoded bitmap shapes

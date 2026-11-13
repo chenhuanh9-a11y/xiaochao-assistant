@@ -74,14 +74,14 @@ class RuntimeBoundaries(unittest.TestCase):
             self.assertTrue(self.runtime.snapshot()["displayAuthorized"])
             self.assertEqual(self.coordinator.alignedData.get("token"), token)
         else:
-            self.assertIsNone(self.runtime.render_payload(token))
-            self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
-            self.assertFalse(self.coordinator.alignedData)
+            self.assertIsNotNone(self.runtime.render_payload(token))
+            self.assertTrue(self.runtime.snapshot()["displayAuthorized"])
+            self.assertEqual(self.coordinator.alignedData.get("token"), token)
 
-    def test_cancel_own_published_refresh_success_tail_withdraws_its_new_grant(self):
+    def test_cancel_own_published_refresh_success_tail_retains_completed_grant(self):
         self.refresh_tail(fail=False, drag=False)
 
-    def test_cancel_own_published_refresh_exception_tail_withdraws_its_new_grant(self):
+    def test_cancel_own_published_refresh_exception_tail_retains_completed_grant(self):
         self.refresh_tail(fail=True, drag=False)
 
     def test_cancel_refresh_exception_tail_preserves_new_drag_revision(self):
@@ -98,8 +98,8 @@ class RuntimeBoundaries(unittest.TestCase):
             workers.append(work)
             return original_start(work)
         def fail(*args, **kwargs):
-            # The cheap residual path already withdrew the old pixels. This
-            # is the current worker's fallback, with no newer drag or cancel.
+            # Failed new-frame residual cannot revoke the completed source.
+            # This is the current fallback, with no newer drag or cancel.
             checkpoints.append(dict(owner=self.runtime._refresh_render_owner(),
                 epoch=self.runtime._epoch, cancelled=workers[0].cancelled.is_set()))
             raise ValueError("controlled current fallback " + boundary + " failure")
@@ -112,7 +112,7 @@ class RuntimeBoundaries(unittest.TestCase):
             self.settle()
         self.assertEqual(residual.call_count, 1)
         self.assertEqual(failed.call_count, 1)
-        self.assertEqual(checkpoints, [dict(owner=None, epoch=epoch, cancelled=False)])
+        self.assertEqual(checkpoints, [dict(owner=initial_owner, epoch=epoch, cancelled=False)])
         receipt = self.session.snapshot["lastReceipt"]
         self.assertEqual(receipt["action"], "refresh_map")
         self.assertFalse(receipt["success"])
@@ -123,14 +123,14 @@ class RuntimeBoundaries(unittest.TestCase):
         self.assertIn("controlled current fallback " + boundary + " failure", receipt["traceback"])
         self.assertTrue(any(row.get("action") == "refresh_map" and
             row.get("exceptionType") == "ValueError" for row in failures))
-        self.assertIsNone(self.runtime._refresh_render_owner())
-        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
-        self.assertFalse(self.coordinator.alignedData)
+        self.assertEqual(self.runtime._refresh_render_owner(), initial_owner)
+        self.assertTrue(self.runtime.snapshot()["displayAuthorized"])
+        self.assertEqual(self.coordinator.alignedData.get("token"), initial_owner[4])
 
-    def test_current_fallback_fit_exception_after_own_revoke_keeps_error_diagnostics(self):
+    def test_current_fallback_fit_exception_retains_material_and_error_diagnostics(self):
         self.assert_current_fallback_exception("fit")
 
-    def test_current_fallback_display_exception_after_own_revoke_keeps_error_diagnostics(self):
+    def test_current_fallback_display_exception_retains_material_and_error_diagnostics(self):
         self.assert_current_fallback_exception("display")
 
     def test_old_capture_exception_after_new_drag_is_stale_and_keeps_current_pixels(self):
@@ -373,17 +373,85 @@ class GroupBoundaries(groups.DragGroupChoiceContracts):
 
     def test_helper_ready_post_drag_choice_fits_current_pixels_without_false_close(self):
         self.finish_drag()
+        source_frame = self.runtime._frame_id
+        source_generation = self.runtime._frame_generation
+        source_observation = self.runtime._last_observation
         observation, floor_read = dict(detected=True), synthetic_read(self.mode)
         with patch("map_interface_observation.detect_map_interface", return_value=observation), \
                 patch("floor_control_region.locate_vertical_floor_controls", return_value=floor_read):
             self.choose_target()
             token = self.await_target_material()
+        pending = self.coordinator.pendingAlignedData
+        self.assertEqual(self.runtime._frame_id, source_frame)
+        self.assertEqual(self.runtime._frame_generation, source_generation)
+        self.assertIs(self.runtime._last_observation, source_observation)
+        self.assertNotEqual(pending["frameId"], source_frame)
+        self.assertEqual(pending["generation"], source_generation + 1)
+        self.assertTrue(self.runtime.snapshot()["poseResult"]["pendingMaterial"])
+        self.assertEqual(self.runtime.snapshot()["poseResult"]["sourceFrameId"], source_frame)
         self.assertTrue(self.runtime.snapshot()["mapOpen"])
         self.assertTrue(all(row["marker"] == 2 for row in self.fit_calls))
         self.coordinator.acceptSiblingMaterial(token, True)
         self.settled()
         self.assertTrue(self.runtime.snapshot()["displayAuthorized"])
         self.assertEqual(self.runtime.snapshot()["currentGroupMemberId"], groups.group_fixtures.IDS[1])
+        self.assertEqual(self.runtime._frame_id, pending["frameId"])
+        self.assertEqual(self.runtime._frame_generation, pending["generation"])
+        self.assertEqual(self.runtime._last_observation["frame_id"], pending["frameId"])
+
+    def assert_mismatched_target_frame_rejected(self, field, value):
+        self.finish_drag()
+        source_frame = self.runtime._frame_id
+        source_generation = self.runtime._frame_generation
+        original = self.runtime._solve_observation
+        observed = []
+        def mismatched_target(*args, **kwargs):
+            # Only corrupt the queued target's identity, after the production
+            # caller has copied its solve arguments. Source ownership stays valid.
+            staged = kwargs["staged_observation"]
+            self.assertTrue(self.runtime._staged_choice_current(staged))
+            staged[field] = value(staged[field])
+            self.assertTrue(self.runtime._staged_choice_current(staged))
+            observed.append(staged)
+            return original(*args, **kwargs)
+        with patch("map_interface_observation.detect_map_interface", return_value=dict(detected=True)), \
+                patch("floor_control_region.locate_vertical_floor_controls", return_value=synthetic_read(self.mode)), \
+                patch.object(self.runtime, "_solve_observation", side_effect=mismatched_target):
+            receipt = self.choose_target()
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(receipt["reason"], "stale-context", receipt)
+        self.assertTrue(receipt["stale"])
+        self.assertFalse(self.fit_calls)
+        self.assertFalse(self.coordinator.pendingAlignedData)
+        self.assertEqual(self.runtime._frame_id, source_frame)
+        self.assertEqual(self.runtime._frame_generation, source_generation)
+        self.assertEqual(self.runtime.snapshot()["currentGroupMemberId"], groups.group_fixtures.IDS[0])
+
+    def test_staged_target_must_match_its_frame_id(self):
+        self.assert_mismatched_target_frame_rejected("frame_id", lambda value: value + "-superseded")
+
+    def test_staged_target_must_match_its_generation(self):
+        self.assert_mismatched_target_frame_rejected("generation", lambda value: value + 1)
+
+    def test_ordinary_publish_rejects_changed_public_generation_with_same_frame_id(self):
+        source = self.runtime._render["token"]
+        original = self.runtime._stage_round_group_commit
+        public_frames = []
+        def advance_generation(*args, **kwargs):
+            target_group = original(*args, **kwargs)
+            with self.runtime._lock:
+                public_frames.append(self.runtime._frame_id)
+                self.runtime._frame_generation += 1
+            return target_group
+        with patch.object(self.runtime, "_stage_round_group_commit", side_effect=advance_generation):
+            receipt = self.drive("capture_now")
+        self.assertEqual(public_frames, [self.runtime._frame_id])
+        self.assertEqual(receipt["reason"], "stale-context", receipt)
+        self.assertTrue(receipt["stale"])
+        self.assertTrue(self.fit_calls)
+        self.assertIsNone(self.runtime._pending_sibling)
+        self.assertTrue(self.runtime.snapshot()["displayAuthorized"])
+        self.assertIsNotNone(self.runtime.render_payload(source))
 
 
 class DifficultGroupBoundaries(GroupBoundaries):

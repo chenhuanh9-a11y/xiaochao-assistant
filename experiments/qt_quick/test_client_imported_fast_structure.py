@@ -19,6 +19,7 @@ from client_imported_providers import SUPPORTED_CAPABILITIES, build_imported_eng
 from client_live_runtime import _AlignmentHost
 from client_paths import RuntimePaths
 import fast_structure_alignment as fast
+import resource_snapshot_io
 from imported_resource_archive import save_archive
 from imported_resource_catalog import ResourceResolver
 from imported_resource_packages import PackageView
@@ -113,16 +114,24 @@ class ImportedFastStructureTests(unittest.TestCase):
                 with patch.object(fast, 'prepare', side_effect=AssertionError('online preprocessing')):
                     engine = build_imported_engine_factories(self.resolver, self.paths).get_engine(mode, season='s1')
                     host = _AlignmentHost(engine, collect_fit_diagnostics=True)
-                    with patch.object(fast, 'load_prepared', wraps=fast.load_prepared) as loaded:
+                    prepared_source = engine.qt_fast_structure_source
+                    prepared_path = prepared_source.view.root / source.prepared_resources[source.ids[0], '-3']
+                    with patch.object(prepared_source, 'acquire_prepared_use',
+                                      wraps=prepared_source.acquire_prepared_use) as acquired, \
+                         patch.object(resource_snapshot_io, 'read_stable_file',
+                                      wraps=resource_snapshot_io.read_stable_file) as read:
                         result = host.fit(np.zeros((720,1280,3),np.uint8), source.ids[0], '-3', lambda:False)
                 self.assertFalse(result['success'])
                 self.assertEqual(result['reason'], 'initial-structure-query-unavailable')
-                self.assertEqual(loaded.call_count, 1)
+                # One acquisition plus an actual return-boundary byte check;
+                # the latter must not acquire or decode the arrays again.
+                self.assertEqual(acquired.call_count, 1)
+                self.assertEqual(sum(Path(call.args[0]).samefile(prepared_path)
+                                     for call in read.call_args_list), 3)
                 events = [event for event in host.events if event.get('event') == 'experimental-fast-alignment']
                 self.assertEqual(len(events), 1)
                 self.assertEqual(events[0]['reason'], 'fast-observation-unavailable')
-                self.assertIn('source', loaded.call_args.kwargs)
-                self.assertIsNotNone(loaded.call_args.kwargs['source'])
+                self.assertEqual(acquired.call_args.args[0].metadata['binding']['floor'], '-3')
                 self.assertFalse(engine.qt_live_ready)
                 self.assertFalse(engine.memory_store.root.exists())
 

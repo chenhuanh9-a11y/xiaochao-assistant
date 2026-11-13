@@ -13,9 +13,10 @@ from difficult_native_identity import NativeDifficultPack, _validate_imported_id
 from difficult_side_entry_identity import MapLocalEntryIdentity
 from imported_legacy_references import ImportedLegacyReferences
 from imported_native_base import (
-    SCHEMA, NativeBaseBundle, NativeBaseUnavailable, _canvas, _entry_rows,
+    SCHEMA, NativeBaseBundle, NativeBaseUnavailable, _canvas, _checked_reference_matches, _entry_rows,
     _identity_matrix, _number, _points, _reference, _reject, _rows, _text,
     _typed_declarations, _verify_typed_products,
+    _admission_owner_state, _bind_bundle_live_reader, _bind_live_readers,
 )
 from imported_resource_packages import PackageView
 from imported_resource_reader import ComponentResourceReader
@@ -61,13 +62,13 @@ def _coordinates(view, reader, paths, typed, canvases, profiles, legacy_bindings
             or document.get('canonicalCrossFloorSearchCandidates') not in (None, {})):
         _reject('difficult-coordinate-contract-invalid')
     provider = document.get('referenceProvider', {})
-    if (_reference(view, provider.get('indexPath'), '.json') != paths['typedIndex']
+    if (not _checked_reference_matches(view, provider.get('indexPath'), paths['typedIndex'], '.json')
             or provider.get('resourceRoot', '.') != '.'):
         _reject('coordinate-index-invalid')
     lookups = _rows(provider.get('lookupBindings'), set(typed), 'coordinate-lookup')
     for key, row in lookups.items():
         if (row.get('profile') != PROFILE or row.get('variant') != 'variant-01'
-                or _reference(view, row.get('resourcePath'), '.npz') != typed[key]['resourcePath']):
+                or not _checked_reference_matches(view, row.get('resourcePath'), typed[key]['resourcePath'], '.npz')):
             _reject('coordinate-lookup-invalid')
     maps = document.get('maps', {})
     shared = document['profiles'][PROFILE].get('maps', {})
@@ -85,7 +86,10 @@ def _coordinates(view, reader, paths, typed, canvases, profiles, legacy_bindings
             legacy = legacy_by_floor.get(key)
             width, height = _canvas(canvases[key], shape_only=legacy is not None)
             product = legacy if legacy is not None else typed[key]
-            if (_reference(view, row.get('referenceResource'), '.npz') != product['resourcePath']
+            reference_matches = (_reference(view, row.get('referenceResource'), '.npz') == product['resourcePath']
+                if legacy is not None else
+                _checked_reference_matches(view, row.get('referenceResource'), product['resourcePath'], '.npz'))
+            if (not reference_matches
                     or row.get('coordinateWidth') != width or row.get('coordinateHeight') != height):
                 _reject('coordinate-canvas-invalid')
             if legacy is None:
@@ -152,6 +156,11 @@ def _entry_policy(legacy_keys):
 def decode_s0_difficult(view):
     if not isinstance(view, PackageView):
         _reject('package-view-required')
+    with view.admission_read_scope() as scope:
+        return _decode_s0_difficult(scope, view)
+
+
+def _decode_s0_difficult(view, live_view):
     component = view.component
     if component.get('type') != 'recognition-base' or component.get('schemaVersion') != 1:
         _reject('component-type-invalid')
@@ -159,13 +168,15 @@ def decode_s0_difficult(view):
         raise NativeBaseUnavailable('native-base-context-unsupported')
     if component['dependencies']:
         raise NativeBaseUnavailable('native-base-dependencies-unsupported')
-    reader = ComponentResourceReader(view)
+    live_reader = ComponentResourceReader(live_view)
+    reader = live_reader if view is live_view else live_reader.for_admission(view)
+    admission_live_reader = live_reader if view is live_view else live_reader.recording_for_admission(view)
     context = reader.json(component['entrypoint'])
     if (set(context) != {'schema', 'season', 'mode', 'runtimeInterfaces'}
             or context.get('schema') != SCHEMA or (context.get('season'), context.get('mode')) != ('s0', 'difficult')):
         _reject('difficult-context-invalid')
     interfaces = context['runtimeInterfaces']
-    if (not isinstance(interfaces, dict) or set(interfaces) - {'reviewedFrontGroups'} != INTERFACES
+    if (not isinstance(interfaces, dict) or set(interfaces) - {'reviewedFrontGroups', 'fastStructureIndex'} != INTERFACES
             or interfaces.get('identityProfile') != PROFILE or interfaces.get('entryEvidenceRole') != ENTRY_ROLE
             or interfaces.get('entryResourceAnchor') != 'component-root'
             or interfaces.get('nativePassports') != 'unavailable'):
@@ -199,7 +210,8 @@ def decode_s0_difficult(view):
     if legacy_ids:
         if not isinstance(declaration, dict) or declaration.get('profileId') != LEGACY_PROFILE:
             _reject('legacy-declaration-invalid')
-        legacy = ImportedLegacyReferences(view, declaration, expected_maps=legacy_ids, floors=FLOORS, reader=reader)
+        legacy = ImportedLegacyReferences(live_view, declaration, expected_maps=legacy_ids,
+                                          floors=FLOORS, reader=admission_live_reader)
         legacy_bindings = legacy.bindings
     else:
         if declaration is not None:
@@ -313,11 +325,15 @@ def decode_s0_difficult(view):
     if set(versions) != set(resources.entries) or any(row['sharedError'] is not None for row in versions.values()):
         _reject('version-binding-invalid')
     _verify_typed_products(view, reader, resources, versions)
-    result = NativeBaseBundle(view, pack=pack, resources=resources, adapters=adapters,
-        versions=MappingProxyType(versions), interfaces=MappingProxyType(deepcopy(interfaces)), reader=reader,
+    _bind_live_readers(live_reader, resources, adapters, main, local)
+    result = NativeBaseBundle(live_view, pack=pack, resources=resources, adapters=adapters,
+        versions=MappingProxyType(versions), interfaces=MappingProxyType(deepcopy(interfaces)), reader=admission_live_reader,
         season='s0', mode='difficult', component_ref=view.component_ref, entry_identity=main,
         side_entry_identity=local, exit_recognizer=None, legacy_references=legacy,
         legacy_passports=deepcopy(passports), native_source=version_pack,
         semantic_side_entries=False, passport_source_available=False, rank_ready=False, gaps=tuple(gaps))
+    _bind_bundle_live_reader(result, live_reader)
+    if view is not live_view:
+        view.register_owner(lambda: _admission_owner_state(result))
     result.assert_current()
     return result

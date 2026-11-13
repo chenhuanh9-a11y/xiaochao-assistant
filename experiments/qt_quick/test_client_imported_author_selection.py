@@ -11,7 +11,7 @@ import numpy as np
 from PIL import Image
 
 import client_imported_activation as activation
-from client_providers import SharedReferenceProvider
+from client_providers import SharedReferenceProvider, DisplayResourceChanged
 from client_imported_providers import SUPPORTED_CAPABILITIES, build_imported_engine_factories
 from client_paths import RuntimePaths
 from client_route_preferences import prepare_display_layer
@@ -66,6 +66,23 @@ class _AuthorSelectionFixture(_AuthorDisplayFixture):
 
 
 class ClientImportedAuthorSelectionTests(_AuthorSelectionFixture):
+    def test_imported_displays_publish_together_and_conflict_preserves_selection(self):
+        self.seed()
+        first, _, _ = self.package(package_id='batch-author-a')
+        second, _, _ = self.package(package_id='batch-author-b', profile_id='author-batch-b')
+        before = (self.resources / 'catalog.json').read_bytes()
+        conflict, _, _ = self.package(package_id='batch-author-conflict')
+        with resource_runtime_lease(self.resources):
+            with self.assertRaisesRegex(ResourceCatalogError, 'display-profile-conflict'):
+                activation.activate_displays(self.resolver(), self.paths,
+                    (first.component_ref, conflict.component_ref))
+        self.assertEqual((self.resources / 'catalog.json').read_bytes(), before)
+        with resource_runtime_lease(self.resources):
+            outcome = activation.activate_displays(self.resolver(), self.paths,
+                (first.component_ref, second.component_ref))
+        self.assertEqual(outcome['status'], 'catalog-activated')
+        self.assertEqual(self.resolver().snapshot().displays, (first.component_ref, second.component_ref))
+
     def test_add_replace_and_repeat_preserve_other_selection_and_show_new_pixels(self):
         dormant = _inert_component(self.resources, 'display', 'display')
         self.seed(displays=[dormant])
@@ -89,8 +106,9 @@ class ClientImportedAuthorSelectionTests(_AuthorSelectionFixture):
         selected = resolver.snapshot()
         self.assertEqual(selected.displays, (dormant, next_view.component_ref, other.component_ref))
         self.assertEqual(dict(selected.contexts), initial_contexts)
-        with self.assertRaises(ResourceCatalogError):
+        with self.assertRaisesRegex(DisplayResourceChanged, 'resource-catalog-superseded') as rejected:
             prepare_display_layer(old_engine, self.source.ids[0], '-4', 'author-fixture')
+        self.assertIsInstance(rejected.exception.__cause__, ResourceCatalogError)
         engine = factory.get_engine('difficult', season='s1')
         layer = prepare_display_layer(engine, self.source.ids[0], '-4', 'author-fixture')
         self.assertEqual(layer['displayKind'], 'author-route')

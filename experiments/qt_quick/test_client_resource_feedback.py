@@ -107,6 +107,21 @@ class ResourceFeedbackTests(unittest.TestCase):
             self.assertEqual(r._capture.enable_count, 0)
             self.assertEqual(engine.rank_count, 0)
 
+    def test_candidate_purpose_allows_start_but_does_not_cover_lost_resources(self):
+        with self.chain('difficult') as (o,c,s,r,f,k,n,a,root):
+            engine = runtime_fixture.fixture_engine('difficult')
+            engine.qt_rank_ready, engine.qt_live_ready = False, False
+            f._build = lambda mode, *, season='s0': engine
+            f.prepare_context('difficult'); s.refreshRuntime()
+            # The runtime/provider integration produces this field in its own
+            # tests; this unit supplies the UI's cached snapshot purpose.
+            state = dict(s.snapshot, candidateStructureAvailable=True)
+            self.assertIsNone(c._map_resource_problem(state))
+            self.assertIsNotNone(c._map_resource_problem(dict(state, candidateStructureAvailable=False)))
+            report = dict(state['savedFrameCapabilities']['difficult'], dataReady=False)
+            lost = dict(state, savedFrameCapabilities=dict(state['savedFrameCapabilities'], difficult=report))
+            self.assertIsNotNone(c._map_resource_problem(lost))
+
     def test_real_lease_rejects_start_once_and_explicit_round_opens_after_ready(self):
         for mode in ("nightmare", "difficult"):
             with self.subTest(mode=mode), self.chain(mode) as (o,c,s,r,f,k,n,a,root):

@@ -116,7 +116,38 @@ class NativeCandidateContracts(unittest.TestCase):
         self.assertFalse(worker.is_alive())
         self.assertTrue(results[0]['success'], results)
 
-    def test_floor_probe_preserves_choice_then_changes_or_withdraws(self):
+    def test_cancel_remaining_scan_keeps_already_successful_replacement(self):
+        from client_live_runtime import _AlignmentHost
+        first = self.show()
+        self.capture.frame[0, 0] = 255
+        entered, release, cancelled = threading.Event(), threading.Event(), threading.Event()
+        results = []
+        def fit(frame, mid, *a, **kw):
+            if mid == 'b':
+                entered.set(); self.assertTrue(release.wait(5))
+            return copy.deepcopy(self.fit)
+        self.registry.engine.qt_s1_structure_scan = lambda frame, **kw: StructureCandidateScanner(
+            self.registry.catalog, fit).scan(frame, **kw)
+        with patch.object(_AlignmentHost, '_canonical_geometry_current_frame_residual',
+                return_value=(dict(verified=False), None)):
+            worker = threading.Thread(target=lambda: results.append(
+                self.runtime.dispatch('refresh_map', {}, cancelled)))
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                replacement = self.current_payload()
+                self.assertIsNotNone(replacement)
+                self.assertNotEqual(replacement['token'], first['token'])
+                cancelled.set()
+            finally:
+                release.set(); worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(results[0]['stale'], results)
+        self.assertEqual(self.current_payload()['token'], replacement['token'])
+        self.assertFalse(self.runtime.snapshot()['structureEvidence']['currentSupportedMapIds'])
+        self.assertFalse(self.runtime.snapshot()['identityLocked'])
+
+    def test_floor_probe_preserves_choice_and_unknown_read_but_changes_floor(self):
         first = self.show()
         self.runtime.dispatch('next_candidate')
         selected = self.current_payload()
@@ -129,15 +160,15 @@ class NativeCandidateContracts(unittest.TestCase):
         self.assertNotEqual(first['frameId'], self.current_payload()['frameId'])
         self.floor = None
         self.assertFalse(self.runtime.dispatch('observe_candidate_floor')['success'])
-        self.assertIsNone(self.current_payload())
+        self.assertEqual(self.current_payload()['floor'], '-2')
 
-    def test_probe_capture_error_revokes_and_old_error_preserves_successor(self):
-        self.show()
+    def test_probe_capture_error_retains_material_and_old_error_preserves_successor(self):
+        first = self.show()
         with patch.object(self.capture, 'capture', side_effect=OSError('fixture capture failure')):
             result = self.runtime.dispatch('observe_candidate_floor')
         self.assertTrue(result['error'])
-        self.assertIsNone(self.current_payload())
-        self.assertFalse(self.runtime.snapshot()['structureEvidence']['currentSupportedMapIds'])
+        self.assertEqual(self.current_payload()['token'], first['token'])
+        self.assertTrue(self.runtime.snapshot()['structureEvidence']['currentSupportedMapIds'])
         self.show()
         successor = (self.runtime._epoch + 1, 'successor')
         def old_error(*a, **kw):
@@ -151,6 +182,25 @@ class NativeCandidateContracts(unittest.TestCase):
         self.assertIs(self.runtime._capture_pending_owner, successor)
         self.assertTrue(self.runtime._capture_pending)
         self.runtime._capture_pending_owner = None
+
+    def test_unknown_drag_floor_keeps_material_until_known_floor_change(self):
+        first = self.show()
+        self.runtime._monotonic = lambda: 1.
+        context = self.runtime.game_floor_click_context()
+        for phase, sequence, total, delta in (
+                ('down', 1, (0., 0.), (0., 0.)),
+                ('move', 2, (13., -7.), (13., -7.)),
+                ('up', 3, (13., -7.), (0., 0.))):
+            result = self.runtime.observe_game_drag(dict(phase=phase, gestureId='candidate-floor',
+                pointerSequence=sequence, context=context, createdAt=1., totalDelta=total, delta=delta))
+            self.assertTrue(result['success'], result)
+        self.floor = None
+        result = self.runtime.dispatch('observe_candidate_floor')
+        self.assertFalse(result['success'], result)
+        self.assertIsNotNone(self.runtime.render_payload(first['token']))
+        self.floor = '-2'
+        self.runtime.dispatch('observe_candidate_floor')
+        self.assertIsNone(self.runtime.render_payload(first['token']))
 
     def test_legacy_manual_setting_is_ignored_and_ui_values_cannot_grant_purpose(self):
         old = self.show()

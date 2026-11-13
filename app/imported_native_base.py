@@ -40,6 +40,10 @@ PROFILE = 'zhan10-speed'
 _INTERFACES = frozenset(('identityPack', 'typedIndex', 'coordinatePack', 'neutralDisplay',
                        'identityEntries', 'exitIcon', 'identityProfile'))
 _SEARCH_KEY = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z')
+S1_COORDINATE_INTERFACE = 's1CoordinateRecognition'
+S1_COORDINATE_DIRECTORY = 'references/s1-coordinate'
+S1_COORDINATE_FILES = ('s1_entrance_coordinate_index.json', 'template_manifest.json',
+                       'native_glyph_template.png')
 
 
 class NativeBaseUnavailable(ValueError):
@@ -72,9 +76,20 @@ class NativeBaseBundle:
         group_path = values['interfaces'].get(GROUP_INTERFACE)
         self._values['reviewed_front_groups'] = ImportedFrontGroups(self, group_path) if group_path else None
 
-    def assert_current(self):
-        if self._view.root != self._root:  # Actual bounded manifest/root load.
+    def _current_view_root(self):
+        view = self._view
+        root = view.root  # Actual bounded manifest/root load.
+        if view is not self._view or root != self._root:
             _reject('component-root-changed')
+        return view, root
+
+    def assert_current(self):
+        self._current_view_root()
+
+    def read_binding(self):
+        """Read one current view and its declared fields for context validation."""
+        view, root = self._current_view_root()
+        return view, root, self._values['component_ref'], self._values['reader']
 
     def _cached(self, name):
         self.assert_current()
@@ -188,6 +203,63 @@ def _reference(view, relative, extension=None):
         _reject('reference-type-invalid')
     view.path(relative)  # Inventory ownership, link checks and current manifest.
     return relative
+
+
+def read_s1_coordinate_assets(view, reader, directory, *, mode, map_ids, floors):
+    """Read an optional declared base resource through its ordinary owner."""
+    if not isinstance(directory, str) or files._relative(directory) != directory:
+        _reject('s1-coordinate-directory-invalid')
+    paths = [directory + '/' + name for name in S1_COORDINATE_FILES]
+    for path in paths:
+        _reference(view, path, Path(path).suffix)
+    root = reader.root
+    raw = reader.read_many(tuple(root / path for path in paths), expected_root=root)
+    payloads = dict(zip(S1_COORDINATE_FILES, raw))
+    index = decode_resource_json(payloads[S1_COORDINATE_FILES[0]])
+    manifest = decode_resource_json(payloads['template_manifest.json'])
+    from s1_native_resources import SOURCE_VERSION
+    if (index.get('schema') != 's1-common-entrance-coordinate-index-v1'
+            or index.get('sourceVersion') != SOURCE_VERSION
+            or manifest.get('template_file') != 'native_glyph_template.png'
+            or index.get('glyphTemplateSha256') != manifest.get('template_sha256')):
+        _reject('s1-coordinate-assets-invalid')
+    entries = index.get('maps', {}).get(mode)
+    if not isinstance(entries, dict) or set(entries) != set(map_ids):
+        _reject('s1-coordinate-map-inventory')
+    for mid in map_ids:
+        if not isinstance(entries[mid], dict) or set(entries[mid]) != set(floors):
+            _reject('s1-coordinate-floor-inventory')
+        for entry in entries[mid].values():
+            try:
+                matrix = np.asarray(entry['imageToEntranceXZ'], dtype=float)
+                shape = entry['shapeHW']
+                valid = (matrix.shape == (3, 3) and np.isfinite(matrix).all()
+                    and np.array_equal(matrix[:2, :2], [[1, 0], [0, -1]])
+                    and np.array_equal(matrix[2], [0, 0, 1])
+                    and np.array_equal(matrix[:2, 2], np.rint(matrix[:2, 2]))
+                    and isinstance(shape, list) and len(shape) == 2
+                    and all(type(value) is int and 0 < value <= MAX_CANVAS_AXIS for value in shape)
+                    and math.prod(shape) <= MAX_CANVAS_PIXELS
+                    and all(isinstance(entry[key], str) and re.fullmatch('[0-9a-f]{64}', entry[key])
+                        for key in ('sourceCatalogSha256', 'sourceRendererMetadataSha256')))
+            except (ValueError, TypeError, KeyError):
+                valid = False
+            if not valid:
+                _reject('s1-coordinate-entry-invalid')
+    # Reuse the original calibration decoder over the exact guarded batch.
+    from s1_gate_anchor import GateAnchorLocator
+    GateAnchorLocator(asset_dir=root / directory,
+        read_resource=lambda path: payloads[Path(path).name])
+    return payloads
+
+
+def _checked_reference_matches(view, relative, checked, extension=None):
+    """Compare an alias with an exact reference checked earlier in this decode.
+
+    Payload consumers still read through the owning view. Different aliases
+    retain the original path/type checks and their original rejection reason.
+    """
+    return relative == checked or _reference(view, relative, extension) == checked
 
 
 def _entry_reference(view, directory, relative):
@@ -352,7 +424,7 @@ def _typed_declarations(view, reader, paths, expected, profile, identity_rows):
     canvases = {key: row.get('canvas') for key, row in neutral_rows.items()}
     for key, row in neutral_rows.items():
         _canvas(canvases[key])
-        if _reference(view, row.get('referenceResource'), '.npz') != typed[key]['resourcePath']:
+        if not _checked_reference_matches(view, row.get('referenceResource'), typed[key]['resourcePath'], '.npz'):
             _reject('neutral-reference-invalid')
         version = versions_rows[key]
         for value, wanted in ((version.get('typedReference'), typed[key]['resourcePath']),
@@ -360,14 +432,15 @@ def _typed_declarations(view, reader, paths, expected, profile, identity_rows):
                               (version.get('adapterReference'), paths['coordinatePack']),
                               (version.get('neutralDisplay', {}).get('index'), paths['neutralDisplay']),
                               (version.get('sharedLookup', {}).get('resourcePath'), typed[key]['resourcePath'])):
-            if _reference(view, value) != wanted:
+            if not _checked_reference_matches(view, value, wanted):
                 _reject('version-reference-invalid')
     return typed, registry_path, neutral, canvases
 
 
-def _verify_typed_products(view, reader, resources, versions):
+def _verify_typed_products(view, reader, resources, versions, coordinate_index=None):
     for key, row in resources.entries.items():
-        raw = reader(view.path(row['resourcePath']))
+        relative = row['resourcePath']
+        raw = reader(view.path(relative))
         metadata = validate_structure_declarations(raw,
             expected_binding=versions[key]['binding'], expected_shape=versions[key]['canvas']['shapeHW'])
         if metadata.get('sourceKind') != 'game-rendered-shared-structure':
@@ -375,12 +448,28 @@ def _verify_typed_products(view, reader, resources, versions):
         calibration = metadata.get('calibration')
         if calibration is not None:
             _identity_matrix(calibration.get('matrixCurrentReferenceToNative'))
-        product = resources.load(key[0], key[1], key[3], variant=key[2])
+
+        def read_preflighted(path):
+            if reader.relative_path(path) != relative:
+                _reject('typed-product-invalid')
+            # Repeat the actual file proof at the loader's original read point.
+            # Only the generic NPZ preflight above is reusable; the loader
+            # still validates typed declarations and decodes the complete arrays.
+            return reader.view.read(relative)
+
+        product = resources.load(key[0], key[1], key[3], variant=key[2],
+                                 read_resource=read_preflighted)
         if (product is None or not np.any(product.clean_mask)
                 or list(product.shape) != versions[key]['canvas']['shapeHW']
                 or product.metadata.get('canvas') != versions[key]['canvas']
                 or any(product.metadata.get(name) != value for name, value in versions[key]['expected'].items())):
             _reject('typed-product-invalid')
+        if coordinate_index is not None:
+            coordinate_index.provider = lambda mid, floor: product if (mid, floor) == (key[1], key[3]) else None
+            try:
+                coordinate_index._native_to_common(key[1], key[3])
+            except (KeyError, TypeError, ValueError):
+                _reject('s1-coordinate-reference-binding-mismatch:' + key[1] + '/' + key[3])
         del product, raw
 
 
@@ -390,11 +479,62 @@ def _decode(view, season, mode):
         return decode_s0_difficult(view)
     if (season, mode) not in {('s0', 'nightmare'), ('s1', 'difficult'), ('s1', 'nightmare')}:
         raise NativeBaseUnavailable('native-base-context-unsupported')
+    if not isinstance(view, PackageView):
+        _reject('package-view-required')
+    with view.admission_read_scope() as scope:
+        return _decode_component(scope, view, season, mode)
+
+
+def _bind_live_readers(reader, resources, adapters, main, local, exit_recognizer=None):
+    # These objects are still private. Published consumers must perform their
+    # ordinary actual view reads, including lazily constructed exit readers.
+    resources.read_resource = reader
+    adapters._read_resource = reader
+    main.read_resource = local.read_resource = reader
+    if local._exit_recognizer is not None:
+        local._exit_recognizer.read_resource = reader
+    if exit_recognizer is not None:
+        exit_recognizer.read_resource = reader
+
+
+def _admission_owner_state(bundle):
+    """RAM ownership of the unpublished result, including all retained readers."""
+    values = bundle._values
+    resources, adapters = values['resources'], values['adapters']
+    main, local, exit_recognizer = (values[name] for name in
+                                  ('entry_identity', 'side_entry_identity', 'exit_recognizer'))
+    fast = values['fast_structure_source']
+    legacy = values['legacy_references']
+    groups = values['reviewed_front_groups']
+    return (id(bundle._view), bundle._root, values['component_ref'],
+        tuple(id(values[name]) for name in ('reader', 'pack', 'resources', 'adapters', 'versions',
+            'entry_identity', 'side_entry_identity', 'exit_recognizer', 'legacy_references', 'fast_structure_source')),
+        (id(resources.read_resource), resources.resource_root, resources.index_path, id(resources.entries)),
+        id(adapters._read_resource),
+        (main.root, id(main.read_resource), id(main.structures), id(main.shared_reference_provider)),
+        (local.root, id(local.read_resource), id(local.structures), id(local.shared_reference_provider)),
+        None if local._exit_recognizer is None else id(local._exit_recognizer.read_resource),
+        None if exit_recognizer is None else id(exit_recognizer.read_resource),
+        fast._read_state(),
+        None if groups is None else (id(groups), id(groups._base), id(groups._view), groups._path, groups.file_ref),
+        None if legacy is None else legacy.read_owner_state())
+
+
+def _bind_bundle_live_reader(bundle, reader):
+    # Fast/groups and legacy use actual live reads even during construction.
+    # Their temporary observer must not remain in a published model.
+    values = bundle._values
+    values['reader'] = reader
+    values['fast_structure_source'].reader = reader
+    legacy = values['legacy_references']
+    if legacy is not None:
+        legacy._reader = legacy._store.read_resource = reader
+
+
+def _decode_component(view, live_view, season, mode):
     proposal_only = season == 's1'
     floors = frozenset(('-1', '-2', '-3', '-4')) if proposal_only else FLOORS
     profile = 'shared-structure' if proposal_only else PROFILE
-    if not isinstance(view, PackageView):
-        _reject('package-view-required')
     component = view.component
     if component.get('type') != 'recognition-base' or component.get('schemaVersion') != 1:
         _reject('component-type-invalid')
@@ -402,7 +542,9 @@ def _decode(view, season, mode):
         raise NativeBaseUnavailable('native-base-context-unsupported')
     if component['dependencies']:
         raise NativeBaseUnavailable('native-base-dependencies-unsupported')
-    reader = ComponentResourceReader(view)
+    live_reader = ComponentResourceReader(live_view)
+    reader = live_reader if view is live_view else live_reader.for_admission(view)
+    admission_live_reader = live_reader if view is live_view else live_reader.recording_for_admission(view)
     context = reader.json(component['entrypoint'])
     if context.get('schema') != SCHEMA:
         raise NativeBaseUnavailable('native-base-schema-unsupported')
@@ -410,9 +552,12 @@ def _decode(view, season, mode):
         raise NativeBaseUnavailable('native-base-context-unsupported')
     interfaces = context.get('runtimeInterfaces')
     interface_fields = (_INTERFACES - {'exitIcon'}) | {'entryEvidenceRole'} if proposal_only else _INTERFACES
+    optional_interfaces = {'fastStructureIndex', 'reviewedFrontGroups'}
+    if proposal_only:
+        optional_interfaces.add(S1_COORDINATE_INTERFACE)
     if (set(context) != {'schema', 'season', 'mode', 'runtimeInterfaces'}
             or not isinstance(interfaces, dict)
-            or set(interfaces) - {'fastStructureIndex', 'reviewedFrontGroups'} != interface_fields
+            or set(interfaces) - optional_interfaces != interface_fields
             or interfaces.get('identityProfile') != profile
             or proposal_only and interfaces.get('entryEvidenceRole') != 'proposal-only'):
         _reject('interfaces-invalid')
@@ -491,7 +636,7 @@ def _decode(view, season, mode):
         for floor in floors:
             row, bridge = maps[mid]['floors'][floor], shared[mid]['floors'][floor]
             width, height = _canvas(canvases[mid, floor])
-            if (_reference(view, row.get('referenceResource'), '.npz') != typed[mid, floor]['resourcePath']
+            if (not _checked_reference_matches(view, row.get('referenceResource'), typed[mid, floor]['resourcePath'], '.npz')
                     or row.get('coordinateWidth', width) != width or row.get('coordinateHeight', height) != height):
                 _reject('coordinate-canvas-invalid')
             if 'matrixCanonicalToLegacyRecognition' in row:
@@ -566,15 +711,31 @@ def _decode(view, season, mode):
         neutral_relative=paths['neutralDisplay'], entry_root_relative=directory, read_resource=reader)
     if set(versions) != set(resources.entries) or any(row['sharedError'] for row in versions.values()):
         _reject('version-binding-invalid')
-    _verify_typed_products(view, reader, resources, versions)
-    result = NativeBaseBundle(view, pack=pack, resources=resources, adapters=adapters,
-        versions=MappingProxyType(versions), interfaces=MappingProxyType(dict(interfaces)), reader=reader,
+    coordinate_index = None
+    if proposal_only and S1_COORDINATE_INTERFACE in interfaces:
+        coordinate_directory = interfaces[S1_COORDINATE_INTERFACE]
+        coordinate_assets = read_s1_coordinate_assets(view, reader, coordinate_directory,
+            mode=mode, map_ids=pack.by_id, floors=floors)
+        from s1_pose_prior import CoordinatePriorIndex
+        coordinate_relative = coordinate_directory + '/' + S1_COORDINATE_FILES[0]
+        coordinate_index = CoordinatePriorIndex(reader.root / coordinate_relative,
+            expected_sha256=view.inventory[coordinate_relative]['sha256'], mode=mode,
+            resource_key='admission-only', provider=lambda mid, floor: None,
+            read_resource=lambda path: coordinate_assets[Path(path).name])
+    _verify_typed_products(view, reader, resources, versions, coordinate_index)
+    exit_recognizer = None if proposal_only else SideDoorRecognizer(view.path(paths['exitIcon']), read_resource=reader)
+    _bind_live_readers(live_reader, resources, adapters, main, local, exit_recognizer)
+    result = NativeBaseBundle(live_view, pack=pack, resources=resources, adapters=adapters,
+        versions=MappingProxyType(versions), interfaces=MappingProxyType(dict(interfaces)), reader=admission_live_reader,
         season=season, mode=mode, component_ref=view.component_ref,
         entry_identity=main, side_entry_identity=local,
-        exit_recognizer=None if proposal_only else SideDoorRecognizer(view.path(paths['exitIcon']), read_resource=reader),
+        exit_recognizer=exit_recognizer,
         legacy_references=None, legacy_passports=None, native_source=pack,
         semantic_side_entries=not proposal_only, passport_source_available=True, rank_ready=True,
         gaps=tuple(gaps))
+    _bind_bundle_live_reader(result, live_reader)
+    if view is not live_view:
+        view.register_owner(lambda: _admission_owner_state(result))
     result.assert_current()
     return result
 

@@ -6,6 +6,7 @@ peer-review test keeps the real host entry; correction replaces only the solver.
 import copy
 from dataclasses import replace
 import threading
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -16,6 +17,7 @@ import test_client_live_runtime as runtime_fixtures
 import test_s1_manual_alignment as manual_fixtures
 import test_shared_recovery_residual_contract as recovery_fixtures
 import single_map_structure as structure
+import round_layer_group_commit as group_commit
 
 
 class ProgressiveDisplayContracts(unittest.TestCase):
@@ -25,6 +27,19 @@ class ProgressiveDisplayContracts(unittest.TestCase):
         self.addCleanup(self.fixture.doCleanups)
         self.runtime = self.fixture.runtime
         self.first = dict(copy.deepcopy(self.fixture.fit), markerOccludedWallObservation=True)
+
+    def real_reference_provider(self):
+        """Use the production guarded cache; only its decoded input is fixture data."""
+        from client_providers import SharedReferenceProvider
+        reference = self.fixture.engine.qt_shared_provider('shared-structure', 'fixture-map', '1')
+        key = ('fixture', 'fixture-map', 'variant-01', '1')
+        version = dict(path=reference.path.resolve(), binding=copy.deepcopy(reference.metadata['binding']),
+            canvas=copy.deepcopy(reference.metadata['canvas']),
+            expected=dict(structureVersionKey=reference.metadata['structureVersionKey']))
+        provider = SharedReferenceProvider(reference.path.parent,
+            SimpleNamespace(load=lambda *args, **kwargs: reference), {key: version})
+        self.fixture.engine.qt_shared_provider = provider
+        return provider, key
 
     def run_review(self, final=None, *, boundary=None, real_host=False, cancel_event=None):
         entered, release = threading.Event(), threading.Event()
@@ -101,8 +116,147 @@ class ProgressiveDisplayContracts(unittest.TestCase):
         self.assertAlmostEqual(final["matrix"][0][2] - pending["matrix"][0][2], 17)
         np.testing.assert_allclose(self.runtime._group.root_pose, corrected["matrixSourceToClient"])
 
+    def test_explicit_shared_material_is_generated_once_for_both_publications(self):
+        from shared_structure_display import structure_display_layer
+        from client_route_preferences import shared_structure_display_current
+        self.real_reference_provider()
+        with patch('shared_structure_display.structure_display_layer', wraps=structure_display_layer) as build, \
+             patch('client_route_preferences.shared_structure_display_current',
+                 wraps=shared_structure_display_current) as validate:
+            pending, result, _ = self.run_review()
+        self.assertTrue(result['success'], result)
+        self.assertEqual(build.call_count, 1, 'each publication must validate without regenerating pixels')
+        self.assertEqual(validate.call_count, 2, 'provisional and final publication each validate the source')
+        final = self.runtime.render_payload(result['renderToken'])
+        self.assertIs(final['pixels'], pending['pixels'])
+        self.assertFalse(final['pixels'].flags.writeable)
+
+    def test_shared_publication_rechecks_the_original_resource_guard(self):
+        available = [True]
+        def current():
+            if not available[0]:
+                raise ValueError('controlled-display-resource-superseded')
+        self.fixture.engine.qt_assert_resource_current = current
+        pending, result, _ = self.run_review(boundary=lambda row: available.__setitem__(0, False))
+        self.assertFalse(result['success'], result)
+        self.assertIn('controlled-display-resource-superseded', result['reason'])
+        self.assertIsNone(self.runtime.render_payload(pending['token']))
+
+    def test_author_structural_fallback_keeps_full_policy_rechecks(self):
+        self.fixture.dispatch('set_route_profile', profileId='another-author')
+        original = self.runtime._display_layer
+        with patch.object(self.runtime, '_display_layer', wraps=original) as prepare:
+            pending, result, _ = self.run_review()
+        self.assertTrue(result['success'], result)
+        self.assertEqual(prepare.call_count, 3)
+        final = self.runtime.render_payload(result['renderToken'])
+        self.assertEqual(final['profileId'], 'another-author')
+        self.assertEqual(final['effectiveProfileId'], 'shared-structure')
+        self.assertTrue(final['fallback'])
+
+    def test_custom_source_keeps_its_original_recheck_and_rejects_replacement(self):
+        identity = ['custom-v1']
+        pixels = np.full((20, 24, 4), 255, np.uint8)
+        self.fixture.engine.qt_custom_display = lambda *args: dict(pixels=pixels,
+            matrixDisplayToReference=np.eye(3), resourceIdentity=identity[0],
+            displayKind='custom-gallery', displayLabel='fixture custom', routeProfileId='shared-structure')
+        self.fixture.dispatch('set_route_profile', profileId='custom:fixture')
+        original = self.runtime._display_layer
+        with patch.object(self.runtime, '_display_layer', wraps=original) as prepare:
+            pending, result, _ = self.run_review(boundary=lambda row: identity.__setitem__(0, 'custom-v2'))
+        self.assertEqual(prepare.call_count, 3)
+        self.assertFalse(result['success'], result)
+        self.assertEqual(result['reason'], 'display-resource-changed')
+        self.assertIsNone(self.runtime.render_payload(pending['token']))
+
+    def test_mutable_reference_binding_cannot_change_the_prepared_identity(self):
+        reference = self.fixture.engine.qt_shared_provider('shared-structure', 'fixture-map', '1')
+        pending, result, _ = self.run_review(boundary=lambda row:
+            reference.metadata['binding'].__setitem__('variant', 'replacement'))
+        self.assertFalse(result['success'], result)
+        self.assertEqual(result['reason'], 'display-resource-changed')
+        self.assertIsNone(self.runtime.render_payload(pending['token']))
+
+    def test_prepared_display_bridge_is_detached_from_mutable_provider_result(self):
+        layers = []
+        original = self.runtime._display_layer
+        def display(*args, **kwargs):
+            layer = original(*args, **kwargs)
+            layers.append(layer)
+            return layer
+        def mutate(row):
+            layers[0]['matrixDisplayToReference'][0, 2] += 50
+        with patch.object(self.runtime, '_display_layer', side_effect=display):
+            pending, result, _ = self.run_review(boundary=mutate)
+        self.assertTrue(result['success'], result)
+        final = self.runtime.render_payload(result['renderToken'])
+        np.testing.assert_allclose(final['matrix'], pending['matrix'])
+
+    def test_peer_correction_reuses_pixel_features_but_reprojects_player(self):
+        frame = self.fixture.capture.frame
+        frame[200:470, 300:650] = 120
+        frame[330:336, 470:476] = (0, 220, 220)
+        for y in range(250, 290, 5):
+            frame[y:y + 2, 500:520] = 190
+        corrected = copy.deepcopy(self.first)
+        corrected["matrixSourceToClient"][0, 2] += 17
+        original_stage = self.runtime._stage_round_group_commit
+        tracking = []
+
+        def stage(*args, **kwargs):
+            group = original_stage(*args, **kwargs)
+            tracking.append(group.tracking_for_floor("1"))
+            return group
+
+        with patch.object(group_commit, "map_reuse_evidence", wraps=group_commit.map_reuse_evidence) as reuse, \
+             patch.object(group_commit, "live_stair_screen_candidates", wraps=group_commit.live_stair_screen_candidates) as stairs, \
+             patch.object(group_commit, "map_anchor_focus_point", wraps=group_commit.map_anchor_focus_point) as marker, \
+             patch.object(self.runtime, "_stage_round_group_commit", side_effect=stage):
+            _, result, _ = self.run_review(corrected)
+            self.assertTrue(result["success"], result)
+            self.assertEqual((reuse.call_count, stairs.call_count, marker.call_count), (1, 1, 1))
+            self.assertEqual(len(tracking), 2)
+            for row, fit in zip(tracking, (self.first, corrected)):
+                expected = np.linalg.inv(fit["matrixSourceToClient"]) @ np.array([472.5, 332.5, 1.])
+                np.testing.assert_allclose(row["verifiedPlayerAuthorPoint"], expected[:2])
+                np.testing.assert_array_equal(row["translationMaskMatrix"], fit["matrixSourceToClient"])
+            self.assertGreaterEqual(tracking[1]["verifiedPlayerCommittedMonotonicAt"],
+                                    tracking[0]["verifiedPlayerCommittedMonotonicAt"])
+            self.assertIsNot(tracking[0]["translationMask"][0], tracking[1]["translationMask"][0])
+            np.testing.assert_array_equal(tracking[0]["translationMask"][0], tracking[1]["translationMask"][0])
+
+            # A later solve must use its newly captured pixels even when the
+            # map, floor and component rectangle are unchanged.
+            self.fixture.dispatch("end_round")
+            frame[330:336, 470:476] = 120
+            frame[350:356, 490:496] = (0, 220, 220)
+            self.fixture.begin_and_capture()
+            self.assertEqual((reuse.call_count, stairs.call_count, marker.call_count), (2, 2, 2))
+            expected = np.linalg.inv(self.fixture.fit["matrixSourceToClient"]) @ np.array([492.5, 352.5, 1.])
+            np.testing.assert_allclose(self.runtime._group.tracking["verifiedPlayerAuthorPoint"], expected[:2])
+
+    def test_same_bounds_changed_component_center_recomputes_marker(self):
+        frame = np.full((720, 1280, 3), 120, np.uint8)
+        frame[300:306, 300:306] = (0, 220, 220)
+        frame[300:306, 600:606] = (0, 220, 220)
+        frame.setflags(write=False)
+        scope = group_commit.RoundPoseObservationScope(frame)
+        component = dict(bounds=(0, 0, 1280, 720), center=(300, 300),
+                         width=1280, height=720, area=1280 * 720)
+        first = scope.prepare(frame, component_override=component,
+                              map_anchor_focus_point=group_commit.map_anchor_focus_point)
+        component["center"] = (600, 300)
+        second = scope.prepare(frame, component_override=component,
+                               map_anchor_focus_point=group_commit.map_anchor_focus_point)
+        np.testing.assert_array_equal(first.marker_client_point, [302.5, 302.5])
+        np.testing.assert_array_equal(second.marker_client_point, [602.5, 302.5])
+        with self.assertRaises(ValueError):
+            scope.prepare(frame.copy(), component_override=component,
+                          map_anchor_focus_point=group_commit.map_anchor_focus_point)
+
     def test_existing_recovery_solver_displays_point_pose_before_wall_correction(self):
-        self.fixture.begin_and_capture()
+        initial = self.fixture.begin_and_capture()
+        old_token = initial['renderToken']
         prior = self.runtime._group
         first = self.first["matrixSourceToClient"].copy()
         corrected = first.copy()
@@ -113,7 +267,8 @@ class ProgressiveDisplayContracts(unittest.TestCase):
         pending = []
         def walls(*args, **kwargs):
             row = self.runtime.render_payload(self.runtime._render["token"])
-            self.assertEqual(row["reviewStatus"], "pending")
+            self.assertEqual(row["reviewStatus"], "complete")
+            self.assertEqual(row['token'], old_token)
             self.assertIs(self.runtime._group, prior)
             np.testing.assert_allclose(row["matrix"], first)
             pending.append(row)
@@ -130,7 +285,8 @@ class ProgressiveDisplayContracts(unittest.TestCase):
         self.assertEqual(len(pending), 1)
         final = self.runtime.render_payload(result["renderToken"])
         self.assertEqual(final["reviewStatus"], "complete")
-        self.assertIs(final["pixels"], pending[0]["pixels"])
+        np.testing.assert_array_equal(final["pixels"], pending[0]["pixels"])
+        self.assertNotEqual(final['token'], old_token)
         np.testing.assert_allclose(final["matrix"], corrected)
         np.testing.assert_allclose(self.runtime._group.root_pose, corrected)
 
@@ -156,7 +312,7 @@ class ProgressiveDisplayContracts(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertIsNone(self.runtime.render_payload(pending["token"]))
 
-    def test_cancellation_at_final_publication_withdraws_its_own_grant(self):
+    def test_cancellation_at_final_publication_keeps_completed_grant(self):
         cancel = threading.Event()
         self.fixture.dispatch("start_round")
         def event(row):
@@ -165,8 +321,12 @@ class ProgressiveDisplayContracts(unittest.TestCase):
         self.runtime.set_event_callback(event)
         result = self.runtime.dispatch("capture_now", {}, cancel)
         self.assertFalse(result["success"])
-        self.assertIsNone(self.runtime._render)
-        self.assertFalse(self.runtime.snapshot()["core"]["displayAuthorized"])
+        # Same-scope cancellation follows the completed commit/render-ready;
+        # it cannot revoke that already verified material.
+        self.assertIsNotNone(self.runtime._render)
+        self.assertTrue(self.runtime._render['poseFinalVerified'])
+        self.assertEqual(self.runtime._render['reviewStatus'], 'complete')
+        self.assertTrue(self.runtime.snapshot()["core"]["displayAuthorized"])
 
     def test_close_and_end_reject_late_success(self):
         for action in ("close_map", "end_round"):
@@ -185,13 +345,17 @@ class ProgressiveDisplayContracts(unittest.TestCase):
                 self.assertIsNone(self.runtime._render)
 
     def test_same_path_resource_replacement_rejects_final_commit(self):
-        original = self.runtime._display_layer
-        replacement = [False]
-        def display(*args, **kwargs):
-            layer = original(*args, **kwargs)
-            return dict(layer, resourceIdentity="replacement") if replacement[0] else layer
-        with patch.object(self.runtime, "_display_layer", side_effect=display):
-            pending, result, _ = self.run_review(boundary=lambda row: replacement.__setitem__(0, True))
+        provider, key = self.real_reference_provider()
+        expected = provider.binding_metadata('shared-structure', 'fixture-map', '1')
+        def replacement(row):
+            # Replace the actual cache result at the same physical path. The
+            # versions metadata lookup deliberately still reports the old ID.
+            reference = provider._cache[key]
+            metadata = copy.deepcopy(reference.metadata)
+            metadata['structureVersionKey'] = 'replacement'
+            provider._cache[key] = replace(reference, metadata=metadata)
+            self.assertEqual(provider.binding_metadata('shared-structure', 'fixture-map', '1'), expected)
+        pending, result, _ = self.run_review(boundary=replacement)
         self.assertFalse(result["success"])
         self.assertEqual(result["reason"], "display-resource-changed")
         self.assertIsNone(self.runtime.render_payload(pending["token"]))
@@ -275,11 +439,17 @@ class ProgressiveDisplayContracts(unittest.TestCase):
                     fit["observationComponent"] = dict(bounds=[0, 0, 1280, 720], center=[640, 360],
                                                        width=1280, height=720, area=1280*720)
                     pending = []
+                    final_fit = copy.deepcopy(fit)
+                    if season == "s1":
+                        final_fit["observationComponent"].update(bounds=[0, 0, 640, 720],
+                                                                 center=[320, 360], width=640, area=640 * 720)
                     def controlled(host, *args, **kwargs):
                         host._offer_usable_fit(fit)
                         pending.append(runtime.render_payload(runtime._render["token"]))
-                        return fit
-                    with patch.object(_AlignmentHost, "fit", controlled):
+                        return final_fit
+                    with patch.object(_AlignmentHost, "fit", controlled), \
+                         patch.object(group_commit, "live_stair_screen_candidates",
+                                      wraps=group_commit.live_stair_screen_candidates) as stairs:
                         if season == "s0":
                             runtime.dispatch("start_round")
                             result = runtime.dispatch("capture_now")
@@ -287,6 +457,7 @@ class ProgressiveDisplayContracts(unittest.TestCase):
                             self.assertFalse(runtime.dispatch("start_round")["success"])
                             producer.prepare()
                             result = runtime.dispatch("confirm_route", dict(mapId="fixture-map"))
+                    self.assertEqual(stairs.call_count, 2 if season == "s1" else 1)
                     self.assertTrue(result["success"], result)
                     self.assertEqual(len(pending), 1)
                     self.assertTrue(requests)
@@ -299,8 +470,67 @@ class ProgressiveDisplayContracts(unittest.TestCase):
                     self.assertEqual(final["reviewStatus"], "complete")
                     self.assertFalse(final["liveAuthorization"])
                     if season == "s1":
+                        self.assertEqual(runtime._group.tracking["component"]["bounds"], (0, 0, 640, 720))
                         self.assertFalse(runtime.snapshot()["liveEngineAvailable"])
                         self.assertFalse(runtime.dispatch("capture_now")["success"])
+
+
+import test_client_local_identity_commit as identity_fixtures
+
+
+class StreamPixelPreparationContracts(unittest.TestCase):
+    """Real imported map stream; only capture, turn measurements and fit supplied."""
+    setUpClass = identity_fixtures.LocalIdentityCommitTests.__dict__['setUpClass']
+    setUp = identity_fixtures.LocalIdentityCommitTests.setUp
+    opening = identity_fixtures.LocalIdentityCommitTests.opening
+    drain_race = identity_fixtures.LocalIdentityCommitTests.drain_race
+
+    def test_candidate_and_identity_material_share_pixels_only_within_this_frame(self):
+        frame = self.capture.frame
+        frame[200:470, 300:650] = 120
+        frame[330:336, 470:476] = (0, 220, 220)
+        for y in range(250, 290, 5):
+            frame[y:y + 2, 500:520] = 190
+        material_ready = threading.Event()
+        ready = []
+        tracking = []
+        stage = self.runtime._stage_round_group_commit
+
+        def record(event):
+            if event.get('event') == 'render-ready':
+                ready.append(dict(self.runtime._render))
+                material_ready.set()
+
+        def wait_for_preview(lane, row):
+            if lane == 'structure':
+                self.assertTrue(material_ready.wait(5), 'candidate must publish real material first')
+
+        def staged(*args, **kwargs):
+            group = stage(*args, **kwargs)
+            tracking.append(group.tracking_for_floor('1'))
+            return group
+
+        self.before_verify = wait_for_preview
+        self.runtime.set_event_callback(record)
+        with patch.object(group_commit, 'map_reuse_evidence', wraps=group_commit.map_reuse_evidence) as reuse, \
+             patch.object(group_commit, 'live_stair_screen_candidates', wraps=group_commit.live_stair_screen_candidates) as stairs, \
+             patch.object(group_commit, 'map_anchor_focus_point', wraps=group_commit.map_anchor_focus_point) as marker, \
+             patch.object(self.runtime, '_stage_round_group_commit', side_effect=staged), \
+             patch('client_live_runtime.INITIAL_IDENTITY_BUDGET_SECONDS', 8.):
+            result = self.opening()
+            self.assertTrue(result['success'], result)
+            self.assertTrue(self.runtime.snapshot()['identityLocked'])
+            self.assertGreaterEqual(len(ready), 2)
+            self.assertTrue(ready[0]['candidateDisplayOnly'])
+            self.assertFalse(ready[-1]['candidateDisplayOnly'])
+            self.assertEqual(ready[0]['frameId'], ready[-1]['frameId'])
+            self.assertEqual((reuse.call_count, stairs.call_count, marker.call_count), (1, 1, 1))
+            self.assertIsNot(tracking[0]['translationMask'][0], tracking[-1]['translationMask'][0])
+            np.testing.assert_array_equal(tracking[0]['translationMask'][0], tracking[-1]['translationMask'][0])
+            self.runtime.dispatch('close_map')
+            reopened = self.runtime.dispatch('map', dict(openIntent=True, inputSequence=2))
+            self.assertTrue(reopened['success'], reopened)
+            self.assertEqual((reuse.call_count, stairs.call_count, marker.call_count), (2, 2, 2))
 
 
 if __name__ == "__main__":

@@ -144,6 +144,32 @@ class NativeBaseExporterTests(unittest.TestCase):
         return exporter.export_package(self.source, self.output, package_id='fixture-package',
                                        resource_version='v1', **kwargs)
 
+    def test_s0_export_supplies_fast_preparations_to_the_real_online_loader(self):
+        from fast_structure_alignment import load_prepared, prepare
+        from imported_native_base import decode_native_base
+
+        report = self.export()
+        installed = self.root / 'installed-fast'
+        saved = archives.save_archive(self.output, installed)
+        base_ref = next(ref for ref in saved.component_refs if ref.component_id == 'base')
+        bundle = decode_native_base(PackageView(installed, base_ref))
+        source = bundle.fast_structure_source
+        self.assertEqual(len(source.entries), 3)
+        self.assertEqual(source.gaps, ())
+        self.assertEqual(report['fastPreparedLayerCount'], 3)
+        for profile, mid, variant, floor in bundle.resources.entries:
+            reference = bundle.resources.load(profile, mid, floor, variant=variant)
+            expected = prepare(reference.clean_mask)
+            # Reference preparation belongs to export/activation. Normal reads
+            # must consume that declared resource, even on a fresh cache.
+            with patch('fast_structure_alignment.prepare', side_effect=AssertionError('online preparation')):
+                actual = load_prepared(reference, source=source)
+            self.assertIsNotNone(actual)
+            self.assertEqual(actual.shape, expected.shape)
+            self.assertEqual(actual.pitch, expected.pitch)
+            for name in ('distance', 'chains', 'rays'):
+                np.testing.assert_array_equal(getattr(actual, name), getattr(expected, name))
+
     def test_public_cli_creates_native_base_suffix_with_real_package_contents(self):
         from resource_package_types import BASE_SUFFIX, validate_package_filename
         output = self.root / ('cli-output' + BASE_SUFFIX)
@@ -171,6 +197,7 @@ class NativeBaseExporterTests(unittest.TestCase):
         reader = ComponentResourceReader(views['base'])
         context = reader.json('resource-context.json')
         self.assertEqual(context['runtimeInterfaces'], dict(exporter.INTERFACES,
+            fastStructureIndex='references/fast-structure/index.json',
             reviewedFrontGroups='references/reviewed-front-groups.json'))
         pack = reader.json(exporter.PACK)
         self.assertEqual(pack['schemaVersion'], 1)
@@ -254,7 +281,9 @@ class NativeBaseExporterTests(unittest.TestCase):
         with np.load(path, allow_pickle=False) as product:
             metadata = product['metadata'].copy()
         np.savez_compressed(path, metadata=metadata, shared_mask=np.ones((4, 4), np.uint8))
-        with self.assertRaisesRegex(ValueError, 'roundtrip-typed-product'):
+        # Preparation uses the same typed decoder before producing any saved
+        # arrays, so malformed pixels now fail at this earlier producer step.
+        with self.assertRaisesRegex(ValueError, 'fast-prepared-source-invalid:fixture-map/1'):
             self.export()
         self.assertFalse(self.output.exists())
 

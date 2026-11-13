@@ -251,9 +251,42 @@ def _base_payloads(source):
     payloads[PACK] = _encoded(converted)
     payloads[COORDINATES] = _encoded(coordinates)
     payloads[EXIT] = _encoded(exit_template)
+    fast_index = _add_fast_preparations(payloads, typed)
     payloads['resource-context.json'] = _encoded(dict(schema='xingtu-native-recognition-base-v1',
-        season='s0', mode='nightmare', runtimeInterfaces=INTERFACES))
+        season='s0', mode='nightmare', runtimeInterfaces=dict(INTERFACES, fastStructureIndex=fast_index)))
     return payloads, len(ids)
+
+
+def _add_fast_preparations(payloads, typed):
+    """Generate static solver inputs from the exact exported typed products.
+
+    This is a producer operation. Imported runtime frames only read the saved
+    arrays through the same fast-structure source used by S1.
+    """
+    from fast_structure_alignment import prepare
+    from imported_fast_structure import INDEX_KIND, INDEX_PATH
+    from shared_structure_reference import load_shared_structure
+
+    entries = []
+    for (mid, floor), row in sorted(typed.items()):
+        original = row['resourcePath']
+        binding = {key: row[key] for key in ('profile', 'mapId', 'floor', 'variant')}
+        reference = load_shared_structure(original, expected_binding=binding,
+            read_resource=lambda path: payloads[path.as_posix()])
+        if reference is None:
+            _reject('fast-prepared-source-invalid:' + mid + '/' + floor)
+        prepared = prepare(reference.clean_mask)
+        # Map and floor form a declared key, so equal source basenames in
+        # different directories cannot overwrite another prepared layer.
+        target = _relative(f'references/fast-structure/{mid}/{floor}.npz')
+        output = BytesIO()
+        np.savez_compressed(output, distance=prepared.distance, chains=prepared.chains,
+            rays=prepared.rays, pitch=np.asarray(prepared.pitch), shape=np.asarray(prepared.shape, dtype=np.int64),
+            sourceMetadata=np.asarray(_encoded(reference.metadata).decode('utf-8')))
+        payloads[target] = output.getvalue()
+        entries.append(dict(binding=binding, referenceResource=original, preparedResource=target))
+    payloads[INDEX_PATH] = _encoded(dict(schemaVersion=1, resourceKind=INDEX_KIND, entries=entries))
+    return INDEX_PATH
 
 
 def _s0_difficult_base_payloads(source):
@@ -371,7 +404,8 @@ def _s0_difficult_base_payloads(source):
     runtime = {key: interfaces[key] for key in
         ('identityPack', 'sourceManifest', 'typedIndex', 'coordinatePack', 'neutralDisplay', 'identityEntries')}
     runtime.update(identityProfile='shared-structure', entryEvidenceRole=ENTRY_ROLE,
-                   entryResourceAnchor='component-root', nativePassports='unavailable', legacyClean=legacy)
+                   entryResourceAnchor='component-root', nativePassports='unavailable', legacyClean=legacy,
+                   fastStructureIndex=_add_fast_preparations(payloads, typed))
     payloads['resource-context.json'] = _encoded(dict(schema='xingtu-native-recognition-base-v1',
         season='s0', mode='difficult', runtimeInterfaces=runtime))
     return payloads, len(ids)
@@ -759,18 +793,24 @@ def _round_trip(path, destination, *, season='s0', mode='nightmare'):
         inspected = archives.inspect_archive(path)
         saved = archives.save_archive(path, destination, expected_archive_sha256=inspected.archive_sha256)
         refs = {ref.component_id: ref for ref in saved.component_refs}
-        bundle = decode_native_base(PackageView(destination, refs['base']), season='s0', mode='difficult')
+        base_view = PackageView(destination, refs['base'])
+        bundle = decode_native_base(base_view, season='s0', mode='difficult')
         controls = S0ControlsProfile(PackageView(destination, refs['controls']))
         context = controls.for_context('s0', 'difficult')
         if context is None or set(context.contract.floor_ids) != set(bundle.pack.floors):
             _reject('roundtrip-controls-floors')
+        from client_providers import SharedReferenceProvider
+        provider = SharedReferenceProvider(base_view.root, bundle.resources, bundle.versions,
+            check_current=bundle.assert_current)
+        bundle.fast_structure_source.validate_all(provider, compare_derived=True)
         bundle.assert_current()
         return dict(mapCount=len(bundle.pack.maps), typedLayerCount=len(bundle.resources.entries),
             legacyLayerCount=len(bundle.legacy_references.bindings) if bundle.legacy_references else 0,
             mainEntries=len(bundle.entry_identity.entries), localEntries=len(bundle.side_entry_identity.entries),
             controlsTemplates=len(controls.templates.labels), controlsLabels=list(controls.templates.label_values),
             rankReady=bundle.rank_ready, nativePassportsAvailable=bundle.passport_source_available,
-            semanticSideEntries=bundle.semantic_side_entries, **_group_report(bundle))
+            semanticSideEntries=bundle.semantic_side_entries,
+            fastPreparedLayerCount=len(bundle.fast_structure_source.entries), **_group_report(bundle))
     if (season, mode) != ('s0', 'nightmare'):
         _reject('context-unsupported')
     from difficult_entry_identity import MapEntryGeometryIdentity
@@ -819,10 +859,13 @@ def _round_trip(path, destination, *, season='s0', mode='nightmare'):
         _reject('roundtrip-controls-floors')
     from imported_native_base import decode_native_base
     bundle = decode_native_base(base, season='s0', mode='nightmare')
+    bundle.fast_structure_source.validate_all(
+        lambda profile, mid, floor: bundle.resources.load(profile, mid, floor), compare_derived=True)
     return dict(mapCount=len(pack.maps), typedLayerCount=len(resources.entries),
                 mainEntries=len(main.entries), localEntries=len(local.entries),
                 controlsTemplates=len(controls.templates.labels),
-                controlsLabels=list(controls.templates.label_values), **_group_report(bundle))
+                controlsLabels=list(controls.templates.label_values),
+                fastPreparedLayerCount=len(bundle.fast_structure_source.entries), **_group_report(bundle))
 
 
 def _discard_owned_temporary(path, identity):
@@ -871,7 +914,7 @@ def _publish_output(staged, output, digest, *, before_move=None):
 
 
 def export_package(source_root, output, *, package_id, resource_version, source_inventory=None,
-                   season='s0', mode='nightmare', group_registration=None):
+                   season='s0', mode='nightmare', group_registration=None, s1_coordinate_asset_dir=None):
     """Validate and exclusively create the requested ZIP; never alter source."""
     output = Path(output).absolute()
     files._no_links(output)
@@ -893,6 +936,17 @@ def export_package(source_root, output, *, package_id, resource_version, source_
     else:
         base, map_count = _s1_base_payloads(source, mode=mode)
         controls = _s1_controls_payloads(mode=mode)
+    if s1_coordinate_asset_dir is not None:
+        if season != 's1':
+            _reject('s1-coordinate-assets-context')
+        from imported_native_base import (S1_COORDINATE_INTERFACE, S1_COORDINATE_DIRECTORY,
+                                          S1_COORDINATE_FILES)
+        assets = _Source(s1_coordinate_asset_dir, None)
+        for name in S1_COORDINATE_FILES:
+            base[S1_COORDINATE_DIRECTORY + '/' + name] = assets.read(name)
+        declaration = decode_resource_json(base['resource-context.json'])
+        declaration['runtimeInterfaces'][S1_COORDINATE_INTERFACE] = S1_COORDINATE_DIRECTORY
+        base['resource-context.json'] = _encoded(declaration)
     _embed_front_groups(base, season=season, mode=mode, registration=group_registration)
     payloads = {'base': base, 'controls': controls}
     context = [dict(season=season, mode=mode)]
@@ -944,6 +998,8 @@ def main(argv=None):
     parser.add_argument('--source-inventory', type=Path)
     parser.add_argument('--group-registration', type=Path,
                         help='Explicit project-reviewed group data for this base context')
+    parser.add_argument('--s1-coordinate-asset-dir', type=Path,
+                        help='Explicit S1 base coordinate index and glyph calibration directory')
     parser.add_argument('--season', choices=('s0', 's1'), default='s0')
     parser.add_argument('--mode', choices=('nightmare', 'difficult'), default='nightmare')
     args = parser.parse_args(argv)
@@ -951,7 +1007,8 @@ def main(argv=None):
         parser.error(f'--output 必须以 {BASE_SUFFIX} 结尾；.zip 是内部 ZIP 容器名，不能作为结构包输出后缀。')
     print(json.dumps(export_package(args.source_root, args.output, package_id=args.package_id,
         resource_version=args.resource_version, source_inventory=args.source_inventory,
-        season=args.season, mode=args.mode, group_registration=args.group_registration),
+        season=args.season, mode=args.mode, group_registration=args.group_registration,
+        s1_coordinate_asset_dir=args.s1_coordinate_asset_dir),
         ensure_ascii=False, sort_keys=True))
 
 

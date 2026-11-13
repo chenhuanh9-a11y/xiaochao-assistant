@@ -39,7 +39,7 @@ class SeasonPreparationTests(unittest.TestCase):
             for stage in stages:
                 result = subprocess.run([sys.executable, str(Path(__file__).resolve()),
                     "--scenario", stage, str(root)], env=dict(os.environ),
-                    capture_output=True, text=True, timeout=30)
+                    capture_output=True, text=True, timeout=120)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 evidence = json.loads(result.stdout.strip().splitlines()[-1])
                 self.assertTrue(evidence["closed"], evidence)
@@ -228,6 +228,14 @@ def scenario(name, root):
              patch.object(ImportedResourceService, "_scan", scan):
             client = QtClient(app, root, probe_output=root / "unused.json", info_fetch=lambda *a, **k: {})
             factory.assert_called_once_with(client.resource_resolver, client.paths)
+            # The real archive inventory is a prerequisite, not part of the
+            # controlled engine scenario's original five-second deadline.
+            # inventoryLoaded avoids the initial not-busy window before Qt's
+            # startup singleShot has even admitted the inventory request.
+            wait(lambda: client.resources.inventoryLoaded and not client.resources.busy
+                and all(client.resources.contextAvailable(season, mode) for season, mode in (
+                    ('s0', 'nightmare'), ('s0', 'difficult'), ('s1', 'nightmare'))),
+                'initial real resource inventory', seconds=90)
             if name == "cancelled-late":
                 wait(entered.is_set, "startup entered controlled build")
                 wait(lambda: not client.resources.busy and client.resources.contextAvailable('s1', 'nightmare'),

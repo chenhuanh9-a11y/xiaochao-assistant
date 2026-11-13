@@ -64,6 +64,14 @@ class ImportedS1ControlsContext:
     visual_order: tuple[int, ...]
 
 
+@dataclass(frozen=True)
+class _S1ObservationControls:
+    context: ImportedS1ControlsContext | None
+    fixed_search_region: tuple[float, ...]
+    expanded_search_region: tuple[float, ...]
+    map_ui: MapUiGeometryParameters
+
+
 def _context(key, value):
     if not isinstance(value, dict) or set(value) != {'floors', 'visualOrder'}:
         _reject('context-fields-invalid')
@@ -171,6 +179,11 @@ class S1ControlsProfile:
         if not isinstance(season, str) or not isinstance(mode, str):
             return None
         return self._contexts.get(season + ':' + mode)
+
+    def observation_parameters(self, season, mode):
+        """Caller must check this profile again before returning pixel evidence."""
+        return _S1ObservationControls(self.for_context(season, mode), self._fixed,
+                                      self._expanded, self._map_ui)
 
     @property
     def fixed_search_region(self):

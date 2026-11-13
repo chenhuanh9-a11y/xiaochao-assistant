@@ -133,7 +133,9 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
         deadline = time.monotonic() + 5
         while setup_settings.busy and time.monotonic() < deadline:
             self.app.processEvents()
-            QTest.qWait(10)
+            # This loop waits for a Python QRunnable doing the real durable
+            # write. Yield the GIL as well as pumping queued UI completion.
+            time.sleep(.002)
         self.assertFalse(setup_settings.busy, setup_settings.message)
         self.assertEqual(setup_settings.persistedValues["contextRouteProfiles"].get("s1:difficult"), None)
         setup_settings.shutdown()
@@ -582,8 +584,12 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
                 self.assertTrue(capabilities['dataReady'])
                 self.assertTrue(capabilities['rankReady'])
                 self.assertFalse(capabilities['liveReady'])
-                self.assertFalse(capabilities['floorObservation']['automaticFloorEligible'])
-                self.assertFalse(capabilities['candidateObservation']['candidateReady'])
+                floor_capability = capabilities['floorObservation']
+                self.assertEqual(floor_capability['validationScope'], 'source-image-replay')
+                self.assertEqual(floor_capability['sourceReplayFloors'], [-1, -2, -3, -4])
+                self.assertFalse(floor_capability['liveValidated'])
+                self.assertTrue(capabilities['candidateObservation']['candidateReady'])
+                self.assertFalse(capabilities['candidateObservation']['liveValidated'])
                 image = item('galleryLargePreview')
                 if image is None or not image.isVisible():
                     if not click("galleryViewAuthor_" + PROFILE_ID):

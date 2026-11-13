@@ -461,12 +461,29 @@ class EngineAdapter:
                 raise EngineUnavailable(f"saved-frame-floor-unavailable:{mode}/{context['floor']}")
             if self._cancelled(cancelled):
                 return {}
-            # This is the existing shared production entry, not an adapter solve.
-            # Its budget is cooperative; it has no cancellation callback. Cancel
-            # is checked before and after rank, and obsolete output is discarded.
-            rows = engine.rank(frame, floor=context["floor"], limit=len(engine.pack.maps),
-                               budget_seconds=budget)
-            diagnostics = copy.deepcopy(getattr(engine, "last_difficult_evidence", None))
+            scan = getattr(engine, 'qt_structure_scan', None)
+            if callable(scan) and getattr(engine, 'qt_native_base', None) is not None:
+                from s1_structure_selection import StructureCandidateScanner
+                def obsolete():
+                    with self._lock:
+                        return self._cancelled(cancelled) or resource_revision != self._revision
+                options = (dict(on_entry_evidence=lambda evidence:
+                    any(row.get('identityHardGatePassed') is True for row in evidence['rows']))
+                    if season == 's0' else {})
+                report = scan(frame, floor=context['floor'], floor_source='operator-declared',
+                    cancelled=obsolete, budget_seconds=budget, **options)
+                if obsolete() or report['status'] == 'cancelled':
+                    return {}
+                entries = report.get('entryEvidence', {}).get('rows', [])
+                rows = entries if any(row.get('identityHardGatePassed') is True for row in entries) else (
+                    StructureCandidateScanner.rank_rows(report, engine.pack))
+                diagnostics = copy.deepcopy(getattr(engine, 'last_difficult_evidence', None)) or {}
+                diagnostics['structureObservation'] = {key: value for key, value in report.items() if key != 'poses'}
+            else:
+                # Explicit legacy/offline engines retain their old collector.
+                rows = engine.rank(frame, floor=context["floor"], limit=len(engine.pack.maps),
+                                   budget_seconds=budget)
+                diagnostics = copy.deepcopy(getattr(engine, "last_difficult_evidence", None))
             candidates = copy.deepcopy(rows)
         # Shared rank output may contain NumPy matrices/scalars. Keep the
         # boundary JSON/QVariant compatible without copying solver logic.

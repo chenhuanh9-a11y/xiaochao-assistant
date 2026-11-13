@@ -15,8 +15,7 @@ import numpy as np
 
 from client_space_geometry import centered_safe_viewport
 from floor_contract import floor_contract
-from map_interface_observation import MAP_REGIONS, detect_map_interface, neutral_ratio
-from s1_map_ui_geometry import observe_s1_map_ui_geometry
+from map_interface_observation import detect_map_interface
 
 
 CAPABILITY = "s1-floor-only-manual-map-use"
@@ -24,6 +23,53 @@ ORDER = (-1, -2, -3, -4)
 SEARCH_BOUNDS = (.80, .12, .92, .56)
 EXPANDED_SEARCH_BOUNDS = (.55, .04, .985, .93)
 SOURCE_REPLAY_FLOORS = (-1, -2, -3, -4)
+
+
+def _source_replay_parameter_gaps(parameters, *, season, mode):
+    """Compare the decoder's actual values with this observer's reviewed inputs.
+
+    Qualification belongs to this algorithm, not a package identity or a claim
+    in its payload. In particular, compare decoded endpoints without rounding
+    or tolerances: legal alternative search parameters remain unreviewed.
+    """
+    from s1_map_ui_geometry import SEARCH, SIZES, MIN_CORRELATION
+    context = parameters.context
+    contract = floor_contract(mode, season=season)
+    gaps = []
+    if (context is None or contract is None or season != 's1'
+            or context.key != f'{season}:{mode}' or context.contract != contract
+            or context.visual_order != ORDER or contract.observed_values != ORDER):
+        gaps.append('s1-controls-floor-contract-not-source-replay-equivalent')
+    def bounds(region):
+        x, y, width, height = region
+        return x, y, x + width, y + height
+    for actual, expected, name in (
+            (bounds(parameters.fixed_search_region), SEARCH_BOUNDS, 'fixed-search-region'),
+            (bounds(parameters.expanded_search_region), EXPANDED_SEARCH_BOUNDS, 'expanded-search-region'),
+            (dict(parameters.map_ui.search), SEARCH, 'map-ui-search'),
+            (parameters.map_ui.sizes, SIZES, 'map-ui-sizes'),
+            (dict(parameters.map_ui.minimum_correlation), MIN_CORRELATION, 'map-ui-correlation')):
+        if actual != expected:
+            gaps.append(f's1-controls-{name}-not-source-replay-equivalent')
+    return tuple(gaps)
+
+
+def _controls_parameters(controls, *, season, mode):
+    from imported_s1_controls_profile import S1ControlsProfile
+    if not isinstance(controls, S1ControlsProfile):
+        raise ValueError('s1-controls-profile-required')
+    parameters = controls.observation_parameters(season, mode)
+    if parameters.context is None:
+        raise ValueError('s1-controls-context-unsupported')
+    return parameters
+
+
+def controls_source_replay_gaps(controls, *, season, mode):
+    """Current-owner qualification shared by observation and native context."""
+    parameters = _controls_parameters(controls, season=season, mode=mode)
+    gaps = _source_replay_parameter_gaps(parameters, season=season, mode=mode)
+    controls.assert_current()
+    return gaps
 
 
 def _result(season, mode, reason, **extra):
@@ -113,24 +159,26 @@ def detect_s1_floor(frame, *, season, mode, frame_id=None, expected_frame_id=Non
                   expected_frame_id=expected_frame_id, frame_current=frame_current)
     if controls is None:
         return _detect_s1_floor(frame, **kwargs)
-    from imported_s1_controls_profile import S1ControlsProfile
-    if not isinstance(controls, S1ControlsProfile):
-        raise ValueError('s1-controls-profile-required')
-    context = controls.for_context(season, mode)
-    if context is None:
-        raise ValueError('s1-controls-context-unsupported')
+    parameters = _controls_parameters(controls, season=season, mode=mode)
+    context = parameters.context
+    gaps = _source_replay_parameter_gaps(parameters, season=season, mode=mode)
     def bounds(region):
         x, y, width, height = region
         return x, y, x + width, y + height
-    result = _detect_s1_floor(frame, **kwargs, floor_context=context,
-        fixed_search_bounds=bounds(controls.fixed_search_region),
-        expanded_search_bounds=bounds(controls.expanded_search_region), map_ui=controls.map_ui)
+    if not gaps:
+        # Equal decoded inputs use the same coordinate/UI/scale policy as the
+        # reviewed native observer. Storage location cannot select an algorithm.
+        result = _detect_s1_floor(frame, **kwargs)
+    else:
+        result = _detect_s1_floor(frame, **kwargs, floor_context=context,
+            fixed_search_bounds=bounds(parameters.fixed_search_region),
+            expanded_search_bounds=bounds(parameters.expanded_search_region), map_ui=parameters.map_ui)
     controls.assert_current()
-    # The external parameter path has not had source-image replay, including
-    # profiles numerically equal to the defaults. Payload declarations cannot
-    # inherit the trusted default observer's static evidence qualification.
+    if not gaps:
+        return result
+    # Alternative parameters still supply pixel proposals, not replay authority.
     return dict(result, automaticFloorEligible=False, observedFloorValidated=False,
-                validationScope="external-controls-unreviewed")
+                validationScope="external-controls-unreviewed", qualificationGaps=list(gaps))
 
 
 def _detect_s1_floor(frame, *, season, mode, frame_id=None, expected_frame_id=None,
@@ -190,7 +238,8 @@ def _detect_s1_floor(frame, *, season, mode, frame_id=None, expected_frame_id=No
                          width if external_parameters else None), **map_parameters)
         if independent is None:
             return dict(out, reason="s1-floor-localization-ui-unverified" if localized
-                        and out["mapOpen"] is True else "s1-floor-map-not-open")
+                        and out["mapOpen"] is True else "s1-floor-independent-ui-unverified"
+                        if out["mapOpen"] is True else "s1-floor-map-not-open")
     if out["mapOpen"] is not True:
         if column.get("selectedFloor") is None:
             return dict(out, reason="s1-floor-map-not-open")
@@ -227,16 +276,6 @@ def _s1_independent_map_evidence(frame, observation, *, floor_bounds=None, floor
         return None
     if observation.get("shapeAccepted") is not True:
         return None
-    required = observation.get("requiredBackdropRatio")
-    backdrop = observation.get("backdropRatio", 0.0)
-    if required is None or backdrop < required:
-        return None
-    independent = ("closeButton", "zoomControl", "bottomControls")
-    # Excluding floor pixels cannot increase a ratio with the same denominator.
-    # Skip the temporary frame for ordinary closed gameplay missing any anchor.
-    raw_ratios = observation.get("ratios", {})
-    if any(raw_ratios.get(name, 0.0) < MAP_REGIONS[name][4] for name in independent):
-        return None
     # Broad legacy UI rectangles overlap the floor search at their left edge.
     # Zero that entire area in a temporary measurement frame so a moved or
     # oversized floor highlight cannot supply its own corroborating anchor.
@@ -257,11 +296,7 @@ def _s1_independent_map_evidence(frame, observation, *, floor_bounds=None, floor
                           round(viewport.left + viewport.width * bounds[2]),
                           round(viewport.top + viewport.height * bounds[3]))
         floor_search_right = bounds[2]
-    anchor_frame = frame.copy()
-    anchor_frame[y0:y1, x0:x1] = 0
-    geometry_frame = frame.copy() if full_client_search else frame
-    if full_client_search:
-        geometry_frame[y0:y1, x0:x1] = 0
+    exclusions = [(x0, y0, x1, y1)]
     if floor_bounds is not None:
         if (not isinstance(floor_bounds, (list, tuple)) or len(floor_bounds) != 4
                 or any(type(value) is not int for value in floor_bounds)):
@@ -269,28 +304,22 @@ def _s1_independent_map_evidence(frame, observation, *, floor_bounds=None, floor
         fx0, fy0, fx1, fy1 = floor_bounds
         if not (0 <= fx0 < fx1 <= width and 0 <= fy0 < fy1 <= height):
             return None
-        anchor_frame[fy0:fy1, fx0:fx1] = 0
-        if not full_client_search:
-            geometry_frame = frame.copy()
-        geometry_frame[fy0:fy1, fx0:fx1] = 0
-    ratios = {name: neutral_ratio(anchor_frame, MAP_REGIONS[name]) for name in independent}
-    if all(ratios.get(name, 0.0) >= MAP_REGIONS[name][4] for name in independent):
-        geometry = observe_s1_map_ui_geometry(geometry_frame, floor_search_right=floor_search_right,
-                                              parameters=map_ui)
-        if geometry.get("verified") is True:
-            if floor_scale is not None:
-                # New search-domain columns must sit beside the independent
-                # control group; a signed list elsewhere on an open map is not
-                # the floor HUD. Only disjoint shape pixels supply this proof.
-                shapes = geometry["shapes"]
-                center = (fx0 + fx1) / 2
-                gap = (shapes["plus"]["center"][0] - center) / floor_scale
-                if (not .025 <= gap <= .16
-                        or shapes["close"]["center"][1] > fy0 + .075 * floor_scale
-                        or fy1 > shapes["minus"]["center"][1] + .075 * floor_scale):
-                    return None
-            return "s1-signed-controls-ui-geometry"
-    return None
+        exclusions.append((fx0, fy0, fx1, fy1))
+    from independent_map_ui import observe_independent_map_ui
+    evidence = observe_independent_map_ui(frame, observation, excluded_bounds=tuple(exclusions),
+        floor_search_right=floor_search_right, parameters=map_ui)
+    if evidence['verified'] is not True:
+        return None
+    if floor_scale is not None:
+        # The signed column must sit beside the independent control group.
+        shapes = evidence['geometry']['shapes']
+        center = (fx0 + fx1) / 2
+        gap = (shapes['plus']['center'][0] - center) / floor_scale
+        if (not .025 <= gap <= .16
+                or shapes['close']['center'][1] > fy0 + .075 * floor_scale
+                or fy1 > shapes['minus']['center'][1] + .075 * floor_scale):
+            return None
+    return 's1-signed-controls-ui-geometry'
 
 
 def _observe_signed_column(frame, width, height, *, search_bounds=None,

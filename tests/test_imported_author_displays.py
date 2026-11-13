@@ -4,6 +4,9 @@ ZIP fixtures are synthetic resources, not screenshot/game acceptance. Only the
 non-unit canonical basis test replaces a mathematical adapter return value.
 """
 from copy import deepcopy
+import ctypes
+import os
+from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -12,6 +15,7 @@ import numpy as np
 
 from client_imported_providers import SUPPORTED_CAPABILITIES, build_imported_engine_factories
 from client_paths import RuntimePaths
+from client_providers import DisplayResourceChanged
 from client_route_preferences import prepare_display_layer
 from imported_author_displays import ImportedAuthorDisplays
 from imported_resource_catalog import ResourceCatalogError, ResourceResolver
@@ -19,14 +23,15 @@ from test_imported_author_display import _AuthorDisplayFixture, encoded, image_b
 
 
 class ImportedAuthorDisplaysTests(_AuthorDisplayFixture):
-    def factory(self, views):
+    def factory(self, views, *, resource_root=None):
         self.catalog_document = dict(schema='xingtu-resource-catalog-v1', generation=str(uuid4()),
             contexts={'s1:difficult':dict(recognitionBase=self.wire(self.refs['base']),
                 controls=self.wire(self.refs['controls']), reviewedGroups=None)},
             displays=[self.wire(view.component_ref) for view in views])
         self.catalog_path = self.resources/'catalog.json'
         self.catalog_path.write_bytes(encoded(self.catalog_document))
-        resolver = ResourceResolver(self.resources, supported_capabilities=SUPPORTED_CAPABILITIES)
+        resolver = ResourceResolver(self.resources if resource_root is None else resource_root,
+                                    supported_capabilities=SUPPORTED_CAPABILITIES)
         factories = build_imported_engine_factories(resolver, RuntimePaths(self.root, False))
         engine = factories._get('difficult', season='s1')
         return factories, engine
@@ -45,6 +50,102 @@ class ImportedAuthorDisplaysTests(_AuthorDisplayFixture):
         np.testing.assert_array_equal(result['matrixDisplayToReference'], np.eye(3))
         np.testing.assert_array_equal(result['pixels'][...,3] != 0, reference.clean_mask != 0)
         return result
+
+    def short_path_alias(self, path):
+        if os.name != 'nt':
+            self.skipTest('GetShortPathNameW is Windows-only')
+        get_short_path = ctypes.windll.kernel32.GetShortPathNameW
+        get_short_path.argtypes = (ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32)
+        get_short_path.restype = ctypes.c_uint32
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = get_short_path(str(path), buffer, len(buffer))
+        if not length or length >= len(buffer):
+            self.skipTest('GetShortPathNameW could not obtain a real alias for this temp path')
+        alias = Path(buffer.value)
+        if alias == path:
+            self.skipTest('8.3 aliases are unavailable for this temp path on this volume')
+        self.assertTrue(alias.samefile(path))
+        return alias
+
+    def test_windows_short_root_factory_selects_original_author_pixels(self):
+        view, document, members = self.package()
+        alias = self.short_path_alias(self.resources)
+        _, engine = self.factory([view], resource_root=alias)
+        mid, floor = self.source.ids[0], '-4'
+        result = prepare_display_layer(engine, mid, floor, 'author-fixture')
+        self.assertEqual(result['displayKind'], 'author-route')
+        self.assertEqual(result['preferredProfileId'], 'author-fixture')
+        self.assertEqual(result['effectiveProfileId'], 'author-fixture')
+        self.assertFalse(result['fallback'])
+        np.testing.assert_array_equal(result['pixels'], cv2.imdecode(
+            np.frombuffer(members['images/route.png'], np.uint8), cv2.IMREAD_UNCHANGED))
+        np.testing.assert_array_equal(result['matrixDisplayToReference'],
+                                      document['layers'][0]['matrixDisplayToReference'])
+        optional = engine.qt_optional_displays
+        row = optional.binding('author-fixture', mid, floor)
+        self.assertNotEqual(row['path'], row['path'].resolve())
+        self.assertTrue(row['path'].samefile(view.path('images/route.png')))
+        for path in (row['path'], row['path'].resolve()):
+            with self.subTest(path=str(path)):
+                self.assertIs(optional.pixels(path, 'aligned-overlay'), result['pixels'])
+        self.assertEqual(row['status'], 'user-provided-unreviewed')
+        view.path('images/route.png').write_bytes(b'damaged after alias cache admission')
+        self.assert_structure(engine)
+        with self.assertRaises(ValueError):
+            optional.pixels(row['path'].resolve(), 'aligned-overlay')
+        view.path('images/route.png').write_bytes(members['images/route.png'])
+        self.assertIs(optional.pixels(row['path'].resolve(), 'aligned-overlay'), result['pixels'])
+        self.supersede_catalog()
+        with self.assertRaises(ResourceCatalogError):
+            optional.pixels(row['path'].resolve(), 'aligned-overlay')
+        with self.assertRaises(DisplayResourceChanged) as changed:
+            prepare_display_layer(engine, mid, floor, 'author-fixture')
+        self.assertIsInstance(changed.exception.__cause__, ResourceCatalogError)
+        self.assertEqual(changed.exception.__cause__.code, 'resource-catalog-superseded')
+
+    def test_alias_lookup_keeps_components_separate_and_rejects_external_pixels(self):
+        view, _, members = self.package()
+        other_pixels = np.full((3, 5, 4), (71, 83, 97, 109), np.uint8)
+        other, _, _ = self.package(profile_id='author-other', payloads={
+            'images/route.png': cv2.imencode('.png', other_pixels)[1].tobytes()})
+        foreign, _, _ = self.package(profile_id='author-unselected')
+        alias = self.short_path_alias(self.resources)
+        _, engine = self.factory([view, other], resource_root=alias)
+        optional = engine.qt_optional_displays
+        mid, floor = self.source.ids[0], '-4'
+        first = optional.binding('author-fixture', mid, floor)
+        second = optional.binding('author-other', mid, floor)
+        self.assertEqual(first['layer'].image.path, second['layer'].image.path)
+        self.assertNotEqual(first['layer'].image, second['layer'].image)
+        np.testing.assert_array_equal(optional.pixels(first['path'].resolve(), 'full-reference'),
+            cv2.imdecode(np.frombuffer(members['images/route.png'], np.uint8), cv2.IMREAD_UNCHANGED))
+        np.testing.assert_array_equal(optional.pixels(second['path'].resolve(), 'full-reference'), other_pixels)
+        external = self.root/'route.png'
+        external.write_bytes(members['images/route.png'])
+        for path in (foreign.path('images/route.png'), external):
+            with self.subTest(path=str(path)), self.assertRaisesRegex(
+                    ValueError, 'imported-author-display-path-unregistered'):
+                optional.pixels(path, 'full-reference')
+        # Exercise the reverse spelling too: long-root registration, short
+        # input. A different selected catalog still uses real package readers.
+        _, engine = self.factory([view, other])
+        optional = engine.qt_optional_displays
+        for profile in ('author-fixture', 'author-other'):
+            row = optional.binding(profile, mid, floor)
+            short = self.short_path_alias(row['path'])
+            self.assertIs(optional.pixels(short, 'full-reference'),
+                          optional.pixels(row['path'], 'full-reference'))
+
+    def test_alias_lookup_rejects_link_into_registered_component(self):
+        view, _, _ = self.package()
+        _, engine = self.factory([view], resource_root=self.short_path_alias(self.resources))
+        link = self.root/'author-link'
+        try:
+            link.symlink_to(view.root, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f'directory symlinks unavailable: {error}')
+        with self.assertRaisesRegex(ValueError, 'linked-target'):
+            engine.qt_optional_displays.pixels(link/'images/route.png', 'full-reference')
 
     def test_default_factory_preserves_identity_and_qualification_while_displaying_png_and_jpeg(self):
         def jpeg(document):
@@ -73,7 +174,13 @@ class ImportedAuthorDisplaysTests(_AuthorDisplayFixture):
         self.assertTrue(report['dataReady'])
         self.assertTrue(report['rankReady'])
         self.assertFalse(report['liveReady'])
-        self.assertFalse(engine.qt_native_context.structure_candidate_capability['candidateReady'])
+        candidate = engine.qt_native_context.structure_candidate_capability
+        self.assertTrue(candidate['candidateReady'])
+        self.assertEqual(candidate['validationScope'], 'source-image-replay')
+        self.assertFalse(candidate['liveValidated'])
+        observation = engine.qt_native_context.floor_observation_capability
+        self.assertEqual(observation['validationScope'], 'source-image-replay')
+        self.assertFalse(observation['liveValidated'])
         self.assertFalse(engine.memory_store.sample_validator(np.zeros((8,8,3), np.uint8)))
         self.assertIsNone(engine.memory_store.portable_seed_path)
         self.assertFalse(engine.memory_store.root.exists())
@@ -146,8 +253,10 @@ class ImportedAuthorDisplaysTests(_AuthorDisplayFixture):
             return pixels
 
         with patch('imported_author_displays.cv2.imdecode', side_effect=change_catalog):
-            with self.assertRaises(ResourceCatalogError):
+            with self.assertRaises(DisplayResourceChanged) as changed:
                 prepare_display_layer(engine, self.source.ids[0], '-4', 'author-fixture')
+        self.assertIsInstance(changed.exception.__cause__, ResourceCatalogError)
+        self.assertEqual(changed.exception.__cause__.code, 'resource-catalog-superseded')
 
         # Exercise the existing custom early return too: a complete-looking
         # layer cannot escape the final catalog check after a late change.
@@ -156,8 +265,10 @@ class ImportedAuthorDisplaysTests(_AuthorDisplayFixture):
             self.supersede_catalog()
             return dict(routeProfileId='shared-structure')
         engine.qt_custom_display = custom
-        with self.assertRaises(ResourceCatalogError):
+        with self.assertRaises(DisplayResourceChanged) as changed:
             prepare_display_layer(engine, self.source.ids[0], '-4', 'custom:fixture')
+        self.assertIsInstance(changed.exception.__cause__, ResourceCatalogError)
+        self.assertEqual(changed.exception.__cause__.code, 'resource-catalog-superseded')
 
     def test_owned_optional_without_binding_never_reads_an_unregistered_catalog_path(self):
         view, _, _ = self.package()

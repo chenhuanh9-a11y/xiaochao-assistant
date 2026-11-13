@@ -82,6 +82,55 @@ class ImportedResourcePackageTests(unittest.TestCase):
         self.assertEqual(base.manifest['formatVersion'], 1)
         self.assertEqual(display.dependencies['base'], self.base_ref)
 
+    def test_repeated_consumers_reuse_decoding_but_still_read_current_manifest(self):
+        view = self.view()
+        original_json = packages.files._json
+        manifest_path = self.package_root / 'manifest.json'
+        with patch.object(packages.files, '_json', wraps=original_json) as decode:
+            self.assertEqual(view.root, self.base_root)
+            exposed = view.manifest
+            exposed['components'][0]['contexts'].clear()
+            view.component['dependencies']['foreign'] = {'componentId': 'missing'}
+            self.assertEqual(view.read('index.json'), self.base_bytes)
+            self.assertEqual(view.component['contexts'], [{'season': 's0', 'mode': 'nightmare'}])
+            self.assertEqual(view.dependencies, {})
+            self.assertEqual(decode.call_count, 1)
+            # Decoded declarations are reusable, not a cached filesystem verdict.
+            manifest_path.write_bytes(self.manifest_bytes.replace(b'"v1"', b'"v2"'))
+            with self.assertRaisesRegex(ValueError, 'manifest-changed'):
+                view.root
+
+    def test_reused_decoding_rejects_same_byte_manifest_replacement_and_stale_selection(self):
+        current = [True]
+        def guard():
+            if not current[0]:
+                raise ValueError('selection-superseded')
+        view = packages.PackageView(self.resource_root, self.base_ref, assert_current=guard)
+        self.assertEqual(view.read('index.json'), self.base_bytes)
+        current[0] = False
+        with self.assertRaisesRegex(ValueError, 'selection-superseded'):
+            view.root
+        current[0] = True
+        manifest_path = self.package_root / 'manifest.json'
+        original_stamp = manifest_path.stat()
+        retained = self.package_root / 'retained-manifest.json'
+        manifest_path.rename(retained)
+        manifest_path.write_bytes(self.manifest_bytes)
+        os.utime(manifest_path, ns=(original_stamp.st_atime_ns, original_stamp.st_mtime_ns))
+        with self.assertRaisesRegex(ValueError, 'manifest-replaced'):
+            view.root
+
+    def test_reused_decoding_is_bound_to_the_complete_component_reference(self):
+        view = self.view()
+        self.assertEqual(view.root, self.base_root)
+        view.component_ref = self.display_ref
+        self.assertEqual(view.root, self.display_root)
+        self.assertEqual(view.component['type'], 'display')
+        (self.data_root / 'unregistered').mkdir()
+        view.component_ref = packages.ComponentRef('demo', 'v1', 'unregistered', self.manifest_sha256)
+        with self.assertRaisesRegex(ValueError, 'component-identity-mismatch'):
+            view.root
+
     def test_undeclared_other_component_and_installation_fallback_are_refused(self):
         installation = Path(self.temp.name) / 'install'
         fallback = installation / '_internal' / 'secret.json'
@@ -217,6 +266,68 @@ class ImportedResourcePackageTests(unittest.TestCase):
         with patch.object(packages.resource_snapshot_io, 'read_stable_file', replace_after_payload):
             with self.assertRaisesRegex(ValueError, 'manifest-replaced'):
                 view.read('index.json')
+
+    def batch_fixture(self, *, assert_current=None):
+        raw = b'second resource'
+        (self.base_root / 'second.bin').write_bytes(raw)
+        self.manifest['files'].append(dict(componentId='base', path='second.bin',
+            bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()))
+        self.write_manifest()
+        return packages.PackageView(self.resource_root, self.base_ref,
+                                    assert_current=assert_current), raw
+
+    def test_selected_batch_reads_actual_payloads_without_repeating_manifest_io(self):
+        view, second = self.batch_fixture()
+        manifest_path = self.package_root / 'manifest.json'
+        real_read = resource_snapshot_io.read_stable_file
+        with patch.object(packages.resource_snapshot_io, 'read_stable_file', wraps=real_read) as read:
+            self.assertEqual(view.read_many(('index.json', 'second.bin')),
+                             (self.base_bytes, second))
+        # The operation still checks the real manifest before and after its
+        # selected payloads; it does not re-enter one scope for every file.
+        self.assertEqual(sum(Path(call.args[0]) == manifest_path for call in read.call_args_list), 2)
+        path = self.base_root / 'second.bin'
+        stamp = path.stat()
+        path.write_bytes(b'x' * len(second))
+        os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        with self.assertRaisesRegex(ValueError, 'file-integrity-mismatch'):
+            view.read_many(('index.json', 'second.bin'))
+
+    def test_batch_rejects_manifest_replacement_and_selection_change_mid_read(self):
+        for action in ('replace-manifest', 'change-selection', 'change-component'):
+            with self.subTest(action=action):
+                current = [True]
+                def guard():
+                    if not current[0]:
+                        raise ValueError('selection-superseded')
+                view, _ = self.batch_fixture(assert_current=guard)
+                manifest_path = self.package_root / 'manifest.json'
+                real_read = resource_snapshot_io.read_stable_file
+                def change_after_first(path, *args, **kwargs):
+                    result = real_read(path, *args, **kwargs)
+                    if Path(path) == self.base_root / 'index.json':
+                        if action == 'replace-manifest':
+                            replacement = self.package_root / 'replacement-manifest.json'
+                            replacement.write_bytes(manifest_path.read_bytes())
+                            replacement.replace(manifest_path)
+                        elif action == 'change-component':
+                            view.component_ref = self.display_ref
+                        else:
+                            current[0] = False
+                    return result
+                with patch.object(packages.resource_snapshot_io, 'read_stable_file', change_after_first):
+                    with self.assertRaisesRegex(ValueError,
+                            'manifest-replaced|selection-superseded|component-reference-changed'):
+                        view.read_many(('index.json', 'second.bin'))
+                # Keep this loop's fixture inventory independent.
+                self.manifest['files'].pop()
+
+    def test_batch_never_returns_partial_or_cross_component_data(self):
+        view, _ = self.batch_fixture()
+        for paths in (('index.json', 'missing.bin'), ('index.json', '../display/poster.webp'),
+                      ('index.json', 'poster.webp')):
+            with self.subTest(paths=paths), self.assertRaises(ValueError):
+                view.read_many(paths)
 
     def test_manifest_rejects_casefold_collisions_unknown_components_and_traversal(self):
         self.manifest['files'].append(dict(self.manifest['files'][0], path='INDEX.json'))

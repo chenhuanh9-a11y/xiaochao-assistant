@@ -119,15 +119,26 @@ class NativeDifficultPack:
 
 class NativeDifficultCandidateEngine(MapIdentityEngine):
     """Original ranking/validators, with the complete declared competitor scope."""
-    def rank(self, frame, floor='1', limit=30, *, budget_seconds=None, _established_members=None):
+    def rank(self, frame, floor='1', limit=30, *, budget_seconds=None):
         if not getattr(self, 'qt_rank_ready', True):
             raise ValueError(';'.join(getattr(self, 'qt_rank_gaps', ())) or 'recognition-rank-unavailable')
         structure_rank = getattr(self, 'qt_s1_structure_rank', None)
         if getattr(self, 'qt_season', None) == 's1' and callable(structure_rank):
             # Caller supplies the floor. No icon/entrance or season inference.
             return structure_rank(frame, floor=str(floor), budget_seconds=budget_seconds)
-        rows = super().rank(frame, floor=floor, limit=limit, budget_seconds=budget_seconds,
-                            _established_members=_established_members)
+        return super().rank(frame, floor=floor, limit=limit, budget_seconds=budget_seconds)
+
+    def prepare_entry_observation(self, frame, floor, *, deadline, prior=None):
+        if not getattr(self, 'qt_rank_ready', True) and not getattr(self, 'qt_structure_scan_ready', False):
+            raise ValueError(';'.join(getattr(self, 'qt_rank_gaps', ())) or 'recognition-rank-unavailable')
+        if getattr(self, 'qt_season', None) == 's1':
+            raise ValueError('proposal-only-entry-evidence')
+        return super().prepare_entry_observation(frame, floor, deadline=deadline, prior=prior)
+
+    def collect_observation_rows(self, work):
+        return self._apply_native_inventory(super().collect_observation_rows(work), work.floor)
+
+    def _apply_native_inventory(self, rows, floor):
         # A missing native competitor cannot disappear from a uniqueness
         # decision. Preserve scores/order and expose the successful partial
         # fits as proposals, just as the existing shared entry inventory does.

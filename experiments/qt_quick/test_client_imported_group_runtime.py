@@ -17,14 +17,30 @@ from PySide6.QtCore import QCoreApplication
 
 import client_imported_activation as activation
 from client_imported_providers import SUPPORTED_CAPABILITIES, build_imported_engine_factories
-from client_live_runtime import LiveRuntime, _AlignmentHost
+from client_live_runtime import LiveRuntime
+from structure_pose_solver import PreparedStructurePoseSolver as _AlignmentHost
 from client_paths import RuntimePaths
 from client_session import SessionService
 from imported_resource_archive import save_archive
 from imported_resource_catalog import ResourceResolver
+from entry_evidence_work import EntryEvidenceWork
 from resource_transaction import resource_runtime_lease
 from s0_nightmare_group_source_fixture import S0NightmareGroupSourceFixture
 from test_client_live_runtime import FixtureCapture
+
+
+class FrontCandidateWork(EntryEvidenceWork):
+    """Only entry evidence is supplied; registry and runtime remain real."""
+    def __init__(self, frame, rows):
+        self.rows = rows
+        super().__init__(frame)
+
+    def _jobs(self):
+        yield self._job('nightmare-04', 'controlled-front-evidence', lambda: None)
+
+    def finish(self):
+        self.close()
+        return self.rows if self._complete else []
 
 
 def _ranked_front_candidate():
@@ -99,7 +115,9 @@ class ImportedGroupRuntimeTests(unittest.TestCase):
         self.addCleanup(self.runtime.dispatch, "end_round", {})
 
         self._patches = [
-            patch.object(self.engine, "rank", Mock(side_effect=self._rank)),
+            patch.object(self.engine, 'prepare_entry_observation', Mock(side_effect=self._prepare_entry)),
+            patch.object(self.engine, 'rank', side_effect=AssertionError('retired default rank')),
+            patch.object(self.engine, 'rank_established_group', side_effect=AssertionError('retired default group rank')),
             patch("s0_vertical_controls.observe_s0_map", side_effect=self._observe_s0_map),
             patch.object(_AlignmentHost, "fit", side_effect=lambda *args, **kwargs: dict(self.fit)),
         ]
@@ -108,11 +126,11 @@ class ImportedGroupRuntimeTests(unittest.TestCase):
             self.addCleanup(item.stop)
         self.dispatch("set_context", season="s0", mode="nightmare")
 
-    def _rank(self, *args, **kwargs):
+    def _prepare_entry(self, frame, *args, **kwargs):
         # The only injected map evidence is the front candidate 04. Historical
         # group members are deliberately absent from rank output.
         self.ranked_rows = [_ranked_front_candidate()]
-        return self.ranked_rows
+        return FrontCandidateWork(frame, self.ranked_rows)
 
     @staticmethod
     def _observe_s0_map(frame, mode, **kwargs):
@@ -150,7 +168,9 @@ class ImportedGroupRuntimeTests(unittest.TestCase):
         })
         self.assertEqual(self.runtime.render_payload(result["renderToken"])["mapId"], "nightmare-04")
         self.assertEqual(self.runtime._identity_native.resource_key, self.registry.index_digest)
-        self.assertEqual(self.engine.rank.call_count, 1)
+        self.assertEqual(self.engine.prepare_entry_observation.call_count, 1)
+        self.engine.rank.assert_not_called()
+        self.engine.rank_established_group.assert_not_called()
         self.assertEqual([row["mapId"] for row in self.ranked_rows], ["nightmare-04"])
 
     def test_damaged_package_registry_blocks_later_manual_member_confirmation(self):
@@ -163,6 +183,38 @@ class ImportedGroupRuntimeTests(unittest.TestCase):
             self.assertEqual(result["reason"], "registered-group-resource-unavailable")
             self.assertNotIn("pendingSiblingToken", result)
             self.assertNotEqual(self.runtime.snapshot()["mapId"], "nightmare-12")
+        finally:
+            self.registry_path.write_bytes(original)
+
+    def test_reentrant_group_intent_does_not_publish_old_material(self):
+        self.assertTrue(self.dispatch('start_round')['success'])
+        events = []
+        def event(row):
+            if row.get('event') == 'group-state':
+                events.append(row)
+                self.runtime._group_intent_generation += 1
+        self.runtime.set_event_callback(event)
+        with patch.object(_AlignmentHost, 'fit', side_effect=AssertionError('superseded material')):
+            result = self.dispatch('capture_now')
+        self.assertEqual(len(events), 1)
+        self.assertFalse(result['success'], result)
+        self.assertTrue(result.get('stale'), result)
+        self.assertIsNone(self.runtime._render)
+
+    def test_unavailable_registered_family_cannot_fall_back_to_individual_pose_choices(self):
+        self.assertTrue(self.dispatch('start_round')['success'])
+        original = self.registry_path.read_bytes()
+        self.registry_path.write_bytes(b'{unavailable reviewed registry')
+        try:
+            with patch.object(_AlignmentHost, 'fit', side_effect=AssertionError('blocked family fallback')) as fit:
+                result = self.dispatch('capture_now')
+            fit.assert_not_called()
+            self.assertFalse(result['success'], result)
+            self.assertEqual(result['reason'], 'identity-not-uniquely-verified')
+            state = self.runtime.snapshot()
+            self.assertFalse(state['identityLocked'])
+            self.assertIsNone(self.runtime._render)
+            self.assertFalse(any(row.get('structureSupported') for row in state['candidateRows']))
         finally:
             self.registry_path.write_bytes(original)
 
@@ -258,9 +310,12 @@ class ImportedGroupRuntimeTests(unittest.TestCase):
 
     def test_registry_replaced_during_canonical_fit_rejects_new_pose_before_render_authorization(self):
         self.assertTrue(self.dispatch("start_round")["success"])
+        self.assertTrue(self.runtime._candidate_provisional_enabled(self.engine))
         original = self.registry_path.read_bytes()
 
         def fit_then_replace_registry(*args, **kwargs):
+            self.assertEqual(self.runtime.snapshot()["identityPhase"], "GROUP_LOCKED")
+            self.assertFalse(self.runtime._candidate_provisional_enabled(self.engine))
             completed_fit = dict(self.fit)
             self.registry_path.write_bytes(b"{registry changed after canonical fit")
             return completed_fit
@@ -277,6 +332,85 @@ class ImportedGroupRuntimeTests(unittest.TestCase):
             self.assertIsNone(self.runtime._render)
         finally:
             self.registry_path.write_bytes(original)
+
+    def test_cancel_or_end_round_during_locked_canonical_fit_rejects_late_pose(self):
+        for boundary in ("cancel", "end_round"):
+            with self.subTest(boundary=boundary):
+                self.assertTrue(self.dispatch("start_round")["success"])
+                self.assertTrue(self.runtime._candidate_provisional_enabled(self.engine))
+                stopped = threading.Event()
+
+                def fit_after_boundary(*args, **kwargs):
+                    self.assertEqual(self.runtime.snapshot()["identityPhase"], "GROUP_LOCKED")
+                    self.assertFalse(self.runtime._candidate_provisional_enabled(self.engine))
+                    if boundary == "cancel":
+                        stopped.set()
+                    else:
+                        self.assertTrue(self.dispatch("end_round")["success"])
+                    return dict(self.fit)
+
+                state = self.runtime.snapshot()
+                payload = {key: state[key] for key in ("mode", "profileId", "roundId", "frameId")}
+                payload["generation"] = 22
+                try:
+                    with patch.object(_AlignmentHost, "fit", side_effect=fit_after_boundary) as fit_hook:
+                        result = self.runtime.dispatch("capture_now", payload, cancelled=stopped.is_set)
+                    self.assertEqual(fit_hook.call_count, 1)
+                    self.assertFalse(result["success"], result)
+                    self.assertEqual(result["reason"], "cancelled-or-stale")
+                    self.assertTrue(result.get("stale"), result)
+                    self.assertFalse(result.get("renderToken"))
+                    self.assertIsNone(self.runtime._render)
+                    self.assertIsNone(self.runtime._s1_structure_ticket)
+                    self.assertFalse(self.runtime._automatic_candidate_rows)
+                    if boundary == "end_round":
+                        self.assertIsNone(self.runtime._s1_structure_session)
+                    else:
+                        self.assertFalse(self.runtime._s1_structure_session.snapshot()["currentSupportedMapIds"])
+                finally:
+                    self.assertTrue(self.dispatch("end_round")["success"])
+
+    def test_cancel_or_end_round_with_final_registry_read_failure_keeps_stale_receipt(self):
+        for boundary in ("cancel", "end_round"):
+            with self.subTest(boundary=boundary):
+                self.assertTrue(self.dispatch("start_round")["success"])
+                stopped = threading.Event()
+                validate, reads = self.registry.validate, []
+                boundary_message = []
+
+                def validate_then_invalidate(*args, **kwargs):
+                    validate(*args, **kwargs)
+                    reads.append(True)
+                    if len(reads) == 2:
+                        self.assertEqual(self.runtime.snapshot()["identityPhase"], "GROUP_LOCKED")
+                        if boundary == "cancel":
+                            stopped.set()
+                        else:
+                            self.assertTrue(self.dispatch("end_round")["success"])
+                        boundary_message.append(self.runtime.snapshot()["message"])
+                        raise ValueError("registry-read-failed-after-boundary")
+
+                state = self.runtime.snapshot()
+                payload = {key: state[key] for key in ("mode", "profileId", "roundId", "frameId")}
+                payload["generation"] = 22
+                try:
+                    with patch.object(self.registry, "validate", side_effect=validate_then_invalidate):
+                        result = self.runtime.dispatch("capture_now", payload, cancelled=stopped.is_set)
+                    self.assertEqual(len(reads), 2)
+                    self.assertFalse(result["success"], result)
+                    self.assertEqual(result["reason"], "cancelled-or-stale")
+                    self.assertTrue(result.get("stale"), result)
+                    self.assertFalse(result.get("renderToken"))
+                    self.assertIsNone(self.runtime._render)
+                    self.assertIsNone(self.runtime._s1_structure_ticket)
+                    self.assertFalse(self.runtime._automatic_candidate_rows)
+                    if boundary == "end_round":
+                        self.assertIsNone(self.runtime._s1_structure_session)
+                    else:
+                        self.assertFalse(self.runtime._s1_structure_session.snapshot()["currentSupportedMapIds"])
+                    self.assertEqual(self.runtime.snapshot()["message"], boundary_message[0])
+                finally:
+                    self.assertTrue(self.dispatch("end_round")["success"])
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 """Resumable side structure search; measured poses do not write runtime state."""
 import time
+import math
+from copy import copy
 
 import cv2
 import numpy as np
@@ -7,8 +9,58 @@ import numpy as np
 from entry_evidence_work import EntryEvidenceWork
 
 
+_AXIS_BOUND_MIN, _AXIS_BOUND_MAX = 2. ** -100, 2. ** 100
+
+
+def _axis_bound_inputs_safe(query, source):
+    """Once per probe: plain binary64 values with no exceptional arithmetic.
+
+    With equally bounded scale/translation, products are at most 2^200 and
+    rounded products are multiples of 2^-252. Subsequent residuals and their
+    two squared components stay normal (or zero) and finite. Unknown inputs
+    retain the original full expression, including its warnings/exceptions.
+    """
+    if (type(query) is not np.ndarray or type(source) is not np.ndarray
+            or query.dtype != np.float64 or source.dtype != np.float64
+            or query.ndim != 2 or query.shape[1:] != (2,) or source.shape != query.shape
+            or any(mode == 'raise' for mode in np.geterr().values())):
+        return False
+    for values in (query, source):
+        if not np.isfinite(values).all():
+            return False
+        magnitude = np.abs(values)
+        if not ((magnitude <= _AXIS_BOUND_MAX)
+                & ((magnitude == 0) | (magnitude >= _AXIS_BOUND_MIN))).all():
+            return False
+    return True
+
+
+def _axis_bound_scalar_safe(value):
+    return (type(value) in (float, np.float64) and math.isfinite(value)
+            and (value == 0 or _AXIS_BOUND_MIN <= abs(value) <= _AXIS_BOUND_MAX))
+
+
+def _oriented_seed_hits(query, source, scale, translation, *, axis_safe=False):
+    """Conservative x broad phase; retained pairs still use the original 2D norm."""
+    if not (axis_safe and not any(mode == 'raise' for mode in np.geterr().values())
+            and _axis_bound_scalar_safe(scale)
+            and type(translation) is np.ndarray and translation.dtype == np.float64
+            and translation.shape == (2,)
+            and _axis_bound_scalar_safe(translation[0]) and _axis_bound_scalar_safe(translation[1])):
+        return np.linalg.norm(query - (source * scale + translation), axis=1) <= 3
+    # Keep the original multiply, add, subtract order. For binary64 at the
+    # exact threshold 3, abs(dx)>3 cannot round the original norm back to <=3.
+    dx = query[:, 0] - (source[:, 0] * scale + translation[0])
+    keep = ~(np.abs(dx) > 3)
+    hits = np.zeros(len(query), dtype=bool)
+    if keep.any():
+        hits[keep] = np.linalg.norm(query[keep] - (source[keep] * scale + translation), axis=1) <= 3
+    return hits
+
+
 class SideEntryEvidence(EntryEvidenceWork):
-    def __init__(self, engine, frame, floor, *, map_id=None, deadline=None, candidate_map_ids=None):
+    def __init__(self, engine, frame, floor, *, map_id=None, deadline=None, candidate_map_ids=None,
+                 prepared_index=None):
         self.engine, self.floor, self.map_id = engine, None if floor is None else str(floor), map_id
         self.deadline = float('inf') if deadline is None else deadline
         self.entries = [entry for entry in engine.entries
@@ -16,12 +68,23 @@ class SideEntryEvidence(EntryEvidenceWork):
                         and (self.floor is None or entry[0]['floor'] == self.floor)
                         and (candidate_map_ids is None or entry[0]['mapId'] in candidate_map_ids)]
         self.local_search = engine.side_search if self.floor == '2' and map_id is None else None
+        self.prepared_index = prepared_index
+        actual_domain = {(entry[0]['mapId'], entry[0]['floor']) for entry in self.entries}
+        # The prepared domain is a promise about every rival, including one
+        # removed from the live locator after preparation. Reconcile the same
+        # requested scope against actual work sources, not only old build gaps.
+        self.index_directory_gaps = tuple(row for row in getattr(prepared_index, 'domain', ())
+            if (self.floor is None or row[1] == self.floor) and (map_id is None or row[0] == map_id)
+            and (candidate_map_ids is None or row[0] in candidate_map_ids) and row not in actual_domain)
         self.context, self.q, self.qr, self.qpairs = None, [], [], []
         self.rows, self.competitors, self.active = [], [], []
         self.scan_complete = self.probes_complete = self.verification_complete = False
         self.seed_count = 0
         self.search_counts = dict(localSearchMaps=0, localSeedTotal=0, outsideSeedsScreened=0,
                                   outsideSeedsRejected=0, ringEvaluations=[0, 0, 0, 0])
+        if prepared_index is not None:
+            self.search_counts.update(preparedIndexMaps=0, preparedIndexFallbacks=0,
+                                      preparedSeedsScreened=0, preparedSeedsRejected=0)
         self.optional_door, self._early_result = None, None
         self._band_prepared = False
         self.route_cache = {}
@@ -35,9 +98,39 @@ class SideEntryEvidence(EntryEvidenceWork):
             return
         self.q = np.array([n['point'] for n in nodes])
         self.qr = np.array([n['rays'] for n in nodes])
-        self.scan_complete = True
+        self.scan_complete = not self.index_directory_gaps
 
     def _probe(self, entry):
+        shared = getattr(self.engine, 'observation_dependencies', None)
+        if shared is None or not shared.owns(self.frame):
+            return self._probe_uncached(entry)
+        local = (self.local_search or {}).get((entry[0]['mapId'], entry[0]['floor']))
+        indexed = (self.prepared_index.prepared_for(entry)
+                   if self.prepared_index is not None and local is None else None)
+        key = ('side-probe', tuple(id(part) for part in entry), id(local), id(indexed))
+        def probe():
+            # Only the per-source kernel is shared. Domain gaps, accumulated
+            # completeness, competitive bands and verification stay local.
+            isolated = copy(self)
+            isolated.rows, isolated.seed_count, isolated.scan_complete = [], 0, True
+            isolated.search_counts = {name: ([0] * len(value) if isinstance(value, list) else 0)
+                                      for name, value in self.search_counts.items()}
+            isolated._probe_uncached(entry)
+            return dict(rows=isolated.rows, seeds=isolated.seed_count,
+                        complete=isolated.scan_complete, counts=isolated.search_counts)
+        result = shared.get(key, probe,
+            cancelled=getattr(self.engine, 'observation_cancelled', None),
+            reusable=lambda value: value['complete'])
+        self.rows.extend(result['rows'])
+        self.seed_count += result['seeds']
+        self.scan_complete = self.scan_complete and result['complete']
+        for name, value in result['counts'].items():
+            if isinstance(value, list):
+                self.search_counts[name] = [a+b for a,b in zip(self.search_counts[name], value)]
+            else:
+                self.search_counts[name] += value
+
+    def _probe_uncached(self, entry):
         item, source, rays, spairs = entry
         frame, deadline, local_search = self.frame, self.deadline, self.local_search
         q, qr, qpairs = self.q, self.qr, self.qpairs
@@ -47,11 +140,19 @@ class SideEntryEvidence(EntryEvidenceWork):
         if not len(spairs):
             return
         prepared = (local_search or {}).get((item['mapId'], item['floor']))
+        # Existing doorway scheduling/cross-checks retain their original path.
+        # The explicit general index replaces only ordinary full-graph probing.
+        indexed = (self.prepared_index.prepared_for(entry)
+                   if self.prepared_index is not None and prepared is None else None)
+        if indexed is not None:
+            source, rays, spairs = indexed.points, indexed.rays, indexed.pairs
+        screened = indexed is not None and indexed.lower is not None
         compatible = np.min(np.sum(qr[:, None] * rays[None], axis=3), axis=2) >= .95
         # Incompatible turns can never be hits. Keep row-major pair order
         # while evaluating only the same orientation-compatible entries.
         oriented_qids, oriented_sids = np.nonzero(compatible)
         oriented_query, oriented_source = q[oriented_qids], source[oriented_sids]
+        axis_safe = _axis_bound_inputs_safe(oriented_query, oriented_source)
         hypotheses = []
         seen = set()
         if prepared is not None:
@@ -65,10 +166,14 @@ class SideEntryEvidence(EntryEvidenceWork):
                 search_counts[name] += counts[name]
             search_counts['ringEvaluations'] = [a+b for a, b in zip(search_counts['ringEvaluations'], counts['ringEvaluations'])]
         else:
+            if indexed is not None:
+                self.search_counts['preparedIndexMaps'] += 1
+            elif self.prepared_index is not None:
+                self.search_counts['preparedIndexFallbacks'] += 1
             # Ordinary search remains available when optional local data is
             # absent. No current-frame icon is a prerequisite for either path.
-            deltas = source[spairs[:, 1]] - source[spairs[:, 0]]
-            denoms = np.sum(deltas*deltas, axis=1)
+            deltas = indexed.deltas if indexed is not None else source[spairs[:, 1]] - source[spairs[:, 0]]
+            denoms = indexed.denoms if indexed is not None else np.sum(deltas*deltas, axis=1)
             long_enough = denoms >= (.6 * item['unit']) ** 2
         for a, b in (() if prepared is not None else qpairs):
             if time.perf_counter() >= deadline:
@@ -80,19 +185,47 @@ class SideEntryEvidence(EntryEvidenceWork):
             translations = q[a] - scales[:, None]*source[spairs[selected, 0]]
             eligible = ((scales*item['unit'] >= 8) & (scales*item['unit'] <= min(frame.shape[:2])/4)
                         & (np.linalg.norm(q[b]-q[a]-scales[:, None]*delta, axis=1) <= 3))
+            scales, translations = scales[eligible], translations[eligible]
+            if not len(scales):
+                continue
+            # Preserve the original row-major, first-seen seed policy while
+            # quantizing a batch once instead of allocating np.r_ per seed.
+            seed_keys = np.rint(np.column_stack((scales * item['unit'] * 4,
+                                                translations / 3))).astype(int)
+            if screened:
+                from local_structure_index import possible_turns
+                unique = []
+                for index, seed_key in enumerate(seed_keys):
+                    if time.perf_counter() >= deadline:
+                        complete = False
+                        break
+                    key = tuple(seed_key)
+                    if key not in seen:
+                        seen.add(key)
+                        unique.append(index)
+                scales, translations = scales[unique], translations[unique]
+                seed_keys = seed_keys[unique]
+                upper = possible_turns(q, scales, translations, compatible, indexed)
+            else:
+                upper = np.full(len(scales), 4, np.int32)
             # Batch cheap residuals, preserve the original seed order and
             # deduplication order. Expensive full correspondences are sparse.
-            for scale, translation in zip(scales[eligible], translations[eligible]):
+            for scale, translation, possible, seed_key in zip(scales, translations, upper, seed_keys):
                 if time.perf_counter() >= deadline:
                     complete = False
                     break
-                key = tuple(np.rint(np.r_[scale * item['unit'] * 4, translation / 3]).astype(int))
-                if key in seen:
-                    continue
-                seen.add(key)
+                if not screened:
+                    key = tuple(seed_key)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                if indexed is not None:
+                    self.search_counts['preparedSeedsScreened'] += 1
+                    if possible < 4:
+                        self.search_counts['preparedSeedsRejected'] += 1
+                        continue
                 seed_count += 1
-                distances = np.linalg.norm(oriented_query - (oriented_source * scale + translation), axis=1)
-                hits = distances <= 3
+                hits = _oriented_seed_hits(oriented_query, oriented_source, scale, translation, axis_safe=axis_safe)
                 hit_q, hit_s = oriented_qids[hits], oriented_sids[hits]
                 if len(hit_q) < 4:
                     continue
@@ -259,7 +392,8 @@ class SideEntryEvidence(EntryEvidenceWork):
             row['poseAmbiguous'] = sum(r['mapId'] == row['mapId'] and r['floor'] == row['floor']
                                        for r in self.competitors) > 1
         self._result = self.rows, dict(
-            reason='side-work-failed' if self._failed else 'side-local-candidates' if complete else 'side-budget-incomplete',
+            reason=('side-work-failed' if self._failed else 'side-resource-directory-incomplete'
+                    if self.index_directory_gaps else 'side-local-candidates' if complete else 'side-budget-incomplete'),
             complete=complete, queryTurns=len(self.q), competitiveHypotheses=len(self.competitors),
             seedCorrespondences=self.seed_count,
             verificationComplete=self._complete and not self._failed and self.verification_complete and len(self.active) <= 3,

@@ -98,6 +98,42 @@ class ImportedResourceServiceTests(unittest.TestCase):
         self.assertIs(self.service.packageModel, model)
         self.assertEqual(model.mutations, 0)
 
+    def test_delete_base_confirmation_respects_lease_and_reimport_restores_mode(self):
+        self.import_zip()
+        self.assertFalse(self.errors, self.errors)
+        self.assertTrue(self.service.contextAvailable('s0', 'difficult'))
+        model = self.service.packageModel
+        self.assertTrue(self.service.requestRemoval('fixture/v1'))
+        self.wait()
+        plan_id = self.service.removalPlanId
+        self.assertIn('S0 困难', self.service.removalPlanSummary)
+        before = (self.resolver.root / 'catalog.json').read_bytes()
+        lease = self.session.acquireResourceLease()
+        self.assertTrue(lease)
+        try:
+            self.assertFalse(self.service.confirmRemoval(plan_id))
+            self.assertTrue(self.service.removalPlanOpen)
+            self.assertEqual((self.resolver.root / 'catalog.json').read_bytes(), before)
+        finally:
+            self.session.releaseResourceLease(lease)
+        self.assertTrue(self.service.cancelRemoval(plan_id))
+        self.assertFalse(self.service.confirmRemoval(plan_id))
+        self.assertTrue(self.service.requestRemoval('fixture/v1'))
+        self.wait()
+        self.assertTrue(self.service.confirmRemoval(self.service.removalPlanId))
+        self.assertTrue(self.service.pendingWrites)
+        self.wait()
+        self.assertFalse(self.errors, self.errors)
+        self.assertFalse(self.service.contextAvailable('s0', 'difficult'))
+        self.assertEqual(self.service.packageRows, [])
+        self.assertIs(self.service.packageModel, model)
+        self.assertTrue(self.archive.is_file())
+        self.assertEqual(self.changes, [True, True])
+        self.import_zip()
+        self.assertFalse(self.errors, self.errors)
+        self.assertTrue(self.service.contextAvailable('s0', 'difficult'))
+        self.assertEqual(self.service.packageRows[0]['status'], 'selected')
+
     def test_actual_import_duplicate_and_verify_keep_base_and_controls_active(self):
         self.import_zip()
         target = self.resolver.root / 'packages/fixture/v1/data/base/resource-context.json'

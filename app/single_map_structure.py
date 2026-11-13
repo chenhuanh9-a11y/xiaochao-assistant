@@ -617,7 +617,7 @@ def selected_scale_observation(geometry, measured_matrix, final_matrix, residual
         scaleMatrixSourceToClient=measured.copy(),matrixSourceToClient=final.copy())
 
 
-def solve_initial_structure(frame,reference,validation,route,profile, *, cancelled=None, source_known_boundary=None, source_unknown=None, _context=None, wall_correspondence_identity=False, pose_index_candidates=(), pose_index_diagnostics=None):
+def solve_initial_structure(frame,reference,validation,route,profile, *, cancelled=None, source_known_boundary=None, source_unknown=None, _context=None, wall_correspondence_identity=False, pose_index_candidates=(), pose_index_diagnostics=None, entry_pose_proposals=()):
     """Pure unknown-scale author->client candidate. Never initializes a group."""
     started=time.perf_counter()
     if cancelled and cancelled(): return dict(success=False,reason='structure-work-obsolete')
@@ -628,6 +628,11 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
     # shared graph/refinement/author gates below will decide those seeds.
     query_chains=[] if pose_index_candidates else observed_corner_chains(frame,context)
     wall_proposals=[] if pose_index_candidates else marker_occluded_corner_proposals(frame,context,query_chains)
+    entry_marker_observation=False
+    if entry_pose_proposals:
+        measured=observed_corner_chains(frame,context) if pose_index_candidates else query_chains
+        marker=marker_occluded_corner_proposals(frame,context,measured) if pose_index_candidates else wall_proposals
+        entry_marker_observation=bool(not measured and marker)
     all_query_chains=query_chains+wall_proposals
     source_nodes=contour_graph(reference)
     source_chains=[]
@@ -646,7 +651,7 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
     def finish(success,reason,**kw):
         diagnostic['elapsedMs']=(time.perf_counter()-started)*1000
         return dict(success=success,reason=reason,diagnostics=diagnostic,**kw)
-    if not all_query_chains and not pose_index_candidates:
+    if not all_query_chains and not pose_index_candidates and not entry_pose_proposals:
         return finish(False,'initial-structure-supported-chains-insufficient')
     seeds=[]
     source_rays=np.array([s['rays'] for s in source_chains]).reshape(-1,2,2)
@@ -670,7 +675,7 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
                 return finish(False,'initial-structure-descriptor-budget-unresolved')
     diagnostic['seedCount']=len(seeds)
     diagnostic['stages'].append(dict(stage='chain-descriptors',elapsedMs=(time.perf_counter()-started)*1000))
-    if not seeds and not pose_index_candidates:return finish(False,'initial-structure-no-chain-ratios')
+    if not seeds and not pose_index_candidates and not entry_pose_proposals:return finish(False,'initial-structure-no-chain-ratios')
     # Marker-covered coordinates can propose wall poses, never enter point fits.
     point_seeds=[seed for seed in seeds if seed[0]<len(query_chains)]
     diagnostic['measuredSeedCount']=len(point_seeds)
@@ -741,8 +746,19 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
     # seed is continuously refined from current structure and then reaches the
     # same current-frame and selected-author validators below.
     diagnostic['poseIndexCandidates']=dict(count=len(pose_index_candidates),validated=[])
-    index_seed_rows=[]
-    for index,seed in enumerate(pose_index_candidates):
+    correspondences=((pose_index_diagnostics or {}).get('correspondences') or []) if pose_index_candidates else []
+    proposal_rows=[('poseIndexCandidates','poseIndexCandidate','indexedWallRefinement',index,seed,
+        correspondences[index] if index<len(correspondences) else {})
+        for index,seed in enumerate(pose_index_candidates)]
+    if entry_pose_proposals:
+        # Entry geometry adds proposals. It never suppresses the ordinary
+        # measured/marker searches, substitutes a verdict, or locks the scale.
+        diagnostic['entryPoseProposals']=dict(count=len(entry_pose_proposals),validated=[])
+        proposal_rows.extend(('entryPoseProposals','entryPoseProposal','entryWallRefinement',index,seed,{})
+            for index,seed in enumerate(entry_pose_proposals))
+    retrieved_seed_rows=[]
+    entry_candidates=[]
+    for diagnostic_key,candidate_key,refinement_key,index,seed,pair in proposal_rows:
         if cancelled and cancelled():return finish(False,'structure-work-obsolete')
         seed=np.asarray(seed,dtype=np.float64)
         item=dict(index=index,accepted=False)
@@ -750,11 +766,9 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
             or abs(seed[0,1])>1e-8 or abs(seed[1,0])>1e-8
             or seed[0,0]<=0 or abs(seed[0,0]-seed[1,1])>1e-8):
             item['reason']='invalid-isotropic-seed'
-            diagnostic['poseIndexCandidates']['validated'].append(item)
+            diagnostic[diagnostic_key]['validated'].append(item)
             continue
-        index_seed_rows.append((index,seed.copy()))
-        correspondences=(pose_index_diagnostics or {}).get('correspondences') or []
-        pair=correspondences[index] if index<len(correspondences) else {}
+        retrieved_seed_rows.append((diagnostic_key,candidate_key,refinement_key,index,seed.copy()))
         source=np.asarray(pair.get('source',[]),dtype=np.float64).reshape(-1,2)
         observed=np.asarray(pair.get('observed',[]),dtype=np.float64).reshape(-1,2)
         if len(source)>=6 and len(source)==len(observed):
@@ -770,17 +784,27 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
             selected=geometry.get(geometry.get('structureModel')) or {}
             item['geometry']={k:geometry.get(k) for k in ('reason','structureModel','scaleObservable','acceptedPointCount','supportPointCount','validationPointCount')}
         if not selected.get('success'):
-            diagnostic['poseIndexCandidates']['validated'].append(item)
+            diagnostic[diagnostic_key]['validated'].append(item)
+            continue
+        if candidate_key=='entryPoseProposal' and geometry.get('scaleObservable') is not True:
+            # H0 only validates translation at the supplied scale. An entry
+            # proposal has no acknowledged scale to inherit; wall refinement
+            # below may still obtain independent held-out scale evidence.
+            item['reason']='entry-scale-unobservable'
+            diagnostic[diagnostic_key]['validated'].append(item)
             continue
         matrix=np.asarray(selected['matrixSourceToClient'],dtype=np.float64)
-        if any(np.linalg.norm((extent@(matrix-c['matrix']).T)[:,:2],axis=1).max()<=3 for c in candidates):
+        candidate_pool=entry_candidates if candidate_key=='entryPoseProposal' else candidates
+        comparison_pool=candidates+entry_candidates if candidate_key=='entryPoseProposal' else candidates
+        if any(np.linalg.norm((extent@(matrix-c['matrix']).T)[:,:2],axis=1).max()<=3 for c in comparison_pool):
             item['reason']='same-pose-as-structural-candidate'
-            diagnostic['poseIndexCandidates']['validated'].append(item)
+            diagnostic[diagnostic_key]['validated'].append(item)
             continue
-        candidates.append(dict(matrix=matrix,geometry=geometry,pairs=[],sourcePoints=[],queryPoints=[],
-            poseIndexCandidate=index))
+        candidate_pool.append(dict(matrix=matrix,geometry=geometry,pairs=[],sourcePoints=[],queryPoints=[],
+            **{candidate_key:index},
+            **(dict(markerOccludedProposal=entry_marker_observation) if candidate_key=='entryPoseProposal' else {})))
         item.update(accepted=True,matrix=matrix.tolist())
-        diagnostic['poseIndexCandidates']['validated'].append(item)
+        diagnostic[diagnostic_key]['validated'].append(item)
     # Small visible islands can have too few complete chains for disjoint
     # point fitting while still exposing independently separated wall planes.
     # Keep the point gate intact; use a normal-only scale fit with leave-one-
@@ -808,30 +832,32 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
                 np.array([matrix[0,0],matrix[0,2],matrix[1,2]]),
                 source_unknown=source_unknown,_samples=raster_samples))
         return raster['verified']
-    for index,seed in index_seed_rows:
+    for diagnostic_key,candidate_key,refinement_key,index,seed in retrieved_seed_rows:
         if cancelled and cancelled():return finish(False,'structure-work-obsolete')
         wall=initial_wall_geometry(qlines,slines,float(seed[0,0]),np.asarray(seed[:2,2]),arrays,
             wall_fit_cache,reference=reference,source_unknown=source_unknown,raster_samples=raster_samples)
         if wall is None:continue
         matrix=np.asarray(wall['matrix'],dtype=np.float64)
-        existing=next((c for c in candidates if c.get('poseIndexCandidate')==index),None)
+        candidate_pool=entry_candidates if candidate_key=='entryPoseProposal' else candidates
+        existing=next((c for c in candidate_pool if c.get(candidate_key)==index),None)
         wall_geometry={'wallScale':{k:v for k,v in wall.items() if k!='matrix'}}
         if existing is not None:
-            existing.update(matrix=matrix,geometry=wall_geometry,
-                indexedWallRefinement=True)
-            for item in diagnostic['poseIndexCandidates']['validated']:
+            existing.update(matrix=matrix,geometry=wall_geometry,**{refinement_key:True})
+            for item in diagnostic[diagnostic_key]['validated']:
                 if item.get('index')==index:
                     item['wallRefinement']={k:v for k,v in wall.items() if k!='matrix'}
                     item['matrix']=matrix.tolist()
                     break
             continue
-        if any(np.linalg.norm((extent@(matrix-c['matrix']).T)[:,:2],axis=1).max()<=3 for c in candidates):
+        comparison_pool=candidates+entry_candidates if candidate_key=='entryPoseProposal' else candidates
+        if any(np.linalg.norm((extent@(matrix-c['matrix']).T)[:,:2],axis=1).max()<=3 for c in comparison_pool):
             continue
-        candidates.append(dict(matrix=matrix,geometry=wall_geometry,pairs=[],sourcePoints=[],queryPoints=[],
-            poseIndexCandidate=index,indexedWallRefinement=True))
-        for item in diagnostic['poseIndexCandidates']['validated']:
+        candidate_pool.append(dict(matrix=matrix,geometry=wall_geometry,pairs=[],sourcePoints=[],queryPoints=[],
+            **{candidate_key:index,refinement_key:True},
+            **(dict(markerOccludedProposal=entry_marker_observation) if candidate_key=='entryPoseProposal' else {})))
+        for item in diagnostic[diagnostic_key]['validated']:
             if item.get('index')==index:
-                item.update(accepted=True,indexedWallRefinement=True,
+                item.update(accepted=True,**{refinement_key:True},
                     wallRefinement={k:v for k,v in wall.items() if k!='matrix'},matrix=matrix.tolist())
                 break
     for qi,si,scale,translation in seeds:
@@ -877,6 +903,17 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
             if cancelled and cancelled():return finish(False,'structure-work-obsolete')
             diagnostic['wallCandidates']=[dict(matrix=c['matrix'].tolist(),geometry=c['geometry']) for c in candidates]
             return finish(False,'initial-structure-validation-budget-unresolved')
+    # Complete ordinary correspondence search before merging entry proposals.
+    # A redundant hint must not consume its budget before stronger ordinary
+    # wall identities have replaced their own provisional subsets.
+    for candidate in entry_candidates:
+        matrix=candidate['matrix']
+        if any(np.linalg.norm((extent@(matrix-c['matrix']).T)[:,:2],axis=1).max()<=3 for c in candidates):
+            continue
+        candidates.append(candidate)
+        if len(candidates)>diagnostic['validationBudget']:
+            diagnostic['candidateCount']=len(candidates)
+            return finish(False,'initial-structure-validation-budget-unresolved')
     diagnostic['candidateCount']=len(candidates)
     diagnostic['stages'].append(dict(stage='scale-consensus',elapsedMs=(time.perf_counter()-consensus_started)*1000))
     accepted=[]; validation_started=time.perf_counter()
@@ -897,6 +934,8 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
             route_profile_id=profile,reference_override=validation,
             visible_override=context.get('visible')) if regions['regionalEdgeVerified'] else None)
         passed=bool(regions['regionalEdgeVerified'] and residual and residual.get('verified'))
+        if passed and 'entryPoseProposal' in c:
+            passed=selected_scale_observation(c['geometry'],matrix,matrix,residual,profile) is not None
         diagnostic['candidates'].append(dict(matrix=matrix.tolist(),pointGeometry=c['geometry'],pairs=c['pairs'],sourcePoints=c['sourcePoints'],queryPoints=c['queryPoints'],regions=regions,residual=residual,accepted=passed))
         if passed and not any(np.linalg.norm((extent@(matrix-old[0]).T)[:,:2],axis=1).max()<=3
                 for old in accepted):
@@ -908,7 +947,7 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
     # No coordinate conversion occurs after this exact author/frame check.
     # Return its evidence with the selected pose instead of recalculating it.
     return finish(True,'initial-structure-candidate',matrixSourceToClient=matrix,coordinateSpace='author-render-to-client',routeProfileId=profile,
-        markerOccludedWallProposal=bool(selected_candidate.get('markerOccludedProposal')),
+        markerOccludedWallProposal=bool(selected_candidate.get('markerOccludedProposal') or entry_marker_observation),
         currentFrameScaleObservation=selected_scale_observation(selected_candidate['geometry'],matrix,matrix,residual,profile),
         selectedRouteCurrentFrameResidual=dict(residual,validationBasis='actual-rendered-profile-structural-mask',poseVerifiedAgainstRenderedProfile=True))
 

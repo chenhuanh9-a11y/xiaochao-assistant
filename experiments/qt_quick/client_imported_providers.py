@@ -6,6 +6,7 @@ Presence is reported separately from algorithm readiness.
 """
 from copy import deepcopy
 import re
+import threading
 
 from season_context import SeasonContext, context_key, is_retired_mode
 from client_providers import EngineFactories, ProviderResourceBinding, ProviderUnavailable
@@ -59,15 +60,13 @@ def load_native_resources(base_view, controls_view, *, season='s0', mode='nightm
     else:
         native = None
 
-    def check_current():
-        if native is not None:
-            native.assert_current()
-            return
-        bundle.assert_current()
-        controls_view.root  # Check the controls manifest as well as its catalog.
-
+    from imported_native_context import ImportedResourceOwners
+    legacy_references = bundle.legacy_references
+    owners = ImportedResourceOwners(base_view, bundle, controls, native, legacy_references)
+    check_current = owners.assert_current
     provider = SharedReferenceProvider(root, bundle.resources, bundle.versions,
-        native=native if bundle.legacy_references is not None else None, check_current=check_current)
+        legacy_reference_loader=legacy_references.reference if legacy_references is not None else None,
+        check_current=check_current, operation_owners=owners)
     check_current()
     return bundle, controls, native, provider, check_current
 
@@ -126,6 +125,9 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
         local.passports.extend(deepcopy(bundle.legacy_passports['entries']))
         local.entry_coverage.extend(deepcopy(bundle.legacy_passports['coverage']))
     engine.qt_native_base = bundle
+    from structure_pose_inputs import StructurePoseInputCache
+    engine.qt_pose_input_cache = StructurePoseInputCache()
+    engine.qt_pose_prepare_lock = threading.RLock()
     engine.qt_assert_resource_current = check_current
     engine.qt_shared_provider = provider
     engine.qt_fast_structure_source = bundle.fast_structure_source
@@ -137,6 +139,8 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
     engine.qt_logical_group_registry = bundle.reviewed_front_groups
     engine.qt_live_gaps = tuple(native.live_gaps) if native is not None else ()
     engine.qt_rank_ready = rank_ready
+    engine.qt_structure_scan_ready = bool(native is not None
+        and native.structure_candidate_capability.get('operatorDeclaredScanReady') is True)
     engine.qt_rank_gaps = () if rank_ready else ('native-base-rank-unavailable',)
     engine.qt_live_ready = rank_ready and not engine.qt_live_gaps
     engine.qt_season = season
@@ -150,10 +154,21 @@ def build_native_engine(base_view, controls_view, paths, *, season='s0', mode='n
         reviewedGroupReviewSource=(bundle.reviewed_front_groups.review_source if bundle.reviewed_front_groups is not None else None),
         reviewedGroupGaps=(dict(bundle.reviewed_front_groups.group_gaps) if bundle.reviewed_front_groups is not None else
                            {'registration': ('reviewed-front-groups-not-provided',)}))
+    from structure_pose_inputs import prepare_structure_pose_common_models
+    engine.qt_pose_common_models = prepare_structure_pose_common_models(engine)
+    if engine.qt_pose_common_models is not None:
+        engine.qt_resource_inventory['commonPoseModelBytes'] = engine.qt_pose_common_models.retained_bytes
+        engine.qt_pose_input_cache.max_bytes -= engine.qt_pose_common_models.retained_bytes
     if season == 's1':
         from s1_structure_selection import StructureCatalog
+        from client_s1_coordinate_recognition import attach_imported_s1_coordinate_recognition
         engine.qt_s1_index_resource_root = root
-        engine.qt_s1_private_coordinate_prepare = engine.qt_s1_pose_prior = None
+        catalog = StructureCatalog.from_engine(engine)
+        coordinate = attach_imported_s1_coordinate_recognition(engine, catalog)
+        attach_structure_scanner(engine, catalog,
+            private_fit=coordinate.fixed_fit if coordinate is not None else None)
+    elif rank_ready or engine.qt_structure_scan_ready:
+        from s1_structure_selection import StructureCatalog
         attach_structure_scanner(engine, StructureCatalog.from_engine(engine))
     check_current()
     return engine
@@ -259,6 +274,19 @@ class ImportedEngineFactories(EngineFactories):
         engine.qt_resource_inventory['optionalResourceGaps'] = list(resources.optional_gaps) + (
             list(optional.errors.values()) if optional is not None else []) + (
             ['reviewed-groups-decoder-unavailable'] if resources.groups is not None else [])
+        from structure_pose_inputs import prepare_structure_pose_static_payloads
+        engine.qt_pose_static_payloads = prepare_structure_pose_static_payloads(engine)
+        if engine.qt_pose_static_payloads is not None:
+            retained = engine.qt_pose_static_payloads.retained_bytes
+            engine.qt_resource_inventory['staticPosePayloadBytes'] = retained
+            engine.qt_pose_input_cache.max_bytes -= retained
+        coordinate = getattr(engine, 'qt_s1_coordinate_recognition', None)
+        if coordinate is not None:
+            # This is a preparation hint from declared floor metadata, not an
+            # observed game floor. Every later observation still proves floor,
+            # pool scope and geometry through the original consumer.
+            prepared = coordinate.prepare_static_floor(coordinate.catalog.floors[0])
+            engine.qt_resource_inventory['s1StaticCoordinatePreparation'] = prepared
         engine.qt_assert_resource_current()
         return engine
 

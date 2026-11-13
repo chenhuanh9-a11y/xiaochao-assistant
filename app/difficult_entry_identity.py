@@ -7,6 +7,10 @@ import cv2
 from entry_evidence_work import EntryEvidenceJob as MainEntryJob, EntryEvidenceWork
 
 
+def _pose_source_eligible(source):
+    return source.get('proposalOnly', False) is False and source.get('authorizesPose', True) is True
+
+
 def entry_geometry(frame):
     """Difficult entry at bottom of map was outside legacy 22–80% crop.
 
@@ -74,14 +78,28 @@ class MainEntryEvidence(EntryEvidenceWork):
         super().__init__(frame if self.floor_indexed else None)
 
     def _observe(self):
-        self.context = self.engine.geometry(self.frame)
-        self.query = entry_corners(self.frame, self.context) if self.context else []
-        self.qpoints = np.array([row['point'] for row in self.query])
-        self.qrays = np.array([row['rays'] for row in self.query])
+        shared = getattr(self.engine, 'observation_dependencies', None)
+        if shared is not None and shared.owns(self.frame):
+            self.context, self.query, self.qpoints, self.qrays = shared.get(
+                ('main-observation',), self._observation,
+                cancelled=getattr(self.engine, 'observation_cancelled', None))
+            # The geometry and its lazy derived parts belong to this consumer.
+            self.engine._observation = (self.frame, self.context)
+            return
+        self.context, self.query, self.qpoints, self.qrays = self._observation()
+
+    def _observation(self):
+        context = self.engine.geometry(self.frame)
+        query = entry_corners(self.frame, context) if context else []
+        return context, query, np.array([row['point'] for row in query]), np.array([row['rays'] for row in query])
 
     def _probe(self, entry):
         self.evaluated_map_ids.append(entry[0]['mapId'])
-        row = self.engine._probe_entry(self.frame, entry, self.qpoints, self.qrays)
+        probe = lambda: self.engine._probe_entry(self.frame, entry, self.qpoints, self.qrays)
+        shared = getattr(self.engine, 'observation_dependencies', None)
+        row = (shared.get(('main-probe', tuple(id(part) for part in entry)), probe,
+                         cancelled=getattr(self.engine, 'observation_cancelled', None))
+               if shared is not None and shared.owns(self.frame) else probe())
         if row is not None:
             self.rows.append(row)
 
@@ -189,8 +207,15 @@ class MapEntryGeometryIdentity:
         here; every consumer still performs its current author validation.
         """
         cached=self._observation
-        if cached is not None and np.array_equal(cached[0],frame):
+        if cached is not None and (cached[0] is frame or np.array_equal(cached[0],frame)):
             return cached[1]
+        shared = getattr(self, 'observation_dependencies', None)
+        if shared is not None and shared.owns(frame):
+            # Geometry is a shared dependency of an already admitted kernel.
+            # A retiring producer must not poison the other lane's kernel.
+            context = shared.get(('entry-geometry',), lambda: entry_geometry(frame))
+            self._observation = (frame, context)
+            return context
         context=entry_geometry(frame)
         self._observation=(frame.copy(),context)
         return context
@@ -226,6 +251,15 @@ class MapEntryGeometryIdentity:
             context['authorVisible']=(visible[0].copy(),visible[1],visible[2]) if visible is not None else None
         return context['authorVisible']
 
+    def has_pose_eligible_source(self, map_id, floor):
+        """Resource purpose only; this does not verify a current-frame pose.
+
+        A known-map pose consumer can omit a producer with no eligible source.
+        General candidate ranking still retains every proposal and competitor.
+        """
+        return any(item['mapId'] == map_id and str(item['floor']) == str(floor)
+                   and _pose_source_eligible(item) for item, *_ in self.entries)
+
     def rank(self,frame,floor,*,budget_seconds=None,map_id=None,route=None,candidate_map_ids=None):
         started=time.perf_counter()
         if not any(item['floor']==str(floor) for item,*_ in self.entries):
@@ -248,15 +282,20 @@ class MapEntryGeometryIdentity:
         source=source[:,1];hypotheses=[]
         oriented=np.min(np.sum(qrays[:,None]*rays[None],axis=3),axis=2)>=.95
         oriented_pairs=np.nonzero(oriented)
+        oriented_query_points=qpoints[oriented_pairs[0]]
+        oriented_queries=[np.flatnonzero(oriented[:, index]) for index in range(len(source))]
         main_ids=np.flatnonzero(main)
         # Two entry corners seed scale; different measured corners and
         # neighboring rooms must support it. No complete wall endpoint
         # is inferred from a fog-clipped contour.
         for ai,si in enumerate(main_ids):
             for sj in main_ids[ai+1:]:
+                qa_ids, qb_ids = oriented_queries[si], oriented_queries[sj]
+                if not len(qa_ids) or not len(qb_ids):
+                    continue
                 delta=source[sj]-source[si];denom=float(delta@delta)
                 if denom<(.7*item['unit'])**2:continue
-                qa,qb=np.meshgrid(np.flatnonzero(oriented[:,si]),np.flatnonzero(oriented[:,sj]))
+                qa,qb=np.meshgrid(qa_ids,qb_ids)
                 qa=qa.ravel();qb=qb.ravel()
                 qdelta=qpoints[qb]-qpoints[qa]
                 scales=qdelta@delta/denom
@@ -264,7 +303,8 @@ class MapEntryGeometryIdentity:
                 compatible=(errors<=2)&(scales*item['unit']>=8)&(scales*item['unit']<=min(frame.shape[:2])/4)
                 for pair_index in np.flatnonzero(compatible):
                     qi=qa[pair_index];s=float(scales[pair_index]);t=qpoints[qi]-s*source[si]
-                    self._score_hypothesis(item,source,main,qpoints,oriented,s,t,hypotheses,oriented_pairs)
+                    self._score_hypothesis(item,source,main,qpoints,oriented,s,t,hypotheses,
+                                           oriented_pairs,oriented_query_points)
         if hypotheses:
             hypotheses.sort(key=lambda h:-h['chainCount'])
             # Updating an existing hypothesis can move it beside another
@@ -280,22 +320,36 @@ class MapEntryGeometryIdentity:
             return dict(mapId=item['mapId'],profileId=self.profile_for_map(item['mapId']),entryKind='main',material=item['material'],
                 score=float(best['chainCount']),hypothesis={k:v for k,v in best.items() if k!='anchor'},
                 poseAmbiguous=len(hypotheses)>1 and hypotheses[1]['chainCount']>=best['chainCount']-1,
-                sourceProduct=item['sourceProduct'])
+                sourceProduct=item['sourceProduct'],
+                **{key:item[key] for key in ('proposalOnly','authorizesPose','authorizesIdentity') if key in item})
 
     @staticmethod
     def _finalize_rank(rows,competitive,complete,map_id):
         accepted=[r for r in competitive if r.get('verification',{}).get('success')]
         winner=accepted[0] if complete and len(accepted)==1 else None
         for row in rows:
+            # Proposal geometry still competes and can seed a later independent
+            # fit. Passing this entry check cannot upgrade its resource purpose.
             row['poseVerified']=bool(row is winner and not row['poseAmbiguous']
+                and _pose_source_eligible(row)
                 and row['hypothesis']['neighborChains']>=6 and row['score']>=10
                 and (row['hypothesis']['mainChains']>=3 or (
                     row['hypothesis']['neighborChains']>=8
                     and min(row['hypothesis']['neighborExtentGrid'])>=4)))
-            row['identityVerified']=row['poseVerified'] and map_id is None
+            row['identityVerified']=row['poseVerified'] and map_id is None and row.get('authorizesIdentity',True) is True
         if winner is not None:rows.sort(key=lambda r:(not r['identityVerified'],-r['score']))
 
     def verify(self,frame,row,*,context=None,route=None):
+        shared = getattr(self, 'observation_dependencies', None)
+        if shared is not None and shared.owns(frame):
+            actual_context = self.geometry(frame) if context is None else context
+            key = ('main-verify', id(self.shared_reference_provider), id(route),
+                   shared.value_key(row), shared.value_key(None if actual_context is None else
+                       {name: actual_context.get(name) for name in ('query', 'observationBounds')}))
+            return shared.get(key, lambda: self._verify_uncached(frame, row, context=actual_context, route=route))
+        return self._verify_uncached(frame, row, context=context, route=route)
+
+    def _verify_uncached(self,frame,row,*,context=None,route=None):
         from single_map_structure import regional_validation,_static_validation_context,partial_wall_geometry
         from nightmare_candidate import imread_unicode,selected_route_current_frame_residual
         item=next(e for e,*_ in self.entries if e['mapId']==row['mapId'])
@@ -374,15 +428,18 @@ class MapEntryGeometryIdentity:
             wallRefinement=wall_refinement,entryWalls=wall_check,matrixSourceToClient=matrix.tolist())
 
     @staticmethod
-    def _score_hypothesis(item,source,main,qpoints,oriented,s,t,hypotheses,oriented_pairs=None):
+    def _score_hypothesis(item,source,main,qpoints,oriented,s,t,hypotheses,oriented_pairs=None,
+                          oriented_query_points=None):
         anchor=np.array(item['center'])*s+t
         if any(np.linalg.norm(anchor-h['anchor'])<3 and abs(s-h['scale'])*item['unit']<.25 for h in hypotheses):return
         # Only measured corners contribute. Fog is never a missing-room vote.
         qi,si=np.nonzero(oriented) if oriented_pairs is None else oriented_pairs
+        if oriented_query_points is None:
+            oriented_query_points=qpoints[qi]
         for iteration in range(3):
             # Direction-incompatible pairs were always discarded. Compute the
             # same distances only for compatible pairs, in np.argwhere order.
-            errors=np.linalg.norm(qpoints[qi]-(source*s+t)[si],axis=1)
+            errors=np.linalg.norm(oriented_query_points-(source*s+t)[si],axis=1)
             hit=errors<=3
             qhit,shit=qi[hit],si[hit]
             unique=(np.bincount(qhit,minlength=len(qpoints))[qhit]==1)&(np.bincount(shit,minlength=len(source))[shit]==1)
@@ -394,9 +451,11 @@ class MapEntryGeometryIdentity:
             # supplies independent support. Partial entries require a wider
             # two-dimensional neighborhood at the identity decision above.
             if main_count<2:return
-            a=source[pairs[:,1]];b=qpoints[pairs[:,0]];centered=a-a.mean(axis=0)
-            proposed_s=float(np.sum(centered*(b-b.mean(axis=0)))/np.sum(centered*centered))
-            proposed_t=b.mean(axis=0)-proposed_s*a.mean(axis=0)
+            a=source[pairs[:,1]];b=qpoints[pairs[:,0]]
+            a_mean,b_mean=a.mean(axis=0),b.mean(axis=0)
+            centered=a-a_mean
+            proposed_s=float(np.sum(centered*(b-b_mean))/np.sum(centered*centered))
+            proposed_t=b_mean-proposed_s*a_mean
             # The final pairs were measured at the current supported pose.
             # LS can reduce RMS while moving one counted pair past 3 px;
             # reject that refinement rather than retain unsupported score.
