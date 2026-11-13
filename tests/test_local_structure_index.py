@@ -9,12 +9,15 @@ import sys
 import time
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
+import warnings
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'app'))
 from local_structure_index import LocalStructureIndex, possible_turns
 from side_entry_evidence import SideEntryEvidence
+import side_entry_evidence as side_evidence
 from side_entry_search import prepare_arrays
 from difficult_side_entry_identity import MapLocalEntryIdentity
 
@@ -50,6 +53,188 @@ def exact_turns(q, scales, translations, compatible, source):
     return np.asarray([np.any(compatible & (np.linalg.norm(q[:, None]
         - (source[None] * scale + shift), axis=2) <= 3), axis=1).sum()
         for scale, shift in zip(scales, translations)])
+
+
+def original_oriented_hits(query, source, scale, translation, **_):
+    """Independent original expression; never calls the axis-bound helper."""
+    return np.linalg.norm(query - (source * scale + translation), axis=1) <= 3
+
+
+class SideAxisBoundTests(unittest.TestCase):
+    def actual_hits(self, query, source, scale=1., translation=None):
+        translation = np.zeros(2) if translation is None else translation
+        return side_evidence._oriented_seed_hits(query, source, scale, translation,
+            axis_safe=side_evidence._axis_bound_inputs_safe(query, source))
+
+    def test_actual_complete_work_uses_axis_helper_and_matches_original_kernel(self):
+        entries = [graph(), graph('rival', offset=(400, 200)), graph('legacy', legacy=True)]
+        _, points, rays, pairs = entries[0]
+        query = points * .45 + [400., 270.]
+        # Only extracted measurements and the final pixel validator are supplied.
+        # Actual seed search, correspondence/refinement, jobs and finish execute.
+        locator = SimpleNamespace(entries=entries, floors=('1',), side_search={},
+            profile_for_map=lambda mid: 'shared-structure', side_door_error=None, side_search_error=None,
+            _side_door_contradicted=lambda row: False,
+            _observe=lambda frame: (None, [dict(point=p, rays=r) for p, r in zip(query, rays)], pairs),
+            verify=lambda frame, row, **kw: dict(success=False, reason='fixture-pixel-validator-unavailable'))
+        frame = np.zeros((1000, 1600, 3), np.uint8)
+
+        def drain(index):
+            work = MapLocalEntryIdentity.prepare_rank(locator, frame, '1',
+                prepared_index=index, deadline=float('inf'))
+            while (job := work.next_job()) is not None:
+                job.run()
+            result = work.finish()
+            return work, result
+
+        perturbation = np.asarray([[0., .2], [.3, -.1], [-.4, .2], [.1, .3],
+                                   [-.2, -.4], [.3, 0.], [0., -.3], [.2, .4]])
+        for noise in (0., .7, 2.9):
+            query = points * .45 + [400., 270.] + perturbation * noise
+            for index in (None, LocalStructureIndex(entries, max_lower_bytes=0)):
+                with self.subTest(prepared=index is not None, noise=noise):
+                    with patch.object(side_evidence, '_oriented_seed_hits',
+                                      side_effect=original_oriented_hits, create=True) as oracle:
+                        old, old_result = drain(index)
+                    self.assertGreater(old.seed_count, 0)
+                    self.assertEqual(oracle.call_count, old.seed_count,
+                        'the actual per-seed production distance must call the replaceable numeric helper')
+                    with patch.object(side_evidence, '_oriented_seed_hits',
+                                      wraps=side_evidence._oriented_seed_hits) as actual, \
+                         patch.object(side_evidence, '_axis_bound_inputs_safe',
+                                      wraps=side_evidence._axis_bound_inputs_safe) as static:
+                        new, new_result = drain(index)
+                    self.assertEqual(actual.call_count, new.seed_count)
+                    self.assertEqual(static.call_count, len(entries), 'static input checks run once per source probe')
+                    self.assertEqual(old.seed_count, new.seed_count)
+                    self.assertEqual(old.scan_complete, new.scan_complete)
+                    self.assertTrue(new._complete)
+                    self.assertEqual(old_result, new_result)
+
+    def test_float64_ulp_boundary_tiny_dy_and_signed_zero_match_original(self):
+        lower, upper = np.nextafter(3., 0.), np.nextafter(3., np.inf)
+        xs = np.asarray([-upper, -3., -lower, -0., 0., lower, 3., upper])
+        query = np.column_stack((np.tile(xs, 3), np.repeat([0., 2. ** -40, 3.], len(xs))))
+        source = np.zeros_like(query)
+        self.assertTrue(side_evidence._axis_bound_inputs_safe(query, source))
+        expected = original_oriented_hits(query, source, 1., np.zeros(2))
+        norm = np.linalg.norm
+        with patch.object(side_evidence.np.linalg, 'norm', wraps=norm) as calls:
+            actual = self.actual_hits(query, source)
+        np.testing.assert_array_equal(actual, expected)
+        self.assertTrue(actual[6])  # dx=3, dy=0 remains measured.
+        self.assertTrue(actual[len(xs) + 6])  # Small nonzero dy can still round norm to 3.
+        self.assertEqual(calls.call_count, 1)
+        self.assertLess(len(calls.call_args.args[0]), len(query), 'outside-x pairs never enter the 2D norm')
+
+    def test_all_retained_all_rejected_and_ordered_interleaving(self):
+        source = np.zeros((6, 2))
+        for query in (np.zeros((6, 2)), np.full((6, 2), 20.),
+                      np.asarray([[4., 0.], [3., 0.], [-4., 0.], [0., 3.], [1., 4.], [0., 0.]])):
+            with self.subTest(query=query.tolist()):
+                expected = original_oriented_hits(query, source, 1., np.zeros(2))
+                actual = self.actual_hits(query, source)
+                np.testing.assert_array_equal(actual, expected)
+                qids, sids = np.asarray([2, 0, 2, 7, 0, 1]), np.asarray([4, 2, 1, 5, 1, 0])
+                np.testing.assert_array_equal(qids[actual], qids[expected])
+                np.testing.assert_array_equal(sids[actual], sids[expected])
+        np.testing.assert_array_equal(self.actual_hits(source[:0], source[:0]), np.empty(0, bool))
+
+    def test_cancellation_arithmetic_and_readonly_noncontiguous_inputs(self):
+        source_store = np.zeros((6, 4))
+        source_store[:, ::2] = [[2. ** 50, 2. ** 49], [30., 80.], [90., 40.],
+                                [0., -0.], [180., 270.], [60., 60.]]
+        source = source_store[:, ::2]
+        scale = np.float64(np.nextafter(.5, 1.))
+        translation = np.asarray([-2. ** 49, -2. ** 48])
+        query_store = np.zeros((6, 4))
+        query_store[:, ::2] = source * scale + translation + [3., 2. ** -40]
+        query = query_store[:, ::2]
+        query.setflags(write=False)
+        source.setflags(write=False)
+        translation.setflags(write=False)
+        saved = query.copy(), source.copy(), translation.copy()
+        self.assertFalse(query.flags.c_contiguous)
+        self.assertTrue(side_evidence._axis_bound_inputs_safe(query, source))
+        np.testing.assert_array_equal(self.actual_hits(query, source, scale, translation),
+            original_oriented_hits(query, source, scale, translation))
+        for actual, expected in zip((query, source, translation), saved):
+            np.testing.assert_array_equal(actual, expected)
+            self.assertFalse(actual.flags.writeable)
+
+    def test_unknown_input_kinds_and_dynamic_values_use_full_original_norm(self):
+        class ArraySubclass(np.ndarray):
+            pass
+
+        ordinary = np.asarray([[10., 0.], [20., 0.], [0., 0.]])
+        variants = [(ordinary.astype(np.float32), np.zeros_like(ordinary, dtype=np.float32), 1., np.zeros(2)),
+                    (ordinary.view(ArraySubclass), np.zeros_like(ordinary), 1., np.zeros(2)),
+                    (ordinary, np.zeros_like(ordinary), np.float32(1.), np.zeros(2)),
+                    (ordinary, np.zeros_like(ordinary), 1., np.zeros(2, np.float32)),
+                    (ordinary, np.zeros_like(ordinary), 1., [0., 0.]),
+                    (ordinary, np.zeros((1, 2)), 1., np.zeros(2)),
+                    (ordinary, np.zeros_like(ordinary), 2. ** 101, np.zeros(2)),
+                    (ordinary, np.zeros_like(ordinary), 1., np.asarray([2. ** -101, 0.]))]
+        norm = np.linalg.norm
+        for query, source, scale, translation in variants:
+            with self.subTest(dtype=query.dtype, kind=type(query), scale=scale, translation=translation):
+                expected = original_oriented_hits(query, source, scale, translation)
+                with patch.object(side_evidence.np.linalg, 'norm', wraps=norm) as calls:
+                    actual = self.actual_hits(query, source, scale, translation)
+                np.testing.assert_array_equal(actual, expected)
+                self.assertEqual(calls.call_count, 1)
+                self.assertEqual(calls.call_args.args[0].shape, query.shape)
+
+    def test_fallback_preserves_nan_overflow_underflow_warnings_and_raises(self):
+        zero = np.zeros((1, 2))
+        signaling_nan = np.asarray([0x7ff0000000000001], dtype=np.uint64).view(np.float64)[0]
+        cases = [
+            (np.asarray([[10., np.nan]]), zero, 1., np.zeros(2)),
+            (np.asarray([[10., signaling_nan]]), zero, 1., np.zeros(2)),
+            (np.asarray([[10., np.inf]]), zero, 1., np.zeros(2)),
+            (np.asarray([[10., 0.]]), zero, np.inf, np.zeros(2)),
+            (np.asarray([[10., 0.]]), zero, 1., np.asarray([np.inf, np.nan])),
+            (zero, np.asarray([[1e308, 1.]]), 2., np.zeros(2)),  # finite multiply overflow
+            (zero, np.asarray([[1e308, 1.]]), 1., np.asarray([1e308, 0.])),  # finite add overflow
+            (np.asarray([[1e200, 0.]]), zero, 1., np.zeros(2)),  # square overflow
+            (np.asarray([[10., 0.]]), np.asarray([[1., 1e-200]]), 1e-200, np.zeros(2)),
+            (np.asarray([[10., 1e-200]]), zero, 1., np.zeros(2)),  # norm square underflow
+            (np.asarray([[10., np.nextafter(0., 1.)]]), zero, 1., np.zeros(2)),
+            (np.asarray([[10., 0.]]), zero, 1., np.asarray([0., 1e-200])),
+        ]
+
+        def outcome(function, args, mode):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter('always')
+                with np.errstate(all=mode):
+                    try:
+                        result, error = function(*args), None
+                    except FloatingPointError as exc:
+                        result, error = None, (type(exc), str(exc))
+            return result, error, [(warning.category, str(warning.message)) for warning in caught]
+
+        for mode in ('warn', 'raise'):
+            for args in cases:
+                with self.subTest(mode=mode, query=args[0].tolist(), scale=args[2]):
+                    expected, old_error, old_warnings = outcome(original_oriented_hits, args, mode)
+                    actual, new_error, new_warnings = outcome(self.actual_hits, args, mode)
+                    self.assertEqual(old_error, new_error)
+                    self.assertEqual(old_warnings, new_warnings)
+                    if expected is not None:
+                        np.testing.assert_array_equal(actual, expected)
+
+    def test_strict_raise_mode_always_uses_original_full_norm_without_changing_seterr(self):
+        query, source = np.full((4, 2), 20.), np.zeros((4, 2))
+        norm = np.linalg.norm
+        eligible = side_evidence._axis_bound_inputs_safe(query, source)
+        self.assertTrue(eligible)
+        with np.errstate(all='raise'):
+            settings = np.geterr()
+            with patch.object(side_evidence.np.linalg, 'norm', wraps=norm) as calls:
+                actual = side_evidence._oriented_seed_hits(query, source, 1., np.zeros(2), axis_safe=eligible)
+            self.assertEqual(np.geterr(), settings)
+        np.testing.assert_array_equal(actual, np.zeros(4, bool))
+        self.assertEqual(calls.call_args.args[0].shape, query.shape)
 
 
 class LocalStructureIndexTests(unittest.TestCase):

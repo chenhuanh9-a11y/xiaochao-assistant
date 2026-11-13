@@ -1,11 +1,61 @@
 """Resumable side structure search; measured poses do not write runtime state."""
 import time
+import math
 from copy import copy
 
 import cv2
 import numpy as np
 
 from entry_evidence_work import EntryEvidenceWork
+
+
+_AXIS_BOUND_MIN, _AXIS_BOUND_MAX = 2. ** -100, 2. ** 100
+
+
+def _axis_bound_inputs_safe(query, source):
+    """Once per probe: plain binary64 values with no exceptional arithmetic.
+
+    With equally bounded scale/translation, products are at most 2^200 and
+    rounded products are multiples of 2^-252. Subsequent residuals and their
+    two squared components stay normal (or zero) and finite. Unknown inputs
+    retain the original full expression, including its warnings/exceptions.
+    """
+    if (type(query) is not np.ndarray or type(source) is not np.ndarray
+            or query.dtype != np.float64 or source.dtype != np.float64
+            or query.ndim != 2 or query.shape[1:] != (2,) or source.shape != query.shape
+            or any(mode == 'raise' for mode in np.geterr().values())):
+        return False
+    for values in (query, source):
+        if not np.isfinite(values).all():
+            return False
+        magnitude = np.abs(values)
+        if not ((magnitude <= _AXIS_BOUND_MAX)
+                & ((magnitude == 0) | (magnitude >= _AXIS_BOUND_MIN))).all():
+            return False
+    return True
+
+
+def _axis_bound_scalar_safe(value):
+    return (type(value) in (float, np.float64) and math.isfinite(value)
+            and (value == 0 or _AXIS_BOUND_MIN <= abs(value) <= _AXIS_BOUND_MAX))
+
+
+def _oriented_seed_hits(query, source, scale, translation, *, axis_safe=False):
+    """Conservative x broad phase; retained pairs still use the original 2D norm."""
+    if not (axis_safe and not any(mode == 'raise' for mode in np.geterr().values())
+            and _axis_bound_scalar_safe(scale)
+            and type(translation) is np.ndarray and translation.dtype == np.float64
+            and translation.shape == (2,)
+            and _axis_bound_scalar_safe(translation[0]) and _axis_bound_scalar_safe(translation[1])):
+        return np.linalg.norm(query - (source * scale + translation), axis=1) <= 3
+    # Keep the original multiply, add, subtract order. For binary64 at the
+    # exact threshold 3, abs(dx)>3 cannot round the original norm back to <=3.
+    dx = query[:, 0] - (source[:, 0] * scale + translation[0])
+    keep = ~(np.abs(dx) > 3)
+    hits = np.zeros(len(query), dtype=bool)
+    if keep.any():
+        hits[keep] = np.linalg.norm(query[keep] - (source[keep] * scale + translation), axis=1) <= 3
+    return hits
 
 
 class SideEntryEvidence(EntryEvidenceWork):
@@ -102,6 +152,7 @@ class SideEntryEvidence(EntryEvidenceWork):
         # while evaluating only the same orientation-compatible entries.
         oriented_qids, oriented_sids = np.nonzero(compatible)
         oriented_query, oriented_source = q[oriented_qids], source[oriented_sids]
+        axis_safe = _axis_bound_inputs_safe(oriented_query, oriented_source)
         hypotheses = []
         seen = set()
         if prepared is not None:
@@ -174,8 +225,7 @@ class SideEntryEvidence(EntryEvidenceWork):
                         self.search_counts['preparedSeedsRejected'] += 1
                         continue
                 seed_count += 1
-                distances = np.linalg.norm(oriented_query - (oriented_source * scale + translation), axis=1)
-                hits = distances <= 3
+                hits = _oriented_seed_hits(oriented_query, oriented_source, scale, translation, axis_safe=axis_safe)
                 hit_q, hit_s = oriented_qids[hits], oriented_sids[hits]
                 if len(hit_q) < 4:
                     continue
