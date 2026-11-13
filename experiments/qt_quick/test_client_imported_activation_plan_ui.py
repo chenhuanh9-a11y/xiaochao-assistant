@@ -335,6 +335,34 @@ class ClientImportedActivationPlanUiTests(_AuthorSelectionFixture):
         self.assertEqual(snapshot.contexts['s1:difficult']['recognitionBase'], next_refs['base'])
         self.assertEqual(snapshot.contexts['s1:difficult']['controls'], next_refs['controls'])
 
+    def test_import_plan_refreshes_damaged_active_base_before_interaction(self):
+        self.scenario()
+        self.assertTrue(self.service.contextAvailable('s1', 'difficult'))
+        base = self.active_resolver.snapshot().resolve_context('s1', 'difficult').base
+        payload = base.path(next(path for path in base.inventory if path.endswith('.npz')))
+        before = (self.resources/'catalog.json').read_bytes()
+        payload.write_bytes(b'damaged while the base update was being imported')
+        source = self.root/'base-v2.xingtu-base'
+        source.write_bytes((self.root/'base-v2.zip').read_bytes())
+        completed = []
+        self.service.importCompleted.connect(lambda *row: completed.append(row))
+
+        self.assertTrue(self.service.importArchive(QUrl.fromLocalFile(str(source)).toString()))
+        self.wait(lambda:self.service.activationPlanOpen or bool(self.errors) or not self.service.busy)
+        self.assertTrue(self.service.activationPlanOpen, self.errors or self.service.message)
+        self.assertFalse(self.errors, self.errors)
+        self.assertFalse(self.service.contextAvailable('s1', 'difficult'))
+        self.assertFalse(self.service._import_inventory_pending)
+        self.assertEqual(completed, [])
+        self.assertEqual((self.resources/'catalog.json').read_bytes(), before)
+        self.assertEqual(payload.read_bytes(), b'damaged while the base update was being imported')
+        self.assertTrue(self.service.cancelActivationPlan(self.service.activationPlanId))
+        self.wait()
+        self.assertEqual(len(completed), 1)
+        self.assertTrue(completed[0][0].endswith('未启用'))
+        self.assertFalse(self.service.activationPlanOpen)
+        self.assertFalse(self.service.contextAvailable('s1', 'difficult'))
+
     def test_dismiss_late_plan_and_stale_catalog_do_not_publish_or_reopen(self):
         first, other, next_refs, second = self.scenario()
         target_key = f'{next_refs["base"].package_id}/{next_refs["base"].resource_version}'

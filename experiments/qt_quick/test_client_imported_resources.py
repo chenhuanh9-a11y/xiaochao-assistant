@@ -253,6 +253,75 @@ class ImportedResourceServiceTests(unittest.TestCase):
         self.assertEqual(len(self.completions), 1)
         self.assertIn('列表暂时无法读取', self.service.message)
 
+    def test_automatic_import_checks_availability_once_at_final_completion(self):
+        from client_imported_admission import available_base_contexts
+        with patch('client_imported_admission.available_base_contexts',
+                   wraps=available_base_contexts) as available:
+            self.import_zip()
+        self.assertEqual(available.call_count, 1)
+        self.assertEqual(self.errors, [])
+        self.assertEqual(len(self.completions), 1)
+        self.assertTrue(self.completions[0][0].endswith('已启用'))
+        self.assertTrue(self.service.contextAvailable('s0', 'difficult'))
+        self.assertEqual(len(self.service.packageRows), 1)
+        self.assertFalse(self.service.activationPlanOpen)
+
+    def test_cancel_after_save_reads_final_inventory_before_reporting(self):
+        from imported_resource_archive import save_archive
+        from client_imported_admission import available_base_contexts
+        saved, resume = threading.Event(), threading.Event()
+
+        def save_then_wait(*args, **kwargs):
+            result = save_archive(*args, **kwargs)
+            saved.set()
+            if not resume.wait(30):
+                raise RuntimeError('test save boundary timed out')
+            return result
+
+        with patch('imported_resource_archive.save_archive', side_effect=save_then_wait), \
+                patch('client_imported_admission.available_base_contexts',
+                      wraps=available_base_contexts) as available:
+            try:
+                self.assertTrue(self.service.importArchive(QUrl.fromLocalFile(str(self.archive)).toString()))
+                deadline = time.monotonic() + 30
+                while not saved.is_set() and time.monotonic() < deadline:
+                    self.app.processEvents()
+                    time.sleep(.005)
+                self.assertTrue(saved.is_set())
+                self.service.cancel()
+            finally:
+                resume.set()
+            self.wait()
+        self.assertEqual(available.call_count, 1)
+        self.assertEqual(self.errors, [])
+        self.assertEqual([row[0] for row in self.completions], ['启用已取消'])
+        self.assertEqual(len(self.service.packageRows), 1)
+        self.assertEqual(self.service.availableContexts, [])
+        self.assertFalse(self.service.activationPlanOpen)
+        self.assertFalse((self.resolver.root / 'catalog.json').exists())
+        self.assertTrue(self.archive.is_file())
+
+    def test_lease_denial_keeps_saved_package_and_reads_final_inventory(self):
+        from client_imported_admission import available_base_contexts
+        held = self.session.acquireResourceLease()
+        self.assertTrue(held)
+        try:
+            with patch('client_imported_admission.available_base_contexts',
+                       wraps=available_base_contexts) as available:
+                self.import_zip()
+            self.assertEqual(available.call_count, 1)
+            self.assertEqual(len(self.completions), 1)
+            self.assertTrue(self.completions[0][0].endswith('未启用'))
+            self.assertEqual(len(self.service.packageRows), 1)
+            self.assertEqual(self.service.availableContexts, [])
+            self.assertFalse(self.service.activationPlanOpen)
+            self.assertFalse((self.resolver.root / 'catalog.json').exists())
+        finally:
+            self.session.releaseResourceLease(held)
+        retry = self.session.acquireResourceLease()
+        self.assertTrue(retry)
+        self.session.releaseResourceLease(retry)
+
     def test_shutdown_drains_accepted_save_without_late_ui_completion(self):
         from imported_resource_inventory import list_saved_versions
         class Publication(QObject):

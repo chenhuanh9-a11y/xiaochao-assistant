@@ -53,8 +53,8 @@ class _AuthorSelectionFixture(_AuthorDisplayFixture):
             displays=[self.wire(ref) for ref in displays])
         resolver = self.resolver()
         # The source/base has already passed the actual public decoder in the
-        # fixture. Seed only this precondition; each API call below constructs
-        # and checks the real engine/provider twice before publishing.
+        # fixture. Seed only this precondition; API calls below use the real
+        # semantic decoder and both publication input checks.
         def inspect(proposed):
             inspect_selection(self.resources, proposed, supported_capabilities=SUPPORTED_CAPABILITIES)
         with resource_write_lock(self.resources):
@@ -94,7 +94,7 @@ class ClientImportedAuthorSelectionTests(_AuthorSelectionFixture):
         self.assertEqual(outcome['status'], 'catalog-activated')
         self.assertEqual(outcome['context'], 's1:difficult')
         self.assertEqual(outcome['profileId'], 'author-fixture')
-        self.assertEqual(decoded.call_count, 2)
+        self.assertEqual(decoded.call_count, 1)
         other, _, _ = self.package(package_id='author-other', profile_id='author-other')
         self.activate(other)
         resolver = self.resolver()
@@ -262,26 +262,73 @@ class ClientImportedAuthorSelectionTests(_AuthorSelectionFixture):
         self.assertEqual((self.resources/'catalog.json').read_bytes(), before)
         self.assertEqual(self.resolver().snapshot().contexts['s1:difficult']['recognitionBase'], self.refs['base'])
 
-    def test_second_semantic_check_cancel_restores_previous_author_version(self):
+    def test_cancel_in_published_input_check_restores_previous_author_version(self):
         self.seed()
         first, _, _ = self.package(package_id='author-versioned')
         self.activate(first)
         second, _, _ = self.package(package_id='author-versioned', resource_version='v2')
         before = (self.resources/'catalog.json').read_bytes()
-        state = dict(calls=0, cancelled=False)
+        state = dict(published=False, cancelled=False)
 
-        def decode_then_cancel(*args):
-            display = decode_author_display(*args)
-            state['calls'] += 1
-            if state['calls'] == 2:
+        def publish(root, document, **kwargs):
+            def stage(name):
+                if name == 'catalog-published':
+                    state['published'] = True
+            return activate_catalog_locked(root, document, on_stage=stage, **kwargs)
+
+        def inspect_then_cancel(*args, **kwargs):
+            inspected = inspect_selection(*args, **kwargs)
+            if state['published']:
                 state['cancelled'] = True
-            return display
+            return inspected
 
-        with patch('imported_author_display.decode_author_display', side_effect=decode_then_cancel):
+        with patch.object(activation.publication, 'activate_catalog_locked', side_effect=publish), \
+                patch.object(activation.selection, 'inspect_selection', side_effect=inspect_then_cancel):
             with self.assertRaisesRegex(files.ImportRejected, 'import-cancelled'):
                 self.activate(second, cancelled=lambda:state['cancelled'])
-        self.assertEqual(state['calls'], 2)
+        self.assertTrue(state['published'])
+        self.assertTrue(state['cancelled'])
         self.assertEqual((self.resources/'catalog.json').read_bytes(), before)
+        self.assertFalse((self.resources/'transactions/pending-catalog.json').exists())
+
+    def test_cached_second_check_rejects_payload_changed_after_final_inventory(self):
+        from imported_resource_packages import PackageView
+        self.seed()
+        first, _, _ = self.package(package_id='author-versioned')
+        self.activate(first)
+        second, _, _ = self.package(package_id='author-versioned', resource_version='v2')
+        before = (self.resources/'catalog.json').read_bytes()
+        image = second.path('images/route.png')
+        state = dict(published=False, inspected=False, damaged=False)
+        original_inventory = PackageView.validate_inventory
+
+        def publish(root, document, **kwargs):
+            def stage(name):
+                if name == 'catalog-published':
+                    state['published'] = True
+            return activate_catalog_locked(root, document, on_stage=stage, **kwargs)
+
+        def inspect(*args, **kwargs):
+            inspected = inspect_selection(*args, **kwargs)
+            state['inspected'] = state['published']
+            return inspected
+
+        def inventory_then_damage(view):
+            result = original_inventory(view)
+            if (state['inspected'] and view.component_ref == second.component_ref
+                    and not state['damaged']):
+                image.write_bytes(b'changed after final inventory')
+                state['damaged'] = True
+            return result
+
+        with patch.object(activation.publication, 'activate_catalog_locked', side_effect=publish), \
+                patch.object(activation.selection, 'inspect_selection', side_effect=inspect), \
+                patch.object(PackageView, 'validate_inventory', inventory_then_damage):
+            with self.assertRaisesRegex(files.ImportRejected, 'file-integrity-mismatch'):
+                self.activate(second)
+        self.assertTrue(state['damaged'])
+        self.assertEqual((self.resources/'catalog.json').read_bytes(), before)
+        self.assertEqual(image.read_bytes(), b'changed after final inventory')
         self.assertFalse((self.resources/'transactions/pending-catalog.json').exists())
 
     def test_old_header_change_between_checks_rejects_update_without_erasing_the_fault(self):

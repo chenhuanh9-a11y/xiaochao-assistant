@@ -6,7 +6,10 @@ selection, then delegates publication and recovery to the existing catalog
 transaction.
 """
 from contextlib import ExitStack
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 import uuid
 
 import imported_resource_activation as publication
@@ -14,7 +17,8 @@ import imported_resource_catalog as catalog
 import imported_resource_selection as selection
 import client_imported_activation_plan as activation_plan
 from client_imported_providers import build_native_engine
-from imported_resource_packages import ComponentRef, PackageView
+from imported_resource_packages import ComponentRef, FileRef, PackageView
+from map_package_upgrade import _identity
 from resource_transaction import resource_write_lock
 import star_map_import as files
 
@@ -45,59 +49,185 @@ def _resolved_root(resolver, paths):
     return root
 
 
-def _validate_proposal(root, paths, resolver, base_ref, controls_ref, *, season, mode, cancelled):
+def _validate_context(inspected, paths, base_ref, controls_ref, *, season, mode, cancelled,
+                      base_qualified=False):
     def operation_current():
-        # Prospective PackageViews must not use a CatalogSnapshot guard: the
-        # publication transaction deliberately has a pending marker while it
-        # runs its second semantic validation.
         files._check_cancelled(cancelled)
 
-    def validate(document):
-        operation_current()
-        inspected = selection.inspect_selection(
-            root, document,
-            supported_capabilities=resolver.supported_capabilities,
-            project_registry_refs=resolver.project_registry_refs,
-            cancelled=cancelled,
-            assert_current=operation_current,
-        )
-        base_view = inspected.views.get(base_ref)
-        controls_view = inspected.views.get(controls_ref)
-        if base_view is None or controls_view is None:
-            raise catalog.ResourceCatalogError('resource-component-not-selected')
-        # Keep the existing proof local to this semantic validation. A second
-        # publication validation opens fresh scopes and rechecks actual files.
-        with ExitStack() as stack:
-            for view in inspected.views.values():
-                stack.enter_context(view.read_scope(cancelled))
-            engine = build_native_engine(base_view, controls_view, paths, season=season, mode=mode, require_rank=False)
-            try:
-                from imported_author_display import decode_author_display
-                profiles = set()
-                for display_ref in inspected.displays:
-                    operation_current()
-                    view = inspected.views[display_ref]
-                    if {'season': season, 'mode': mode} not in view.component['contexts']:
-                        continue
-                    display = decode_author_display(view, engine.qt_native_base, engine.qt_shared_provider)
-                    profile = display.profile_id
-                    if profile in profiles:
-                        raise catalog.ResourceCatalogError('resource-display-profile-conflict')
-                    profiles.add(profile)
-                    if not display.layers:
-                        raise catalog.ResourceCatalogError('resource-display-no-usable-layers')
+    base_view = inspected.views.get(base_ref)
+    controls_view = inspected.views.get(controls_ref)
+    if base_view is None or controls_view is None:
+        raise catalog.ResourceCatalogError('resource-component-not-selected')
+    with ExitStack() as stack:
+        for view in inspected.views.values():
+            stack.enter_context(view.read_scope(cancelled))
+        engine = build_native_engine(base_view, controls_view, paths, season=season, mode=mode, require_rank=False)
+        try:
+            from imported_author_display import decode_author_display
+            profiles = set()
+            for display_ref in inspected.displays:
                 operation_current()
+                view = inspected.views[display_ref]
+                if {'season': season, 'mode': mode} not in view.component['contexts']:
+                    continue
+                display = decode_author_display(view, engine.qt_native_base, engine.qt_shared_provider)
+                profile = display.profile_id
+                if profile in profiles:
+                    raise catalog.ResourceCatalogError('resource-display-profile-conflict')
+                profiles.add(profile)
+                if not display.layers:
+                    raise catalog.ResourceCatalogError('resource-display-no-usable-layers')
+            operation_current()
+            if not base_qualified:
                 engine.qt_fast_structure_source.validate_all(
                     engine.qt_shared_provider, compare_derived=True, cancelled=cancelled)
                 if engine.qt_logical_group_registry is not None:
                     engine.qt_logical_group_registry.validate_available(engine.qt_shared_provider)
-                operation_current()
-                engine.qt_assert_resource_current()
-            finally:
-                # The prospective engine has no lifetime beyond semantic admission.
-                del engine
+            operation_current()
+            engine.qt_assert_resource_current()
+        finally:
+            del engine
 
-    return validate
+
+class SemanticQualifications:
+    """Worker-owned bounded results, never file health or selection authority.
+
+    No engine, image, array or filesystem verdict is retained. Actual immutable
+    inputs must still be proved before reusing a pure semantic result.
+    """
+    def __init__(self):
+        self._results = OrderedDict()
+
+    def contains(self, key):
+        return key in self._results
+
+    def remember(self, keys):
+        for key in keys:
+            self._results[key] = None
+            self._results.move_to_end(key)
+        while len(self._results) > 32:
+            self._results.popitem(last=False)
+
+
+class _SelectionValidator:
+    def __init__(self, root, paths, resolver, *, contexts=None, check_updates=None,
+                 cancelled=None, qualifications=None):
+        self.root, self.paths, self.resolver = root, paths, resolver
+        self.contexts, self.check_updates, self.cancelled = contexts, check_updates, cancelled
+        self.qualifications = qualifications
+        self._qualified = set()
+
+    def _current(self):
+        # No CatalogSnapshot guard while publication has a pending marker.
+        files._check_cancelled(self.cancelled)
+
+    def _key(self, inspected, season, mode, base_ref, controls_ref):
+        row = inspected.contexts[f'{season}:{mode}']
+        if row['recognitionBase'] != base_ref or row['controls'] != controls_ref:
+            raise catalog.ResourceCatalogError('resource-component-not-selected')
+        displays = tuple(ref for ref in inspected.displays
+            if {'season': season, 'mode': mode} in inspected.views[ref].component['contexts'])
+        base = (self.root, tuple(_identity(self.root.stat())), season, mode,
+            tuple(row[role] for role in _ROLES), frozenset(self.resolver.supported_capabilities),
+            frozenset(self.resolver.project_registry_refs))
+        return base, displays
+
+    def _known(self, key):
+        return key in self._qualified or (self.qualifications is not None
+            and self.qualifications.contains(key))
+
+    def _prove_inputs(self, inspected):
+        with ExitStack() as stack:
+            scopes = {ref: stack.enter_context(view.read_scope(self.cancelled))
+                      for ref, view in inspected.views.items()}
+            checked_packages = set()
+            for ref, view in inspected.views.items():
+                self._current()
+                package = (ref.package_id, ref.resource_version, ref.manifest_sha256)
+                if package not in checked_packages:
+                    view.validate_inventory()
+                    checked_packages.add(package)
+                # The tree has just been read successfully. Each selected
+                # component separately joins the final actual byte proof.
+                for relative in view.inventory:
+                    scopes[ref].record_consumed(FileRef(ref, relative))
+            if self.check_updates is not None:
+                self.check_updates()
+            self._current()
+
+    def _qualify_missing(self, inspected, pending):
+        if not pending:
+            return
+        stopped = Event()
+
+        def cancelled():
+            return stopped.is_set() or (self.cancelled is not None and self.cancelled())
+
+        def qualify(item):
+            season, mode, base_ref, controls_ref, key, base_qualified = item
+            _validate_context(inspected, self.paths, base_ref, controls_ref,
+                season=season, mode=mode, cancelled=cancelled,
+                base_qualified=base_qualified)
+            return key
+
+        if len(pending) == 1:
+            keys = [qualify(pending[0])]
+        else:
+            # Context engines/providers are private and read_scope is thread
+            # local. Only independent cold qualification runs in two workers;
+            # publication, final proofs and result transfer remain here.
+            with ThreadPoolExecutor(max_workers=2) as workers:
+                futures = [workers.submit(qualify, item) for item in pending]
+                try:
+                    # Preserve context error precedence; a later failure must
+                    # not cancel an earlier context and mask its real error.
+                    keys = [future.result() for future in futures]
+                except BaseException:
+                    stopped.set()
+                    for future in futures:
+                        future.cancel()
+                    raise
+        for key in keys:
+            self._qualified.add((key[0], ()))
+            self._qualified.add(key)
+
+    def __call__(self, document):
+        self._current()
+        if self.check_updates is not None:
+            self.check_updates()
+        inspected = selection.inspect_selection(self.root, document,
+            supported_capabilities=self.resolver.supported_capabilities,
+            project_registry_refs=self.resolver.project_registry_refs,
+            cancelled=self.cancelled, assert_current=self._current)
+        selected = self.contexts if self.contexts is not None else tuple(
+            (*key.split(':'), row['recognitionBase'], row['controls'])
+            for key, row in inspected.contexts.items()
+            if row['recognitionBase'] is not None and row['controls'] is not None)
+        reused = False
+        pending = []
+        for season, mode, base_ref, controls_ref in selected:
+            self._current()
+            key = self._key(inspected, season, mode, base_ref, controls_ref)
+            base_key = (key[0], ())
+            if self._known(key):
+                reused = True
+            else:
+                base_qualified = self._known(base_key)
+                pending.append((season, mode, base_ref, controls_ref, key, base_qualified))
+                reused |= base_qualified
+        # Base checks do not consume author data. Successful subresults never
+        # combine separately qualified authors into a qualified author group.
+        self._qualify_missing(inspected, pending)
+        if reused or len(pending) > 1:
+            # Parallel context scopes can finish at different instants. Join
+            # them all before proving the complete selection once more here.
+            self._prove_inputs(inspected)
+        self._current()
+
+    def committed(self):
+        # Only successful publication/currentness transfers results to Service.
+        if self.qualifications is not None:
+            self.qualifications.remember(self._qualified)
 
 
 def _prepare_display_updates(root, snapshot, display_refs, remove_display_refs,
@@ -174,7 +304,7 @@ def _snapshot_for_root(resolver, root):
 
 
 def _activate_contexts_locked(root, snapshot, paths, resolver, contexts, *, display_refs,
-                              cancelled, remove_display_refs=()):
+                              cancelled, remove_display_refs=(), qualifications=None):
     proposals = contexts
     def operation_current():
         files._check_cancelled(cancelled)
@@ -184,19 +314,8 @@ def _activate_contexts_locked(root, snapshot, paths, resolver, contexts, *, disp
     allowed_contexts = frozenset((season, mode) for season, mode, _, _ in contexts)
     displays, check_updates = _prepare_display_updates(root, snapshot, display_refs,
         remove_display_refs, allowed_contexts, operation_current)
-    validators = tuple((season, mode, base_ref, controls_ref, _validate_proposal(root, paths, resolver,
-        base_ref, controls_ref, season=season, mode=mode, cancelled=cancelled))
-        for season, mode, base_ref, controls_ref in contexts)
-
-    def validate(document):
-        operation_current()
-        # Only the proposed closure is decoded. Old replaced images/base data
-        # may be damaged; their exact old display header still binds the scope.
-        check_updates()
-        for _, _, _, _, validate_context in validators:
-            operation_current()
-            validate_context(document)
-        operation_current()
+    validate = _SelectionValidator(root, paths, resolver, contexts=proposals,
+        check_updates=check_updates, cancelled=cancelled, qualifications=qualifications)
 
     already_active = (displays == snapshot.displays and all(
         (current := snapshot.contexts.get(context_key)) is not None
@@ -204,7 +323,7 @@ def _activate_contexts_locked(root, snapshot, paths, resolver, contexts, *, disp
         and current['controls'] == controls_ref
         for context_key, (_, _, base_ref, controls_ref) in zip(context_keys, proposals)))
     contexts = {key:{role:_wire(row[role]) for role in _ROLES} for key,row in snapshot.contexts.items()}
-    for context_key, (_, _, base_ref, controls_ref, _) in zip(context_keys, validators):
+    for context_key, (_, _, base_ref, controls_ref) in zip(context_keys, proposals):
         row = contexts.setdefault(context_key, {role:None for role in _ROLES})
         row.update(recognitionBase=_wire(base_ref), controls=_wire(controls_ref))
     document = dict(schema=catalog.SCHEMA,
@@ -214,14 +333,16 @@ def _activate_contexts_locked(root, snapshot, paths, resolver, contexts, *, disp
         validate(document)
         operation_current()
         snapshot.assert_current()
+        validate.committed()
         return dict(status='already-active', generation=snapshot.generation, contexts=list(context_keys))
     result = publication.activate_catalog_locked(root, document, expected_catalog_stamp=expected_stamp,
         validate=validate, cancelled=cancelled)
+    validate.committed()
     return dict(result, contexts=list(context_keys))
 
 
 def _activate_locked(root, snapshot, paths, resolver, *, season, mode, display_refs,
-                     cancelled, base_ref=None, controls_ref=None, remove_display_refs=()):
+                     cancelled, base_ref=None, controls_ref=None, remove_display_refs=(), qualifications=None):
     context_key = f'{season}:{mode}'
     current = snapshot.contexts.get(context_key)
     if base_ref is None and controls_ref is None:
@@ -230,14 +351,14 @@ def _activate_locked(root, snapshot, paths, resolver, *, season, mode, display_r
         base_ref, controls_ref = current['recognitionBase'], current['controls']
     outcome = _activate_contexts_locked(root, snapshot, paths, resolver,
         ((season, mode, base_ref, controls_ref),), display_refs=display_refs,
-        remove_display_refs=remove_display_refs, cancelled=cancelled)
+        remove_display_refs=remove_display_refs, cancelled=cancelled, qualifications=qualifications)
     outcome.pop('contexts', None)
     outcome['context'] = context_key
     return outcome
 
 
 def activate_contexts(resolver, paths, contexts, *, display_refs=(), remove_display_refs=(),
-                      expected_catalog_stamp=_UNSPECIFIED_CATALOG, cancelled=None):
+                      expected_catalog_stamp=_UNSPECIFIED_CATALOG, cancelled=None, qualifications=None):
     """Publish all proposed base/control contexts in one catalog transaction.
 
     The caller owns the Session idle lease. Every context is semantically
@@ -254,12 +375,12 @@ def activate_contexts(resolver, paths, contexts, *, display_refs=(), remove_disp
             raise catalog.ResourceCatalogError('resource-catalog-superseded')
         return _activate_contexts_locked(root, snapshot, paths, resolver, contexts,
             display_refs=display_refs, remove_display_refs=remove_display_refs,
-            cancelled=cancelled)
+            cancelled=cancelled, qualifications=qualifications)
 
 
 def activate_context(resolver, paths, base_ref, controls_ref, *, season='s0', mode='nightmare',
                      display_refs=(), remove_display_refs=(),
-                     expected_catalog_stamp=_UNSPECIFIED_CATALOG, cancelled=None):
+                     expected_catalog_stamp=_UNSPECIFIED_CATALOG, cancelled=None, qualifications=None):
     """Select B/C and explicitly requested display updates in one transaction.
 
     display_refs is an update subset, not a replacement list. Omitted authors
@@ -282,10 +403,10 @@ def activate_context(resolver, paths, base_ref, controls_ref, *, season='s0', mo
             raise catalog.ResourceCatalogError('resource-catalog-superseded')
         return _activate_locked(root, snapshot, paths, resolver, season=season, mode=mode,
             base_ref=base_ref, controls_ref=controls_ref, display_refs=display_refs,
-            remove_display_refs=remove_display_refs, cancelled=cancelled)
+            remove_display_refs=remove_display_refs, cancelled=cancelled, qualifications=qualifications)
 
 
-def activate_display(resolver, paths, display_ref, *, cancelled=None):
+def activate_display(resolver, paths, display_ref, *, cancelled=None, qualifications=None):
     """Select one display version while preserving the currently active base."""
     from imported_author_display import read_display_identity
     if not isinstance(display_ref, ComponentRef):
@@ -296,11 +417,11 @@ def activate_display(resolver, paths, display_ref, *, cancelled=None):
         view = PackageView(root, display_ref, assert_current=lambda:files._check_cancelled(cancelled))
         identity = read_display_identity(view)
         outcome = _activate_locked(root, snapshot, paths, resolver, season=identity.season,
-            mode=identity.mode, display_refs=(display_ref,), cancelled=cancelled)
+            mode=identity.mode, display_refs=(display_ref,), cancelled=cancelled, qualifications=qualifications)
         return dict(outcome, context=f'{identity.season}:{identity.mode}', profileId=identity.profile_id)
 
 
-def activate_displays(resolver, paths, display_refs, *, cancelled=None):
+def activate_displays(resolver, paths, display_refs, *, cancelled=None, qualifications=None):
     """Admit every display in an imported archive in one selection change."""
     from imported_author_display import read_display_identity
     display_refs = tuple(display_refs)
@@ -320,17 +441,15 @@ def activate_displays(resolver, paths, display_refs, *, cancelled=None):
                 raise catalog.ResourceCatalogError('resource-display-base-context-not-active')
             contexts[key] = (identity.season, identity.mode, current['recognitionBase'], current['controls'])
         return _activate_contexts_locked(root, snapshot, paths, resolver, tuple(contexts.values()),
-            display_refs=display_refs, cancelled=cancelled)
+            display_refs=display_refs, cancelled=cancelled, qualifications=qualifications)
 
 
 def validate_selected_resources(resolver, paths, document, *, cancelled=None):
     """Validate the remaining selection during a saved-version removal."""
+    selected_resource_validator(resolver, paths, cancelled=cancelled)(document)
+
+
+def selected_resource_validator(resolver, paths, *, cancelled=None, qualifications=None):
+    """One private validator for both checks of a single removal transaction."""
     root = _resolved_root(resolver, paths)
-    inspected = selection.inspect_selection(root, document,
-        supported_capabilities=resolver.supported_capabilities,
-        project_registry_refs=resolver.project_registry_refs, cancelled=cancelled)
-    for key, row in inspected.contexts.items():
-        if row['recognitionBase'] is not None and row['controls'] is not None:
-            season, mode = key.split(':')
-            _validate_proposal(root, paths, resolver, row['recognitionBase'], row['controls'],
-                season=season, mode=mode, cancelled=cancelled)(document)
+    return _SelectionValidator(root, paths, resolver, cancelled=cancelled, qualifications=qualifications)

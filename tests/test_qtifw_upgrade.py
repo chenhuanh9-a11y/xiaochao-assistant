@@ -245,31 +245,37 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(upgrade._versions(self.target)[upgrade.PACKAGE], "1.1.6")
 
     def test_native_116_upgrade_to_117_keeps_native_owner_database_and_user_bytes(self):
-        previous = "03e1622e43603a7e3f2fc98bf97386406adc7945"
+        self.assert_native_owner_upgrade("03e1622e43603a7e3f2fc98bf97386406adc7945", "1.1.6", "1.1.7")
+
+    def test_native_117_upgrade_to_118_keeps_native_owner_database_and_user_bytes(self):
+        self.assert_native_owner_upgrade("aa6b4384c296c5fbf3f2d808062236a0ccb40449", "1.1.7", "1.1.8")
+
+    def assert_native_owner_upgrade(self, previous, old_version, target_version):
         self.old["payloadSource"] = self.owner["payloadSource"] = previous
         for name in ("_internal/installation-profile.json", "release-report.json"):
             metadata = json.loads(self.old_values[name])
             metadata["sourceCommit"] = previous
             if name == "release-report.json":
-                metadata["displayVersion"] = "1.1.6"
+                metadata["displayVersion"] = old_version
             self.old_values[name] = json.dumps(metadata).encode()
             write(self.program/name, self.old_values[name])
         self.old["files"] = inventory(self.old_values)
         helper.write_owner(self.target, self.owner)
         write(self.target/"_installer-support/_internal/qtifw-trial-policy.json", json.dumps(self.old).encode())
-        self.components("1.1.6")
+        self.components(old_version)
         database = self.target / "trial-maintenance.dat"
         database_before = (database.read_bytes(), database.stat().st_ino)
         report = json.loads(self.new_values["release-report.json"])
-        report["displayVersion"] = "1.1.7"
+        report["displayVersion"] = target_version
         self.new_values["release-report.json"] = json.dumps(report).encode()
-        self.policy.update(targetVersion=dict(version="1.1.7", displayVersion="1.1.7"), files=inventory(self.new_values))
+        self.policy.update(targetVersion=dict(version=target_version, displayVersion=target_version),
+                           files=inventory(self.new_values))
         self.assertEqual(upgrade.check(self.policy, self.target)["mode"], "update")
         result = self.perform_update_with_native_substitute()
         self.assertTrue(result["success"])
         self.assert_protected()
         self.assertEqual((database.read_bytes(), database.stat().st_ino), database_before)
-        self.assertEqual(upgrade._versions(self.target)[upgrade.PACKAGE], "1.1.7")
+        self.assertEqual(upgrade._versions(self.target)[upgrade.PACKAGE], target_version)
         self.assertEqual((self.target/result["backup"]/"trial-maintenance.dat").read_bytes(), database_before[0])
         self.assertFalse((self.program/upgrade.PENDING).exists())
 
