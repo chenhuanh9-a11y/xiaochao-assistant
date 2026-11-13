@@ -5,6 +5,7 @@ catalog operation, validates immutable package views against the exact proposed
 selection, then delegates publication and recovery to the existing catalog
 transaction.
 """
+from contextlib import ExitStack
 from pathlib import Path
 import uuid
 
@@ -64,32 +65,37 @@ def _validate_proposal(root, paths, resolver, base_ref, controls_ref, *, season,
         controls_view = inspected.views.get(controls_ref)
         if base_view is None or controls_view is None:
             raise catalog.ResourceCatalogError('resource-component-not-selected')
-        engine = build_native_engine(base_view, controls_view, paths, season=season, mode=mode, require_rank=False)
-        try:
-            from imported_author_display import decode_author_display
-            profiles = set()
-            for display_ref in inspected.displays:
+        # Keep the existing proof local to this semantic validation. A second
+        # publication validation opens fresh scopes and rechecks actual files.
+        with ExitStack() as stack:
+            for view in inspected.views.values():
+                stack.enter_context(view.read_scope(cancelled))
+            engine = build_native_engine(base_view, controls_view, paths, season=season, mode=mode, require_rank=False)
+            try:
+                from imported_author_display import decode_author_display
+                profiles = set()
+                for display_ref in inspected.displays:
+                    operation_current()
+                    view = inspected.views[display_ref]
+                    if {'season': season, 'mode': mode} not in view.component['contexts']:
+                        continue
+                    display = decode_author_display(view, engine.qt_native_base, engine.qt_shared_provider)
+                    profile = display.profile_id
+                    if profile in profiles:
+                        raise catalog.ResourceCatalogError('resource-display-profile-conflict')
+                    profiles.add(profile)
+                    if not display.layers:
+                        raise catalog.ResourceCatalogError('resource-display-no-usable-layers')
                 operation_current()
-                view = inspected.views[display_ref]
-                if {'season': season, 'mode': mode} not in view.component['contexts']:
-                    continue
-                display = decode_author_display(view, engine.qt_native_base, engine.qt_shared_provider)
-                profile = display.profile_id
-                if profile in profiles:
-                    raise catalog.ResourceCatalogError('resource-display-profile-conflict')
-                profiles.add(profile)
-                if not display.layers:
-                    raise catalog.ResourceCatalogError('resource-display-no-usable-layers')
-            operation_current()
-            engine.qt_fast_structure_source.validate_all(
-                engine.qt_shared_provider, compare_derived=True, cancelled=cancelled)
-            if engine.qt_logical_group_registry is not None:
-                engine.qt_logical_group_registry.validate_available(engine.qt_shared_provider)
-            operation_current()
-            engine.qt_assert_resource_current()
-        finally:
-            # The prospective engine has no lifetime beyond semantic admission.
-            del engine
+                engine.qt_fast_structure_source.validate_all(
+                    engine.qt_shared_provider, compare_derived=True, cancelled=cancelled)
+                if engine.qt_logical_group_registry is not None:
+                    engine.qt_logical_group_registry.validate_available(engine.qt_shared_provider)
+                operation_current()
+                engine.qt_assert_resource_current()
+            finally:
+                # The prospective engine has no lifetime beyond semantic admission.
+                del engine
 
     return validate
 

@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 import zipfile
 
 from PySide6.QtCore import QUrl
@@ -21,7 +22,7 @@ from export_author_display_component import INPUT_SCHEMA, export_component
 from imported_author_display import SCHEMA as DISPLAY_SCHEMA
 from imported_resource_archive import save_archive
 from imported_resource_catalog import ResourceResolver
-from imported_resource_packages import ComponentRef
+from imported_resource_packages import ComponentRef, PackageView
 from original_qt_resource_fixtures import OriginalS0NightmareSourceFixture
 import test_imported_resource_catalog as catalog_fixture
 
@@ -138,6 +139,48 @@ class ImportedAdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'base-context-not-active'):
             self.save(self.author_archive(base, season='s1', name='other-context'))
         self.assertFalse((self.root / 'packages/other-context/v1').exists())
+
+    def test_base_readability_check_does_not_reopen_manifest_for_each_payload(self):
+        from client_imported_admission import _context_base
+        self.active_base()
+        loads, payloads = [], set()
+        original_load = PackageView._load_actual
+        original_read = PackageView._read_payload
+
+        def load(view):
+            loads.append(view.component_ref)
+            return original_load(view)
+
+        def read(root, inventory, component_id, relative):
+            payloads.add((component_id, relative))
+            return original_read(root, inventory, component_id, relative)
+
+        with patch.object(PackageView, '_load_actual', load), \
+                patch.object(PackageView, '_read_payload', staticmethod(read)):
+            _context_base(self.resolver.snapshot(), 's0', 'nightmare')
+        self.assertGreater(len(payloads), 10)  # Real original base/control files.
+        self.assertLess(len(loads), len(payloads),
+            'One readability check must not reload declarations for every file')
+
+    def test_base_changed_after_read_is_rejected_before_author_admission_returns(self):
+        from client_imported_admission import _context_base
+        self.active_base()
+        original = PackageView._read_payload
+        changed = []
+
+        def read(root, inventory, component_id, relative):
+            raw = original(root, inventory, component_id, relative)
+            if component_id == 'base' and relative.endswith('.npz') and not changed:
+                path = root / 'data' / component_id / relative
+                path.write_bytes(b'changed after the successful payload read')
+                changed.append(path)
+            return raw
+
+        with patch.object(PackageView, '_read_payload', staticmethod(read)), \
+                self.assertRaisesRegex(ValueError, 'file-integrity-mismatch'):
+            _context_base(self.resolver.snapshot(), 's0', 'nightmare')
+        self.assertEqual(len(changed), 1)
+        self.assertEqual(changed[0].read_bytes(), b'changed after the successful payload read')
 
     def test_active_base_version_must_match_author_dependency(self):
         base = self.active_base()

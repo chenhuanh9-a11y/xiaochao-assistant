@@ -16,17 +16,20 @@ def _context_base(snapshot, season, mode, *, cancelled=None, validated=None):
     for view in (resources.base, resources.controls):
         if view.component_ref in validated:
             continue
-        reader = ComponentResourceReader(view)
-        entrypoint = view.component['entrypoint']
-        entry = reader.json(entrypoint)
-        if view.component['type'] == 'recognition-base':
-            from imported_original_base import SCHEMA
-            if entry.get('schema') != SCHEMA:
-                raise ResourceCatalogError('original-qt-base-required')
-        for relative in view.inventory:
-            files._check_cancelled(cancelled)
-            if relative != entrypoint:
-                reader(view.path(relative))
+        # One component check shares declarations while every payload still
+        # uses the real reader; scope exit rechecks consumed bytes/currentness.
+        with view.read_scope(cancelled):
+            reader = ComponentResourceReader(view)
+            entrypoint = view.component['entrypoint']
+            entry = reader.json(entrypoint)
+            if view.component['type'] == 'recognition-base':
+                from imported_original_base import SCHEMA
+                if entry.get('schema') != SCHEMA:
+                    raise ResourceCatalogError('original-qt-base-required')
+            for relative in view.inventory:
+                files._check_cancelled(cancelled)
+                if relative != entrypoint:
+                    reader(view.path(relative))
         validated.add(view.component_ref)
     snapshot.assert_current()
     return resources.base.component_ref
