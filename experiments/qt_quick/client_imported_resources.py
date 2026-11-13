@@ -569,7 +569,7 @@ class ImportedResourceService(QObject):
             from resource_transaction import resource_write_lock
             from imported_resource_activation import recover_catalog_locked
             from imported_resource_removal import recover_saved_version_removal_locked, removal_recovery_required
-            with resource_write_lock(self.resolver.root):
+            with resource_write_lock(self.resolver.root, wait=True):
                 outcome = (recover_saved_version_removal_locked(self.resolver.root)
                            if removal_recovery_required(self.resolver.root)
                            else recover_catalog_locked(self.resolver.root))

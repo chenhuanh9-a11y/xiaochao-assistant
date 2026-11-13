@@ -29,11 +29,26 @@ class ResourceCatalogError(ValueError):
         self.code = code
 
 
-def assert_catalog_ready(root):
+def _pending_catalog_issue(root):
     if files._target(Path(root), PENDING_REMOVAL).exists():
-        raise ResourceCatalogError('resource-removal-recovery-required')
+        return 'resource-removal-recovery-required'
     if files._target(Path(root), PENDING_CATALOG).exists():
-        raise ResourceCatalogError('resource-catalog-recovery-required')
+        return 'resource-catalog-recovery-required'
+    return None
+
+
+def assert_catalog_ready(root):
+    if _pending_catalog_issue(root) is None:
+        return
+    # A publication marker also exists during a healthy writer. Wait only on
+    # this exceptional path, then retain the exact interrupted-store guard.
+    # Ordinary currentness checks add no lock or filesystem write. A writer's
+    # own checks reuse the existing same-thread read path and still fail shut.
+    from resource_transaction import resource_read_lock
+    with resource_read_lock(root, wait=True):
+        issue = _pending_catalog_issue(root)
+        if issue is not None:
+            raise ResourceCatalogError(issue)
 
 
 def _issue_code(error):

@@ -149,10 +149,7 @@ def _catalog_token(root):
     return pending, catalog_content
 
 
-def _catalog_state(resolver, token_before):
-    root = Path(resolver.root).absolute()
-    if token_before[0] is not None:
-        return None, 'resource-catalog-recovery-required'
+def _catalog_state(resolver):
     try:
         snapshot = resolver.snapshot()
     except (ResourceCatalogError, files.ImportRejected, OSError, ValueError) as error:
@@ -412,7 +409,7 @@ def list_saved_versions(resolver: ResourceResolver, *, verify=False, cancelled=N
     except (OSError, files.ImportRejected) as error:
         raise ImportedResourceInventoryError('resource-root-unreadable') from error
 
-    snapshot, catalog_issue = _catalog_state(resolver, token_before)
+    snapshot, catalog_issue = _catalog_state(resolver)
     if snapshot is not None:
         try:
             # Anchor subsequent race checks to the exact CatalogSnapshot that

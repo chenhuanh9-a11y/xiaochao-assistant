@@ -226,6 +226,7 @@ class Backend(QObject):
         self._refresh_pending = False
         generation, mode, season, initial_view = self._generation, self._mode, self._season, self.viewKey
         self._busy = True
+        self._message = '正在读取地图资源…'
         self.changed.emit()
         def loaded(context, error):
             if generation != self._generation or (mode, season) != (self._mode, self._season):
