@@ -1,122 +1,72 @@
-"""Compile and inspect the thin QtIFW release wrapper without running Setup."""
-import hashlib
+"""Compile and inspect native QtIFW support; never run Setup or write ARP."""
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 import build_qtifw_trial as build
-
-
-def inno_compiler():
-    configured = os.environ.get("INNO_SETUP_ISCC")
-    candidates = [Path(configured)] if configured else []
-    candidates.append(Path(r"E:\codex\tools\inno-setup-6.7.3\compiler\ISCC.exe"))
-    candidates.extend(Path(base) / "Inno Setup 6/ISCC.exe"
-                      for key in ("ProgramFiles", "ProgramFiles(x86)")
-                      if (base := os.environ.get(key)))
-    return next((path for path in candidates if path.is_file()), candidates[0])
-
-
-def brand_icon():
-    configured = os.environ.get("STARMAP_TEST_BRAND_ICON")
-    candidates = ([Path(configured)] if configured else []) + [ROOT / "assets/brand/xingtu.ico"]
-    return next((path for path in candidates if path.is_file()
-                 and build.build.sha256(path).lower() == build.build.BRAND_ICON_SHA256.lower()), None)
+from probe_qtifw_lifecycle import write_xml
+from qtifw_upgrade import materialize_repository
 
 
 class QtIfwBootstrapPackagingTests(unittest.TestCase):
-    def test_upgrade_boot_files_are_staged_from_synthetic_inputs(self):
-        with tempfile.TemporaryDirectory(prefix="xingtu-qtifw-boot-") as temporary:
-            root = Path(temporary)
-            helper = root / "helper"
-            packages = root / "packages"
-            config = root / "config"
-            ifw = root / "ifw"
-            helper.mkdir()
-            packages.mkdir()
+    def test_real_native_setup_contains_one_program_archive_and_rebuilds_offline_repository(self):
+        ifw = Path(os.environ.get("STARMAP_TEST_IFW_BIN", r"E:\codex\tools\qtifw-4.11.0\bin"))
+        if not (ifw / "binarycreator.exe").is_file():
+            self.skipTest("QtIFW 4.11 native compiler is unavailable")
+        with tempfile.TemporaryDirectory(prefix="星图 native QtIFW compile ") as temporary:
+            output = Path(temporary)
+            packages, config = output / "packages", output / "config"
             config.mkdir()
-            ifw.mkdir()
-            icon = brand_icon()
-            if icon is None:
-                self.skipTest("A verified 星图 brand icon is unavailable for the wrapper fixture")
-            native = root / "native-setup.exe"
-            native.write_bytes(b"synthetic native setup")
-            (ifw / "installerbase.exe").write_bytes(b"synthetic installerbase")
+            payload = packages / build.PACKAGE / "data/program"
+            payload.mkdir(parents=True)
+            raw = b"synthetic program, never executed\n" * 2048
+            (payload / "fixture.bin").write_bytes(raw)
+            for name in (build.PACKAGE, build.DATA_PACKAGE):
+                write_xml(packages / name / "meta/package.xml", "Package", dict(
+                    DisplayName="Native compile fixture", Version="1.1.5", ReleaseDate="2026-11-13", Default="true"))
             (config / "controller.js").write_text("function Controller() {}\n", encoding="utf-8")
-            (config / "config.xml").write_text("<Installer />", encoding="utf-8")
-            shutil.copy2(icon, config / "xingtu.ico")
-            calls = []
-
-            def fake_run(command, *, check=False, cwd=None, **kwargs):
-                calls.append((command, cwd))
-                if Path(command[0]).name.lower() == "repogen.exe":
-                    repository = Path(command[-1])
-                    repository.mkdir(parents=True)
-                    (repository / "Updates.xml").write_text("<Updates />", encoding="utf-8")
-                else:
-                    (Path(cwd) / "update.rcc").write_bytes(b"synthetic update RCC")
-                return subprocess.CompletedProcess(command, 0)
-
-            with patch.object(build.subprocess, "run", side_effect=fake_run):
-                result = build.build_upgrade_bootstrap(helper, packages, config, native, ifw)
-
-            boot = helper / "boot"
-            self.assertEqual((boot / "native-setup.exe").read_bytes(), native.read_bytes())
-            self.assertEqual((boot / "installerbase.exe").read_bytes(),
-                             (ifw / "installerbase.exe").read_bytes())
-            self.assertEqual((boot / "upgrade-controller.js").read_text(encoding="utf-8"),
-                             (config / "controller.js").read_text(encoding="utf-8"))
-            self.assertEqual(build.build.sha256(boot / "xingtu.ico"), build.build.BRAND_ICON_SHA256)
-            self.assertEqual(result["sha256"], hashlib.sha256(native.read_bytes()).hexdigest())
-            self.assertEqual([Path(call[0][0]).name.lower() for call in calls],
-                             ["repogen.exe", "binarycreator.exe"])
-            self.assertEqual(calls[1][1], boot)
-            self.assertIn("-rcc", calls[1][0])
-            self.assertNotIn("--resources", calls[1][0])
-
-    def test_wrapper_compiles_with_complete_synthetic_dontcopy_tree(self):
-        compiler = inno_compiler()
-        if not compiler.is_file():
-            self.skipTest(f"Inno Setup 6.7.3 compiler is unavailable: {compiler}")
-
-        with tempfile.TemporaryDirectory(prefix="星图 bootstrap compile ") as temporary:
-            root = Path(temporary)
-            helper = root / "helper root"
-            output = root / "final setup"
-            (helper / "_internal").mkdir(parents=True)
-            (helper / "boot" / "repository").mkdir(parents=True)
-            output.mkdir()
-            icon = brand_icon()
-            if icon is None:
-                self.skipTest("A verified 星图 brand icon is unavailable for the wrapper fixture")
-            (helper / "qtifw-trial-helper.exe").write_bytes(b"synthetic helper fixture")
-            (helper / "_internal" / "example.dat").write_bytes(b"synthetic runtime fixture")
-            (helper / "boot" / "native-setup.exe").write_bytes(b"synthetic QtIFW Setup fixture")
-            (helper / "boot" / "installerbase.exe").write_bytes(b"synthetic QtIFW base fixture")
-            (helper / "boot" / "update.rcc").write_bytes(b"synthetic RCC fixture")
-            shutil.copy2(icon, helper / "boot" / "xingtu.ico")
-            (helper / "boot" / "upgrade-controller.js").write_text("function Controller() {}\n", encoding="utf-8")
-            (helper / "boot" / "repository" / "Updates.xml").write_text("<Updates />", encoding="utf-8")
-
-            setup = build.compile_upgrade_wrapper(compiler, helper, output,
-                {"version": "1.1.4", "displayVersion": "1.1.4", "numericVersion": "1.0.0.26"})
-
-            self.assertTrue(setup.is_file())
-            self.assertGreater(setup.stat().st_size, 0)
-            source = (ROOT / "tools/qtifw-bootstrap.iss").read_text(encoding="utf-8")
-            self.assertIn("CreateAppDir=no", source)
-            self.assertIn("Uninstallable=no", source)
-            self.assertIn("CreateUninstallRegKey=no", source)
-            self.assertIn("SetupIconFile={#HelperRoot}\\boot\\xingtu.ico", source)
-            self.assertIn("ExtractTemporaryFiles('{app}\\*')", source)
-            self.assertNotIn("[Run]", source)
+            write_xml(config / "config.xml", "Installer", dict(Name="Owned compile fixture", Version="1.1.5",
+                Title="Compile only", Publisher="Synthetic", TargetDir=str(output / "never-installed"),
+                ControlScript="controller.js"))
+            record = build.build_upgrade_support(output, packages, config, ifw, compression=3)
+            layout = record["archiveLayout"]
+            self.assertEqual(len(layout), 1)
+            self.assertFalse(payload.exists())
+            self.assertTrue((packages / build.PACKAGE / "data/program.7z").is_file())
+            self.assertFalse((output / "upgrade-support/boot/repository" / layout[0]["repository"]).exists())
+            self.assertFalse((output / "upgrade-support/boot/native-setup.exe").exists())
+            qrc = ET.Element("RCC")
+            entries = ET.SubElement(qrc, "qresource", prefix="/qtifw-upgrade")
+            for path in (output / "upgrade-support").rglob("*"):
+                if path.is_file():
+                    ET.SubElement(entries, "file", alias=path.relative_to(output / "upgrade-support").as_posix()).text = str(path)
+            ET.ElementTree(qrc).write(output / "support.qrc", encoding="utf-8", xml_declaration=True)
+            setup = output / "native-Setup.exe"
+            base = build.administrator_installer_base(ifw, output)
+            subprocess.run([str(ifw / "binarycreator.exe"), "--offline-only", "--compression", "3", "--resources",
+                str(output / "support.qrc"), "-t", str(base), "-c", str(config / "config.xml"), "-p", str(packages), str(setup)],
+                check=True, capture_output=True)
+            build.build.verify_administrator_manifest(setup)
+            result = materialize_repository(output / "upgrade-support", setup)
+            self.assertEqual(result, dict(materialized=True, archives=1))
+            archive = output / "upgrade-support/boot/repository" / layout[0]["repository"]
+            self.assertEqual(archive.read_bytes(), (packages / build.PACKAGE / "data/program.7z").read_bytes())
+            dumped = list((output / "upgrade-support/boot").glob("archive-dump-*/metadata/*/*program.7z"))
+            self.assertEqual(len(dumped), 1)
+            # Read the official native PE without launching it.
+            import pefile
+            with pefile.PE(str(setup)) as pe:
+                native_code = next(section.get_data() for section in pe.sections if section.Name.rstrip(b"\0") == b".text")
+            with pefile.PE(str(ifw / "installerbase.exe")) as pe:
+                official_code = next(section.get_data() for section in pe.sections if section.Name.rstrip(b"\0") == b".text")
+            self.assertEqual(native_code, official_code)
+            self.assertNotIn(b"Inno Setup", setup.read_bytes())
 
 
 if __name__ == "__main__":

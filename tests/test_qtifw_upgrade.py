@@ -71,10 +71,10 @@ class UpgradeTests(unittest.TestCase):
             "_internal/csharp-grid/StarMap.Grid.exe": b"synthetic-grid-never-run",
             "_internal/installation-profile.json": json.dumps(dict(product="星图", sourceCommit="b"*40,
                 installerInstance=instance)).encode(),
-            "release-report.json": json.dumps(dict(sourceCommit="b"*40, displayVersion="1.1.4")).encode(),
+            "release-report.json": json.dumps(dict(sourceCommit="b"*40, displayVersion="1.1.5")).encode(),
         })
         self.policy = dict(instance="b"*32, payloadSource="b"*40, portable=True, fullUninstall=True,
-            allowNewTargets=True, upgradeCapable=True, targetVersion=dict(version="1.1.4", displayVersion="1.1.4"),
+            allowNewTargets=True, upgradeCapable=True, targetVersion=dict(version="1.1.5", displayVersion="1.1.5"),
             files=inventory(self.new_values))
 
     def components(self, version):
@@ -116,13 +116,29 @@ class UpgradeTests(unittest.TestCase):
                     (self.program/name).unlink(missing_ok=True)
                 for name, data in self.new_values.items():
                     write(self.program/name, data)
-                self.components("1.1.4")
+                self.components("1.1.5")
                 write(self.target/"_installer-support/_internal/qtifw-trial-policy.json",
                       json.dumps(self.policy).encode())
             return self.native_process()
         with patch("game_startup_watcher.control", return_value=0), \
                 patch("qtifw_upgrade._native_start", side_effect=native):
             return upgrade.run(self.policy, self.target, support=self.support())
+
+    def test_update_and_persisted_controller_verification_use_separate_native_caches(self):
+        commands = []
+        def native(command, **kwargs):
+            commands.append(command)
+            if "--script" in command:
+                for name, data in self.new_values.items():
+                    write(self.program/name, data)
+                self.components("1.1.5")
+            return self.native_process()
+        with patch("game_startup_watcher.control", return_value=0), patch("qtifw_upgrade._native_start", side_effect=native):
+            self.assertTrue(upgrade.run(self.policy, self.target, support=self.support())["success"])
+        self.assertEqual(len(commands), 2)
+        caches = [Path(command[command.index("--cache-path") + 1]) for command in commands]
+        self.assertNotEqual(caches[0], caches[1])
+        self.assertTrue(all(path.is_relative_to(self.target / "recovery-files") for path in caches))
 
     def test_program_only_112_upgrade_preserves_independent_packages_and_user_bytes(self):
         result = self.perform_update_with_native_substitute()
@@ -190,7 +206,7 @@ class UpgradeTests(unittest.TestCase):
         result = self.perform_update_with_native_substitute()
         self.assertTrue(result["success"])
         self.assert_protected()
-        self.assertEqual(upgrade._versions(self.target)[upgrade.PACKAGE], "1.1.4")
+        self.assertEqual(upgrade._versions(self.target)[upgrade.PACKAGE], "1.1.5")
         self.assertFalse((self.program/upgrade.PENDING).exists())
 
     def test_program_only_113_upgrade_preserves_independent_packages_and_user_bytes(self):
@@ -241,7 +257,7 @@ class UpgradeTests(unittest.TestCase):
         self.cancel_native()
         for name, raw in self.new_values.items():
             write(self.program/name, raw)
-        self.components("1.1.4")
+        self.components("1.1.5")
         with patch("qtifw_upgrade._native_start", return_value=self.native_process()) as native:
             result = upgrade.run(self.policy, self.target, support=self.support())
         self.assertTrue(result["success"])
@@ -524,7 +540,7 @@ class UpgradeTests(unittest.TestCase):
         record = self.prepare()
         for name, data in self.new_values.items():
             write(self.program/name, data)
-        self.components("1.1.4")
+        self.components("1.1.5")
         verified = MagicMock()
         verified.__enter__.return_value = verified
         verified.returncode = 0
@@ -543,7 +559,7 @@ class UpgradeTests(unittest.TestCase):
         record = self.prepare()
         for name, data in self.new_values.items():
             write(self.program/name, data)
-        self.components("1.1.4")
+        self.components("1.1.5")
         stale = MagicMock()
         stale.__enter__.return_value = stale
         stale.returncode = 2

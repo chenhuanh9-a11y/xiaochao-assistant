@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ExistingUpdate</class>
+ <widget class="QWidget" name="ExistingUpdate">
+  <property name="windowTitle"><string>更新星图</string></property>
+  <layout class="QVBoxLayout" name="UpdateLayout">
+   <item><widget class="QLabel" name="UpdateHelp"><property name="text"><string>已找到有效的星图安装，将自动更新到原安装位置。</string></property><property name="wordWrap"><bool>true</bool></property></widget></item>
+   <item><widget class="QLabel" name="ExistingPath"><property name="text"><string/></property><property name="textFormat"><enum>Qt::PlainText</enum></property><property name="textInteractionFlags"><set>Qt::TextSelectableByMouse</set></property><property name="wordWrap"><bool>true</bool></property></widget></item>
+   <item><widget class="QLabel" name="UpdateNote"><property name="text"><string>请先关闭正在运行的星图。更新会保留地图包、设置和自建路线；旧程序备份保留在安装目录内。</string></property><property name="wordWrap"><bool>true</bool></property></widget></item>
+   <item><widget class="QLabel" name="UpdateStatus"><property name="text"><string/></property><property name="textFormat"><enum>Qt::PlainText</enum></property><property name="wordWrap"><bool>true</bool></property></widget></item>
+   <item><layout class="QHBoxLayout" name="UpdateActions">
+    <item><widget class="QPushButton" name="UpdateButton"><property name="text"><string>开始更新</string></property></widget></item>
+    <item><widget class="QPushButton" name="CloseButton"><property name="text"><string>关闭</string></property></widget></item>
+   </layout></item>
+   <item><spacer name="UpdateSpace"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property></spacer></item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

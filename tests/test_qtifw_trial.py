@@ -215,6 +215,7 @@ class TrialTests(unittest.TestCase):
         output, ifw = self.scope / 'upgrade-release', self.scope / 'ifw'
         ifw.mkdir()
         (ifw / 'installerbase.exe').write_bytes(b'synthetic installer base, never run')
+        (ifw / 'devtool.exe').write_bytes(b'synthetic native archive reader, never run')
         def git(*args):
             return source['commit'] if args == ('rev-parse', 'HEAD') else ''
         def external_compiler(command, **kwargs):
@@ -232,19 +233,16 @@ class TrialTests(unittest.TestCase):
             elif executable == 'binarycreator.exe':
                 path = Path(kwargs['cwd']) / 'update.rcc' if '-rcc' in command else Path(command[-1])
                 path.write_bytes(b'synthetic output, never run')
-            elif executable == 'ISCC.exe':
-                (output / ('星图-' + record['version']['version'] + '-Setup.exe')).write_bytes(b'synthetic wrapper')
             else:
                 self.fail('unexpected external command: ' + executable)
             return subprocess.CompletedProcess(command, 0)
-        compiler = self.scope / 'ISCC.exe'
-        compiler.touch()
         args = ['build-qtifw', '--stage', str(stage), '--build-record', str(build_record),
-                '--ifw-bin', str(ifw), '--output', str(output), '--release', '--upgrade-capable',
-                '--iscc', str(compiler)]
+                '--ifw-bin', str(ifw), '--output', str(output), '--release', '--upgrade-capable']
         with patch.object(sys, 'argv', args), patch.object(builder.build, '_git', side_effect=git), \
              patch.object(builder.build, 'source_identity', return_value=source), \
              patch.object(builder.build, 'verify_invoker_manifest', return_value=None), \
+             patch.object(builder, 'administrator_installer_base', return_value=ifw / 'installerbase.exe'), \
+             patch.object(builder.build, 'verify_administrator_manifest', return_value=1), \
              patch.object(builder.subprocess, 'run', side_effect=external_compiler), redirect_stdout(StringIO()):
             builder.main()
         policy = json.loads((output / 'qtifw-trial-policy.json').read_bytes())
@@ -259,11 +257,13 @@ class TrialTests(unittest.TestCase):
         component = (output / 'packages' / builder.PACKAGE / 'meta/component.js').read_text(encoding='utf8')
         self.assertNotIn('install-maps', component)
         self.assertIn('TrialUpgradeActive', component)
-        self.assertTrue((output / 'helper/qtifw-trial-helper/boot/repository/Updates.xml').is_file())
-        self.assertTrue((output / 'helper/qtifw-trial-helper/boot/update.rcc').is_file())
+        self.assertTrue((output / 'upgrade-support/boot/repository/Updates.xml').is_file())
+        self.assertTrue((output / 'upgrade-support/boot/update.rcc').is_file())
+        self.assertFalse((output / 'upgrade-support/boot/native-setup.exe').exists())
         receipt = json.loads((output / 'qtifw-build-record.json').read_bytes())
         self.assertEqual(receipt['payloadSource'], source['commit'])
         self.assertFalse(receipt['installed'])
+        self.assertEqual(receipt['bridgeMode'], 'native-qtifw-offline-maintenance-handoff')
 
     @unittest.skipUnless(os.name == "nt", "Win32 per-install Run entry")
     def test_uninstall_disables_own_run_entry_even_if_watcher_exe_is_missing(self):

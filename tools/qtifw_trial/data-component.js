@@ -1,4 +1,8 @@
 function Component() {}
+Component.prototype.beginInstallation = function() {
+    if (installer.isInstaller() && installer.value("TrialNativeHandoff", "false") === "true")
+        throw new Error("已有安装只允许原维护器更新，未启动新装事务。");
+};
 Component.prototype.createOperations = function() {
     // The real program depends on this component. Dependency ordering removes
     // the program component first, then runs this data policy's UNDO.

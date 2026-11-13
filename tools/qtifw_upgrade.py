@@ -1,6 +1,6 @@
 """Offline QtIFW upgrade adapter; native components retain file ownership.
 
-Only the wrapper invokes this adapter. The pending record prevents startup
+The native Setup invokes this adapter. The pending record prevents startup
 after native update failure; old files are copied before QtIFW can undo them.
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ from resource_transaction import _safe, _assert_resource_transactions_ready, res
 PENDING = "work/pending-installer-upgrade.json"
 PACKAGE = "org.xingtu.qtifw.realtrial"
 DATA_PACKAGE = "org.xingtu.qtifw.trialdata"
-PREVIOUS_VERSIONS = frozenset({"1.1.2", "1.1.3"})
+PREVIOUS_VERSIONS = frozenset({"1.1.2", "1.1.3", "1.1.4"})
 BRAND_MIGRATIONS = frozenset({"_internal/assets/brand/xingtu.ico", "_internal/assets/brand/xingtu-round.png"})
 
 
@@ -65,7 +65,7 @@ def _external_resource_lease():
 def _native_start(command, **kwargs):
     """Make Windows loader failures return to this CLI instead of waiting on UI.
 
-    Inno starts helpers with error mode 0. Only the thread creating this child
+    Only the thread creating this child
     temporarily adds SEM_FAILCRITICALERRORS; no process/system setting changes.
     """
     if os.name != "nt":
@@ -208,7 +208,7 @@ def _retry_program(policy, target, record):
             raise ValueError("upgrade-intermediate-program-byte-mismatch:" + name)
 
 
-def _old_install(policy, target):
+def _old_install(policy, target, *, verify_files=True):
     from qtifw_trial_helper import OWNER, bound_owner, verify_program
     old = _read(target / "_installer-support/_internal/qtifw-trial-policy.json")
     if not (old.get("portable") is True and old.get("fullUninstall") is True
@@ -224,7 +224,7 @@ def _old_install(policy, target):
             or report.get("sourceCommit") != old.get("payloadSource")
             or report.get("displayVersion") not in PREVIOUS_VERSIONS | {policy["targetVersion"]["displayVersion"]}):
         raise ValueError("unsupported-upgrade-source")
-    if report["displayVersion"] not in PREVIOUS_VERSIONS and (old["payloadSource"] != policy["payloadSource"]
+    if report["displayVersion"] == policy["targetVersion"]["displayVersion"] and (old["payloadSource"] != policy["payloadSource"]
             or old["instance"] != policy["instance"]):
         raise ValueError("different-same-version-installation")
     maintenance = _safe(target / "trial-maintenance.exe")
@@ -233,8 +233,11 @@ def _old_install(policy, target):
     versions = _versions(target)
     if not {PACKAGE, DATA_PACKAGE} <= versions.keys():
         raise ValueError("unsupported-qtifw-components")
-    verify_program(old, target)
-    adopted = _brand_adoptions(policy, target, old)
+    # Discovery can shortlist by verified owner/profile/component metadata.
+    # Actual admission always repeats the complete byte/collision validation.
+    if verify_files:
+        verify_program(old, target)
+    adopted = _brand_adoptions(policy, target, old) if verify_files else {}
     return old, _read(target / OWNER), adopted
 
 
@@ -336,13 +339,17 @@ def _native_complete(policy, target, *, maintenance_check=False):
         env.pop("XINGTU_QTIFW_UPGRADE_SUPPORT", None)
         env.pop("XINGTU_QTIFW_UPGRADE_BASE", None)
         env.pop("XINGTU_QTIFW_UPGRADE_RCC", None)
-        with _native_start([str(target / "trial-maintenance.exe"), "--reject-messages", "list"],
+        record = pending(policy, target)
+        if record is None:
+            raise ValueError("upgrade-verification-pending-required")
+        cache = _safe(target / record["backup"] / ("verify-cache-" + uuid.uuid4().hex))
+        with _native_start([str(target / "trial-maintenance.exe"), "--cache-path", str(cache), "--reject-messages", "list"],
                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0) as process:
             try:
                 output, errors = process.communicate(timeout=60)
             except subprocess.TimeoutExpired:
-                process.kill()  # Only this owned, read-only maintenance check.
+                process.kill()  # Only this owned verification child, never the installed application.
                 process.communicate()
                 raise ValueError("qtifw-persisted-controller-verification-timeout")
         expected = "XINGTU_MAINTENANCE_SOURCE_VERIFIED: " + policy["instance"]
@@ -374,12 +381,51 @@ def _finish(policy, target, record):
                 programFiles=len(policy["files"]), userData="retained-in-place")
 
 
-def run(policy, target, support=None):
+def materialize_repository(support, setup):
+    """Read native component archives from this Setup using QtIFW's devtool.
+
+    The local repository keeps QtIFW's generated archive checksums; it validates
+    the copied archive itself. No old installation is passed to devtool.
+    """
+    support, setup = _safe(Path(support).resolve()), _safe(Path(setup).resolve())
+    if not setup.is_file() or setup.stat().st_nlink != 1:
+        raise ValueError("native-setup-source-unavailable")
+    boot = _safe(support / "boot")
+    layout = _read(boot / "archive-layout.json")
+    if not isinstance(layout, list) or not layout:
+        raise ValueError("native-repository-layout-unavailable")
+    dump = boot / ("archive-dump-" + uuid.uuid4().hex)
+    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    with (boot / (dump.name + ".log")).open("xb") as log:
+        process = _native_start([str(boot / "devtool.exe"), "dump", str(setup), str(dump)],
+                               stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
+        with process:
+            if process.wait() != 0:
+                raise ValueError("native-setup-archive-read-failed")
+    for row in layout:
+        package, archive, relative = row.get("package"), row.get("archive"), row.get("repository")
+        if (package not in {PACKAGE, DATA_PACKAGE} or not isinstance(archive, str)
+                or "/" in archive or "\\" in archive or not archive.endswith("program.7z")
+                or relative != package + "/" + archive):
+            raise ValueError("native-repository-layout-invalid")
+        source = _safe(dump / "metadata" / package / archive)
+        destination = _safe(boot / "repository" / relative)
+        if not source.is_file():
+            raise ValueError("native-setup-program-archive-unavailable")
+        _copy_checked(source, destination)
+    return dict(materialized=True, archives=len(layout))
+
+
+def run(policy, target, support=None, *, setup_source=None, interactive=False):
     with _external_resource_lease():
-        return _run(policy, target, support)
+        if setup_source is not None:
+            if check(policy, target)["mode"] != "update":
+                raise ValueError("native-fresh-setup-required")
+            materialize_repository(support or Path(sys.executable).parent, setup_source)
+        return _run(policy, target, support, interactive=interactive)
 
 
-def _run(policy, target, support=None):
+def _run(policy, target, support=None, *, interactive=False):
     from qtifw_trial_helper import receipt, scoped
     plan = check(policy, target)
     target = scoped(policy, target)
@@ -395,17 +441,9 @@ def _run(policy, target, support=None):
     automatic = ["--reject-messages", "--auto-answer",
         "installationErrorWithRetry=Cancel,installationError=Ok", "--confirm-command"]
     if plan["mode"] == "fresh":
-        try:
-            process = _native_start([str(boot / "native-setup.exe"), *automatic, "install",
-                "TrialTarget=" + str(target)], env=env, creationflags=flags)
-        except OSError as error:
-            raise ValueError("native-install-failed:launch:" + str(error)) from error
-        with process:
-            code = process.wait()
-        if code != 0:
-            raise ValueError("native-install-failed:" + str(code))
-        _native_complete(policy, target, maintenance_check=True)
-        return dict(success=True, mode="fresh", target=str(target), programFiles=len(policy["files"]))
+        # Fresh installation belongs to the running QtIFW Setup. This adapter
+        # must never recurse into a second installer or replace its database.
+        raise ValueError("native-fresh-setup-required")
     program = target / "program"
     with resource_write_lock(program):
         check(policy, target)
@@ -437,9 +475,11 @@ def _run(policy, target, support=None):
         _write(program / PENDING, record)
         with (session / "native-update.log").open("xb") as log:
             try:
+                mode = ["--start-updater"] if interactive else [*automatic, *command]
                 process = _native_start([str(target / "trial-maintenance.exe"), "--script",
                     str(boot / "upgrade-controller.js"), "--set-temp-repository", (boot / "repository").as_uri(),
-                    *automatic, *command], env=env, stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
+                    "--cache-path", str(session / "cache"),
+                    *mode], env=env, stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
             except OSError as error:
                 # CreateProcess did not start: retain pre-native collision
                 # checks on the next attempt rather than claiming native work.

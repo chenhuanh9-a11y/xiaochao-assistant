@@ -3,6 +3,19 @@ function Component() {
         component.loaded.connect(this, Component.prototype.installLocationLoaded);
 }
 
+function nativeUpdateResult(result) {
+    if (result.length !== 2) throw new Error("无法启动更新支持工具。");
+    try { return JSON.parse(result[0]); }
+    catch (error) { throw new Error("更新工具未返回完整结果，请保留现场。" + result[0]); }
+}
+
+Component.prototype.beginInstallation = function() {
+    // QtIFW calls this before clearing its fresh-install component database.
+    // A createOperations-only refusal happens after that destructive boundary.
+    if (installer.isInstaller() && installer.value("TrialNativeHandoff", "false") === "true")
+        throw new Error("已有安装只允许原维护器更新，未启动新装事务。");
+};
+
 function locationProblem(result) {
     var reason = "";
     try { reason = JSON.parse(result[0]).reason || ""; } catch (error) {}
@@ -18,15 +31,50 @@ function locationProblem(result) {
 }
 
 Component.prototype.installLocationLoaded = function() {
+    if (installer.value("TrialNativeHandoff", "false") === "true") {
+        this.addExistingUpdate(QInstaller.TargetDirectory);
+        return;
+    }
     if (!installer.addWizardPage(component, "InstallLocation", QInstaller.TargetDirectory))
         throw new Error("无法加载安装位置页面");
     var widget = gui.pageWidgetByObjectName("DynamicInstallLocation");
     widget.windowTitle = "选择安装位置";
     widget.InstallPath.text = installer.toNativeSeparators(installer.value("TargetDir"));
+    try {
+        var discovery = JSON.parse(installer.value("TrialInstallDiscovery", "{}"));
+        if (discovery.mode === "select") {
+            var message = discovery.reason === "multiple-valid-installations" ?
+                "发现多个有效安装，请明确选择要更新的旧安装根目录，或使用新的空文件夹。" :
+                "已有安装登记需要检查，请明确选择安装位置。";
+            for (var n = 0; n < discovery.candidates.length; ++n)
+                message += "\n" + discovery.candidates[n].target;
+            for (var n = 0; n < discovery.rejected.length; ++n)
+                message += "\n" + discovery.rejected[n].target + "：" + discovery.rejected[n].reason;
+            widget.LocationHelp.text = message;
+        }
+    } catch (error) {}
     widget.BrowseButton.clicked.connect(this, Component.prototype.browseLocation);
     widget.InstallPath.textChanged.connect(this, Component.prototype.locationChanged);
     installer.setValidatorForCustomPage(component, "InstallLocation", "validateLocation");
     this.locationChanged(widget.InstallPath.text);
+};
+
+Component.prototype.addExistingUpdate = function(beforePage) {
+    if (installer.value("TrialExistingUpdateAdded", "false") === "true") return;
+    if (!installer.addWizardPage(component, "ExistingUpdate", beforePage))
+        throw new Error("无法加载更新页面");
+    installer.setValue("TrialExistingUpdateAdded", "true");
+    installer.setValue("TrialHandoffTarget", installer.value("TargetDir"));
+    installer.setDefaultPageVisible(QInstaller.ReadyForInstallation, false);
+    installer.setDefaultPageVisible(QInstaller.PerformInstallation, false);
+    installer.setDefaultPageVisible(QInstaller.InstallationFinished, false);
+    var update = gui.pageWidgetByObjectName("DynamicExistingUpdate");
+    update.windowTitle = "更新星图";
+    update.ExistingPath.text = installer.toNativeSeparators(installer.value("TargetDir"));
+    update.UpdateButton.clicked.connect(this, Component.prototype.updateExisting);
+    update.CloseButton.clicked.connect(function() { gui.rejectWithoutPrompt(); });
+    update.complete = false;
+    installer.setValidatorForCustomPage(component, "ExistingUpdate", "preventFreshInstall");
 };
 
 Component.prototype.locationChanged = function(text) {
@@ -47,13 +95,72 @@ Component.prototype.browseLocation = function() {
 };
 
 Component.prototype.validateLocation = function() {
-    var result = installer.execute(installer.value("TrialHelper"), ["check-target", installer.value("TargetDir")]);
+    var upgrade = JSON.parse(installer.value("TrialNativeUpgradeFiles", "[]")).length > 0;
+    var result = installer.execute(installer.value("TrialHelper"), [upgrade ? "bootstrap-check" : "check-target", installer.value("TargetDir")]);
+    if (upgrade && result.length === 2 && result[1] === 10) {
+        installer.setValue("TrialNativeHandoff", "true");
+        // Validation has no update side effect. Both automatic and explicit
+        // old-root selection continue to the same stateful update page.
+        this.addExistingUpdate(QInstaller.ReadyForInstallation);
+        return true;
+    }
     if (result.length === 2 && result[1] === 0) return true;
     gui.pageWidgetByObjectName("DynamicInstallLocation").LocationError.text = locationProblem(result);
     return false;
 };
 
+Component.prototype.preventFreshInstall = function() { return false; };
+
+Component.prototype.updateExisting = function() {
+    if (installer.value("TrialHandoffBusy", "false") === "true" ||
+            installer.value("TrialHandoffSuccess", "false") === "true") return false;
+    var widget = gui.pageWidgetByObjectName("DynamicExistingUpdate");
+    var status = widget.UpdateStatus;
+    installer.setValue("TrialHandoffBusy", "true");
+    widget.UpdateButton.enabled = false;
+    widget.CloseButton.enabled = false;
+    installer.setMessageBoxAutomaticAnswer("cancelInstallation", QMessageBox.No);
+    status.text = "正在更新，请等待维护器完成。设置、地图包和自建路线将保留。";
+    try {
+    var support = installer.value("TrialSupport");
+    var files = JSON.parse(installer.value("TrialNativeUpgradeFiles", "[]"));
+    for (var i = 0; installer.value("TrialNativeSupportReady", "false") !== "true" && i < files.length; ++i) {
+        var relative = files[i];
+        var slash = relative.lastIndexOf("/");
+        if (slash >= 0 && !installer.performOperation("Mkdir", [support + "/" + relative.substring(0, slash)]))
+            throw new Error("无法准备离线更新目录。");
+        if (!installer.performOperation("Copy", [":/qtifw-upgrade/" + relative, support + "/" + relative]))
+            throw new Error("无法读取随包更新工具。");
+    }
+    var attrib = installer.environmentVariable("SystemRoot") + "/System32/attrib.exe";
+    var writable = installer.execute(attrib, ["-R", installer.toNativeSeparators(support + "/boot/*"), "/S"]);
+    if (writable.length !== 2 || writable[1] !== 0) throw new Error("无法准备可写的更新工具。");
+    installer.setValue("TrialNativeSupportReady", "true");
+    var result = installer.execute(installer.value("TrialHelper"), ["bootstrap-run", installer.value("TargetDir"),
+        "--setup-source", installer.value("InstallerFilePath"), "--interactive"]);
+    var outcome = nativeUpdateResult(result);
+    if (result[1] === 0 && outcome.success === true) {
+        installer.setValue("TrialHandoffSuccess", "true");
+        status.text = "星图已更新。原有设置、地图包和自建路线已保留。\n可关闭安装器后启动星图。";
+        if (widget.UpdateButton) widget.UpdateButton.visible = false;
+    } else {
+        throw new Error(outcome.reason || "维护器未完成");
+    }
+    } catch (error) {
+        status.text = "更新未完成：" + error.message +
+            "\n请关闭正在运行的星图，检查磁盘空间和目录权限后重试。原有资料与恢复现场已保留。";
+        if (widget.UpdateButton) widget.UpdateButton.enabled = true;
+        installer.setValue("TrialHandoffFailure", error.message);
+    } finally {
+        installer.setValue("TrialHandoffBusy", "false");
+        widget.CloseButton.enabled = true;
+    }
+    return false; // The outer Setup must not execute any native fresh operation.
+};
+
 Component.prototype.createOperations = function() {
+    if (installer.value("TrialNativeHandoff", "false") === "true")
+        throw new Error("已有安装只允许原维护器更新，未启动新装事务。");
     if (installer.value("TrialRootRejected", "") === "true")
         throw new Error("目录覆盖被拒绝。请使用 TrialTarget=已核准测试目录，而不是 --root。");
     function normal(path) { return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase(); }

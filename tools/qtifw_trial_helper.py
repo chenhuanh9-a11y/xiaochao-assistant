@@ -238,17 +238,27 @@ def receipt(policy, target, name, value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("bootstrap-check", "bootstrap-run", "check-target", "prepare", "verify-program", "verify", "disable-watcher", "inspect-data", "hold-uninstall", "select-data", "undo-data", "noop", "data", "pause", "fail"))
-    parser.add_argument("target", type=Path)
+    parser.add_argument("action", choices=("discover-installation", "bootstrap-check", "bootstrap-run", "check-target", "prepare", "verify-program", "verify", "disable-watcher", "inspect-data", "hold-uninstall", "select-data", "undo-data", "noop", "data", "pause", "fail"))
+    parser.add_argument("target", type=Path, nargs="?")
     parser.add_argument("choice", nargs="?", default="keep")
     parser.add_argument("operation", nargs="?", default="none", choices=("none", "purge"))
     parser.add_argument("--result-file", type=Path)
+    parser.add_argument("--setup-source", type=Path,
+                        help="Current native Setup; only its component archives are read")
+    parser.add_argument("--interactive", action="store_true", help="Show the native maintenance update progress")
     args = parser.parse_args()
+    if args.action != "discover-installation" and args.target is None:
+        parser.error("target is required for this action")
     policy = json.loads(Path(__file__).with_name("qtifw-trial-policy.json").read_text(encoding="utf-8"))
     try:
+        if args.action == "discover-installation":
+            from qtifw_installation import discover
+            print(json.dumps(discover(policy), ensure_ascii=True))
+            return 0
         if args.action in {"bootstrap-check", "bootstrap-run"}:
             from qtifw_upgrade import check, run
-            result = check(policy, args.target) if args.action == "bootstrap-check" else run(policy, args.target)
+            result = check(policy, args.target) if args.action == "bootstrap-check" else run(
+                policy, args.target, setup_source=args.setup_source, interactive=args.interactive)
             if args.result_file:
                 args.result_file.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
             print(json.dumps(result, ensure_ascii=True))

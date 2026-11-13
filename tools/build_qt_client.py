@@ -591,7 +591,7 @@ def _requirements(path, seen=None):
     return result
 
 
-def environment(iscc):
+def environment(iscc, *, stage_only=False):
     packages, errors = {}, []
     for name, expected in _requirements(TOOLS / "requirements-qt-build.txt").items():
         try:
@@ -604,7 +604,7 @@ def environment(iscc):
     if sys.platform != "win32" or sys.maxsize <= 2**32 or sys.version_info[:2] != (3, 13):
         errors.append("Use the isolated Windows x64 Python 3.13 interpreter")
     compiler = Path(iscc).resolve() if iscc else None
-    if not compiler or not compiler.is_file() or compiler.name.lower() != "iscc.exe":
+    if not stage_only and (not compiler or not compiler.is_file() or compiler.name.lower() != "iscc.exe"):
         errors.append("Pass an existing Inno Setup 6 compiler explicitly with --iscc")
     qml_root = None
     try:
@@ -1254,10 +1254,12 @@ def main(argv=None):
     parser.add_argument("--bundled-package", action="append", choices=("difficult-zhan10",), default=[],
                         help="Include this explicitly authorized read-only display default in an isolated client/private Setup only")
     parser.add_argument("--iscc", type=Path)
+    parser.add_argument("--stage-only", action="store_true",
+                        help="Freeze and verify the program for QtIFW; do not require or run Inno Setup")
     parser.add_argument("--dotnet", type=Path, help="Path to dotnet.exe (or set STARMAP_DOTNET)")
     parser.add_argument("--output-dir", type=Path, help="NEW directory within this checkout's work/ or dist/")
     args = parser.parse_args(argv)
-    tools = environment(args.iscc)
+    tools = environment(args.iscc, stage_only=args.stage_only)
     try:
         tools["gridSdk"] = grid_sdk_info(args.dotnet)
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
@@ -1266,8 +1268,8 @@ def main(argv=None):
     if args.check_environment:
         print(json.dumps(tools, indent=2))
         return 0 if tools["success"] else 1
-    if not all((args.source_commit, args.resource_root, args.resource_inventory, args.iscc)):
-        parser.error("--source-commit, --resource-root, --resource-inventory and --iscc are required")
+    if not all((args.source_commit, args.resource_root, args.resource_inventory)) or (not args.stage_only and not args.iscc):
+        parser.error("--source-commit, --resource-root and --resource-inventory are required; --iscc is required unless --stage-only")
     if not tools["success"]:
         raise ValueError("Build environment is not pinned: " + "; ".join(tools["errors"]))
     source = source_identity(args.source_commit)
@@ -1322,7 +1324,7 @@ def main(argv=None):
                 productBrand=dict(icon=BRAND_ICON, iconSha256=BRAND_ICON_SHA256,
                                   artworkSource="existing supplied 3438365b/38490F4F brand resource; unchanged bytes",
                                   fileDescription=instance["appName"], productName=instance["appName"]),
-                action="plan-only" if args.plan_only else "build-setup-only",
+                action="plan-only" if args.plan_only else "freeze-only" if args.stage_only else "build-setup-only",
                 buildCompleted=False, installPerformed=False, executableLaunched=False, published=False)
     if args.instance == "production":
         plan.update(buildFingerprint=source["commit"][:8].upper(), fingerprintScheme="source-commit-prefix",
@@ -1418,7 +1420,8 @@ def main(argv=None):
         production_defines = ["/DProductionInstaller", f"/DProductionFilesInclude={include}"]
         production_defines += resource_reset_installer_defines(stage, plan, output, source)
     setup_name = setup_basename(instance, display, source["commit"])
-    subprocess.run([str(args.iscc.resolve()), f"/DStageDir={stage}", f"/DSetupOutputDir={output / 'setup'}",
+    if not args.stage_only:
+        subprocess.run([str(args.iscc.resolve()), f"/DStageDir={stage}", f"/DSetupOutputDir={output / 'setup'}",
                     f"/DSetupName={setup_name}", f"/DDisplayVersion={display}", f"/DNumericVersion={numeric}",
                     "/DInstallerAppId={{" + instance["appId"] + "}",
                     f"/DInstallerAppName={instance['appName']}",
@@ -1426,11 +1429,14 @@ def main(argv=None):
                     f"/DInstallerGroup={instance['startMenuGroup']}",
                     f"/DInstallerExeName={product}.exe",
                     *production_defines,
-                    str(TOOLS / "qt-client.iss")], cwd=ROOT, check=True)
-    setup = output / "setup" / (setup_name + ".exe")
-    if not setup.is_file():
-        raise ValueError("Inno Setup completed without the expected Setup artifact")
-    plan["installer"] = dict(fileName=setup.name, bytes=setup.stat().st_size, sha256=sha256(setup))
+                        str(TOOLS / "qt-client.iss")], cwd=ROOT, check=True)
+    setup = None if args.stage_only else output / "setup" / (setup_name + ".exe")
+    if setup is not None:
+        if not setup.is_file():
+            raise ValueError("Inno Setup completed without the expected Setup artifact")
+        plan["installer"] = dict(fileName=setup.name, bytes=setup.stat().st_size, sha256=sha256(setup))
+    else:
+        plan["installer"] = None
     recipes = [Path(__file__), TOOLS / "qt-client.spec", TOOLS / "qt-recovery-helper.spec",
                TOOLS / "qt-import-helper.spec", TOOLS / "qt-reset-helper.spec", TOOLS / "qt-game-watcher.spec", TOOLS / "qt-client.iss"]
     if args.instance == 'production':
@@ -1439,7 +1445,8 @@ def main(argv=None):
     plan["source"] = source_identity(args.source_commit)
     plan["buildCompleted"] = True
     record_path.write_text(json.dumps(plan, indent=2), encoding="utf-8")
-    print(json.dumps(dict(setup=str(setup), **plan["installer"], record=str(record_path)), indent=2))
+    print(json.dumps(dict(setup=str(setup) if setup else None, stage=str(stage),
+                         **(plan["installer"] or {}), record=str(record_path)), indent=2))
     return 0
 
 
