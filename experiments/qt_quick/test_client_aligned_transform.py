@@ -24,10 +24,64 @@ APP = QGuiApplication.instance() or QGuiApplication([])
 
 
 class Settings(QObject):
-    values = Property("QVariantMap", lambda self: dict(sheetOpacity=.7), constant=True)
+    values = Property("QVariantMap", lambda self: dict(sheetOpacity=.7,
+        sheetScale=1., referenceOpacity=.7), constant=True)
 
 
 class AlignedTransformProbe(unittest.TestCase):
+    def test_reference_status_uses_neutral_s1_wording_and_keeps_preview_and_s0_warnings(self):
+        CoordinatorTests.setUpClass()
+        fixture = CoordinatorTests()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        coordinator = fixture.coordinator
+        images = LiveImages()
+        coordinator.images = images
+        engine = QQmlApplicationEngine()
+        engine.addImageProvider("live", images)
+        settings = Settings()
+        engine.rootContext().setContextProperty("clientCoordinator", coordinator)
+        engine.rootContext().setContextProperty("settingsService", settings)
+        warnings = []
+        engine.warnings.connect(lambda rows: warnings.extend(str(row) for row in rows))
+        engine.load(QUrl.fromLocalFile(str(Path(__file__).with_name("ClientReference.qml"))))
+        self.assertEqual(len(engine.rootObjects()), 1, warnings)
+        window = engine.rootObjects()[0]
+        self.addCleanup(lambda engine=engine: engine.rootObjects()[0].hide())
+        badge = window.findChild(QObject, "referencePreviewBadge")
+        row = dict(token="reference", referenceAuthorized=True,
+            pixels=np.full((12, 16, 4), 255, np.uint8),
+            season="s1", mode="nightmare", roundId=1, mapId="fixture", floor="-2",
+            s1CandidateReference=True, provisional=True, identityLocked=False)
+        for mode in ("nightmare", "difficult"):
+            coordinator._sync_reference_payload(dict(row, mode=mode))
+            coordinator.changed.emit()
+            APP.processEvents()
+            self.assertTrue(badge.property("visible"))
+            self.assertEqual(badge.property("text"), "静态参考")
+            self.assertFalse(coordinator.referenceData["identityLocked"])
+        # Metadata promotion keeps the same image and never invents a lock.
+        image = window.findChild(QObject, "clientReferenceImage")
+        source = image.property("source")
+        coordinator._sync_reference_payload(dict(row, mode="difficult",
+            provisional=False, identityLocked=True, durableMapId="fixture"))
+        coordinator.changed.emit()
+        APP.processEvents()
+        self.assertFalse(badge.property("visible"))
+        self.assertIn("已锁定", window.title())
+        self.assertEqual(image.property("source"), source)
+        coordinator._sync_reference_payload(dict(row, season="s0", s1CandidateReference=False))
+        coordinator.changed.emit()
+        APP.processEvents()
+        self.assertTrue(badge.property("visible"))
+        self.assertEqual(badge.property("text"), "暂选地图｜组内确认中")
+        coordinator._reference.update(previewOnly=True, season="s1", provisional=False)
+        coordinator.changed.emit()
+        APP.processEvents()
+        self.assertTrue(badge.property("visible"))
+        self.assertEqual(badge.property("text"), "位置预览（不参与识别）")
+        self.assertEqual(warnings, [])
+
     def test_real_qml_moves_bounds_with_same_material_url_and_no_reload(self):
         self.run_probe()
 

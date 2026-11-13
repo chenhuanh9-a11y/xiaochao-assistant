@@ -399,6 +399,7 @@ jobs:
                 # Race's two independent terminal evidence lanes are retired.
                 'test_client_providers', 'test_feature_test_round_lock', 'test_s1_playtest_round_lock',
                 'test_s1_playtest_round_lock_qml', 'test_s1_formal_round_lock', 'test_s1_resources_changed_chain',
+                'test_s1_author_settings_chain',
                 'test_s1_native_candidate_preview', 'test_wall_raster_local_distances', 'test_marker_implicit_domain',
                 # Keep every donor marker test; the five later entry-proposal
                 # injection tests require a removed fit_one argument.

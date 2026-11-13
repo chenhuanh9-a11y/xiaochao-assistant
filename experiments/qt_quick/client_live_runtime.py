@@ -828,21 +828,27 @@ class LiveRuntime:
         """Manual mode waits for the player's pick instead of ranking identity."""
         return self._effective_map_selection_mode() == "manual" and not self._map_id
 
-    def _s1_floor_observer_available(self, engine=None):
+    def _s1_floor_observer_available(self, engine=None, *, report=None):
         """Separate selected-context floor capability, not live/identity readiness."""
         engine = self._engine if engine is None else engine
         if (self._season != "s1" or engine is None or self._mode not in ("difficulty2", "difficult", "nightmare")
                 or getattr(engine.pack, "mode", None) != self._mode
                 or tuple(getattr(engine, "identity_floors", ())) != ("-1", "-2", "-3", "-4")):
             return False
-        capability = getattr(getattr(engine, "qt_native_context", None), "floor_observation_capability", {})
+        if report is not None and "floorObservation" in report:
+            if report.get("season") != self._season or report.get("mode") != self._mode:
+                return False
+            capability = report["floorObservation"]
+        else:
+            capability = getattr(getattr(engine, "qt_native_context", None), "floor_observation_capability", {})
         return (isinstance(capability, dict)
                 and capability.get("contract") == "s1-floor-only-manual-map-use"
                 and capability.get("manualMapObservation") is True
                 and tuple(capability.get("automaticFloors", ())) == (-1, -2, -3, -4))
 
-    def _current_floor_source(self):
-        if self._manual_alignment and self._s1_floor_observer_available():
+    def _current_floor_source(self, *, observer_available=None):
+        if self._manual_alignment and (self._s1_floor_observer_available()
+                if observer_available is None else observer_available):
             return self._s1_floor_source
         return "manual" if self._manual_floor else "automatic"
 
@@ -3073,6 +3079,10 @@ class LiveRuntime:
             offline = self._offline.snapshot()
             capabilities = offline["savedFrameCapabilities"]
             report = capabilities[self._mode]
+            # UI metadata consumes the existing admission report. Reopening
+            # native package views here blocks Qt while holding the state lock.
+            # Observation/dispatch still use the guarded native capability.
+            floor_observer_available = self._s1_floor_observer_available(report=report)
             saved_ready = report["available"]
             live_gaps = tuple(report.get("liveGaps", ()))
             if not report.get("liveReady", self._season == "s0") and not live_gaps:
@@ -3101,9 +3111,9 @@ class LiveRuntime:
                 commands.append("prepare_manual_alignment")
             if self._manual_alignment and self._active:
                 commands.append("reselect_map")
-                if self._map_id and (self._manual_floor or self._s1_floor_observer_available()):
+                if self._map_id and (self._manual_floor or floor_observer_available):
                     commands.append("fit_manual_frame")
-                    if (self._map_open or self.map_open_recovery_status().get("pending")) and self._s1_floor_observer_available():
+                    if (self._map_open or self.map_open_recovery_status().get("pending")) and floor_observer_available:
                         commands.append("observe_manual_floor")
             if self._candidate_edit and self._gate is not None:
                 commands += ["select_candidate", "previous_candidate", "next_candidate"]
@@ -3188,13 +3198,13 @@ class LiveRuntime:
                 manualMapPickAvailable=manual_pick_available,
                 manualAlignmentSession=self._manual_alignment,
                 manualAlignmentAvailable=manual_ready,
-                automaticFloorObservationAvailable=bool(self._manual_alignment and self._s1_floor_observer_available()),
-                automaticFloorSupportedFloors=["-1", "-2", "-3", "-4"] if self._s1_floor_observer_available() else [],
+                automaticFloorObservationAvailable=bool(self._manual_alignment and floor_observer_available),
+                automaticFloorSupportedFloors=["-1", "-2", "-3", "-4"] if floor_observer_available else [],
                 unvalidatedFloorPositions=["-3", "-4"] if self._season == "s1" else [],
                 automaticIdentityAvailable=False if self._season == "s1" else bool(ready),
                 targetFloor=self._floor, rawObservedFloor=self._s1_raw_floor,
                 floorObservationReason=self._s1_floor_reason,
-                mapObservationSource=("s1-current-frame" if self._manual_alignment and self._s1_floor_observer_available()
+                mapObservationSource=("s1-current-frame" if self._manual_alignment and floor_observer_available
                                       else "manual-declaration" if self._manual_alignment else "automatic"),
                 alignedVisible=self._aligned_visible,
                 structureEvidence=(self._s1_structure_session.snapshot() if self._s1_structure_session is not None else {}),
@@ -3207,7 +3217,7 @@ class LiveRuntime:
                 pendingSiblingToken=self._pending_sibling["render"]["token"] if self._pending_sibling is not None else "",
                 availableFloors=self._available_floors(), manualFloor=self._manual_floor,
                 observedFloor=self._observed_floor,
-                floorSource=self._current_floor_source(),
+                floorSource=self._current_floor_source(observer_available=floor_observer_available),
                 floorRequired=self._floor_required, floorPolicyReason=self._last_floor_policy,
                 manualFloorHoldRemaining=max(0.0, self._manual_hold_until - self._monotonic())
                     if self._manual_override and not self._floor_hard_locked else 0.0,
@@ -3396,7 +3406,11 @@ class LiveRuntime:
                 # boundaries have no command owner and fence the current queue.
                 boundary = owners[-1] if owners else next(self._dispatch_serials)
                 self._dispatch_cutoff = max(self._dispatch_cutoff, boundary)
-            if self._manual_alignment and self._s1_floor_observer_available():
+            # Revocation must finish even when the admitted resources have
+            # disappeared. Their capability is metadata, not a new observation.
+            floor_report = (self._offline.snapshot()["savedFrameCapabilities"][self._mode]
+                if self._manual_alignment else None)
+            if self._manual_alignment and self._s1_floor_observer_available(report=floor_report):
                 self._observed_floor = ""
                 self._s1_raw_floor = None
                 self._s1_floor_source = "unknown"

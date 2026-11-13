@@ -1553,8 +1553,8 @@ class ClientCoordinator(QObject):
                 mapId=payload.get("mapId"), floor=payload.get("floor"), profileId=payload.get("profileId"))
         for key in ("season", "mode", "identityPhase", "identityLocked", "provisional", "groupId", "durableMapId", "roundId", "cycleId", "frameId", "generation", "s1CandidateReference"):
             self._reference[key] = payload.get(key)
-        label = ("定点地图（已锁定）" if payload.get("s1CandidateReference") and payload.get("identityLocked") else
-                 "定点地图（暂用）" if payload.get("s1CandidateReference") else
+        label = ("定点地图（已锁定）" if payload.get("season") == "s1" and payload.get("identityLocked") else
+                 "定点地图" if payload.get("season") == "s1" else
                  "暂用地图" if payload.get("provisional") else "定点地图")
         floor_label = (f"上次 {payload.get('floor')}层 · 当前楼层待核对"
             if payload.get("referenceFloorCurrent") is False else f"{payload.get('floor')}层")
@@ -1945,7 +1945,11 @@ class ClientCoordinator(QObject):
             reprojecting = (pending == "set_context" and self._pending_context
                             and self._pending_context[0] == self._applied_context[0]
                             and self._pending_context[2] == self._applied_context[2])
-            if not reprojecting and pending not in {
+            if pending == "capture_now":
+                # Recapture owns a new observation, not the completed material.
+                # Only the runtime can retain or revoke that material's grant.
+                self._present_runtime_state(self.session.snapshot, trigger="capture-requested")
+            elif not reprojecting and pending not in {
                     "refresh_map", "observe_manual_floor", "observe_candidate_floor", "recover_map_open", "probe_map_after_drag", "reselect_map", "previous_candidate", "next_candidate",
                     "select_candidate", "confirm_route", "set_floor", "cycle_floor",
                     "select_group_member"}:

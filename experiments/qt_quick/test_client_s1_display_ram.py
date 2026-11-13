@@ -6,7 +6,7 @@ owners run here. Synthetic canvases establish display contracts only.
 from copy import copy, deepcopy
 from pathlib import Path
 import unittest
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch
 
 import numpy as np
 
@@ -17,6 +17,42 @@ from test_client_display_guard_consumption import OriginalDisplayContextMixin, n
 
 
 class S1DisplayRamTests(OriginalDisplayContextMixin, unittest.TestCase):
+    def test_snapshot_uses_prepared_floor_metadata_but_worker_still_checks_actual_resources(self):
+        from test_client_live_runtime import FixtureCapture
+        for mode in ('difficult', 'nightmare'):
+            with self.subTest(mode=mode):
+                engine, factories, _, _, _ = self.original_context('s1', mode)
+                capture = FixtureCapture()
+                runtime = LiveRuntime(engine_factories=factories, capture_provider=capture,
+                    evidence_kind='synthetic')
+                self.addCleanup(runtime.shutdown)
+                self.assertTrue(runtime.dispatch('set_context', dict(season='s1', mode=mode))['success'])
+                self.assertTrue(runtime.dispatch('prepare_manual_alignment')['success'])
+                before = runtime.snapshot()
+                self.assertTrue(before['automaticFloorObservationAvailable'])
+                native = engine.qt_native_context
+                # Resource admission is real. Only forbid the guarded property
+                # on UI snapshot reads, never on capture/observation/dispatch.
+                with patch.object(type(native), 'floor_observation_capability', new_callable=PropertyMock,
+                        side_effect=AssertionError('UI snapshot reopened admitted floor resources')):
+                    for _ in range(3):
+                        self.assertEqual(runtime.snapshot(), before)
+                reports = factories.capabilities('s1')
+                reports[mode]['floorObservation']['automaticFloors'] = [-1, -2]
+                with patch.object(factories, 'capabilities', return_value=reports):
+                    unsupported = runtime.snapshot()
+                self.assertFalse(unsupported['automaticFloorObservationAvailable'])
+                self.assertEqual(unsupported['automaticFloorSupportedFloors'], [])
+                self.assertFalse(unsupported['liveAuthorization'])
+                # Stale cached UI capability must never authorize actual work.
+                self.supersede_catalog(engine)
+                rejected = runtime.dispatch('observe_manual_floor')
+                self.assertFalse(rejected['success'])
+                self.assertTrue(rejected.get('error'), rejected)
+                self.assertEqual(capture.count, 0)
+                self.assertIsNone(runtime.reference_payload())
+                self.assertIsNone(runtime._render)
+
     def context(self, mode='difficult', *, short_resource_root=False):
         engine, _, _, _, _ = self.original_context('s1', mode, author=True,
             short_resource_root=short_resource_root)

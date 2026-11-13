@@ -164,6 +164,43 @@ class CoordinatorTests(unittest.TestCase):
         sync.assert_called_once_with(None)
         self.runtime.render_payload.assert_called_once_with("current")
 
+    def test_s1_reference_status_updates_without_reupload_or_inventing_lock(self):
+        self.images.publish = Mock(return_value="image://live/s1-reference")
+        payload = dict(token="sheet", referenceAuthorized=True, pixels=object(),
+            season="s1", mode="nightmare", roundId=1, mapId="map-a", floor="-2",
+            profileId="profile-one", displayGeneration=1, resourceIdentity="fixture",
+            s1CandidateReference=True, identityLocked=False, provisional=True,
+            identityPhase="CANDIDATE_DISPLAY", durableMapId="", referenceFloorCurrent=False)
+        self.coordinator._sync_reference_payload(payload)
+        shown = self.coordinator.referenceData
+        self.assertIn("定点地图", shown["title"])
+        self.assertNotIn("暂用", shown["title"])
+        self.assertNotIn("已锁定", shown["title"])
+        self.assertIn("当前楼层待核对", shown["title"])
+        self.assertTrue(shown["provisional"])
+        self.assertFalse(shown["identityLocked"])
+        self.assertEqual(shown["durableMapId"], "")
+        self.coordinator._sync_reference_payload(dict(payload, identityLocked=True,
+            provisional=False, identityPhase="MEMBER_VERIFIED", durableMapId="map-a"))
+        locked = self.coordinator.referenceData
+        self.assertIn("已锁定", locked["title"])
+        self.assertEqual(locked["imageUrl"], shown["imageUrl"])
+        self.assertEqual(locked["context"], shown["context"])
+        self.assertFalse(locked["provisional"])
+        self.images.publish.assert_called_once()
+
+    def test_recapture_request_withdraws_material_without_current_runtime_grant(self):
+        self.coordinator._aligned = dict(token="expired")
+        self.coordinator._last_render_token = "expired"
+        self.runtime.reference_payload = Mock(return_value=None)
+        self.session.busy = True
+        self.session.snapshot["pendingAction"] = "capture_now"
+        self.session.changed.emit()
+        self.assertFalse(self.coordinator.alignedData)
+        self.assertIsNone(self.coordinator._last_render_token)
+        self.windows.hide.assert_any_call("aligned")
+        self.runtime.render_payload.assert_called_with("expired")
+
     def test_foreground_diagnostics_identify_owned_role_without_activation(self):
         self.windows._windows["toast"] = SimpleNamespace(isVisible=lambda: True, winId=lambda: 77)
         self.native.window_process_id = Mock(return_value=700)
