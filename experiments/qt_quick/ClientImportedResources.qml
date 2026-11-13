@@ -13,7 +13,7 @@ Item {
     readonly property bool operationPending: archiveDialog.visible || resourceService.busy || resourceService.activationPlanOpen || resourceService.removalPlanOpen
     readonly property bool recoveryPending: resourceService.recoveryRequired
     readonly property var hostWindow: Window.window
-    readonly property bool planVisible: active && hostWindow !== null && hostWindow.visible
+    readonly property bool planVisible: hostWindow !== null && hostWindow.visible
                                         && hostWindow.visibility !== Window.Minimized
     readonly property bool importedPackages: true
     readonly property var packageManager: resourceService
