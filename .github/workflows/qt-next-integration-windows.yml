@@ -47,6 +47,9 @@ jobs:
           architecture: x64
       - name: Pinned dependencies (tests only, no Setup or publication)
         run: python -m pip install --disable-pip-version-check -r experiments/qt_quick/requirements-client.txt
+      - name: Pinned packaging inventory dependencies
+        if: matrix.group == 'original-csharp'
+        run: python -m pip install --disable-pip-version-check -r tools/requirements-qt-build.txt
       - name: Original grid SDK
         if: matrix.group == 'original-csharp'
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5

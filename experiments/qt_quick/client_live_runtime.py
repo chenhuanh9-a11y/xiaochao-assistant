@@ -4429,8 +4429,10 @@ class LiveRuntime:
         if action in ("start_round", "toggle_round", "capture_now", "map", "refresh_map", "recover_map_open", "probe_map_after_drag"):
             report = self._offline.snapshot()["savedFrameCapabilities"][self._mode]
             if not report.get("liveReady", self._season == "s0") and not self._s1_candidate_available(report):
+                fallback = ("s1-live-contract-unavailable" if self._season == "s1"
+                            else f"season-live-contract-unavailable:{self._season}")
                 return self._receipt(action, payload, success=False,
-                    reason=";".join(report.get("liveGaps", ())) or f"season-live-contract-unavailable:{self._season}",
+                    reason=";".join(report.get("liveGaps", ())) or fallback,
                     unavailable=True)
         if action == "resume_group_automatic":
             return self._receipt(action, payload, success=False, reason="unsupported-action")
