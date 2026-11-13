@@ -7,6 +7,7 @@ establishes component semantic usability by an algorithm.
 from __future__ import annotations
 
 from copy import deepcopy
+from contextvars import ContextVar
 from dataclasses import dataclass
 import hashlib
 import os
@@ -18,6 +19,9 @@ from types import MappingProxyType
 import generic_author_package as generic
 import resource_snapshot_io
 import star_map_import as files
+
+
+_read_operations = ContextVar('imported_resource_read_operations', default=())
 
 
 MANIFEST_NAME = 'manifest.json'
@@ -134,6 +138,13 @@ class PackageView:
         return raw, stamp, digest
 
     def _load(self):
+        operation = self._read_operation()
+        if operation is not None:
+            operation._assert_owners()
+            return operation._loaded
+        return self._load_actual()
+
+    def _load_actual(self):
         self._assert_current()
         package_root = self._package_root()
         # Read and verify the actual file on every access. Only decoding the
@@ -369,6 +380,9 @@ class PackageView:
 
     @property
     def root(self):
+        operation = self._read_operation()
+        if operation is not None:
+            return operation.root
         _, data_root, _, _, _, _, _ = self._load()
         component_root = self._component_root(data_root, self.component_ref)
         self._assert_current()
@@ -415,6 +429,9 @@ class PackageView:
         return MappingProxyType(resolved)
 
     def path(self, relative):
+        operation = self._read_operation()
+        if operation is not None:
+            return operation.path(relative)
         package_root, _, _, _, inventory, _, _ = self._load()
         target = self._selected_path(package_root, inventory, self.component_ref, relative)
         self._assert_current()
@@ -445,6 +462,18 @@ class PackageView:
         """Create a private construction scope; it cannot authorize live reads."""
         return _AdmissionReadScope(self)
 
+    def _read_operation(self):
+        return next((operation for operation in reversed(_read_operations.get())
+                     if operation.owner_view is self), None)
+
+    def read_scope(self, cancelled=None):
+        """Reuse one actual read proof, including ordinary live consumers.
+
+        Only this operation's consumed payloads are retained and checked again
+        before return. Models keep their actual PackageView after the scope.
+        """
+        return _PackageReadOperation(self, cancelled)
+
     def file_ref(self, relative):
         self.path(relative)
         return FileRef(self.component_ref, relative)
@@ -465,6 +494,10 @@ class PackageView:
         on_payload may stage each actual payload locally; the final proof has
         not run yet. Its own exceptions are not attributed to a resource file.
         """
+        operation = self._read_operation()
+        if operation is not None:
+            return operation.read_many(relatives, expected_root=expected_root, cancelled=cancelled,
+                validate_payloads=validate_payloads, on_payload=on_payload)
         files._check_cancelled(cancelled)
         expected_root = Path(expected_root) if expected_root is not None else None
         ref, resource_root = self.component_ref, self.resource_root
@@ -540,7 +573,8 @@ class _AdmissionReadScope:
 
     def __enter__(self):
         self._state = self._view_state()
-        loaded = self.owner_view._load()
+        loaded = self.owner_view._load_actual()
+        self._loaded = loaded
         (self._package_root, self._data_root, _, self._components,
          self._inventory, self._stamp, self._digest) = loaded
         self._ref = self._state[2]
@@ -566,6 +600,8 @@ class _AdmissionReadScope:
 
     def register_owner(self, read_state):
         self._assert_owners()
+        if any(owner is read_state for owner, _ in self._owners):
+            return
         self._owners.append((read_state, read_state()))
 
     def record_consumed(self, file_ref):
@@ -636,9 +672,11 @@ class _AdmissionReadScope:
     def _finish(self):
         self._assert_owners()
         for file_ref in self._consumed:
-            self._read_payload(file_ref)
+            # Final proof must enter the real reader, including for a live
+            # operation which reused the first immutable bytes internally.
+            _AdmissionReadScope._read_payload(self, file_ref)
         self._assert_owners()
-        loaded = self.owner_view._load()
+        loaded = self.owner_view._load_actual()
         package_root, data_root, _, _, _, stamp, digest = loaded
         if stamp['identity'] != self._stamp['identity'] or digest != self._digest:
             _reject('manifest-replaced')
@@ -646,6 +684,10 @@ class _AdmissionReadScope:
                 or self.owner_view._component_root(data_root, self._ref) != self.root):
             _reject('component-root-changed')
         self._assert_owners()
+
+    def verify(self):
+        """Force the real consumed-file and manifest proof before publication."""
+        self._finish()
 
     def __exit__(self, kind, error, traceback):
         try:
@@ -657,3 +699,72 @@ class _AdmissionReadScope:
             self._owners.clear()
             self._consumed.clear()
         return False
+
+
+class _PackageReadOperation(_AdmissionReadScope):
+    """The existing bounded read proof, applied to one live operation.
+
+    No filesystem verdict survives exit. Nested consumers share this proof;
+    every newly consumed file still uses the original reader, and final checks
+    reject changes while the immutable bytes were being consumed.
+    """
+    def __init__(self, view, cancelled):
+        super().__init__(view)
+        self._cancelled = (cancelled.is_set if hasattr(cancelled, 'is_set') else cancelled)
+        self._parent = None
+        self._discarded = False
+        self._payloads, self._paths = {}, {}
+
+    def __enter__(self):
+        files._check_cancelled(self._cancelled)
+        self._parent = self.owner_view._read_operation()
+        if self._parent is not None:
+            self._parent._assert_owners()
+            return self._parent
+        super().__enter__()
+        self._token = _read_operations.set((*_read_operations.get(), self))
+        return self
+
+    def _assert_owners(self):
+        files._check_cancelled(self._cancelled)
+        if self._discarded:
+            _reject('optional-read-discarded')
+        super()._assert_owners()
+
+    def discard_optional(self):
+        """A rejected author candidate cannot contaminate structural fallback."""
+        if self._components[self._ref.component_id]['type'] != 'display':
+            _reject('required-read-cannot-be-discarded')
+        self._discarded = True
+
+    def path(self, relative):
+        self._assert_owners()
+        if not isinstance(relative, str):
+            return super().path(relative)
+        if relative not in self._paths:
+            self._paths[relative] = super().path(relative)
+        return self._paths[relative]
+
+    def _read_payload(self, file_ref):
+        self._assert_owners()
+        if file_ref not in self._payloads:
+            self._payloads[file_ref] = super()._read_payload(file_ref)
+        return self._payloads[file_ref]
+
+    def __exit__(self, kind, error, traceback):
+        if self._parent is not None:
+            if kind is None:
+                files._check_cancelled(self._cancelled)
+                self._parent._assert_owners()
+            return False
+        try:
+            if self._discarded:
+                self._active = False
+                self._owners.clear()
+                self._consumed.clear()
+                return False
+            return super().__exit__(kind, error, traceback)
+        finally:
+            _read_operations.reset(self._token)
+            self._payloads.clear()
+            self._paths.clear()

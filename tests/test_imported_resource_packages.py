@@ -100,6 +100,111 @@ class ImportedResourcePackageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'manifest-changed'):
                 view.root
 
+    def test_live_read_scope_reuses_metadata_and_bytes_then_proves_real_consumed_files(self):
+        view = self.view()
+        original_manifest, original_payload = view._read_manifest_bytes, view._read_payload
+        with patch.object(view, '_read_manifest_bytes', wraps=original_manifest) as metadata, \
+             patch.object(view, '_read_payload', wraps=original_payload) as payload:
+            with view.read_scope() as operation:
+                for _ in range(8):
+                    self.assertEqual(view.root, self.base_root)
+                    self.assertEqual(view.component['type'], 'recognition-base')
+                    self.assertEqual(view.read('index.json'), self.base_bytes)
+                with view.read_scope():
+                    self.assertEqual(view.read('index.json'), self.base_bytes)
+                self.assertEqual(metadata.call_count, 1)
+                self.assertEqual(payload.call_count, 1)
+                operation.verify()
+                self.assertEqual(metadata.call_count, 2)
+                self.assertEqual(payload.call_count, 2)
+            self.assertEqual(metadata.call_count, 3)
+            self.assertEqual(payload.call_count, 3)
+        with self.assertRaisesRegex(ValueError, 'read-scope-closed'):
+            operation.root
+
+    def test_live_read_scope_rejects_changed_cached_payload_before_publication(self):
+        view = self.view()
+        with self.assertRaisesRegex(ValueError, 'file-integrity-mismatch'):
+            with view.read_scope() as operation:
+                self.assertEqual(view.read('index.json'), self.base_bytes)
+                (self.base_root/'index.json').write_bytes(b'X' * len(self.base_bytes))
+                self.assertEqual(view.read('index.json'), self.base_bytes)
+                operation.verify()
+        with self.assertRaisesRegex(ValueError, 'file-integrity-mismatch'):
+            view.read('index.json')
+
+    def test_live_read_scope_rejects_replaced_manifest_and_stale_selection(self):
+        current = [True]
+        def guard():
+            if not current[0]:
+                raise ValueError('selection-superseded')
+        view = packages.PackageView(self.resource_root, self.base_ref, assert_current=guard)
+        with self.assertRaisesRegex(ValueError, 'selection-superseded'):
+            with view.read_scope() as operation:
+                view.read('index.json')
+                current[0] = False
+                operation.verify()
+        current[0] = True
+        with self.assertRaisesRegex(ValueError, 'manifest-replaced'):
+            with view.read_scope() as operation:
+                view.read('index.json')
+                replacement = self.package_root/'replacement.json'
+                replacement.write_bytes(self.manifest_bytes)
+                os.replace(replacement, self.package_root/'manifest.json')
+                operation.verify()
+
+    def test_live_read_scope_cancellation_does_not_leak_a_cached_filesystem_verdict(self):
+        import threading
+        cancelled = threading.Event()
+        view = self.view()
+        with self.assertRaisesRegex(ValueError, 'import-cancelled'):
+            with view.read_scope(cancelled):
+                view.read('index.json')
+                cancelled.set()
+                view.root
+        self.assertIsNone(view._read_operation())
+        self.assertEqual(view.read('index.json'), self.base_bytes)
+
+    def test_live_read_scope_rejects_a_link_substituted_for_cached_payload(self):
+        view = self.view()
+        target, backup = self.base_root/'index.json', self.base_root/'original.json'
+        try:
+            with self.assertRaises(ValueError):
+                with view.read_scope() as operation:
+                    view.read('index.json')
+                    target.rename(backup)
+                    try:
+                        target.symlink_to(backup)
+                    except OSError as error:
+                        backup.rename(target)
+                        self.skipTest('native symlink unavailable: '+str(error))
+                    operation.verify()
+        finally:
+            if target.is_symlink():
+                target.unlink()
+            if backup.exists():
+                backup.rename(target)
+
+    def test_live_read_scope_does_not_lend_cached_metadata_to_another_thread(self):
+        import threading
+        view, errors = self.view(), []
+        original = view._read_manifest_bytes
+        def read_elsewhere():
+            try:
+                self.assertIsNone(view._read_operation())
+                self.assertEqual(view.read('index.json'),self.base_bytes)
+            except BaseException as error:
+                errors.append(error)
+        with patch.object(view,'_read_manifest_bytes',wraps=original) as manifests:
+            with view.read_scope():
+                view.read('index.json')
+                worker = threading.Thread(target=read_elsewhere)
+                worker.start()
+                worker.join(5)
+                self.assertFalse(worker.is_alive())
+                self.assertFalse(errors,errors)
+                self.assertEqual(manifests.call_count,3)
+
     def test_reused_decoding_rejects_same_byte_manifest_replacement_and_stale_selection(self):
         current = [True]
         def guard():

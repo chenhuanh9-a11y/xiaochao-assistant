@@ -18,6 +18,7 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from reference_position_editor import ReferencePositionEdit
 from client_problem_messages import operation_problem
+from client_fit_reporting import RETRY_REASONS
 from client_input_diagnostics import InputDiagnostics, map_attempt
 from client_manual_map import MANUAL_PICKER_ACTION, normalize_selection_mode
 from season_context import SEASONS, season_label, normalize_season, context_key, selected_profile, CONTEXTS
@@ -2186,25 +2187,86 @@ class ClientCoordinator(QObject):
             else:
                 self._fallback_notices.end_round()
                 self._clear_reference()
-                self.notificationRequested.emit("本局已结束", "本局显示与识别已停止", "info")
+                terminal_key = ("round-end-incomplete", current.get("season", "s0"), current.get("mode"), current.get("roundId"))
+                if terminal_key not in self._notified:
+                    self.notificationRequested.emit("本局已结束", "本局显示与识别已停止", "info")
         receipt = state.get("lastReceipt", {})
         reason = receipt.get("reason", "")
         expected_candidate_close = (receipt.get("action") == "observe_candidate_floor"
                                     and reason == "candidate-map-closed" and not receipt.get("error"))
-        if (receipt.get("success") is False and receipt.get("action") != "observe_manual_floor"
+        pending_identity = (receipt.get("success") is True and receipt.get("posePending")
+                            and receipt.get("reason") in {"similar-group-pending",
+                                "s1-structure-candidates-awaiting-confirmation", "manual-map-selection-pending"}
+                            and state.get("mapOpen") and not state.get("displayAuthorized"))
+        if ((receipt.get("success") is False or pending_identity)
+                and (receipt.get("action") != "observe_manual_floor" or receipt.get("error"))
                 and not expected_candidate_close
                 and not (reason == "private-contradiction-recovery" and not receipt.get("error"))
-                and not receipt.get("fitReportingDeferred")
+                and not (receipt.get("fitReportingDeferred") and reason not in RETRY_REASONS)
+                and self._operation_feedback_is_current(state, current, receipt)
                 and not (receipt.get("action") == "recover_map_open" and receipt.get("recoveryPending"))):
-            key = ("failure", state.get("roundId"), state.get("cycleId"), receipt.get("action"), reason)
+            # One progress explanation per stage/opening, across passive and
+            # explicit retries. The close report retains the actual last cause.
+            deferred = bool(receipt.get("fitReportingDeferred"))
+            category = ("worker-error" if receipt.get("error") else "alignment" if deferred else "identity" if pending_identity or reason in {
+                "identity-not-uniquely-verified", "s1-structure-candidates-unresolved",
+                "candidate-awaiting-confirmation"} else reason)
+            key = ("failure", self._failure_notice_scope(state, receipt), category)
             if key not in self._notified:
                 self._notified.add(key)
                 problem = operation_problem(receipt, state)
-                self.errorReported.emit(problem)
-                pose = state.get("poseResult") or {}
-                meaningful_pose_failure = pose.get("status") == "rejected" and not state.get("displayAuthorized")
-                if receipt.get("action") not in {"refresh_map", "recover_map_open", "inspect_engine_resources"} or meaningful_pose_failure:
-                    self.notificationRequested.emit(problem["title"], problem["summary"], problem["kind"])
+                if not deferred and not pending_identity:
+                    self.errorReported.emit(problem)
+                if pending_identity:
+                    problem["kind"] = "info"
+                self.notificationRequested.emit(problem["title"], problem["summary"], problem["kind"])
+
+    @staticmethod
+    def _failure_notice_scope(state, receipt=None):
+        receipt = receipt or {}
+        opening = receipt.get("openingId") or (receipt.get("mapAttempt") or {}).get("openingId") or state.get("openingId")
+        resource = receipt.get("resourceIdentity", state.get("resourceIdentity"))
+        return (state.get("season", "s0"), state.get("mode"), state.get("profileId"), state.get("roundId"),
+                opening or ("cycle", state.get("cycleId")), json.dumps(resource, sort_keys=True, default=str))
+
+    def _operation_feedback_is_current(self, state, current, receipt):
+        if receipt.get("stale") or receipt.get("cancelled"):
+            return False
+        grid_worker_failure = False
+        if (receipt.get("error") and receipt.get("exceptionType") in {"GridFailure", "InterruptedError"}
+                and receipt.get("exceptionOrigin") in {"session-worker:runtime-dispatch", "session-worker:runtime-snapshot"}
+                and current.get("message") == "grid-computation-failed" and "generation" in state):
+            accepted = self.session.snapshot
+            grid_worker_failure = (state["generation"] == accepted.get("generation")
+                                   and receipt == accepted.get("lastReceipt"))
+        # Session admits worker receipts. Recheck the live snapshot as queued
+        # UI work may run after another close, frame, resource or round change.
+        fields = ("season", "mode", "profileId", "roundId", "openingId", "resourceIdentity")
+        if not grid_worker_failure:
+            fields += ("cycleId", "epoch", "frameId")
+        # A failed native scope revokes its own runtime epoch, sometimes after
+        # this job advanced the frame/cycle. Session retains its request-time
+        # state on errors; only its exact still-current worker receipt may use
+        # this exception. Opening/resource/round changes remain hard boundaries.
+        for key in fields:
+            if key in state and key in current and state[key] != current[key]:
+                return False
+        result = receipt.get("resultContext") or {}
+        if any(key in receipt and key in current and receipt[key] != current[key]
+               for key in ("openingId", "resourceIdentity")):
+            return False
+        return all(key not in current or value == current[key] for key, value in result.items())
+
+    def _failure_event_is_current(self, event):
+        check = getattr(self.runtime, "failure_event_is_current", None)
+        if callable(check):
+            return bool(check(event))
+        state = self.runtime.snapshot()
+        # Compatibility only for older injected runtime fixtures. Production
+        # owns the opening's terminal lifetime, including a close before solve.
+        return all(key not in state or key not in event or state[key] == event[key]
+                   for key in ("season", "mode", "profileId", "roundId", "cycleId", "openingId", "resourceIdentity"))
+
     def _native_action(self, action):
         if self._closing or self._closed:
             return
@@ -2487,12 +2549,16 @@ class ClientCoordinator(QObject):
         if name == "map-fit-incomplete":
             # A finalized historical segment is independent of the current open.
             # It cannot mutate current runtime/input/display state.
-            key = ("map-fit-incomplete", event.get("season", "s0"), event.get("mode"), event.get("roundId"),
-                   event.get("cycleId"), event.get("epoch"))
+            key = ("map-fit-incomplete", event.get("reportId") or (self._failure_notice_scope(event), event.get("epoch")))
             if key not in self._notified:
                 from client_fit_reporting import incomplete_problem
                 self._notified.add(key)
-                self.errorReported.emit(incomplete_problem(event))
+                problem = incomplete_problem(event)
+                self.errorReported.emit(problem)
+                if self._failure_event_is_current(event):
+                    if event.get("terminationReason") in {"end_round", "stop_round", "reset_round", "end-round", "stop-round", "input-end_round"}:
+                        self._notified.add(("round-end-incomplete", event.get("season", "s0"), event.get("mode"), event.get("roundId")))
+                    self.notificationRequested.emit(problem["title"], problem["summary"], problem["kind"])
         elif name == "map-fit-waiting":
             state = self.runtime.snapshot()
             if all(event.get(k) == state.get(k) for k in

@@ -355,16 +355,19 @@ class _AlignmentHost:
         return fit_one
 
     def fit(self, frame, map_id, floor, cancelled, entry_candidate=None, *, observation_bounds=None, _scan_observation=None):
-        check_current = getattr(self.engine, 'qt_assert_resource_current', None)
-        if check_current is not None:
-            check_current()
-        scope = self.grid_runtime.fit_scope(cancelled) if self.grid_runtime is not None else nullcontext()
-        with scope:
-            result = self._fit_owned(frame, map_id, floor, cancelled, entry_candidate,
-                observation_bounds=observation_bounds, _scan_observation=_scan_observation)
-        if check_current is not None:
-            check_current()
-        return result
+        make_scope = getattr(self.engine, 'qt_resource_read_scope', None)
+        resources = make_scope(cancelled=cancelled) if make_scope is not None else nullcontext()
+        with resources:
+            check_current = getattr(self.engine, 'qt_assert_resource_current', None)
+            if check_current is not None:
+                check_current()
+            scope = self.grid_runtime.fit_scope(cancelled) if self.grid_runtime is not None else nullcontext()
+            with scope:
+                result = self._fit_owned(frame, map_id, floor, cancelled, entry_candidate,
+                    observation_bounds=observation_bounds, _scan_observation=_scan_observation)
+            if check_current is not None:
+                check_current()
+            return result
 
     def _fit_owned(self, frame, map_id, floor, cancelled, entry_candidate=None, *, observation_bounds=None, _scan_observation=None):
         _test_evidence("solver-input", frame)
@@ -723,6 +726,7 @@ class LiveRuntime:
                                       allowed_read_root=allowed_read_root or WORK_ROOT, clock=clock)
         from client_fit_reporting import FitReporting
         self._fit_reporting = FitReporting()
+        self._failure_opening = None
         self._monotonic = clock or time.monotonic
         self._factories, self._capture = engine_factories, capture_provider
         self._evidence_kind = evidence_kind
@@ -3163,6 +3167,7 @@ class LiveRuntime:
                                        "capture-provider-unavailable" if self._capture is None else
                                        capabilities[self._mode]["reason"] if not ready else ""),
                 roundActive=self._active, roundPreparing=self._round_preparing, mapOpen=self._map_open,
+                **self._failure_notice_fields(),
                 fitReportingWaiting=(self._fit_reporting.scope == self._fit_reporting_scope()
                     and self._fit_reporting.waiting and not self._fit_reporting.succeeded),
                 mapRecoveryPending=recovery.get("pending", False), mapRecovery=recovery,
@@ -3227,6 +3232,73 @@ class LiveRuntime:
                 self._map_id if map_id is None else map_id,
                 str(self._floor if floor is None else floor))
 
+    def _begin_failure_opening(self, payload, *, new=False):
+        """Own one notice lifetime independently of frame retries and close epoch."""
+        with self._lock:
+            context = (self._season, self._mode, self._profile, self._round,
+                       self._settings_generation, id(self._engine))
+            row = self._failure_opening
+            if new or row is None or row['closed'] or row['context'] != context:
+                row = self._failure_opening = dict(openingId=uuid4().hex,
+                    resourceIdentity=f'{id(self._engine)}:{self._settings_generation}',
+                    context=context, closed=False, succeeded=False, succeededScope=None,
+                    lastReason='', lastReasonScope=None)
+            payload['_diagnosticOpeningId'] = row['openingId']
+
+    def _failure_notice_fields(self):
+        row = self._failure_opening
+        return dict(openingId=row['openingId'], resourceIdentity=row['resourceIdentity']) if row else {}
+
+    def failure_event_is_current(self, event):
+        """Queued notices cannot borrow another opening, resource or round."""
+        if not isinstance(event, dict):
+            return False
+        with self._lock:
+            row = self._failure_opening
+            if row is None or row['succeeded']:
+                return False
+            if any(event.get(key) != row[key] for key in ('openingId', 'resourceIdentity')):
+                return False
+            if row['context'][:5] != (self._season, self._mode, self._profile,
+                                      self._round, self._settings_generation):
+                return False
+            if self._engine is not None and id(self._engine) != row['context'][5]:
+                return False
+            if event.get('event') == 'map-fit-incomplete':
+                return bool(row['closed'] and event.get('reportId') == row['openingId'])
+            return bool(not row['closed'] and event.get('frameId') == self._frame_id)
+
+    def _finish_failure_opening(self, reason, report):
+        row = self._failure_opening
+        if row is None or row['closed']:
+            return False
+        self._remember_opening_success()
+        row['succeeded'] = bool(row['succeeded'] and row['succeededScope'] is not None
+            and row['succeededScope'][0] == self._map_id
+            and (not self._floor or row['succeededScope'][1] == str(self._floor)))
+        row['closed'] = True
+        if row['succeeded']:
+            return False
+        if row['lastReasonScope'] != (self._map_id, str(self._floor)):
+            row['lastReason'] = ''
+        details = dict(self._failure_notice_fields(), terminal=True,
+            reportId=row['openingId'], terminationReason=reason, lastReason=row['lastReason'])
+        if report is not None:
+            details['fitReport'] = report
+        self._notify('map-fit-incomplete', reason='map-fit-incomplete', **details)
+        return True
+
+    def _remember_opening_success(self):
+        row = self._failure_opening
+        render = self._render
+        if row is None or row['closed'] or render is None:
+            return
+        identity = self._identity_fields()
+        if (identity.get('identityLocked') and not identity.get('provisional')
+                and render.get('mapId') == self._map_id and str(render.get('floor')) == str(self._floor)):
+            row['succeeded'] = True
+            row['succeededScope'] = (self._map_id, str(self._floor))
+
     def invalidate(self, reason="invalidated", *, source="", input_sequence=None):
         """Revoke immediately; return whether this close emitted a fit summary."""
         with self._lock:
@@ -3267,10 +3339,15 @@ class LiveRuntime:
             # Finalize only a real close. Other boundaries discard an incomplete
             # segment; they are not evidence that an opening failed.
             self._fit_reporting.select(self._fit_reporting_scope())
-            report = self._fit_reporting.close() if reason in ("map-closed", "escape") else None
+            terminal = reason in ("map-closed", "escape", "end_round", "input-end_round", "stop_round", "reset_round", "cancel")
+            report = self._fit_reporting.close() if terminal else None
             self._fit_reporting.discard()
-            if report is not None:
+            reported = self._finish_failure_opening(reason, report) if terminal else False
+            if report is not None and not reported and self._failure_opening is None:
                 self._notify("map-fit-incomplete", reason="map-fit-incomplete", fitReport=report)
+            if not terminal and any(word in str(reason) for word in
+                    ('resource', 'context', 'settings', 'mode', 'floor', 'identity', 'reselection', 'candidate', 'binding')):
+                self._failure_opening = None
             previous_token = self._render.get("token", "") if self._render is not None else ""
             self._transient_drag = None
             if reason in ("map-closed","escape","foreground-lost","capture-context-changed","floor-unknown") or any(
@@ -3335,7 +3412,7 @@ class LiveRuntime:
                 mapClosed=reason in ("map-closed", "escape"),
                 inputSequence=self._last_map_input_sequence,
                 inputWindow=str(capture.get("hwnd", "")))
-            return report is not None
+            return reported or report is not None
 
     def set_event_callback(self, callback):
         """Install a thread-safe emitter only; it must queue work to Qt's owner."""
@@ -3363,6 +3440,14 @@ class LiveRuntime:
                 **self._context(), mapId=self._map_id, floor=self._floor,
                 cycleId=self._cycle, generation=self._frame_generation,
                 alignedVisible=self._aligned_visible, **extra)
+            for key, value in self._failure_notice_fields().items():
+                packet.setdefault(key, value)
+            if event in ('render-ready', 'identity-committed', 'sibling-committed', 'render-material-accepted'):
+                self._remember_opening_success()
+            if (event == 'map-fit-retry' and self._failure_opening is not None
+                    and not self._failure_opening['closed']):
+                self._failure_opening['lastReason'] = str(reason)
+                self._failure_opening['lastReasonScope'] = (self._map_id, str(self._floor))
             if self._diagnostics is not None:
                 packet["producedAt"] = time.monotonic()
                 self._diagnostics.record("runtime-event", eventName=event, reason=reason, token=token,
@@ -4185,6 +4270,17 @@ class LiveRuntime:
             attempt = self._map_attempt_metadata(payload)
             if attempt:
                 extra["mapAttempt"] = attempt
+            row = self._failure_opening
+            if (row is not None and not extra.get('stale')
+                    and payload.get('_diagnosticOpeningId') == row['openingId']):
+                extra.update(self._failure_notice_fields())
+                if not success or extra.get('posePending') or extra.get('identityUnresolved'):
+                    row['lastReason'] = str(reason)
+                    row['lastReasonScope'] = (self._map_id, str(self._floor))
+                    if self._floor and row['succeededScope'] != row['lastReasonScope']:
+                        row['succeeded'] = False
+                elif success:
+                    self._remember_opening_success()
             _test_evidence("receipt", action, payload, success, reason, extra)
             return dict(action=action, success=success, reason=reason, message=reason,
                         requestContext=request, resultContext=context,
@@ -4394,6 +4490,7 @@ class LiveRuntime:
                     return self._receipt(action, payload, success=True, reason="map-closed")
                 if transition == "ignore":
                     return self._receipt(action, payload, success=True, reason="map-open-verification-in-progress")
+                self._begin_failure_opening(payload, new=True)
                 if transition == "open" and self._s1_provisional_enabled():
                     # Never adopt whatever epoch an intervening/reentrant
                     # request owns. Only our single increment is admissible.
@@ -5080,6 +5177,7 @@ class LiveRuntime:
                             or payload.get("s1OpenEdge") is True and sequence == self._last_map_input_sequence):
                         return self._receipt(action, payload, success=False, reason="stale-map-input", stale=True)
                     self._last_map_input_sequence = sequence
+                self._begin_failure_opening(payload)
                 epoch, engine, map_id = self._epoch, self._engine, self._map_id
                 manual_target, old_floor = self._manual_floor, self._floor
                 owner = self._manual_capture_owner = object()
@@ -5245,6 +5343,7 @@ class LiveRuntime:
                 if not (self._season == "s1" and self._manual_alignment and self._active
                         and self._engine is not None and self._map_id and self._manual_floor):
                     return self._receipt(action, payload, success=False, reason="manual-map-floor-required")
+                self._begin_failure_opening(payload)
                 epoch, engine, group = self._epoch, self._engine, self._group
                 map_id, floor = self._map_id, self._manual_floor
                 self._revoke_render("manual-current-frame-request")
@@ -5291,6 +5390,26 @@ class LiveRuntime:
                         self._capture_pending = False
 
     def _capture_and_solve(self, action, payload, cancelled, *, prepared=None, recovery_scope=None, expected_epoch=None):
+        with self._lock:
+            if self._cancelled(cancelled) or expected_epoch is not None and expected_epoch != self._epoch:
+                return self._receipt(action, payload, success=False, reason='cancelled-or-stale', stale=True)
+            if not self._active:
+                return self._receipt(action, payload, success=False, reason='round-not-active')
+            self._begin_failure_opening(payload)
+            engine = self._engine
+        make_scope = getattr(engine, 'qt_resource_read_scope', None)
+        scope = make_scope(cancelled=cancelled) if callable(make_scope) else nullcontext()
+        with scope:
+            return self._capture_and_solve_owned(action, payload, cancelled, prepared=prepared,
+                recovery_scope=recovery_scope, expected_epoch=expected_epoch)
+
+    @staticmethod
+    def _verify_resource_read_scope(engine):
+        verify = getattr(engine, 'qt_verify_resource_read_scope', None)
+        if callable(verify):
+            verify()
+
+    def _capture_and_solve_owned(self, action, payload, cancelled, *, prepared=None, recovery_scope=None, expected_epoch=None):
         if prepared is None:
             self._new_diagnostic_attempt(payload)
         with self._lock:
@@ -5954,6 +6073,7 @@ class LiveRuntime:
             self._set_pose_phase("rejected", reason, map_id, floor, frame_id, frame_generation,
                 staged_observation=staged_observation)
             return self._receipt(action, payload, success=False, reason=reason)
+        self._verify_resource_read_scope(engine)
         with self._lock:
             if display_generation != getattr(self, "_display_generation", 0):
                 return self._receipt(action, payload, success=False, reason="stale-display-settings", stale=True)
@@ -6163,7 +6283,9 @@ class LiveRuntime:
     @staticmethod
     def _display_layer(engine, map_id, floor, profile, *, variant_id="variant-01"):
         from client_route_preferences import prepare_display_layer
-        return prepare_display_layer(engine, map_id, floor, profile, variant_id=variant_id)
+        layer = prepare_display_layer(engine, map_id, floor, profile, variant_id=variant_id)
+        LiveRuntime._verify_resource_read_scope(engine)
+        return layer
 
 
 SharedLiveRuntime = LiveRuntime

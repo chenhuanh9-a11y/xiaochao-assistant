@@ -71,6 +71,7 @@ class _DisplayAdapters(OptionalAuthorDisplayAdapters):
 
 class ImportedAuthorDisplays:
     def __init__(self, views, base, reference_provider, *, catalog=None, check_current=None):
+        self._resource_read_scope = None
         self._base, self._check_current = base, check_current
         self.bindings, self.profiles, self.errors = {}, set(), {}
         self.preparation_failed = False
@@ -79,8 +80,11 @@ class ImportedAuthorDisplays:
         packages, conflicts, canvases = {}, set(), {}
         for index, view in enumerate(views):
             try:
-                package = decode_author_display(view, base, reference_provider)
-                profile = package.profile_id
+                with view.read_scope():
+                    package = decode_author_display(view, base, reference_provider)
+                    profile = package.profile_id
+                # Publish only after the optional component's actual final
+                # byte/manifest proof succeeds; failures remain display-only.
                 if profile in packages:
                     conflicts.add(profile)
                 packages[profile] = package
@@ -94,28 +98,29 @@ class ImportedAuthorDisplays:
                 self.errors[profile] = 'display-profile-conflict'
                 continue
             try:
-                bindings, profile_canvases, maps = {}, {}, {}
-                for layer in package.layers:
-                    reference = reference_provider('shared-structure', layer.map_id, layer.floor)
-                    source = adapters.matrix_profile_to_canonical('shared-structure', layer.map_id, layer.floor)
-                    if reference is None or source is None:
-                        self.errors[profile] = 'display-reference-bridge-unavailable'
-                        continue
-                    matrix = source @ np.asarray(layer.matrix_display_to_reference, dtype=np.float64)
-                    matrix.setflags(write=False)
-                    path = package.image_path(layer.map_id, layer.floor)
-                    bindings[(profile, layer.map_id, layer.floor)] = dict(path=path, matrix=matrix,
-                        usable=True, status=package.qualification, package=package, layer=layer)
-                    maps.setdefault(layer.map_id, {})[layer.floor] = path
-                    profile_canvases[(layer.map_id, layer.floor)] = dict(shapeHW=list(reference.shape),
-                        coordinateSpace=reference.metadata['canvas']['coordinateSpace'])
-                if package.gaps:
-                    self.errors[profile] = 'display-reference-role-unavailable'
-                variants = {mid:(AuthorRouteVariant(profile, mid, 'variant-01', package.author_name, layers,
-                    'display-only-user-provided', 'display-only'),) for mid, layers in maps.items()}
-                route_profile = AuthorRouteProfile(profile, package.display_name, package.author_name,
-                    base.season.upper(), True, True, True, variants)
-                package.assert_current()
+                with package._view.read_scope():
+                    bindings, profile_canvases, maps = {}, {}, {}
+                    for layer in package.layers:
+                        reference = reference_provider('shared-structure', layer.map_id, layer.floor)
+                        source = adapters.matrix_profile_to_canonical('shared-structure', layer.map_id, layer.floor)
+                        if reference is None or source is None:
+                            self.errors[profile] = 'display-reference-bridge-unavailable'
+                            continue
+                        matrix = source @ np.asarray(layer.matrix_display_to_reference, dtype=np.float64)
+                        matrix.setflags(write=False)
+                        path = package.image_path(layer.map_id, layer.floor)
+                        bindings[(profile, layer.map_id, layer.floor)] = dict(path=path, matrix=matrix,
+                            usable=True, status=package.qualification, package=package, layer=layer)
+                        maps.setdefault(layer.map_id, {})[layer.floor] = path
+                        profile_canvases[(layer.map_id, layer.floor)] = dict(shapeHW=list(reference.shape),
+                            coordinateSpace=reference.metadata['canvas']['coordinateSpace'])
+                    if package.gaps:
+                        self.errors[profile] = 'display-reference-role-unavailable'
+                    variants = {mid:(AuthorRouteVariant(profile, mid, 'variant-01', package.author_name, layers,
+                        'display-only-user-provided', 'display-only'),) for mid, layers in maps.items()}
+                    route_profile = AuthorRouteProfile(profile, package.display_name, package.author_name,
+                        base.season.upper(), True, True, True, variants)
+                    package.assert_current()
             except (OSError, ValueError) as error:
                 self.assert_current()
                 self.preparation_failed = True
@@ -133,12 +138,19 @@ class ImportedAuthorDisplays:
             self._check_current()
         self._base.assert_current()
 
+    def set_resource_read_scope(self, scope):
+        self._resource_read_scope = scope
+
+    def _read_scope(self, view):
+        return self._resource_read_scope(view) if self._resource_read_scope is not None else view.read_scope()
+
     def binding(self, profile, map_id, floor):
         self.assert_current()
         row = self.bindings.get((str(profile), str(map_id), str(floor)))
         if row is not None:
             try:
-                row['package'].assert_layer_current(str(map_id), str(floor))
+                with self._read_scope(row['package']._view):
+                    row['package'].assert_layer_current(str(map_id), str(floor))
             except (OSError, ValueError):
                 self.assert_current()
                 return dict(row, usable=False, status='display-component-unavailable')
@@ -175,6 +187,10 @@ class ImportedAuthorDisplays:
         row = self._binding_for_path(path)
         if row is None:
             raise ValueError('imported-author-display-path-unregistered')
+        with self._read_scope(row['package']._view) as operation:
+            return self._pixels_owned(row, operation)
+
+    def _pixels_owned(self, row, operation):
         package, layer = row['package'], row['layer']
         key = (package.component_ref, layer.map_id, layer.floor)
         data = package.image_bytes(layer.map_id, layer.floor)
@@ -196,6 +212,7 @@ class ImportedAuthorDisplays:
         # A cache hit uses the same bounded readers and does not bypass checks.
         package.image_bytes(layer.map_id, layer.floor)
         self.assert_current()
+        operation.verify()
         with self._lock:
             self._cache[key] = pixels
             self._cache.move_to_end(key)

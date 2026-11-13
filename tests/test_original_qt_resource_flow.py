@@ -384,6 +384,110 @@ class OriginalQtResourceFlowTests(unittest.TestCase):
         state = engine.qt_fast_structure_source._read_state()
         self.assertEqual(engine.qt_fast_structure_source._read_state(),state)
 
+    def test_original_rank_and_display_share_live_read_operation_and_verify_before_return(self):
+        from client_route_preferences import prepare_display_layer
+        from client_live_runtime import _AlignmentHost
+        self.activate()
+        factories = build_imported_engine_factories(self.resolver,self.paths)
+        self.addCleanup(factories.invalidate)
+        engine = factories.get_engine('nightmare')
+        frame = np.zeros((720,1280,3),np.uint8)
+        original = PackageView._read_manifest_bytes
+        calls = []
+        def read(view, root):
+            calls.append(view.component_ref)
+            return original(view, root)
+        with patch.object(PackageView,'_read_manifest_bytes',read):
+            with engine.qt_resource_read_scope() as operation:
+                admitted = len(calls)
+                engine.rank(frame, floor='1')
+                prepare_display_layer(engine,'fixture-map','1','shared-structure')
+                _AlignmentHost(engine).fit(frame,'fixture-map','1',lambda:False)
+                # The real donor rank, display and Host all use their normal
+                # provider APIs; nested metadata does not reopen manifests.
+                self.assertEqual(len(calls),admitted)
+                engine.qt_verify_resource_read_scope()
+                self.assertGreater(len(calls),admitted)
+                operation.verify()
+        with self.assertRaisesRegex(ValueError,'resource-context-superseded'):
+            with engine.qt_resource_read_scope():
+                factories.invalidate()
+
+    def test_live_read_operation_rejects_replaced_engine_resource_consumer(self):
+        self.activate()
+        factories = build_imported_engine_factories(self.resolver,self.paths)
+        self.addCleanup(factories.invalidate)
+        engine = factories.get_engine('nightmare')
+        for field in ('qt_shared_provider','qt_fast_structure_source','qt_adapters','qt_optional_displays'):
+            original = getattr(engine,field)
+            try:
+                with self.subTest(field=field), self.assertRaises(ValueError):
+                    with engine.qt_resource_read_scope():
+                        setattr(engine,field,object())
+                        engine.qt_verify_resource_read_scope()
+            finally:
+                setattr(engine,field,original)
+
+    def test_standalone_original_host_owns_read_scope_and_rejects_late_payload_damage(self):
+        from client_live_runtime import _AlignmentHost
+        self.activate()
+        factories = build_imported_engine_factories(self.resolver,self.paths)
+        self.addCleanup(factories.invalidate)
+        engine = factories.get_engine('nightmare')
+        frame = np.zeros((720,1280,3),np.uint8)
+        original = PackageView._read_manifest_bytes
+        calls = []
+        def metadata(view, root):
+            calls.append(view.component_ref)
+            return original(view,root)
+        with patch.object(PackageView,'_read_manifest_bytes',metadata):
+            _AlignmentHost(engine).fit(frame,'fixture-map','1',lambda:False)
+        self.assertLessEqual(len(calls),6)
+        self.assertGreaterEqual(len(calls),4)
+        reader = engine.qt_native_base.reader
+        target = reader.view.path(engine.qt_native_base.interfaces['identityPack'])
+        raw = target.read_bytes()
+        fit_owned = _AlignmentHost._fit_owned
+        def change_after_math(host,*args,**kwargs):
+            result = fit_owned(host,*args,**kwargs)
+            # Only the resource-update timing is substituted. The real Host
+            # mathematics ran, then an actually consumed file changed before
+            # its standalone fit could return to a consumer.
+            reader(target)
+            target.write_bytes(b'X' * len(raw))
+            return result
+        try:
+            with patch.object(_AlignmentHost,'_fit_owned',change_after_math):
+                with self.assertRaisesRegex(ValueError,'file-integrity-mismatch'):
+                    _AlignmentHost(engine).fit(frame,'fixture-map','1',lambda:False)
+        finally:
+            target.write_bytes(raw)
+
+    def test_live_operation_checks_new_payload_and_rejects_changes_before_commit(self):
+        self.activate()
+        factories = build_imported_engine_factories(self.resolver,self.paths)
+        self.addCleanup(factories.invalidate)
+        engine = factories.get_engine('nightmare')
+        reader = engine.qt_native_base.reader
+        relative = engine.qt_native_base.interfaces['identityPack']
+        target = reader.view.path(relative)
+        original = target.read_bytes()
+        with self.assertRaisesRegex(ValueError,'file-integrity-mismatch'):
+            with engine.qt_resource_read_scope():
+                reader(target)
+                target.write_bytes(b'X' * len(original))
+                engine.qt_verify_resource_read_scope()
+        target.write_bytes(original)
+        with engine.qt_resource_read_scope():
+            self.assertEqual(reader(target),original)
+        # A different catalog generation cannot validate old scope/model data.
+        with self.assertRaisesRegex(ValueError,'resource-catalog-superseded'):
+            with engine.qt_resource_read_scope():
+                document = json.loads((self.root/'catalog.json').read_bytes())
+                document['generation'] = str(uuid4())
+                (self.root/'catalog.json').write_text(json.dumps(document),encoding='utf8')
+                engine.qt_verify_resource_read_scope()
+
     def test_original_prepared_cache_uses_the_shared_bound_and_owned_ram(self):
         from imported_resource_reader import ComponentResourceReader
         from imported_fast_structure import decode_prepared

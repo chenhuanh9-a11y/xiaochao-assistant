@@ -1,7 +1,8 @@
 """Reporting only: a failed structure observation is not a failed map opening.
 
 Owner holds LiveRuntime's lifetime lock. No recognition/display authority lives
-here. Non-close invalidation discards the segment, never invents a close/result.
+here. The owner supplies terminal boundaries and may report unfinished work
+without inventing a solver verdict; this module only explains that evidence.
 """
 import copy
 
@@ -55,12 +56,25 @@ class FitReporting:
 
 
 def incomplete_problem(event):
-    report = event['fitReport']
-    first, last = report['firstReason'], report['lastReason']
+    report = event.get('fitReport') or {}
+    first, last = report.get('firstReason'), report.get('lastReason', event.get('lastReason'))
     import json
-    raw = json.dumps(dict(roundId=event.get('roundId'), cycleId=event.get('cycleId'),
-                          **report), ensure_ascii=False, default=str)
-    return dict(title='本次开图未能贴合', kind='warning', phase='recognition-alignment',
+    raw = json.dumps({'roundId': event.get('roundId'), 'cycleId': event.get('cycleId'),
+                     'openingId': event.get('openingId'), 'lastReason': last,
+                     'terminationReason': event.get('terminationReason'), **report}, ensure_ascii=False, default=str)
+    if report.get('attemptCount'):
+        first_text = RETRY_REASONS.get(first, '首次原因尚未确认')
+        last_text = RETRY_REASONS.get(last, '末次原因尚未确认')
+        summary = (f"本次开图尝试贴合 {report['attemptCount']} 次均未成功（重试 {report.get('retryCount', max(0, report['attemptCount'] - 1))} 次）。"
+                   f"首次：{first_text}；最后：{last_text}。")
+        title = '本次开图未能贴合'
+    else:
+        title, summary = '本次开图未完成', '开图结束前未完成识别或贴合。'
+        if last:
+            from client_problem_messages import operation_problem
+            problem = operation_problem(dict(action='close_map', reason=last), event)
+            summary += problem['summary']
+    return dict(title=title, kind='warning', phase='recognition-alignment',
         action='close_map', mode=event.get('mode', ''), mapId=event.get('mapId', ''), floor=event.get('floor', ''),
-        summary=f"本次开图尝试贴合 {report['attemptCount']} 次均未成功（重试 {report.get('retryCount', max(0, report['attemptCount'] - 1))} 次）。首次：{RETRY_REASONS[first]}；最后：{RETRY_REASONS[last]}。",
+        summary=summary,
         reason='map-fit-incomplete', fitReport=copy.deepcopy(report), raw=raw)

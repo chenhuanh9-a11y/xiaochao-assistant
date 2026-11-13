@@ -4,9 +4,19 @@ Algorithm classes, scanner and fit order are the original implementation. This
 module supplies only guarded bytes, independent displays and resource lifetime.
 """
 from pathlib import Path
+from contextlib import ExitStack, contextmanager
+from types import SimpleNamespace
 
 
 def build_original_engine(base_view, controls_view, paths, *, season, mode, require_rank=True):
+    with ExitStack() as stack:
+        for view in (base_view, controls_view):
+            stack.enter_context(view.read_scope())
+        return _build_original_engine(base_view, controls_view, paths,
+            season=season, mode=mode, require_rank=require_rank)
+
+
+def _build_original_engine(base_view, controls_view, paths, *, season, mode, require_rank):
     from client_imported_providers import load_native_resources, ImportedProviderUnavailable
     from client_providers import _build_memory_store
     from map_identity_engine import MapIdentityEngine
@@ -112,6 +122,86 @@ def build_original_engine(base_view, controls_view, paths, *, season, mode, requ
     engine.qt_native_context, engine.qt_resource_root, engine.qt_season = native, root, season
     engine.qt_assert_resource_current, engine.qt_resource_context_current = check_current, current
     engine.qt_assert_entry_resources_current = assert_reads_current
+    engine.qt_resource_views = (base_view, controls_view)
+    engine.qt_optional_resource_views = ()
+    owners = provider._operation_owners
+
+    def read_resource_owners():
+        return (tuple(engine.qt_resource_views), tuple(engine.qt_optional_resource_views),
+                id(engine.qt_resource_context_current),
+                tuple(id(getattr(engine, name, None)) for name in (
+                    'qt_native_base', 'qt_controls_profile', 'qt_native_context',
+                    'qt_shared_provider', 'qt_fast_structure_source',
+                    'qt_adapters', 'qt_catalog', 'qt_optional_displays')),
+                provider._read_owner_state(), owners.read_state())
+
+    def verify_resource_read_scope():
+        scopes = [view._read_operation() for view in dict.fromkeys(engine.qt_resource_views)]
+        if not all(scope is not None for scope in scopes):
+            with resource_read_scope() as operation:
+                operation.verify()
+            return
+        scopes += [scope for view in engine.qt_optional_resource_views
+                   if (scope := view._read_operation()) is not None and not scope._discarded]
+        for scope in scopes:
+            scope.verify()
+        assert_reads_current()
+        if not engine.qt_resource_context_current():
+            raise ValueError('resource-context-superseded')
+
+    @contextmanager
+    def optional_read_scope(view):
+        if view not in engine.qt_optional_resource_views:
+            raise ValueError('display-resource-owner-changed')
+        base_operation = base_view._read_operation()
+        enter = getattr(base_operation, '_original_optional_reader', None)
+        if not callable(enter):
+            with view.read_scope() as operation:
+                yield operation
+            return
+        operation = enter(view)
+        try:
+            yield operation
+        except (OSError, ValueError):
+            operation.discard_optional()
+            raise
+
+    @contextmanager
+    def resource_read_scope(cancelled=None):
+        # Ordinary donor rank/Host consumers retain their actual reader types.
+        # Only their bounded operation reuses metadata and checked payloads.
+        views = tuple(engine.qt_resource_views)
+        current_owner = engine.qt_resource_context_current
+        state = read_resource_owners()
+        def assert_owned():
+            if (tuple(engine.qt_resource_views) != views
+                    or engine.qt_resource_context_current is not current_owner
+                    or not current_owner() or read_resource_owners() != state):
+                raise ValueError('resource-context-superseded')
+        with ExitStack() as stack:
+            scopes = [stack.enter_context(view.read_scope(cancelled)) for view in dict.fromkeys(views)]
+            for scope in scopes:
+                scope.register_owner(read_resource_owners)
+            installed = not hasattr(scopes[0], '_original_optional_reader')
+            if installed:
+                def enter_optional(view):
+                    operation = view._read_operation()
+                    if operation is None:
+                        operation = stack.enter_context(view.read_scope(cancelled))
+                        operation.register_owner(read_resource_owners)
+                    operation._assert_owners()
+                    return operation
+                scopes[0]._original_optional_reader = enter_optional
+            assert_owned()
+            try:
+                yield SimpleNamespace(verify=verify_resource_read_scope)
+                assert_owned()
+            finally:
+                if installed:
+                    del scopes[0]._original_optional_reader
+    engine.qt_resource_read_scope = resource_read_scope
+    engine.qt_verify_resource_read_scope = verify_resource_read_scope
+    engine.qt_optional_resource_read_scope = optional_read_scope
     engine.qt_logical_group_registry = OriginalRegisteredGroups(pack, season=season)
     engine.qt_live_gaps = tuple(native.live_gaps) if native is not None else ()
     engine.qt_live_ready = not engine.qt_live_gaps
@@ -128,10 +218,11 @@ def build_original_engine(base_view, controls_view, paths, *, season, mode, requ
     bundle._values['entry_identity'], bundle._values['side_entry_identity'] = engine.entry_identity, engine.side_entry_identity
     def owned(operation):
         def run(*args, **kwargs):
-            assert_reads_current()
-            result = operation(*args, **kwargs)
-            assert_reads_current()
-            return result
+            with resource_read_scope():
+                assert_reads_current()
+                result = operation(*args, **kwargs)
+                assert_reads_current()
+                return result
         return run
     for name in ('rank', 'rank_established_group'):
         setattr(engine, name, owned(getattr(engine, name)))

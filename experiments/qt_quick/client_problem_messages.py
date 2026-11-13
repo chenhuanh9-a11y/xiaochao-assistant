@@ -13,6 +13,10 @@ import re
 
 
 _OPERATION_MESSAGES = {
+    "s1-structure-candidates-unresolved": ("地图尚未识别", "当前结构尚未得到可用地图候选，未生成贴合。请保持地图打开，等待画面稳定或探索更多结构后再试。", "identity"),
+    "s1-structure-candidates-awaiting-confirmation": ("地图仍需确认", "已找到结构候选，但尚未唯一确认地图，未生成正式贴合。请继续核对或确认候选。", "identity"),
+    "similar-group-pending": ("地图仍需确认", "当前画面对应多个相似地图，尚未唯一确认，未生成正式贴合。请继续探索或选择候选地图。", "identity"),
+    "manual-map-selection-pending": ("请选择地图", "当前使用手动选图，尚未选择地图，未开始贴合。请先选择本局地图。", "identity"),
     "no-current-supported-candidates": ("当前结构暂未匹配", "当前画面尚未得到通过位置核验的地图候选，本次未生成贴合。请等待地图画面稳定或探索更多结构后重新开图。", "recognition-alignment"),
     "candidate-floor-unavailable": ("暂未读到楼层", "当前楼层高亮暂时无法确认，已撤下贴合。请保持地图打开，等待画面稳定。", "floor"),
     "candidate-map-closed": ("地图已关闭", "地图已关闭，本次楼层观察结束。", "floor"),
@@ -162,6 +166,11 @@ def operation_problem(receipt, state):
     elif raw in {'current-floor-unavailable', 'floor-policy-deferred', 'candidate-or-floor-missing'}:
         title, summary = '暂未读到楼层', '请完整打开游戏地图，等待楼层高亮稳定后再试。'
         phase = 'floor'
+    elif receipt.get('error') and any(receipt.get(key) for key in ('exceptionType', 'exceptionOrigin', 'traceback')):
+        title = '识别任务发生异常'
+        exception_type = receipt.get('exceptionType')
+        suffix = f'（{exception_type}）' if isinstance(exception_type, str) and re.fullmatch(r'[A-Za-z_]\w{0,79}', exception_type) else ''
+        summary = f'识别或贴合任务发生异常{suffix}，本次未完成。详细原因已保存在帮助页的“最近问题”，请重新开图重试。'
     problem = dict(title=title, summary=summary, raw=raw, reason=problem_reason(receipt.get('reason')), action=action, phase=phase, kind=kind,
                 mode=state.get('mode', ''), mapId=state.get('mapId', ''), floor=state.get('floor', ''),
                 captureDiagnostics=receipt.get('captureDiagnostics') or {},

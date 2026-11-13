@@ -258,6 +258,15 @@ class OriginalFastStructureSource:
         return value
 
     def validate_all(self, provider, *, compare_derived=False, cancelled=None):
+        from contextlib import ExitStack
+        owners = getattr(provider, '_operation_owners', None)
+        views = (self.view,) if owners is None else (self.view, owners.controls_view)
+        with ExitStack() as stack:
+            for view in dict.fromkeys(views):
+                stack.enter_context(view.read_scope(cancelled))
+            return self._validate_all(provider, compare_derived=compare_derived, cancelled=cancelled)
+
+    def _validate_all(self, provider, *, compare_derived, cancelled):
         self._clear_prepared()
         for key in self.reference_keys:
             self.assert_current(cancelled)

@@ -116,7 +116,7 @@ class UpgradeTests(unittest.TestCase):
                     (self.program/name).unlink(missing_ok=True)
                 for name, data in self.new_values.items():
                     write(self.program/name, data)
-                self.components("1.1.5")
+                self.components(self.policy["targetVersion"]["version"])
                 write(self.target/"_installer-support/_internal/qtifw-trial-policy.json",
                       json.dumps(self.policy).encode())
             return self.native_process()
@@ -214,6 +214,31 @@ class UpgradeTests(unittest.TestCase):
         result = self.perform_update_with_native_substitute()
         self.assertTrue(result["success"])
         self.assert_protected()
+
+    def test_native_115_upgrade_to_116_preserves_independent_packages_and_user_bytes(self):
+        previous = "6e5792dd5cae3dde2a2c68de320d433700743ca0"
+        self.old["payloadSource"] = self.owner["payloadSource"] = previous
+        for name in ("_internal/installation-profile.json", "release-report.json"):
+            metadata = json.loads(self.old_values[name])
+            metadata["sourceCommit"] = previous
+            if name == "release-report.json":
+                metadata["displayVersion"] = "1.1.5"
+            self.old_values[name] = json.dumps(metadata).encode()
+            write(self.program/name, self.old_values[name])
+        self.old["files"] = inventory(self.old_values)
+        helper.write_owner(self.target, self.owner)
+        write(self.target/"_installer-support/_internal/qtifw-trial-policy.json", json.dumps(self.old).encode())
+        self.components("1.1.5")
+        report = json.loads(self.new_values["release-report.json"])
+        report["displayVersion"] = "1.1.6"
+        self.new_values["release-report.json"] = json.dumps(report).encode()
+        self.policy.update(targetVersion=dict(version="1.1.6", displayVersion="1.1.6"),
+                           files=inventory(self.new_values))
+        self.assertEqual(upgrade.check(self.policy, self.target)["mode"], "update")
+        result = self.perform_update_with_native_substitute()
+        self.assertTrue(result["success"])
+        self.assert_protected()
+        self.assertEqual(upgrade._versions(self.target)[upgrade.PACKAGE], "1.1.6")
 
     def cancel_native(self):
         with patch("game_startup_watcher.control", return_value=0), \

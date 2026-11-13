@@ -7,6 +7,7 @@ Presence is reported separately from algorithm readiness.
 from copy import deepcopy
 import re
 import threading
+from contextlib import ExitStack
 
 from season_context import SeasonContext, context_key, is_retired_mode
 from client_providers import EngineFactories, ProviderResourceBinding, ProviderUnavailable
@@ -159,6 +160,15 @@ class ImportedEngineFactories(EngineFactories):
 
     def _build(self, mode, *, season='s0'):
         resources, _ = self._context_resources(mode, season)
+        with ExitStack() as stack:
+            # Author components are optional. Their construction proofs belong
+            # inside ImportedAuthorDisplays' failure/fallback boundary.
+            views = (resources.base, resources.controls)
+            for view in dict.fromkeys(views):
+                stack.enter_context(view.read_scope())
+            return self._build_resources(resources, mode, season)
+
+    def _build_resources(self, resources, mode, season):
         engine = build_native_engine(resources.base, resources.controls, self.paths,
                                      season=season, mode=mode, require_rank=False)
         if resources.displays:
@@ -175,6 +185,9 @@ class ImportedEngineFactories(EngineFactories):
             list(optional.errors.values()) if optional is not None else []) + (
             ['reviewed-groups-decoder-unavailable'] if resources.groups is not None else [])
         engine.qt_assert_resource_current()
+        engine.qt_optional_resource_views = tuple(resources.displays)
+        if optional is not None:
+            optional.set_resource_read_scope(engine.qt_optional_resource_read_scope)
         return engine
 
 

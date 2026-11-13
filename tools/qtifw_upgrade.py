@@ -22,7 +22,7 @@ from resource_transaction import _safe, _assert_resource_transactions_ready, res
 PENDING = "work/pending-installer-upgrade.json"
 PACKAGE = "org.xingtu.qtifw.realtrial"
 DATA_PACKAGE = "org.xingtu.qtifw.trialdata"
-PREVIOUS_VERSIONS = frozenset({"1.1.2", "1.1.3", "1.1.4"})
+PREVIOUS_VERSIONS = frozenset({"1.1.2", "1.1.3", "1.1.4", "1.1.5"})
 BRAND_MIGRATIONS = frozenset({"_internal/assets/brand/xingtu.ico", "_internal/assets/brand/xingtu-round.png"})
 
 

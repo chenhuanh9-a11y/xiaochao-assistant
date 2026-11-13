@@ -231,6 +231,70 @@ class ImportedAuthorDisplaysTests(_AuthorDisplayFixture):
         self.assertTrue(engine.qt_rank_ready)
         engine.qt_assert_resource_current()
 
+    def test_factory_optional_manifest_replacement_after_resolution_keeps_base_ready(self):
+        view, _, _ = self.package()
+        prior, _ = self.factory([view])
+        prior.invalidate()
+        resolver = ResourceResolver(self.resources,supported_capabilities=SUPPORTED_CAPABILITIES)
+        factories = build_imported_engine_factories(resolver,RuntimePaths(self.root,False))
+        resolve = factories._context_resources
+        def replace_after_resolution(*args,**kwargs):
+            resources,revision = resolve(*args,**kwargs)
+            manifest = view.root.parent.parent/'manifest.json'
+            replacement = manifest.with_suffix('.replacement')
+            replacement.write_bytes(manifest.read_bytes())
+            replacement.replace(manifest)
+            return resources,revision
+        with patch.object(factories,'_context_resources',replace_after_resolution):
+            engine = factories._build('difficult',season='s1')
+        self.assertTrue(engine.qt_rank_ready)
+        self.assertTrue(engine.qt_display_preparation_failed)
+        self.assert_structure(engine)
+
+    def test_factory_optional_damage_after_image_validation_keeps_base_ready(self):
+        import imported_author_display as displays
+        view, _, _ = self.package()
+        prior, _ = self.factory([view])
+        prior.invalidate()
+        target = view.path('images/route.png')
+        resolver = ResourceResolver(self.resources,supported_capabilities=SUPPORTED_CAPABILITIES)
+        factories = build_imported_engine_factories(resolver,RuntimePaths(self.root,False))
+        validate = displays.validate_display_image
+        def change_after_validation(*args,**kwargs):
+            result = validate(*args,**kwargs)
+            target.write_bytes(b'changed after actual author image validation')
+            return result
+        with patch.object(displays,'validate_display_image',change_after_validation):
+            engine = factories._build('difficult',season='s1')
+        self.assertTrue(engine.qt_rank_ready)
+        self.assertTrue(engine.qt_display_preparation_failed)
+        self.assert_structure(engine)
+
+    def test_factory_optional_decode_cannot_hide_changed_base_or_catalog(self):
+        import imported_author_display as displays
+        view, _, _ = self.package()
+        prior, previous = self.factory([view])
+        prior.invalidate()
+        base_target = previous.qt_native_base.reader.view.path(previous.qt_native_base.interfaces['identityPack'])
+        original_base = base_target.read_bytes()
+        validate = displays.validate_display_image
+        resolver = ResourceResolver(self.resources,supported_capabilities=SUPPORTED_CAPABILITIES)
+        def build_with(change):
+            factories = build_imported_engine_factories(resolver,RuntimePaths(self.root,False))
+            def changed(*args,**kwargs):
+                result = validate(*args,**kwargs)
+                change()
+                return result
+            with patch.object(displays,'validate_display_image',changed):
+                return factories._build('difficult',season='s1')
+        try:
+            with self.assertRaisesRegex(ValueError,'file-integrity-mismatch'):
+                build_with(lambda:base_target.write_bytes(b'X'*len(original_base)))
+        finally:
+            base_target.write_bytes(original_base)
+        with self.assertRaisesRegex(ValueError,'resource-catalog-superseded'):
+            build_with(self.supersede_catalog)
+
     def test_decode_time_image_damage_falls_back_but_catalog_change_rejects_all_returns(self):
         view, _, _ = self.package()
         _, engine = self.factory([view])

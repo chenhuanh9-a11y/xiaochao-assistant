@@ -1,6 +1,7 @@
 """Display preferences using the existing catalog and coordinate declarations."""
 from functools import wraps
 from pathlib import Path
+from contextlib import nullcontext
 
 
 COFFIN_CONTEXT = ("zhan10-coffin", "nightmare-01", "1")
@@ -11,7 +12,9 @@ def _display_resource_boundary(consumer):
     @wraps(consumer)
     def consume(*args, **kwargs):
         try:
-            return consumer(*args, **kwargs)
+            scope = getattr(args[0], 'qt_resource_read_scope', None) if args else None
+            with scope() if callable(scope) else nullcontext():
+                return consumer(*args, **kwargs)
         except (OSError, ValueError) as error:
             from client_providers import DisplayResourceChanged, _is_proven_display_resource_change
             if not isinstance(error, DisplayResourceChanged) and _is_proven_display_resource_change(error):

@@ -368,6 +368,9 @@ jobs:
             'map-defaults' { $modules = @('test_bundled_author_resources', 'test_package_profiles', 'test_client_paths', 'test_client_editor_upgrade', 'test_map_resource_context', 'test_qt_installer_projection') }
           }
           $failed = @()
+          if ('${{ matrix.group }}' -eq 'features') {
+            $modules += 'test_client_failure_notifications'
+          }
           foreach ($module in $modules) {
             if ($module -eq 'test_runtime_environment_diagnostics') {
               # This module owns its FunctionTestCase runner; unittest discovery finds zero tests.
