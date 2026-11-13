@@ -16,6 +16,20 @@ RETRY_REASONS = {
     'structure-current-geometry-failed': '当前画面结构未核对通过',
 }
 
+_OPENING_PROGRESS_REASONS = {
+    '', 'map-not-observed', 'candidate-map-closed', 'map-open-preparation-deadline',
+    'map-open-verification-in-progress', 'map-open-recovery-pending', 'map-open-recovery-waiting',
+    'cancelled-or-stale', 'stale-context', 'structure-work-obsolete', 'alignment-work-cancelled',
+    'capture-context-changed', 'game-not-foreground', 'manual-map-selection-pending',
+    'similar-group-pending', 's1-structure-candidates-awaiting-confirmation',
+    'identity-confirmed-pose-pending', 'floor-target-updated',
+}
+
+
+def reportable_opening_reason(reason):
+    """A completed refusal can explain failure; absence/cancellation is not one."""
+    return isinstance(reason, str) and reason not in _OPENING_PROGRESS_REASONS
+
 
 class FitReporting:
     def __init__(self):
@@ -57,14 +71,19 @@ class FitReporting:
 
 def incomplete_problem(event):
     report = event.get('fitReport') or {}
-    first, last = report.get('firstReason'), report.get('lastReason', event.get('lastReason'))
+    first, last = report.get('firstReason'), event.get('lastReason') or report.get('lastReason')
+    if not report.get('attemptCount') and not reportable_opening_reason(last):
+        return None
     import json
-    raw = json.dumps({'roundId': event.get('roundId'), 'cycleId': event.get('cycleId'),
+    raw = json.dumps({**report, 'roundId': event.get('roundId'), 'cycleId': event.get('cycleId'),
                      'openingId': event.get('openingId'), 'lastReason': last,
-                     'terminationReason': event.get('terminationReason'), **report}, ensure_ascii=False, default=str)
+                     'terminationReason': event.get('terminationReason')}, ensure_ascii=False, default=str)
     if report.get('attemptCount'):
         first_text = RETRY_REASONS.get(first, '首次原因尚未确认')
-        last_text = RETRY_REASONS.get(last, '末次原因尚未确认')
+        last_text = RETRY_REASONS.get(last)
+        if last_text is None:
+            from client_problem_messages import operation_problem
+            last_text = operation_problem(dict(action='close_map', reason=last), event)['summary']
         summary = (f"本次开图尝试贴合 {report['attemptCount']} 次均未成功（重试 {report.get('retryCount', max(0, report['attemptCount'] - 1))} 次）。"
                    f"首次：{first_text}；最后：{last_text}。")
         title = '本次开图未能贴合'

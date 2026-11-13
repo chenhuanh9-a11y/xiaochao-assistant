@@ -114,17 +114,15 @@ class FitRuntimeTests(LiveRuntimeContracts):
             worker = threading.Thread(target=lambda: result.append(self.dispatch('capture_now')))
             worker.start()
             self.assertTrue(entered.wait(3))
+            opening = self.runtime.snapshot()['openingId']
             self.runtime.invalidate('map-closed')
             release.set(); worker.join(3)
             self.assertFalse(worker.is_alive())
         self.assertTrue(result[0].get('stale'))
-        self.assertEqual(len(self.finals()), 1)
-        first = self.finals()[0]
-        self.assertNotIn('fitReport', first)
-        self.assertEqual(first['lastReason'], '')
+        self.assertEqual(self.finals(), [])
         self.fail_fit(); self.dispatch('close_map')
         self.assertEqual(self.finals()[-1]['fitReport']['attemptCount'], 1)
-        self.assertNotEqual(self.finals()[-1]['openingId'], first['openingId'])
+        self.assertNotEqual(self.finals()[-1]['openingId'], opening)
 
     def test_unreported_floor_change_does_not_attribute_old_failure_to_new_floor(self):
         self.dispatch('start_round'); self.fail_fit()
@@ -133,9 +131,7 @@ class FitRuntimeTests(LiveRuntimeContracts):
         with self.runtime._lock:
             self.runtime._floor = '2'
         self.dispatch('close_map')
-        self.assertEqual(len(self.finals()), 1)
-        self.assertNotIn('fitReport', self.finals()[0])
-        self.assertEqual(self.finals()[0]['lastReason'], '')
+        self.assertEqual(self.finals(), [])
 
     def test_real_solver_diagnostics_are_preserved(self):
         self.dispatch('start_round')
@@ -225,7 +221,7 @@ class FitCoordinatorTests(CoordinatorTests):
         self.assertEqual(len(errors), 1)
         self.assertEqual(len(notices), 1)
 
-    def test_deferred_receipt_explains_reason_once_without_persisting_progress(self):
+    def test_deferred_receipt_waits_for_terminal_reason_without_persisting_progress(self):
         errors, notices = [], []
         self.coordinator.errorReported.connect(errors.append)
         self.coordinator.notificationRequested.connect(lambda *a: notices.append(a))
@@ -235,7 +231,7 @@ class FitCoordinatorTests(CoordinatorTests):
         self.coordinator._notify_session_transitions(state)
         self.coordinator._notify_session_transitions(dict(state, lastReceipt=dict(state['lastReceipt'], action='refresh_map')))
         self.assertEqual(errors, [])
-        self.assertEqual(notices, [('地图位置仍在核对', '存在多个结构候选，请保持地图打开并等待画面稳定。', 'warning')])
+        self.assertEqual(notices, [])
 
 
 def load_tests(loader, tests, pattern):
@@ -256,7 +252,7 @@ class FitCloseConsumerTests(unittest.TestCase):
         from client_problems import ProblemsService
         self.r = FitRuntimeTests('test_fixture_assertions_really_raise')
         self.r.setUp(); self.addCleanup(self.r.doCleanups)
-        self.c = FitCoordinatorTests('test_deferred_receipt_explains_reason_once_without_persisting_progress')
+        self.c = FitCoordinatorTests('test_deferred_receipt_waits_for_terminal_reason_without_persisting_progress')
         self.c.setUp(); self.addCleanup(self.c.tearDown)
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.problems = ProblemsService(SimpleNamespace(work_root=self.temp.name))
@@ -299,11 +295,11 @@ class FitCloseConsumerTests(unittest.TestCase):
         with patch('map_interface_observation.detect_map_interface', return_value=dict(detected=False)):
             self.auto_probe()
             self.assertEqual(self.problems.recent, [])
-            self.assertEqual(len(self.notices), 1)
+            self.assertEqual(self.notices, [])
             self.auto_probe()
         self.assertEqual([p['title'] for p in self.problems.recent], ['本次开图未能贴合'])
         self.assertEqual(self.problems.recent[0]['count'], 1)
-        self.assertEqual(len(self.notices), 2)
+        self.assertEqual(len(self.notices), 1)
         self.assertEqual(self.notices[-1][0], '本次开图未能贴合')
 
     def test_capture_close_has_one_problem_and_final_reason_toast(self):
@@ -312,18 +308,16 @@ class FitCloseConsumerTests(unittest.TestCase):
         with patch('map_interface_observation.detect_map_interface', return_value=dict(detected=False)):
             self.consume(self.r.dispatch('capture_now'))
         self.assertEqual([p['title'] for p in self.problems.recent], ['本次开图未能贴合'])
-        self.assertEqual(len(self.notices), 2)
+        self.assertEqual(len(self.notices), 1)
         self.assertEqual(self.notices[-1][0], '本次开图未能贴合')
 
-    def test_map_not_observed_without_fit_segment_still_reports(self):
+    def test_map_not_observed_without_a_failure_verdict_does_not_warn(self):
         from unittest.mock import patch
         with patch('map_interface_observation.detect_map_interface', return_value=dict(detected=False)):
             receipt = self.r.dispatch('capture_now')
             self.consume(receipt)
-        self.assertTrue(receipt.get('fitReportingDeferred', False))
-        self.assertEqual(len(self.problems.recent), 1)
-        self.assertEqual(len(self.notices), 1)
-        self.assertEqual(self.notices[0][0], '本次开图未完成')
+        self.assertEqual(self.problems.recent, [])
+        self.assertEqual(self.notices, [])
 
     def test_capture_exception_during_fit_segment_still_reports(self):
         from unittest.mock import patch
@@ -334,5 +328,5 @@ class FitCloseConsumerTests(unittest.TestCase):
         self.assertTrue(receipt.get('error'))
         self.assertFalse(receipt.get('fitReportingDeferred', False))
         self.assertEqual(len(self.problems.recent), 1)
-        self.assertEqual(len(self.notices), 2)
+        self.assertEqual(len(self.notices), 1)
         self.assertEqual(self.notices[-1][2], 'error')

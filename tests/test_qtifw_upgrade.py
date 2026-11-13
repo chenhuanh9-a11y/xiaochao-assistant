@@ -1,16 +1,20 @@
 """Actual filesystem adapter tests; native QtIFW execution is separate."""
 import hashlib
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
 import tempfile
 import threading
+import time
+import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
 import qtifw_trial_helper as helper
 import qtifw_upgrade as upgrade
-from resource_transaction import assert_resources_ready, resource_write_lock
+from resource_transaction import assert_resources_ready, resource_write_lock, resource_runtime_lease
 
 
 def write(path, data):
@@ -239,6 +243,35 @@ class UpgradeTests(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assert_protected()
         self.assertEqual(upgrade._versions(self.target)[upgrade.PACKAGE], "1.1.6")
+
+    def test_native_116_upgrade_to_117_keeps_native_owner_database_and_user_bytes(self):
+        previous = "03e1622e43603a7e3f2fc98bf97386406adc7945"
+        self.old["payloadSource"] = self.owner["payloadSource"] = previous
+        for name in ("_internal/installation-profile.json", "release-report.json"):
+            metadata = json.loads(self.old_values[name])
+            metadata["sourceCommit"] = previous
+            if name == "release-report.json":
+                metadata["displayVersion"] = "1.1.6"
+            self.old_values[name] = json.dumps(metadata).encode()
+            write(self.program/name, self.old_values[name])
+        self.old["files"] = inventory(self.old_values)
+        helper.write_owner(self.target, self.owner)
+        write(self.target/"_installer-support/_internal/qtifw-trial-policy.json", json.dumps(self.old).encode())
+        self.components("1.1.6")
+        database = self.target / "trial-maintenance.dat"
+        database_before = (database.read_bytes(), database.stat().st_ino)
+        report = json.loads(self.new_values["release-report.json"])
+        report["displayVersion"] = "1.1.7"
+        self.new_values["release-report.json"] = json.dumps(report).encode()
+        self.policy.update(targetVersion=dict(version="1.1.7", displayVersion="1.1.7"), files=inventory(self.new_values))
+        self.assertEqual(upgrade.check(self.policy, self.target)["mode"], "update")
+        result = self.perform_update_with_native_substitute()
+        self.assertTrue(result["success"])
+        self.assert_protected()
+        self.assertEqual((database.read_bytes(), database.stat().st_ino), database_before)
+        self.assertEqual(upgrade._versions(self.target)[upgrade.PACKAGE], "1.1.7")
+        self.assertEqual((self.target/result["backup"]/"trial-maintenance.dat").read_bytes(), database_before[0])
+        self.assertFalse((self.program/upgrade.PENDING).exists())
 
     def cancel_native(self):
         with patch("game_startup_watcher.control", return_value=0), \
@@ -596,6 +629,89 @@ class UpgradeTests(unittest.TestCase):
         self.assertTrue((self.program/upgrade.PENDING).exists())
 
     @unittest.skipUnless(upgrade.os.name == "nt", "Windows loader error mode")
+    def test_post_start_mode_restore_failure_drains_owned_child_before_result_and_unlock(self):
+        import ctypes
+        support = self.support()
+        write(support / "qtifw-trial-policy.json", json.dumps(self.policy).encode())
+        result_file = support / "update-attempt-post-start.json"
+        original_run, original_start = upgrade.run, upgrade._native_start
+        real_popen = upgrade.subprocess.Popen
+        children, observers, observed = [], [], {}
+
+        def observe(child):
+            time.sleep(.1)
+            observed["childAlive"] = child.poll() is None
+            observed["resultPublished"] = result_file.exists()
+            try:
+                lease = resource_runtime_lease(self.program)
+            except (ValueError, OSError) as error:
+                observed["leaseBlocked"] = "resource-busy" in str(error)
+            else:
+                lease.close()
+                observed["leaseBlocked"] = False
+
+        def finite_child(command, **kwargs):
+            # Only native maintenance work is substituted. The actual Popen,
+            # mode-restoration failure, adapter, leases and publisher run here.
+            # Captured output also covers the verification caller: a plain
+            # wait without draining these pipes would leave the child stuck.
+            kwargs.update(stdout=upgrade.subprocess.PIPE, stderr=upgrade.subprocess.PIPE)
+            child = real_popen([sys.executable, "-B", "-c",
+                "import sys,time;sys.stdout.write('x'*131072);sys.stderr.write('y'*131072);time.sleep(.6)"], **kwargs)
+            children.append(child)
+            watcher = threading.Thread(target=observe, args=(child,))
+            observers.append(watcher)
+            watcher.start()
+            return child
+
+        def fail_restore(command, **kwargs):
+            api = MagicMock()
+            api.GetThreadErrorMode.return_value = 0
+            api.SetThreadErrorMode.side_effect = [1, 0]
+            with patch.object(ctypes, "WinDLL", return_value=api), \
+                    patch.object(upgrade.subprocess, "Popen", side_effect=finite_child):
+                return original_start(command, **kwargs)
+
+        arguments = ["helper", "bootstrap-run", str(self.target), "--result-file", str(result_file)]
+        try:
+            with patch.object(helper, "__file__", str(support / "qtifw_trial_helper.py")), \
+                    patch.object(sys, "argv", arguments), patch("game_startup_watcher.control", return_value=0), \
+                    patch.object(upgrade, "run", side_effect=lambda policy, target, **kwargs:
+                                 original_run(policy, target, support=support, **kwargs)), \
+                    patch.object(upgrade, "_native_start", side_effect=fail_restore), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(helper.main(), 2)
+            self.assertIsNotNone(children[0].poll(), "A terminal failure must not leave the owned native child running")
+            for watcher in observers:
+                watcher.join(timeout=5)
+            self.assertTrue(observed["childAlive"])
+            self.assertFalse(observed["resultPublished"], "Do not publish a retryable failure while native work is alive")
+            self.assertTrue(observed["leaseBlocked"], "Keep the resource lease until the native child naturally exits")
+            outcome = json.loads(result_file.read_text(encoding="utf-8"))
+            self.assertFalse(outcome["success"])
+            self.assertEqual(outcome["reason"], "native-launch-error-mode-restoration-failed")
+            self.assertEqual(upgrade.pending(self.policy, self.target)["stage"], "native-in-progress")
+            self.assert_protected()
+        finally:
+            for child in children:
+                child.communicate(timeout=5)
+            for watcher in observers:
+                watcher.join(timeout=5)
+
+    @unittest.skipUnless(upgrade.os.name == "nt", "Windows loader error mode")
+    def test_mode_restore_failure_without_started_child_returns_promptly(self):
+        import ctypes
+        api = MagicMock()
+        api.GetThreadErrorMode.return_value = 0
+        api.SetThreadErrorMode.side_effect = [1, 0]
+        missing = Path(self.temporary.name) / "never-created.exe"
+        started = time.perf_counter()
+        with patch.object(ctypes, "WinDLL", return_value=api):
+            with self.assertRaisesRegex(ValueError, "native-launch-error-mode-restoration-failed"):
+                upgrade._native_start([str(missing)], creationflags=upgrade.subprocess.CREATE_NO_WINDOW)
+        self.assertLess(time.perf_counter() - started, 1)
+
+    @unittest.skipUnless(upgrade.os.name == "nt", "Windows loader error mode")
     def test_bad_native_image_returns_error_and_restores_thread_mode(self):
         import ctypes
         from ctypes import wintypes as wt
@@ -608,8 +724,10 @@ class UpgradeTests(unittest.TestCase):
         bad.write_bytes(b"NOT-A-NATIVE-SETUP")
         try:
             self.assertTrue(api.SetThreadErrorMode(0, None))
+            started = time.perf_counter()
             with self.assertRaises(OSError):
                 upgrade._native_start([str(bad)], creationflags=upgrade.subprocess.CREATE_NO_WINDOW)
+            self.assertLess(time.perf_counter() - started, 1)
             self.assertEqual(api.GetThreadErrorMode(), 0)
         finally:
             api.SetThreadErrorMode(previous, None)

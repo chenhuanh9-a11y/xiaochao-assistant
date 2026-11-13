@@ -3,6 +3,11 @@
  <class>ExistingUpdate</class>
  <widget class="QWidget" name="ExistingUpdate">
   <property name="windowTitle"><string>更新星图</string></property>
+  <widget class="QPushButton" name="UpdatePollButton">
+   <property name="visible"><bool>false</bool></property>
+   <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
   <layout class="QVBoxLayout" name="UpdateLayout">
    <item><widget class="QLabel" name="UpdateHelp"><property name="text"><string>已找到有效的星图安装，将自动更新到原安装位置。</string></property><property name="wordWrap"><bool>true</bool></property></widget></item>
    <item><widget class="QLabel" name="ExistingPath"><property name="text"><string/></property><property name="textFormat"><enum>Qt::PlainText</enum></property><property name="textInteractionFlags"><set>Qt::TextSelectableByMouse</set></property><property name="wordWrap"><bool>true</bool></property></widget></item>

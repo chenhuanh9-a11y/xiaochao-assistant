@@ -21,6 +21,7 @@ function Controller() {
     console.log("TRIAL_UI_LANGUAGE: " + installer.value("UILanguage"));
     var scope = __SCOPE__;
     installer.setValue("TrialNativeUpgradeFiles", JSON.stringify(nativeUpgradeFiles));
+    installer.setValue("TrialInstallerInstance", __INSTANCE__);
     var portable = scope === "";
     installer.setValue("TrialPortable", portable ? "true" : "false");
     if (!portable && (!installer.fileExists(scope + "/.qtifw-trial-scope") ||

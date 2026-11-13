@@ -369,7 +369,13 @@ jobs:
           }
           $failed = @()
           if ('${{ matrix.group }}' -eq 'features') {
-            $modules += 'test_client_failure_notifications'
+            $modules += @('test_client_failure_notifications', 'test_s0_floor_search_boundary')
+          }
+          if ('${{ matrix.group }}' -eq 'packaging-imported-display') {
+            $modules += 'test_client_original_browse'
+          }
+          if ('${{ matrix.group }}' -eq 'original-csharp') {
+            $modules += @('test_qtifw_native_ui', 'test_qtifw_update_job', 'test_qtifw_bootstrap_packaging')
           }
           foreach ($module in $modules) {
             if ($module -eq 'test_runtime_environment_diagnostics') {

@@ -4,7 +4,7 @@
 
 程序 Setup 沿用当前仅程序策略：`PROGRAM_UI_RESOURCES`、帮助资源与运行时属于程序；`managedBaseManifest/managedBaseBundleId/managedBaseManifestSha256` 为 `null`，资源动作是 `preserve`。独立基础包、作者路线、catalog、原始导入包和用户设置不进入程序替换清单；已退役的 QtIFW 内置地图参数与 `install-maps` helper 入口保持禁用。
 
-当前候选版本为 `1.1.6`，PE 数字版本为 `1.0.0.28`。先以 `build_qt_client.py --instance production --stage-only` 从同一远端 commit 冻结程序，再以 `build_qtifw_trial.py --release` 生成最终原生 QtIFW Setup；传入冻结的 `--stage`、`--build-record` 及 QtIFW `--ifw-bin`。这条交付链不要求 ISCC，不生成 Inno 中间 Setup 或外层包装器；旧通用 Inno 构建入口保留兼容。`--upgrade-capable` 仅保留为兼容参数，正式 QtIFW Setup 总是包含离线更新支持。不得用未提交源码或旧 payload 冒充最终构建。
+正式候选版本由发版列车的版本号 PR 确定，构建只读取该提交的 `version.json`。先以 `build_qt_client.py --instance production --stage-only` 从同一远端 commit 冻结程序，再以 `build_qtifw_trial.py --release` 生成最终原生 QtIFW Setup；传入冻结的 `--stage`、`--build-record` 及 QtIFW `--ifw-bin`。这条交付链不要求 ISCC，不生成 Inno 中间 Setup 或外层包装器；旧通用 Inno 构建入口保留兼容。`--upgrade-capable` 仅保留为兼容参数，正式 QtIFW Setup 总是包含离线更新支持。不得用未提交源码或旧 payload 冒充最终构建。
 
 最终 EXE 由官方 QtIFW `binarycreator` 构建，使用复制到本轮输出的官方 `installerbase`，仅将 Setup 清单设为 `requireAdministrator`，延续此前正式 Setup 的 UAC 要求。程序压缩包由 `repogen` 先生成，同一 `program.7z` 直接用于 Setup 原生组件归档；额外 QRC 只放辅助工具和仓库元数据，不重复放程序压缩包。更新时先从 QRC 提取工具及 `archive-layout.json`，官方 `devtool dump` 从当前 Setup 读出唯一程序归档，补全本地离线仓库；QtIFW 自身继续核对仓库归档校验值。`update.rcc` 及新 controller 随维护更新持久化，维护器使用已安装的当前 helper，不依赖原 Setup 的临时目录。
 
@@ -14,7 +14,9 @@
 
 原生更新和持久维护器验证各使用本轮备份目录下独立的 `--cache-path`，避免与仍在运行的 Setup 争用默认 QtIFW cache。QtIFW 正常将路径保存到 `network.xml` 时，普通维护可以继续使用仍保留在本安装备份目录下的缓存；验证子进程也可能写缓存和诊断回执，不称为完全只读。全清仅覆盖本安装根及本实例登记，不删除或接管用户历史全局缓存锁。新装仍是原生 Setup 自身的正常安装事务。
 
-覆盖支持具有完整 QtIFW owner、生产 profile、真实程序库存及维护记录的 `1.1.2`、`1.1.3`、`1.1.4` 和 `1.1.5`。旧 `1.1.2` 的完整 managed 布局和仅程序布局均可接入；更新先保留旧程序和维护元数据备份，随后由 QtIFW 更新组件及 Windows 卸载版本。未知程序路径碰撞、改动字节、其他 Setup 的 pending、未完成资源事务均明确拒绝。运行时继续受 `work/pending-installer-upgrade.json` 阻断；只有同一 Setup 核验物理根、owner 和自身记录后才能继续。外置资源根 `%LOCALAPPDATA%/Xingtu/resources` 已存在时，更新持有其资源读锁并检查独立 catalog/删除事务，不借程序标记跳过资源恢复。
+更新按钮立即返回，由 QtIFW 的延时点击驱动短步骤，每次只复制一个支持文件并让出事件循环；后台 helper 执行原来的备份、维护器等待与最终验证。只有绑定本次目标、实例和结果路径的原子终态才能宣告完成。后台进程退出但没有结果时保留“状态未知”，禁止直接重试；只有可信失败或确认未启动时可重试。关闭向导不终止已启动的更新，也不把关闭当作成功。
+
+覆盖支持具有完整 QtIFW owner、生产 profile、真实程序库存及维护记录的 `1.1.2`、`1.1.3`、`1.1.4`、`1.1.5` 和 `1.1.6`。旧 `1.1.2` 的完整 managed 布局和仅程序布局均可接入；更新先保留旧程序和维护元数据备份，随后由 QtIFW 更新组件及 Windows 卸载版本。未知程序路径碰撞、改动字节、其他 Setup 的 pending、未完成资源事务均明确拒绝。运行时继续受 `work/pending-installer-upgrade.json` 阻断；只有同一 Setup 核验物理根、owner 和自身记录后才能继续。外置资源根 `%LOCALAPPDATA%/Xingtu/resources` 已存在时，更新持有其资源读锁并检查独立 catalog/删除事务，不借程序标记跳过资源恢复。
 
 定向验证入口是 `tests/test_qt_csharp_grid_package.py`、`test_qtifw_upgrade.py`、`test_qtifw_trial.py`、`test_qtifw_installation.py`、`test_qtifw_native_ui.py` 和 `test_qtifw_bootstrap_packaging.py`。设置 `PYTHONPATH=app;tools;tests;experiments/qt_quick`；真实 C# 发布测试另设 `STARMAP_DOTNET`。普通升级 fixture 运行实际文件系统适配器，仅替换原生 QtIFW 进程；目录发现仅替换注册表/进程观察，保留真实文件准入；UI 回归在 Qt JS 引擎执行生产 controller/component，替换 UI/进程边界，并隔离两种脚本上下文。编译 fixture 使用真实 QtIFW 编译器、PE `.text` 与官方 base 对照以及真实 devtool 读取，不运行 Setup 或写 ARP。Windows 隔离安装/更新/卸载须另记实际命令和唯一 fixture GUID；这些证据不等于用户安装目录覆盖、可见 GUI、游戏或用户验收。
 

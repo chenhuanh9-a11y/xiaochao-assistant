@@ -3273,14 +3273,19 @@ class LiveRuntime:
         if row is None or row['closed']:
             return False
         self._remember_opening_success()
+        current_map = self._provisional_display_map_id or self._map_id or (self._render or {}).get('mapId') or ''
         row['succeeded'] = bool(row['succeeded'] and row['succeededScope'] is not None
-            and row['succeededScope'][0] == self._map_id
+            and row['succeededScope'][0] == current_map
             and (not self._floor or row['succeededScope'][1] == str(self._floor)))
         row['closed'] = True
         if row['succeeded']:
             return False
-        if row['lastReasonScope'] != (self._map_id, str(self._floor)):
+        scope = row['lastReasonScope']
+        if not scope or scope[0] != current_map or self._floor and scope[1] != str(self._floor):
             row['lastReason'] = ''
+        from client_fit_reporting import reportable_opening_reason
+        if not report and not reportable_opening_reason(row['lastReason']):
+            return False
         details = dict(self._failure_notice_fields(), terminal=True,
             reportId=row['openingId'], terminationReason=reason, lastReason=row['lastReason'])
         if report is not None:
@@ -3293,11 +3298,16 @@ class LiveRuntime:
         render = self._render
         if row is None or row['closed'] or render is None:
             return
-        identity = self._identity_fields()
-        if (identity.get('identityLocked') and not identity.get('provisional')
-                and render.get('mapId') == self._map_id and str(render.get('floor')) == str(self._floor)):
+        # Reporting consumes the existing current-frame display grant. A legal
+        # provisional fit is still a delivered fit; this never confirms identity
+        # or changes any display authorization.
+        if (self._display_current(render)
+                and render.get('mapId') == (self._provisional_display_map_id or self._map_id)
+                and str(render.get('floor')) == str(self._floor)):
             row['succeeded'] = True
-            row['succeededScope'] = (self._map_id, str(self._floor))
+            row['succeededScope'] = (render['mapId'], str(self._floor))
+            row['lastReason'] = ''
+            row['lastReasonScope'] = None
 
     def invalidate(self, reason="invalidated", *, source="", input_sequence=None):
         """Revoke immediately; return whether this close emitted a fit summary."""
@@ -4274,7 +4284,8 @@ class LiveRuntime:
             if (row is not None and not extra.get('stale')
                     and payload.get('_diagnosticOpeningId') == row['openingId']):
                 extra.update(self._failure_notice_fields())
-                if not success or extra.get('posePending') or extra.get('identityUnresolved'):
+                from client_fit_reporting import reportable_opening_reason
+                if not success and not extra.get('recoveryPending') and reportable_opening_reason(str(reason)):
                     row['lastReason'] = str(reason)
                     row['lastReasonScope'] = (self._map_id, str(self._floor))
                     if self._floor and row['succeededScope'] != row['lastReasonScope']:

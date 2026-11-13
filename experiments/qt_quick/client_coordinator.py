@@ -18,7 +18,7 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from reference_position_editor import ReferencePositionEdit
 from client_problem_messages import operation_problem
-from client_fit_reporting import RETRY_REASONS
+from client_fit_reporting import RETRY_REASONS, reportable_opening_reason
 from client_input_diagnostics import InputDiagnostics, map_attempt
 from client_manual_map import MANUAL_PICKER_ACTION, normalize_selection_mode
 from season_context import SEASONS, season_label, normalize_season, context_key, selected_profile, CONTEXTS
@@ -2194,31 +2194,28 @@ class ClientCoordinator(QObject):
         reason = receipt.get("reason", "")
         expected_candidate_close = (receipt.get("action") == "observe_candidate_floor"
                                     and reason == "candidate-map-closed" and not receipt.get("error"))
-        pending_identity = (receipt.get("success") is True and receipt.get("posePending")
-                            and receipt.get("reason") in {"similar-group-pending",
-                                "s1-structure-candidates-awaiting-confirmation", "manual-map-selection-pending"}
-                            and state.get("mapOpen") and not state.get("displayAuthorized"))
-        if ((receipt.get("success") is False or pending_identity)
+        if (receipt.get("success") is False
                 and (receipt.get("action") != "observe_manual_floor" or receipt.get("error"))
                 and not expected_candidate_close
+                and (receipt.get("error") or reportable_opening_reason(reason))
                 and not (reason == "private-contradiction-recovery" and not receipt.get("error"))
                 and not (receipt.get("fitReportingDeferred") and reason not in RETRY_REASONS)
                 and self._operation_feedback_is_current(state, current, receipt)
                 and not (receipt.get("action") == "recover_map_open" and receipt.get("recoveryPending"))):
-            # One progress explanation per stage/opening, across passive and
-            # explicit retries. The close report retains the actual last cause.
             deferred = bool(receipt.get("fitReportingDeferred"))
-            category = ("worker-error" if receipt.get("error") else "alignment" if deferred else "identity" if pending_identity or reason in {
-                "identity-not-uniquely-verified", "s1-structure-candidates-unresolved",
-                "candidate-awaiting-confirmation"} else reason)
-            key = ("failure", self._failure_notice_scope(state, receipt), category)
+            opening = (receipt.get("openingId") or current.get("openingId")) if active else None
+            # Ordinary observations may recover while this map remains open.
+            # Its terminal report owns the single reason notice. Worker errors
+            # remain immediate and consume that same one-notice slot.
+            if not receipt.get("error") and (deferred or opening):
+                return
+            notice_state = dict(state, **{key: current[key] for key in ("openingId", "resourceIdentity") if key in current})
+            key = (("opening-failure-notice", self._failure_notice_scope(notice_state, receipt)) if opening else
+                   ("failure", self._failure_notice_scope(state, receipt), reason))
             if key not in self._notified:
                 self._notified.add(key)
                 problem = operation_problem(receipt, state)
-                if not deferred and not pending_identity:
-                    self.errorReported.emit(problem)
-                if pending_identity:
-                    problem["kind"] = "info"
+                self.errorReported.emit(problem)
                 self.notificationRequested.emit(problem["title"], problem["summary"], problem["kind"])
 
     @staticmethod
@@ -2554,8 +2551,12 @@ class ClientCoordinator(QObject):
                 from client_fit_reporting import incomplete_problem
                 self._notified.add(key)
                 problem = incomplete_problem(event)
+                if problem is None:
+                    return
                 self.errorReported.emit(problem)
-                if self._failure_event_is_current(event):
+                notice_key = ("opening-failure-notice", self._failure_notice_scope(event))
+                if self._failure_event_is_current(event) and notice_key not in self._notified:
+                    self._notified.add(notice_key)
                     if event.get("terminationReason") in {"end_round", "stop_round", "reset_round", "end-round", "stop-round", "input-end_round"}:
                         self._notified.add(("round-end-incomplete", event.get("season", "s0"), event.get("mode"), event.get("roundId")))
                     self.notificationRequested.emit(problem["title"], problem["summary"], problem["kind"])

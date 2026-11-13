@@ -5,13 +5,15 @@ The real-solver case removes its fit patch; other replacements are named locally
 No native input/game discovery or user configuration store is used.
 """
 import os
+import copy
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 os.environ.setdefault('QT_QUICK_BACKEND', 'software')
@@ -59,11 +61,16 @@ class FailureNotificationFlowTests(unittest.TestCase):
         self.toast = self.engine.rootObjects()[0]
 
     def tearDown(self):
+        self.c._closed = True
         self.session.shutdown()
         self.session._pool.waitForDone(4000)
-        self.problems.shutdown()
-        self.problems.pool.waitForDone(4000)
         APP.processEvents()
+        self.problems.shutdown()
+        deadline = time.monotonic() + 4
+        while self.problems.pendingWrites and time.monotonic() < deadline:
+            self.problems.pool.waitForDone(4000)
+            APP.processEvents()
+        self.assertFalse(self.problems.pendingWrites)
         self.f.tearDown()
         self.r.doCleanups()
         self.toast.close()
@@ -88,6 +95,97 @@ class FailureNotificationFlowTests(unittest.TestCase):
     def failures(self):
         return [row for row in self.notices if row[2] in {'warning', 'error'}]
 
+    def enable_published_pose_fixture(self, *, grouped=False):
+        from client_coordinator import LiveImages
+        if grouped:
+            import test_client_similarity_protocol as groups
+            for mid in groups.IDS[1:]:
+                item = SimpleNamespace(id=mid)
+                self.r.engine.pack.maps.append(item)
+                self.r.engine.pack.by_id[mid] = item
+            self.r.engine.qt_logical_group_registry = groups.explicit_registry('nightmare')
+            self.r.engine.rank = Mock(return_value=groups.rows(mode='nightmare'))
+        # Capture ownership and screen geometry are fixture boundaries. The
+        # actual core grant, Session, Coordinator publication/ACK and toast run.
+        self.r.runtime._evidence_kind = 'live-client-capture'
+        self.r.capture.generation = 1
+        self.r.capture.is_current = lambda context, *, generation: generation == 1
+        self.c.images = LiveImages()
+        geometry = patch.object(self.c, '_convert_client_geometry', side_effect=lambda data: data.update(deviceScale=1))
+        geometry.start()
+        self.addCleanup(geometry.stop)
+
+    def publish_verified_fixture_pose(self):
+        from client_live_runtime import _AlignmentHost
+        # Only the numerical result is replaced with the existing independently
+        # specified valid matrix/residual fixture; lifecycle is not replaced.
+        with patch.object(_AlignmentHost, 'fit', side_effect=lambda *a, **kw: copy.deepcopy(self.r.fit)):
+            result = self.dispatch('capture_now')
+        self.assertTrue(result['success'], result)
+        data = self.c._aligned
+        self.assertEqual(data['token'], result['renderToken'])
+        self.c._accept_current_material(data, dict(token=data['token'], visible=True,
+            materialReady=True, sourceMatchesPayload=True, validPayload=True,
+            geometry=[data['originX'], data['originY'], data['clientWidth'], data['clientHeight']]))
+        self.assertTrue(self.r.runtime._remember_proposals[data['token']]['accepted'])
+        return result
+
+    def test_published_provisional_pose_close_is_not_an_unfinished_opening(self):
+        self.enable_published_pose_fixture(grouped=True)
+        self.dispatch('start_round')
+        self.publish_verified_fixture_pose()
+        state = self.r.runtime.snapshot()
+        self.assertTrue(state['provisional'])
+        self.assertFalse(state['identityLocked'])
+        self.assertTrue(state['displayAuthorized'])
+        self.notices.clear()
+        self.errors.clear()
+        self.dispatch('close_map')
+        self.assertEqual(self.failures(), [])
+        self.assertFalse(any(row.get('reason') == 'map-fit-incomplete' for row in self.errors))
+        self.publish_verified_fixture_pose()
+        with patch('map_interface_observation.detect_map_interface', return_value=dict(detected=False)):
+            self.dispatch('refresh_map')
+            self.dispatch('refresh_map')
+        self.assertEqual(self.failures(), [])
+        self.assertFalse(any(row.get('reason') == 'map-fit-incomplete' for row in self.errors))
+
+    def test_published_pose_does_not_hide_real_failure_on_a_new_known_floor(self):
+        from test_client_live_runtime import synthetic_read
+        self.enable_published_pose_fixture()
+        self.dispatch('start_round')
+        self.publish_verified_fixture_pose()
+        self.notices.clear()
+        self.errors.clear()
+        with patch('floor_control_region.locate_vertical_floor_controls', return_value=synthetic_read(selected=2)):
+            result = self.dispatch('refresh_map')
+        self.assertFalse(result['success'])
+        self.assertEqual(result['reason'], 'initial-structure-supported-chains-insufficient')
+        self.assertEqual(self.failures(), [])
+        self.dispatch('close_map')
+        self.assertEqual(len(self.failures()), 1)
+        self.assertEqual(self.errors[0]['floor'], '2')
+        self.assertIn('可用结构线段不足', self.toast.property('notificationMessage'))
+
+    def test_retry_then_published_pose_is_quiet_and_next_failed_opening_explains_once(self):
+        self.enable_published_pose_fixture(grouped=True)
+        self.dispatch('start_round')
+        self.notices.clear()
+        self.dispatch('capture_now')  # Actual solver rejection, not a verdict fixture.
+        self.assertEqual(self.failures(), [])
+        self.publish_verified_fixture_pose()
+        self.dispatch('close_map')
+        self.assertEqual(self.failures(), [])
+        self.notices.clear()
+        self.errors.clear()
+        self.dispatch('capture_now')  # New opening, same actual negative image.
+        self.dispatch('capture_now')
+        self.assertEqual(self.failures(), [])
+        self.dispatch('close_map')
+        self.assertEqual(len(self.failures()), 1)
+        self.assertEqual(self.errors[0]['fitReport']['attemptCount'], 2)
+        self.assertIn('可用结构线段不足', self.toast.property('notificationMessage'))
+
     def test_actual_solver_retries_explain_once_then_close_summary_reaches_qml(self):
         for mode in ('nightmare', 'difficult'):
             with self.subTest(mode=mode):
@@ -102,17 +200,14 @@ class FailureNotificationFlowTests(unittest.TestCase):
                 self.assertFalse(failed['success'])
                 self.assertTrue(failed['fitReportingDeferred'])
                 self.assertEqual(failed['reason'], 'initial-structure-supported-chains-insufficient')
-                self.assertEqual(len(self.failures()), 1)
-                self.assertEqual(self.failures()[0], ('地图位置仍在核对', '可用结构线段不足，请保持地图打开并等待画面稳定。', 'warning'))
-                self.assertTrue(self.toast.isVisible())
-                self.assertEqual(self.toast.property('notificationMessage'), self.failures()[0][1])
+                self.assertEqual(self.failures(), [])
                 self.assertEqual(self.errors, [])
                 second = self.dispatch('capture_now')
                 self.assertEqual(second['reason'], failed['reason'])
-                self.assertEqual(len(self.failures()), 1)
+                self.assertEqual(self.failures(), [])
                 self.assertEqual(self.session.stale_results, 0)
                 self.dispatch('close_map')
-                self.assertEqual(len(self.failures()), 2)
+                self.assertEqual(len(self.failures()), 1)
                 self.assertEqual(len(self.errors), 1)
                 self.assertEqual(self.errors[0]['fitReport']['attemptCount'], 2)
                 self.assertEqual(self.toast.property('notificationTitle'), '本次开图未能贴合')
@@ -128,10 +223,12 @@ class FailureNotificationFlowTests(unittest.TestCase):
         self.notices.clear()
         first = self.dispatch('capture_now')
         self.assertEqual(first['reason'], 'identity-not-uniquely-verified')
-        self.assertEqual(len(self.failures()), 1)
+        self.assertEqual(self.failures(), [])
         self.dispatch('refresh_map')
+        self.assertEqual(self.failures(), [])
+        self.dispatch('close_map')
         self.assertEqual(len(self.failures()), 1)
-        self.assertEqual(self.toast.property('notificationTitle'), '地图仍需确认')
+        self.assertIn('唯一确认地图', self.toast.property('notificationMessage'))
 
     def test_late_terminal_event_cannot_replace_the_next_opening_notice(self):
         def hold_terminal(event):
@@ -164,6 +261,7 @@ class FailureNotificationFlowTests(unittest.TestCase):
             return original(host, *args, **kwargs)
         self.dispatch('start_round')
         self.notices.clear()
+        self.toast.dismiss()
         try:
             # Only delay the actual fit call. After release, the original fit
             # and runtime lifetime checks must prevent any late publication.
@@ -172,26 +270,25 @@ class FailureNotificationFlowTests(unittest.TestCase):
                 self.assertTrue(entered.wait(2))
                 self.r.runtime.invalidate(reason)
                 APP.processEvents()
-                self.assertEqual(len(self.failures()), 1)
-                self.assertEqual(self.toast.property('notificationTitle'), '本次开图未完成')
-                self.assertEqual(self.toast.property('notificationMessage'), '开图结束前未完成识别或贴合。')
-                self.assertTrue(self.toast.isVisible())
+                self.assertEqual(self.failures(), [])
+                self.assertNotIn(self.toast.property('notificationKind'), ('warning', 'error'))
                 release.set()
                 receipt = self.settle()
             self.assertTrue(receipt.get('stale'))
-            self.assertEqual(len(self.failures()), 1)
-            self.assertEqual(len(self.errors), 1)
-            self.assertEqual(self.errors[0]['fitReport'], {})
+            self.assertEqual(self.failures(), [])
+            self.assertEqual(self.errors, [])
         finally:
             release.set()
 
-    def test_close_before_verdict_explains_incompletion_and_rejects_late_real_fit(self):
+    def test_short_close_without_verdict_is_quiet_and_next_failure_still_reports(self):
         self.interrupted_real_fit('map-closed')
         self.dispatch('capture_now')
-        self.assertEqual(len(self.failures()), 2)
-        self.assertEqual(self.toast.property('notificationTitle'), '地图位置仍在核对')
+        self.assertEqual(self.failures(), [])
+        self.dispatch('close_map')
+        self.assertEqual(len(self.failures()), 1)
+        self.assertEqual(self.toast.property('notificationTitle'), '本次开图未能贴合')
 
-    def test_cancel_before_verdict_explains_incompletion(self):
+    def test_short_cancel_without_verdict_is_quiet(self):
         self.interrupted_real_fit('cancel')
 
     def test_end_round_keeps_failure_summary_visible(self):
@@ -259,6 +356,8 @@ class FailureNotificationFlowTests(unittest.TestCase):
         self.assertEqual(self.toast.property('notificationTitle'), '识别任务发生异常')
         self.assertIn('GridFailure', self.toast.property('notificationMessage'))
         self.assertTrue(self.toast.isVisible())
+        self.dispatch('close_map')
+        self.assertEqual(len(self.failures()), 1)
 
     def test_actual_grid_scope_failure_during_first_capture_reaches_qml(self):
         self.dispatch('start_round')
@@ -352,9 +451,9 @@ class FailureNotificationFlowTests(unittest.TestCase):
                 self.assertFalse(failed['success'])
                 self.assertTrue(failed['fitReportingDeferred'])
                 self.assertTrue(failed['openingId'])
-                self.assertEqual(len(self.failures()), 1)
+                self.assertEqual(self.failures(), [])
                 self.dispatch('close_map')
-                self.assertEqual(len(self.failures()), 2)
+                self.assertEqual(len(self.failures()), 1)
                 self.assertEqual(len(self.errors), 1)
                 self.assertEqual(self.errors[0]['fitReport']['attemptCount'], 1)
                 self.assertEqual(self.errors[0]['fitReport']['lastReason'], failed['reason'])
@@ -362,7 +461,7 @@ class FailureNotificationFlowTests(unittest.TestCase):
                 self.assertTrue(self.toast.isVisible())
                 self.assertEqual(self.session.stale_results, 0)
 
-    def test_manual_s1_close_before_numerical_verdict_explains_incompletion(self):
+    def test_manual_s1_short_close_before_numerical_verdict_is_quiet(self):
         self.use_manual_s1_runtime()
         self.dispatch('prepare_manual_alignment')
         entered, release = threading.Event(), threading.Event()
@@ -374,17 +473,18 @@ class FailureNotificationFlowTests(unittest.TestCase):
         self.r.fitter.side_effect = delayed
         self.notices.clear()
         self.errors.clear()
+        self.toast.dismiss()
         try:
             self.session.dispatchWithPayload('confirm_route', dict(mapId='fixture-map'))
             self.assertTrue(entered.wait(2))
             self.r.runtime.invalidate('map-closed')
             APP.processEvents()
-            self.assertEqual(self.toast.property('notificationMessage'), '开图结束前未完成识别或贴合。')
-            self.assertEqual(len(self.failures()), 1)
+            self.assertFalse(self.toast.isVisible())
+            self.assertEqual(self.failures(), [])
             release.set()
             self.assertTrue(self.settle().get('stale'))
-            self.assertEqual(len(self.failures()), 1)
-            self.assertEqual(self.errors[0]['fitReport'], {})
+            self.assertEqual(self.failures(), [])
+            self.assertEqual(self.errors, [])
         finally:
             release.set()
 
@@ -433,7 +533,7 @@ class FailureNotificationFlowTests(unittest.TestCase):
             self.c._notify_session_transitions(state)
         self.assertEqual(self.failures(), [])
 
-    def test_pending_candidate_is_informational_and_deduplicated(self):
+    def test_pending_candidate_does_not_interrupt_with_progress_toasts(self):
         self.dispatch('start_round')
         self.dispatch('capture_now')
         state = self.r.runtime.snapshot()
@@ -445,9 +545,8 @@ class FailureNotificationFlowTests(unittest.TestCase):
         # that the S1 scanner recognized this synthetic S0 fixture.
         self.c._notify_session_transitions(state)
         self.c._notify_session_transitions(state)
-        self.assertEqual(self.notices, [('地图仍需确认', '已找到结构候选，但尚未唯一确认地图，未生成正式贴合。请继续核对或确认候选。', 'info')])
+        self.assertEqual(self.notices, [])
         self.assertEqual(self.errors, [])
-        self.assertEqual(self.toast.property('notificationTitle'), '地图仍需确认')
 
     def test_resource_refusal_keeps_specific_reason_on_passive_refresh(self):
         self.dispatch('start_round')
@@ -457,15 +556,25 @@ class FailureNotificationFlowTests(unittest.TestCase):
         state = self.r.runtime.snapshot()
         # Boundary: an upstream resource-readiness refusal. This test covers
         # the passive feedback consumer, not the package readiness algorithm.
-        state['lastReceipt'] = dict(action='refresh_map', success=False,
-            reason='mode-resources-unavailable')
+        state['lastReceipt'] = self.r.runtime._receipt('refresh_map',
+            dict(_diagnosticOpeningId=state['openingId']), success=False, reason='mode-resources-unavailable')
         self.c._notify_session_transitions(state)
         self.c._notify_session_transitions(state)
+        self.assertEqual(self.failures(), [])
+        self.dispatch('close_map')
         self.assertEqual(len(self.failures()), 1)
         self.assertEqual(len(self.errors), 1)
-        self.assertEqual(self.toast.property('notificationTitle'), '当前模式资源不可用')
+        self.assertEqual(self.toast.property('notificationTitle'), '本次开图未能贴合')
         self.assertIn('地图资源', self.toast.property('notificationMessage'))
+        self.assertEqual(json.loads(self.errors[0]['raw'])['lastReason'], 'mode-resources-unavailable')
         self.assertEqual(self.toast.property('notificationKind'), 'warning')
+        self.dispatch('end_round')
+        self.notices.clear()
+        state = self.session.snapshot
+        state['lastReceipt'] = dict(action='inspect_engine_resources', success=False, reason='mode-resources-unavailable')
+        self.c._notify_session_transitions(state)
+        self.assertEqual(len(self.failures()), 1)
+        self.assertEqual(self.toast.property('notificationTitle'), '当前模式资源不可用')
 
 
 def load_tests(loader, tests, pattern):
