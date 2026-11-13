@@ -5,6 +5,7 @@ on:
     branches: [integration/qt-next-20261102, integration/qt-pr84-88-20261103, codex/pr133-p3-p4-p5-integration-20261111, codex/pr133-shared-observation-stream-20261111, codex/python-csharp-resource-integration-20261113]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 permissions:
