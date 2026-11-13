@@ -20,7 +20,6 @@ os.environ.setdefault('QT_QUICK_BACKEND', 'software')
 import cv2
 from PySide6.QtCore import QCoreApplication, QEvent, QUrl
 from PySide6.QtQml import QQmlApplicationEngine
-from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 APP = QApplication.instance() or QApplication([])
@@ -83,7 +82,9 @@ class FailureNotificationFlowTests(unittest.TestCase):
         deadline = time.monotonic() + 4
         while self.session.busy and time.monotonic() < deadline:
             APP.processEvents()
-            QTest.qWait(2)
+            # Let the Python worker reacquire the GIL after I/O or cold imports;
+            # native Qt waits can otherwise consume its completion budget.
+            time.sleep(.005)
         self.assertFalse(self.session.busy)
         APP.processEvents()
         return self.session.snapshot['lastReceipt']
