@@ -159,28 +159,26 @@ class ImportedResourceTransactionUiTests(unittest.TestCase):
         return entered, release, patch.object(activation, 'activate_catalog_locked', side_effect=paused)
 
     def test_visible_gallery_waits_for_active_import_without_recovery_error(self):
-        import client_imported_providers as providers
+        import client_imported_browse as browse
         started, timings = time.monotonic(), []
         def stage(name):
             timings.append(dict(stage=name, elapsedSeconds=round(time.monotonic() - started, 3)))
         entered, release, pause = self.hold_publication()
-        decode = providers.load_native_resources
-        barrier, decoder_lock, decoder_threads = threading.Barrier(2), threading.Lock(), []
-        def overlapping_decode(*args, **kwargs):
-            # Both real background consumers must enter before either performs
-            # its actual decoding: the catalog wait must not serialize them.
-            # Prospective activation also uses this decoder; it must finish
-            # its own semantic admission before observer concurrency is tested.
-            if (not entered.is_set() or not release.is_set()
-                    or (self.client.resource_resolver.root / activation.PENDING_CATALOG).exists()):
-                return decode(*args, **kwargs)
-            with decoder_lock:
-                decoder_threads.append(threading.get_ident())
-                first_two = len(decoder_threads) <= 2
+        load = browse.load_imported_browse_context
+        barrier, metadata_lock, metadata_threads = threading.Barrier(2), threading.Lock(), []
+        def overlapping_metadata(*args, **kwargs):
+            # Gallery metadata and home previews must both enter their public
+            # loader before waiting for the real catalog writer. The gallery
+            # does not need an eager native-engine build to display its cards.
+            if not entered.is_set():
+                return load(*args, **kwargs)
+            with metadata_lock:
+                metadata_threads.append(threading.get_ident())
+                first_two = len(metadata_threads) <= 2
             if first_two:
                 barrier.wait(timeout=15)
-            return decode(*args, **kwargs)
-        with pause, patch.object(providers, 'load_native_resources', side_effect=overlapping_decode):
+            return load(*args, **kwargs)
+        with pause, patch.object(browse, 'load_imported_browse_context', side_effect=overlapping_metadata):
             stage('import-submitted')
             self.import_archive()
             self.until(entered.is_set)
@@ -205,7 +203,7 @@ class ImportedResourceTransactionUiTests(unittest.TestCase):
             self.settle()
             stage('metadata-and-session-settled')
         self.assertEqual(self.errors, [])
-        self.assertGreaterEqual(len(set(decoder_threads)), 2)
+        self.assertGreaterEqual(len(set(metadata_threads)), 2)
         self.assert_visible_gallery()
         stage('qml-images-ready')
         self.until(lambda: bool(self.client.info.homePreviews))
@@ -215,7 +213,7 @@ class ImportedResourceTransactionUiTests(unittest.TestCase):
         evidence = os.environ.get('XINGTU_TEST_RESOURCE_UI_EVIDENCE')
         if evidence:
             result = dict(archive=str(self.archive), archiveBytes=self.archive.stat().st_size,
-                          mapCount=self.client.backend.mapCount, parallelDecoderThreads=len(set(decoder_threads)),
+                          mapCount=self.client.backend.mapCount, parallelMetadataThreads=len(set(metadata_threads)),
                           stages=timings)
             (Path(evidence) / 'visible-import-timings.json').write_text(
                 json.dumps(result, ensure_ascii=False, indent=2), encoding='utf8')

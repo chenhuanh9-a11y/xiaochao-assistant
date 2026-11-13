@@ -43,6 +43,8 @@ S0/S1 困难、噩梦的资源外置及此前整合设计见 [四模式识别、
 
 当前 Windows 回归以此用户要求为范围：旧 race/direct/local/prepared 求解、normalized 基础包、可任意注入像素算法参数及 proposal-only 编排的历史测试不再代表产品要求。其源码保留用于历史对照，不计入当前通过数。独立资源、显示缓存、事务、取消和后台队列测试须迁移真实 original 包 fixture；不能随算法一起退掉。`test_original_qt_resource_flow` 验证实际导出、保存、启用和工厂，楼层资源当前性由 `test_imported_s0_observation.OriginalS0ControlsLifecycleTests` 验证，C# 原数值组件及请求生命周期由 `test_hybrid_grid_backend`、`test_qt_csharp_grid_runtime` 验证。复杂度与派生资源校验属于资源准入，不能移进每帧求解。定向回归通过不等于历史全库测试、GUI、游戏、安装或性能目标通过。
 
+当前 CI 不再执行 race 双通道证据、pending pose 转交、向原 `fit_one` 注入 entry proposal、P3 `_offer_usable_fit` 分阶段发布、采样区域参数注入或默认观察域仅一次 residual 的历史断言；这些要求不能通过重新接入已撤下算法来满足。原 scanner 的取消／未知竞争者、原几何正反例、真实资源准入、显示 owner 和旧结果拒绝仍须运行。暖显示缓存检查禁止重复 NPZ／图片解码，允许实际资源当前性检查；不再以“禁止所有文件系统调用”替代当前读取作用域合同，也不据此声称零磁盘 I/O。
+
 ## 贴合速度与可靠显示的验收口径
 
 首贴属于识别阶段，约 **500ms** 是目标；已锁图且首贴成功后的每一次重新开图，约 **300ms** 是目标。当前规范不宣称任一目标已经达成，也不改变验证门槛。

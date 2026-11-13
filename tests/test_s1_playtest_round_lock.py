@@ -116,13 +116,21 @@ class PlaytestRoundLockContracts(unittest.TestCase):
         self.assertIsNone(self.current_payload())
         self.assertEqual(self.runtime.reference_payload()['floor'], '-3')
 
-    def test_unknown_floor_keeps_historical_static_not_current_pixels(self):
+    def test_unknown_floor_keeps_completed_material_without_new_floor_authority(self):
         pool, row = self.locked()
+        source_core = self.runtime._core
         self.floor = None
         self.assertFalse(self.runtime.dispatch('capture_now')['success'])
         self.assert_locked(pool)
-        self.assertIsNone(self.current_payload())
+        retained = self.current_payload()
+        for field in ('token', 'frameId', 'generation', 'authorizationId', 'floor'):
+            self.assertEqual(retained[field], row[field])
+        self.assertIs(self.runtime._core, source_core)
+        self.assertNotEqual(self.runtime._frame_id, retained['frameId'])
+        self.assertEqual(self.runtime._observed_floor, '')
         self.assertFalse(self.runtime.reference_payload()['referenceFloorCurrent'])
+        self.runtime.dispatch('close_map')
+        self.assertIsNone(self.current_payload())
 
     def test_reselection_and_force_catalogue_cannot_reopen_locked_round(self):
         pool, row = self.locked()

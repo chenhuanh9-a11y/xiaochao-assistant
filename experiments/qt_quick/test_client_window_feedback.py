@@ -116,20 +116,26 @@ class WindowFeedbackTests(unittest.TestCase):
         problem = operation_problem(dict(reason='map-open-preparation-deadline', preparationObservation=row),{})
         self.assertEqual(problem['title'],'地图画面尚未确认')
 
-    def test_qt_notification_and_recent_problem_receive_same_evidence(self):
+    def test_preparation_wait_is_quiet_and_preserves_size_diagnostic(self):
         from test_client_coordinator import CoordinatorTests
         harness = CoordinatorTests('test_round_notifications_follow_preparation_and_activation_once_despite_stale_session')
         harness.setUpClass()
         harness.setUp()
         try:
-            _, receipt, expected = self.run_map(999,600)
+            runtime, receipt, expected = self.run_map(999,600)
             notices, problems = [], []
             harness.coordinator.notificationRequested.connect(lambda *args: notices.append(args))
             harness.coordinator.errorReported.connect(problems.append)
-            state = dict(harness.session.snapshot, lastReceipt=receipt)
+            harness.coordinator.runtime = runtime
+            state = dict(runtime.snapshot(), lastReceipt=receipt)
             harness.coordinator._notify_session_transitions(state)
-            self.assertEqual(notices[-1],(expected['title'],expected['summary'],expected['kind']))
-            self.assertEqual(problems[-1]['preparationObservation'],receipt['preparationObservation'])
+            self.assertFalse([row for row in notices if row[2] in ('warning', 'error')])
+            self.assertEqual(problems, [])
+            # The current opening may recover. Suppressing its progress toast
+            # does not erase the measured pixels or their reason mapping.
+            diagnostic = operation_problem(receipt, state)
+            self.assertEqual(diagnostic['title'], expected['title'])
+            self.assertEqual(diagnostic['preparationObservation'], receipt['preparationObservation'])
         finally:
             harness.doCleanups()
 

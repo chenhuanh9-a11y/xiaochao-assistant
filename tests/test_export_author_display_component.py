@@ -30,7 +30,7 @@ from imported_author_display import decode_author_display
 from imported_author_displays import ImportedAuthorDisplays
 from imported_native_base import decode_native_base
 from imported_resource_packages import ComponentRef, PackageView
-import test_export_s1_native_base_package as base_fixture
+from original_qt_resource_fixtures import OriginalS1SourceFixture
 
 
 def _png_bytes():
@@ -63,7 +63,7 @@ class ExportAuthorDisplayComponentTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix='author-display-base-source-')
         cls.addClassCleanup(temporary.cleanup)
         cls.fixture_root = Path(temporary.name).resolve()
-        cls.source = base_fixture.S1NativeBaseSourceFixture(cls.fixture_root / 'base-source')
+        cls.source = OriginalS1SourceFixture(cls.fixture_root / 'base-source')
         # The expensive real native-base producer runs once for this class.
         cls.source.export()
         cls.resource_root = cls.fixture_root / 'installed'

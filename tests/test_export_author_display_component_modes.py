@@ -23,7 +23,7 @@ from imported_native_base import decode_native_base
 from imported_resource_packages import PackageView
 import test_export_native_base_package as s0n_fixture_module
 from test_export_s0_difficult_native_base_package import LEGACY, S0DifficultSourceFixture
-from test_export_s1_native_base_package import S1NativeBaseSourceFixture
+from original_qt_resource_fixtures import OriginalS1SourceFixture
 
 
 def _synthetic_png():
@@ -60,6 +60,17 @@ class AuthorDisplayComponentModeTests(unittest.TestCase):
             main = s0n_case.read(s0n_fixture_module.exporter.ENTRIES + '/entries.json')
             main['entries'][0].update(center=[2., 2.], kind='main', material='fixture-native-room')
             s0n_case.write(s0n_fixture_module.exporter.ENTRIES + '/entries.json', main)
+            # This shared fixture predates the original Qt resource contract.
+            # Supply the metadata and empty source indexes required by the
+            # real S0 nightmare loader before exporting it for this test.
+            pack = s0n_case.read(s0n_fixture_module.exporter.PACK)
+            pack['displayName'] = 'Synthetic original-layout nightmare'
+            s0n_case.write(s0n_fixture_module.exporter.PACK, pack)
+            s0n_case.write('references/native-similarity-groups.json', dict(
+                schemaVersion=1, resourceKind='native-similarity-groups', groups=[]))
+            s0n_case.write('references/nightmare-source-candidate-index.json',
+                dict(schemaVersion=1, entries=[]))
+            s0n_case.write('references/nightmare-portable-layout-seeds.json', dict(entries=[]))
             s0n_case.export()
             s0n_archive = cls.root / 's0-nightmare-base.zip'
             s0n_archive.write_bytes(s0n_case.output.read_bytes())
@@ -68,7 +79,7 @@ class AuthorDisplayComponentModeTests(unittest.TestCase):
 
         s0d_source = S0DifficultSourceFixture(cls.root / 's0-difficult-source')
         s0d_source.export()
-        s1n_source = S1NativeBaseSourceFixture(cls.root / 's1-nightmare-source', mode='nightmare')
+        s1n_source = OriginalS1SourceFixture(cls.root / 's1-nightmare-source', mode='nightmare')
         s1n_source.export()
 
         cls.bases = {

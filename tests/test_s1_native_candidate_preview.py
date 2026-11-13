@@ -183,6 +183,64 @@ class NativeCandidateContracts(unittest.TestCase):
         self.assertTrue(self.runtime._capture_pending)
         self.runtime._capture_pending_owner = None
 
+    def test_probe_observation_resource_errors_revoke_completed_material(self):
+        from client_providers import DisplayResourceChanged
+        from imported_original_base import OriginalResourceReadFailure
+        invalidations = []
+        # This registry owns immutable fixtures; observe the real invalidation
+        # handoff without replacing runtime/core/display lifecycle behavior.
+        self.registry.invalidate = lambda: invalidations.append(True)
+        for count, error in enumerate((DisplayResourceChanged('fixture-resource-replaced'),
+                                       OriginalResourceReadFailure()), 1):
+            with self.subTest(error=type(error).__name__):
+                first = self.show()
+                with patch.object(self.runtime, '_observe', side_effect=error):
+                    result = self.runtime.dispatch('observe_candidate_floor')
+                self.assertFalse(result['success'], result)
+                self.assertTrue(result['error'], result)
+                self.assertIsNone(self.runtime.render_payload(first['token']))
+                self.assertFalse(self.runtime.snapshot()['displayAuthorized'])
+                self.assertFalse(self.runtime.acknowledge_render_material(first['token'])['success'])
+                self.assertEqual(len(invalidations), count)
+
+    def test_probe_observation_os_error_keeps_completed_material(self):
+        first = self.show()
+        source_core = self.runtime._core
+        with patch.object(self.runtime, '_observe', side_effect=OSError('fixture-observation-io')):
+            result = self.runtime.dispatch('observe_candidate_floor')
+        self.assertFalse(result['success'], result)
+        self.assertTrue(result['error'], result)
+        self.assertIs(self.runtime._core, source_core)
+        retained = self.current_payload()
+        for field in ('token', 'frameId', 'generation', 'authorizationId'):
+            self.assertEqual(retained[field], first[field])
+
+    def test_late_probe_resource_errors_cannot_revoke_successor_material(self):
+        from client_providers import DisplayResourceChanged
+        from imported_original_base import OriginalResourceReadFailure
+        for error in (DisplayResourceChanged('fixture-old-resource'), OriginalResourceReadFailure(),
+                      OSError('fixture-old-observation-io')):
+            with self.subTest(error=type(error).__name__):
+                first = self.show()
+                successors = []
+                observe = self.runtime._observe
+                def replace_then_fail(*args):
+                    self.runtime.invalidate('map-closed')
+                    with patch.object(self.runtime, '_observe', side_effect=observe):
+                        self.assertTrue(self.runtime.dispatch('capture_now')['success'])
+                    successors.append(self.current_payload())
+                    raise error
+                with patch.object(self.runtime, '_observe', side_effect=replace_then_fail):
+                    result = self.runtime.dispatch('observe_candidate_floor')
+                self.assertFalse(result['success'], result)
+                self.assertTrue(result['stale'], result)
+                self.assertEqual(result['errorType'], type(error).__name__)
+                self.assertIsNone(self.runtime.render_payload(first['token']))
+                current = self.current_payload()
+                for field in ('token', 'frameId', 'generation', 'authorizationId'):
+                    self.assertEqual(current[field], successors[0][field])
+                self.assertFalse(self.runtime.snapshot()['captureInProgress'])
+
     def test_unknown_drag_floor_keeps_material_until_known_floor_change(self):
         first = self.show()
         self.runtime._monotonic = lambda: 1.

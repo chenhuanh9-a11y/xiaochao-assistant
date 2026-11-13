@@ -78,11 +78,25 @@ class ImportedBrowseTests(source_fixture._AuthorSelectionFixture):
         cancelled = threading.Event()
         context = load_imported_browse_context(self.resolver(), 'difficult', season='s1',
                                                cancelled=cancelled.is_set)
-        self.assertEqual([profile.profile_id for profile in context.profiles], ['s1-native-structure', 'author-good'])
-        self.assertTrue(context.warnings)
+        # Cards describe declarations. Only requesting the selected layer can
+        # establish whether its current pixels are actually usable.
+        self.assertEqual([profile.profile_id for profile in context.profiles],
+                         ['s1-native-structure', 'author-good', 'author-bad'])
+        self.assertIsNone(context.catalog)
+        profiles = {profile.profile_id: profile for profile in context.profiles}
+        good_key = context.assets.key(profiles['author-good'].first_preview[2])
+        bad_key = context.assets.key(profiles['author-bad'].first_preview[2])
+        with self.assertRaises(ValueError):
+            context.assets.pixels(bad_key)
+        np.testing.assert_array_equal(context.assets.pixels(good_key)[1, 2], (3, 2, 1, 0))
+        fallback = imported_home_rows(self.resolver(), 'difficult', 'author-bad', 's1')
+        structure = imported_home_rows(self.resolver(), 'difficult', 'shared-structure', 's1')
+        self.assertTrue(fallback)
+        self.assertTrue(all(row['structure'] and row['key'] == '' for row in fallback))
+        self.assertEqual([row['imageUrl'] for row in fallback], [row['imageUrl'] for row in structure])
         cancelled.set()
         with self.assertRaises(CancelledError):
-            context.assets.pixels(context.assets.key(context.profiles[1].first_preview[2]))
+            context.assets.pixels(good_key)
 
     def test_structure_home_and_warm_pixels_use_actual_base_without_author_or_ranking(self):
         import client_imported_providers as providers

@@ -438,14 +438,21 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
                 self.assertEqual(item('galleryUseAuthor').property('text'), '使用结构底图')
                 context = instance.backend.context
                 selected = next(row for row in instance.backend.model.rows if row['key'] == instance.backend.selectedKey)
-                reference = context.assets._provider('shared-structure', selected['mapId'], selected['floor'])
+                self.assertIsNone(context.catalog)
+                profile = next(row for row in context.profiles if row.profile_id == 's1-native-structure')
+                selected_map = next(row for row in profile.maps if row.id == selected['mapId'])
+                path = next(variant.layers[selected['floor']] for variant in selected_map.variants
+                            if selected['floor'] in variant.layers)
+                source_pixels = context.assets.pixels(context.assets.key(path))
                 source = instance.backend.selectedImage.split('image://importedgallery/', 1)[1]
                 pixels = instance.gallery_images.requestImage(source, QSize(), QSize())
                 self.assertFalse(pixels.isNull())
-                self.assertEqual((pixels.width(), pixels.height()), (reference.shape[1], reference.shape[0]))
-                holder['structureSourceSize'] = (reference.shape[1], reference.shape[0])
-                ys, xs = np.nonzero(reference.clean_mask)
+                self.assertEqual((pixels.width(), pixels.height()), (source_pixels.shape[1], source_pixels.shape[0]))
+                holder['structureSourceSize'] = (source_pixels.shape[1], source_pixels.shape[0])
+                ys, xs = np.nonzero(source_pixels[..., 3])
                 self.assertGreater(len(ys), 0)
+                np.testing.assert_array_equal(source_pixels[ys[len(ys)//2], xs[len(xs)//2]],
+                                              (218, 228, 238, 255))
                 self.assertEqual(pixels.pixelColor(int(xs[len(xs)//2]), int(ys[len(ys)//2])).getRgb(),
                                  (238, 228, 218, 255))
                 holder['structureCatalogBefore'] = (fixture.resources/'catalog.json').read_bytes()
@@ -534,14 +541,20 @@ class ImportedGalleryDefaultUiTests(unittest.TestCase):
                                  {"-4": "B4", "-3": "B3", "-2": "B2", "-1": "B1"})
                 self.assertEqual(instance.backend.selectedFloor, "-4")
                 self.assertTrue(instance.backend.selectedImage.startswith("image://importedgallery/"))
-                asset_display = context.assets._displays
-                binding = asset_display.binding(PROFILE_ID, fixture.source.ids[0], "-4")
-                self.assertIsNotNone(binding)
-                self.assertEqual(binding["status"], "user-provided-unreviewed")
-                self.assertEqual(binding["package"].qualification, "user-provided-unreviewed")
-                variant = context.catalog.profiles[PROFILE_ID].maps[fixture.source.ids[0]][0]
-                self.assertEqual(variant.identity_status, "display-only-user-provided")
-                self.assertEqual(variant.display_policy, "display-only")
+                from imported_resource_reader import ComponentResourceReader
+                self.assertIsNone(context.catalog, 'browse declarations cannot grant runtime identity')
+                declaration = ComponentResourceReader(view).json(view.component['entrypoint'])
+                self.assertEqual(declaration['profileId'], PROFILE_ID)
+                self.assertFalse(declaration['identityAuthority'])
+                self.assertFalse(declaration['structureValidationAuthority'])
+                self.assertFalse(declaration['crossFloorProjectionAllowed'])
+                self.assertTrue(declaration['currentFrameGeometryFitRequired'])
+                profile = next(row for row in context.profiles if row.profile_id == PROFILE_ID)
+                self.assertEqual(profile.package_id, view.component_ref.package_id)
+                path = profile.first_preview[2]
+                self.assertEqual(context.assets.key(path), (PROFILE_ID, fixture.source.ids[0], '-4'))
+                np.testing.assert_array_equal(context.assets.pixels(context.assets.key(path))[0, 0],
+                                              (71, 49, 201, 255))
                 self.assertFalse(instance.session.snapshot.get("liveAuthorization", False))
                 holder["galleryModel"] = instance.backend.galleryProfileModel
                 snapshot = instance.resource_resolver.snapshot()

@@ -1,5 +1,6 @@
 """Real archive/store admission; metadata fixtures grant no recognition authority."""
 import hashlib
+from io import BytesIO
 import json
 from pathlib import Path
 import tempfile
@@ -9,11 +10,19 @@ import zipfile
 
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QGuiApplication
+from PIL import Image
 from client_imported_resources import ImportedResourceService
 from client_imported_admission import admit_import, available_base_contexts
+from client_imported_providers import SUPPORTED_CAPABILITIES, build_imported_engine_factories
+from client_live_runtime import LiveRuntime
+from client_paths import RuntimePaths
+from client_session import SessionService
+from export_author_display_component import INPUT_SCHEMA, export_component
 from imported_author_display import SCHEMA as DISPLAY_SCHEMA
 from imported_resource_archive import save_archive
 from imported_resource_catalog import ResourceResolver
+from imported_resource_packages import ComponentRef
+from original_qt_resource_fixtures import OriginalS0NightmareSourceFixture
 import test_imported_resource_catalog as catalog_fixture
 
 
@@ -30,8 +39,9 @@ class ImportedAdmissionTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix='import-admission-')
         self.addCleanup(temporary.cleanup)
         self.folder = Path(temporary.name).resolve()
-        self.root = self.folder / 'resources'
-        self.resolver = ResourceResolver(self.root)
+        self.paths = RuntimePaths(self.folder, False)
+        self.root = self.paths.imported_resource_root
+        self.resolver = ResourceResolver(self.root, supported_capabilities=SUPPORTED_CAPABILITIES)
 
     def archive(self, components, *, payloads=None, name='candidate', suffix='.zip'):
         payloads = payloads or {row['componentId']: b'{}' for row in components}
@@ -63,10 +73,36 @@ class ImportedAdmissionTests(unittest.TestCase):
             validate_components=lambda views: admit_import(views, self.resolver))
 
     def active_base(self):
-        base = self.component('base', 'recognition-base')
-        controls = self.component('controls', 'controls-profile')
+        source = OriginalS0NightmareSourceFixture(self.folder / 'original-s0n-source')
+        source.export()
+        saved = save_archive(source.output, self.root)
+        refs = {ref.component_id: dict(packageId=ref.package_id,
+            resourceVersion=ref.resource_version, componentId=ref.component_id,
+            manifestSha256=ref.manifest_sha256) for ref in saved.component_refs}
+        base, controls = refs['base'], refs['controls']
         self.catalog({'s0:nightmare': self.context(base, controls)})
+        self.base_source = source.source
         return base
+
+    def real_author_archive(self, base):
+        base_ref = ComponentRef(base['packageId'], base['resourceVersion'],
+            base['componentId'], base['manifestSha256'])
+        images = self.folder / 'author-images'
+        images.mkdir()
+        stream = BytesIO()
+        Image.new('RGBA', (5, 3), (64, 128, 192, 255)).save(stream, format='PNG')
+        (images / 'route.png').write_bytes(stream.getvalue())
+        registration = self.folder / 'author-registration.json'
+        registration.write_text(json.dumps(dict(schema=INPUT_SCHEMA,
+            profileId='author-route-fixture', authorName='Fixture Author',
+            displayName='Fixture Route', layers=[dict(mapId=self.base_source.ids[0],
+                floor='1', image='route.png',
+                matrixDisplayToReference=[[1, 0, 0], [0, 1, 0], [0, 0, 1]])]),
+            ensure_ascii=False), encoding='utf-8')
+        output = self.folder / 'author-route.xingtu-route'
+        export_component(self.root, base_ref, registration, images, output,
+            package_id='author-route', resource_version='fixture-v1')
+        return output
 
     def test_base_and_controls_must_be_in_same_archive(self):
         for kind in ('recognition-base', 'controls-profile'):
@@ -146,12 +182,17 @@ class ImportedAdmissionTests(unittest.TestCase):
             self.app.processEvents()
 
     def import_with_service(self, archive):
-        service = ImportedResourceService(self.resolver)
+        factories = build_imported_engine_factories(self.resolver, self.paths)
+        runtime = LiveRuntime(engine_factories=factories, evidence_kind='synthetic')
+        session = SessionService(runtime)
+        service = ImportedResourceService(self.resolver, paths=self.paths,
+            engine_factories=factories)
+        service.setLeaseProvider(session)
         errors = []
         service.errorReported.connect(errors.append)
         try:
             self.assertTrue(service.importArchive(QUrl.fromLocalFile(str(archive)).toString()))
-            deadline = time.monotonic() + 8
+            deadline = time.monotonic() + 90
             while service.busy and time.monotonic() < deadline:
                 self.app.processEvents()
                 time.sleep(.005)
@@ -161,6 +202,10 @@ class ImportedAdmissionTests(unittest.TestCase):
             service.shutdown()
             service.pool.waitForDone()
             self.app.processEvents()
+            session.shutdown()
+            session._pool.waitForDone()
+            runtime.shutdown()
+            factories.invalidate()
 
     def test_real_service_checks_filename_role_before_publishing_either_package_kind(self):
         base = self.active_base()
@@ -185,16 +230,18 @@ class ImportedAdmissionTests(unittest.TestCase):
         self.assertFalse((self.root / 'packages/wrong-base/v1').exists())
 
     def test_real_service_imports_route_suffix_with_active_exact_base(self):
-        # Metadata fixture tests save/admission only. Base auto-activation and
-        # actual display decoding are covered by their real-resource suites.
         base = self.active_base()
-        archive = self.author_archive(base, suffix='.xingtu-route')
+        archive = self.real_author_archive(base)
         errors, _ = self.import_with_service(archive)
         self.assertEqual(errors, [])
         with zipfile.ZipFile(archive) as source:
-            expected = source.read('data/art/entry.json')
-        self.assertEqual((self.root / 'packages/author/v1/data/art/entry.json').read_bytes(),
-                         expected)
+            manifest = json.loads(source.read('manifest.json'))
+            component = manifest['components'][0]
+            relative = f"data/{component['componentId']}/{component['entrypoint']}"
+            expected = source.read(relative)
+        installed = (self.root / 'packages' / 'author-route' / 'fixture-v1' /
+                     relative)
+        self.assertEqual(installed.read_bytes(), expected)
 
 
 if __name__ == '__main__':

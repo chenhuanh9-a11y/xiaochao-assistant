@@ -133,7 +133,7 @@ class LocalWallRasterTests(unittest.TestCase):
                         qt_adapters=SimpleNamespace(canonical_pack_id='synthetic'),
                         qt_shared_provider=lambda profile,map_id,floor:references[map_id]))
                     scan=host.prepare_structure_scan(frame,bounds)
-                    with patch('fast_structure_alignment.load_prepared',side_effect=lambda ref:prepared.get(id(ref))), \
+                    with patch('fast_structure_alignment.load_prepared',side_effect=lambda ref, **kwargs:prepared.get(id(ref))), \
                          patch.object(structure,'_wall_raster_validation',side_effect=original if deferred else full):
                         results.append([normalized(scan(frame,name,'-3',lambda:False,observation_bounds=bounds))
                                         for name in references])

@@ -20,6 +20,7 @@ from difficult_side_entry_identity import MapLocalEntryIdentity
 from imported_resource_activation import activate_catalog_locked
 from imported_resource_catalog import ResourceResolver, SCHEMA
 from imported_resource_packages import PackageView
+from imported_resource_reader import ComponentResourceReader
 from imported_resource_selection import inspect_selection
 from imported_resource_archive import save_archive
 from resource_transaction import resource_write_lock
@@ -184,12 +185,15 @@ class ImportedBrowseModeTests(unittest.TestCase):
         summary = context.profiles[1]
         self.assertEqual(summary.name, '合成浏览路线')
         self.assertEqual(summary.package_id, selected_ref.package_id)
-        route_profile = context.catalog.profiles[profile_id]
-        route_variant = route_profile.maps[map_id][0]
-        self.assertEqual((route_variant.identity_status, route_variant.display_policy),
-                         ('display-only-user-provided', 'display-only'))
-        binding = context.assets._displays.binding(profile_id, map_id, floor)
-        self.assertEqual(binding['status'], 'user-provided-unreviewed')
+        self.assertIsNone(context.catalog, 'browse declarations cannot grant runtime identity')
+        document = ComponentResourceReader(view).json(view.component['entrypoint'])
+        self.assertEqual(document['profileId'], profile_id)
+        self.assertFalse(document['identityAuthority'])
+        self.assertFalse(document['structureValidationAuthority'])
+        self.assertFalse(document['crossFloorProjectionAllowed'])
+        self.assertTrue(document['currentFrameGeometryFitRequired'])
+        layer, = document['layers']
+        self.assertEqual((layer['mapId'], layer['floor']), (map_id, floor))
         self.assertEqual(summary.map_count, len(base.pack.maps))
         self.assertEqual(summary.available_maps, 1)
         self.assertEqual(summary.available_layers, 1)
@@ -202,12 +206,10 @@ class ImportedBrowseModeTests(unittest.TestCase):
         self.assertEqual(summary.maps[0].variants[0].name, '合成浏览作者')
         self.assertEqual({f for variant in summary.maps[0].variants for f in variant.layers}, {floor})
         self.assertEqual(set(context.floor_metadata), {str(value) for value in base.pack.floors})
-        expected_matrix = (base.adapters.matrix_profile_to_canonical(
-            'shared-structure', map_id, floor) @ np.asarray(_matrix, dtype=np.float64))
-        np.testing.assert_allclose(context.assets._displays.adapters.matrix_profile_to_canonical(
-            profile_id, map_id, floor), expected_matrix)
+        np.testing.assert_allclose(layer['matrixDisplayToReference'], _matrix)
 
         path = summary.first_preview[2]
+        self.assertEqual(path, view.path(layer['displayPath']))
         self.assertTrue(path.is_relative_to(view.root))
         self.assertIn(f'packages/{selected_ref.package_id}/{selected_ref.resource_version}/data/'
                       f'{selected_ref.component_id}/images/', path.as_posix())
@@ -233,7 +235,8 @@ class ImportedBrowseModeTests(unittest.TestCase):
             from test_export_s0_difficult_native_base_package import LEGACY
             self.assertIn(LEGACY, base.pack.by_id)
             self.assertNotIn(LEGACY, [item.id for item in summary.maps])
-            self.assertIsNone(context.catalog.route_path(profile_id, LEGACY, '1'))
+            with self.assertRaisesRegex(ValueError, 'layer-unregistered'):
+                context.assets.pixels((profile_id, LEGACY, '1'))
         return context, info, selected_ref, view
 
     def test_s0_nightmare_browse_reads_only_the_selected_component(self):

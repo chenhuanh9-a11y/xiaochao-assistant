@@ -19,7 +19,7 @@ import build_qt_client as build
 class GridPackageTests(unittest.TestCase):
     def test_production_plan_describes_component_without_building(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             for name in (build.GRID_PROJECT, "experiments/qt_quick/client.py", "experiments/qt_quick/Client.qml"):
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -89,7 +89,11 @@ class GridPackageTests(unittest.TestCase):
                     rows = backend(np.array([[2., 3.], [4., 7.]], dtype=np.float32), prepared, 1., None, None)
                     self.assertTrue(rows)
                     process = psutil.Process(backend.process_id)
-                    self.assertIn(directory / "coreclr.dll", {Path(m.path) for m in process.memory_maps()})
+                    # Windows may report the same loaded file with a long or
+                    # 8.3 name. Require the installed DLL's physical identity.
+                    runtimes = [Path(m.path) for m in process.memory_maps()
+                                if Path(m.path).name.casefold() == "coreclr.dll"]
+                    self.assertTrue(any(path.samefile(directory / "coreclr.dll") for path in runtimes), runtimes)
             finally:
                 backend.close()
             self.assertFalse(process.is_running())

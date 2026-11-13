@@ -30,7 +30,7 @@ from client_paths import RuntimePaths
 from client_session import SessionService
 from imported_resource_catalog import ResourceResolver
 from test_client_live_runtime import FixtureCapture
-import s0_nightmare_group_source_fixture as source_fixture
+from original_qt_resource_fixtures import OriginalS0NightmareSourceFixture
 
 
 class ImportedFileDialogTests(unittest.TestCase):
@@ -45,7 +45,7 @@ class ImportedFileDialogTests(unittest.TestCase):
         else:
             temporary = tempfile.TemporaryDirectory(prefix='s0n-file-dialog-source-')
             cls.addClassCleanup(temporary.cleanup)
-            cls.source = source_fixture.S0NightmareGroupSourceFixture(
+            cls.source = OriginalS0NightmareSourceFixture(
                 Path(temporary.name).resolve())
             cls.source.export()
 

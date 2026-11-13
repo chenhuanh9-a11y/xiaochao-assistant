@@ -261,14 +261,18 @@ class DragProbeContracts:
             # without the unsafe unlocked exception hand-off above.
             self.session.refreshRuntime(); self.assert_retained(self.first['token'])
 
-    def test_negative_observation_revokes_and_second_miss_closes(self):
+    def test_first_negative_retains_completed_material_and_second_miss_closes(self):
         self.drag()
         self.producer.opened = False
-        for _ in range(2):
+        for miss in range(2):
             result = self.runtime.dispatch('probe_map_after_drag')
             self.assertFalse(result['success'], result)
             self.assertEqual(result['reason'], 'map-not-observed')
-            self.session.refreshRuntime(); self.assert_withdrawn(self.first['token'])
+            self.session.refreshRuntime()
+            if miss == 0:
+                self.assert_retained(self.first['token'])
+            else:
+                self.assert_withdrawn(self.first['token'])
         self.assertFalse(self.runtime.snapshot()['mapOpen'])
 
     def test_close_end_focus_and_cancel_before_delivery_never_restore(self):

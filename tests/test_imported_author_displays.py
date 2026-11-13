@@ -17,6 +17,7 @@ from client_imported_providers import SUPPORTED_CAPABILITIES, build_imported_eng
 from client_paths import RuntimePaths
 from client_providers import DisplayResourceChanged
 from client_route_preferences import prepare_display_layer
+from difficult_native_identity import NativeDifficultCandidateEngine
 from imported_author_displays import ImportedAuthorDisplays
 from imported_resource_catalog import ResourceCatalogError, ResourceResolver
 from test_imported_author_display import _AuthorDisplayFixture, encoded, image_bytes
@@ -152,6 +153,7 @@ class ImportedAuthorDisplaysTests(_AuthorDisplayFixture):
             document['layers'].append(self.layer('-3', 'images/route.jpg'))
         view, document, _ = self.package(jpeg, payloads={'images/route.jpg':image_bytes('JPEG')})
         original_maps = deepcopy(self.base.adapters.maps)
+        rank_frame = np.zeros((720, 1280, 3), dtype=np.uint8)
         factories, engine = self.factory([view])
         optional, base = engine.qt_optional_displays, engine.qt_native_base
         mid = self.source.ids[0]
@@ -176,11 +178,27 @@ class ImportedAuthorDisplaysTests(_AuthorDisplayFixture):
         self.assertFalse(report['liveReady'])
         candidate = engine.qt_native_context.structure_candidate_capability
         self.assertTrue(candidate['candidateReady'])
-        self.assertEqual(candidate['validationScope'], 'source-image-replay')
+        self.assertEqual(candidate['contract'], 's1-recorded-structure-candidate-floor-v2')
+        self.assertEqual(tuple(candidate['observedFloors']), (-1, -2, -3, -4))
+        self.assertEqual(tuple(candidate['contractFloors']), (-1, -2, -3, -4))
         self.assertFalse(candidate['liveValidated'])
         observation = engine.qt_native_context.floor_observation_capability
-        self.assertEqual(observation['validationScope'], 'source-image-replay')
+        self.assertEqual(observation['evidence'], 'private-test-four-floor-contract')
+        self.assertEqual(tuple(observation['sourceReplayFloors']), (-1, -2, -3, -4))
         self.assertFalse(observation['liveValidated'])
+        self.assertIs(type(engine), NativeDifficultCandidateEngine)
+        # Run the donor ranker against the synthetic frame and inspect its
+        # current evidence directly. Candidate readiness never becomes identity.
+        ranked = engine.rank(rank_frame, floor='-4', budget_seconds=1.0)
+        report = engine.last_s1_structure_scan
+        self.assertEqual(set(report['expectedMapIds']), set(self.source.ids))
+        self.assertEqual(report['reason'], 'supported-geometry-is-not-complete-identity-competition')
+        self.assertFalse(report['competitionComplete'])
+        self.assertFalse(report['uniqueIdentityVerified'])
+        self.assertFalse(report['identityHardGatePassed'])
+        self.assertFalse(report['automaticSelectionAuthorized'])
+        self.assertFalse(report['liveAuthorization'])
+        self.assertTrue(all(row['identityHardGatePassed'] is False for row in ranked))
         self.assertFalse(engine.memory_store.sample_validator(np.zeros((8,8,3), np.uint8)))
         self.assertIsNone(engine.memory_store.portable_seed_path)
         self.assertFalse(engine.memory_store.root.exists())

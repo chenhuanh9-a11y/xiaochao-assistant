@@ -34,8 +34,11 @@ class JointDiagnosticSchemaTests(unittest.TestCase):
         target = SimpleNamespace(_closed=False, _closing=False, _diagnostics=None,
             _notified=set(), runtime=SimpleNamespace(snapshot=lambda: {}),
             traceReported=SimpleNamespace(emit=self.service.recordTrace),
-            errorReported=SimpleNamespace(emit=self.service.record))
+            errorReported=SimpleNamespace(emit=self.service.record),
+            notificationRequested=SimpleNamespace(emit=lambda *args: None))
         target._trace = lambda stage, **values: ClientCoordinator._trace(target, stage, **values)
+        target._failure_notice_scope = ClientCoordinator._failure_notice_scope
+        target._failure_event_is_current = lambda event: ClientCoordinator._failure_event_is_current(target, event)
         for name in ('map-fit-retry', 'map-fit-waiting', 'map-fit-incomplete'):
             ClientCoordinator._on_runtime_event(target, dict(event=name,
                 reason='structure-current-geometry-failed', mode='nightmare', roundId=1,

@@ -602,7 +602,7 @@ class DisplayGuardConsumptionTests(OriginalDisplayContextMixin, unittest.TestCas
                 self.assertEqual(layer['displayKind'], 'shared-structure')
                 self.assertNotIn('authorizesIdentity', layer)
 
-    def test_real_factory_four_mode_native_warm_sources_need_no_filesystem(self):
+    def test_real_factory_four_mode_native_warm_sources_need_no_pixel_decode(self):
         for season, mode in (('s0', 'nightmare'), ('s0', 'difficult'), ('s1', 'nightmare'), ('s1', 'difficult')):
             with self.subTest(season=season, mode=mode):
                 engine, _, _, _, _ = self.original_context(season, mode)
@@ -636,12 +636,18 @@ from contextlib import contextmanager, ExitStack
 
 @contextmanager
 def no_display_resource_io():
-    from imported_resource_catalog import CatalogSnapshot
-    from imported_resource_packages import PackageView
+    """Forbid repeated pixel decode, while real operation integrity checks run.
+
+    The historical helper name is shared with the S1 tests. Current original
+    resource operations retain their real owner/currentness and integrity
+    checks. Previously admitted immutable RAM and a fresh integrity read have
+    separate contracts, tested below.
+    """
+    import cv2
+    from PIL import Image
     with ExitStack() as stack:
-        for owner, name in ((Path, 'resolve'), (Path, 'stat'), (Path, 'read_bytes'), (Path, 'read_text'),
-                (resource_snapshot_io, 'read_stable_file'), (PackageView, '_load'), (CatalogSnapshot, 'assert_current')):
-            stack.enter_context(patch.object(owner, name, side_effect=AssertionError('warm-display-resource-IO:' + name)))
+        for owner, name in ((np, 'load'), (cv2, 'imdecode'), (Image, 'open')):
+            stack.enter_context(patch.object(owner, name, side_effect=AssertionError('warm-display-pixel-decode:' + name)))
         yield
 
 

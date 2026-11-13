@@ -1012,6 +1012,8 @@ class EngineFactories(dict):
         if not rank_ready and not rank_gaps:
             rank_gaps = ['recognition-rank-unavailable']
         live_gaps = list(getattr(engine, 'qt_live_gaps', ()))
+        if not getattr(engine, 'qt_live_ready', season == 's0') and not live_gaps:
+            live_gaps = [f'season-live-contract-unavailable:{season}']
         if not rank_ready:
             live_gaps = list(dict.fromkeys(live_gaps + rank_gaps))
         return dict(available=rank_ready, dataReady=True, rankReady=rank_ready, rankGaps=rank_gaps,

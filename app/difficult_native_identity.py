@@ -120,6 +120,9 @@ class NativeDifficultPack:
 class NativeDifficultCandidateEngine(MapIdentityEngine):
     """Original ranking/validators, with the complete declared competitor scope."""
     def rank(self, frame, floor='1', limit=30, *, budget_seconds=None, _established_members=None):
+        if not getattr(self, 'qt_rank_ready', True):
+            raise ValueError(';'.join(getattr(self, 'qt_rank_gaps', ()))
+                             or 'recognition-rank-unavailable')
         structure_rank = getattr(self, 'qt_s1_structure_rank', None)
         if getattr(self, 'qt_season', None) == 's1' and callable(structure_rank):
             # Caller supplies the floor. No icon/entrance or season inference.

@@ -262,7 +262,15 @@ jobs:
                 'test_entry_resource_io.EntryResourceIOTests.test_optional_npz_and_passports_cannot_fall_back_to_valid_undeclared_files',
                 'test_entry_resource_io.EntryResourceIOTests.test_taxonomy_and_audited_reference_image_use_reader_and_match_disk_decode',
                 'test_entry_resource_io.EntryResourceIOTests.test_undeclared_and_changed_main_file_fail_even_when_disk_decoder_works',
-                'test_s1_common_wall_evidence',
+                # Keep original comparator and shared wall primitives. The
+                # later icon-qualified comparator is outside the donor path.
+                'test_s1_common_wall_evidence.CommonWallEvidenceTests.test_actual_missing_walls_still_exclude_the_wrong_reference',
+                'test_s1_common_wall_evidence.CommonWallEvidenceTests.test_real_wall_conflict_still_recovers_a_fully_incompatible_pool',
+                'test_s1_common_wall_evidence.CommonWallEvidenceTests.test_diagonal_wall_still_excludes_a_reference_missing_it',
+                'test_s1_common_wall_evidence.CommonWallEvidenceTests.test_faint_wall_keeps_relative_contrast_measurement',
+                'test_s1_common_wall_evidence.CommonWallEvidenceTests.test_crop_boundary_is_not_a_wall',
+                'test_s1_common_wall_evidence.CommonWallEvidenceTests.test_short_or_broken_runs_stay_unknown_without_changing_raw_pixels',
+                'test_s1_common_wall_evidence.CommonWallEvidenceTests.test_diagonal_length_boundary_counts_arc_samples_not_unique_pixels',
                 # Normalized P3 base/solver contracts are retired. Current
                 # producer -> import -> consumers run in original-csharp.
                 'test_export_native_base_package.NativeBaseExporterTests.test_existing_output_is_preserved_and_output_inside_source_is_rejected',
@@ -275,14 +283,33 @@ jobs:
                 'test_imported_s1_controls_profile.ImportedS1Controls.test_nonfinite_and_bounded_shape_parameters_rejected',
                 'test_imported_s1_controls_profile.ImportedS1Controls.test_current_view_guard_blocks_cached_parameters_before_and_after_pixels',
                 'test_imported_s1_controls_profile.ImportedS1Controls.test_package_manifest_and_payload_integrity_are_not_bypassed',
-                'test_entry_semantic_capability', 'test_client_imported_package_activation'
+                # Optional semantics belong to original package admission;
+                # the donor low-level constructors do not accept P3 flags.
+                'test_original_qt_resource_flow.OriginalQtResourceFlowTests.test_original_contexts_preserve_legitimate_optional_capability_gaps',
+                'test_original_qt_resource_flow.OriginalQtResourceFlowTests.test_consumed_declared_optional_schema_is_rejected_before_activation',
+                'test_original_qt_resource_flow.OriginalQtResourceFlowTests.test_absent_and_legitimately_empty_optional_sources_remain_available',
+                'test_client_imported_package_activation'
               )
             }
             # Provider/startup/activation tests retain the independent-process
             # runner and job cap; new shard completion still needs remote CI.
             'packaging-imported-runtime' {
               $modules = @(
-                'test_s1_floor_observation', 'test_s1_map_ui_geometry',
+                'test_s1_floor_observation',
+                # Original shape proofs remain. P3 sampled exclusions/gain
+                # and its independent UI producer are retired, not reattached.
+                'test_s1_map_ui_geometry.S1MapUiGeometry.test_complete_group_at_multiple_scales',
+                'test_s1_map_ui_geometry.S1MapUiGeometry.test_each_shape_missing_and_uniform_shape_colored_tile_rejected',
+                'test_s1_map_ui_geometry.S1MapUiGeometry.test_one_close_diagonal_or_orthogonal_cross_is_not_x',
+                'test_s1_map_ui_geometry.S1MapUiGeometry.test_plus_and_minus_have_different_strokes',
+                'test_s1_map_ui_geometry.S1MapUiGeometry.test_missing_or_interrupted_rail_is_not_control_group',
+                'test_s1_map_ui_geometry.S1MapUiGeometry.test_only_x_or_only_plus_or_only_rail_never_proves_map',
+                'test_s1_map_ui_geometry.S1MapUiGeometry.test_displaced_plus_cannot_match_unrelated_x_and_minus',
+                'test_s1_map_ui_geometry.S1MapUiGeometry.test_wrong_vertical_spacing_rejected',
+                'test_s1_map_ui_geometry.S1MapUiGeometry.test_duplicate_close_glyphs_are_ambiguous',
+                'test_s1_map_ui_geometry.S1MapUiGeometry.test_shapes_inside_floor_region_do_not_supply_evidence',
+                'test_s1_map_ui_geometry.S1MapUiGeometry.test_shape_observer_does_not_mutate_input',
+                'test_s1_map_ui_geometry.S1MapUiGeometry.test_bad_type_size_and_uniform_frames_fail_closed',
                 'test_client_shared_reference_context',
                 'test_client_imported_providers', 'test_client_native_base_provider',
                 # P3 proposal-only eligibility/scoped cohort orchestration is
@@ -321,7 +348,9 @@ jobs:
             }
             'packaging-imported-display' {
               $modules = @(
-                'test_client_progressive_display', 'test_client_progressive_pixels',
+                # P3 _offer_usable_fit/peer-review publication is retired.
+                # Actual donor publication, late-result and material ownership
+                # remain covered by features, original-csharp and below.
                 'test_client_display_guard_consumption', 'test_client_s1_display_ram',
                 'test_client_similarity_protocol',
                 'test_imported_author_displays',
@@ -343,20 +372,58 @@ jobs:
             'installer-reset' { $modules = @('test_addition_prepublication_recovery', 'test_linkless_package_publication', 'test_linkless_package_removal', 'test_linkless_download_adoption', 'test_download_cache_recovery', 'test_linkless_upgrade_reset', 'test_linkless_base_resources', 'test_resource_upgrade_reset', 'test_resource_reset_installer', 'test_resource_reset_snapshots', 'test_resource_reset_directory_history', 'test_resource_reset_legacy_protocol', 'test_upgrade_retirement', 'test_installer_committed_projection', 'test_installer_upgrade_journal', 'test_installer_upgrade_coordinator', 'test_installer_program_only', 'test_installer_coordinator_guards', 'test_installer_native_observation', 'test_installer_native_formats', 'test_installer_program_inventory', 'test_native_evidence_budget', 'test_resource_transaction', 'test_managed_base_absent_rollback', 'test_qt_installer_directory', 'test_qt_installer_reuse_guard', 'test_qt_installer_projection', 'test_qt_game_watcher_packaging', 'test_uninstall_data_wizard', 'test_qt_startup_failures', 'test_qt_startup_user_messages', 'test_client_resource_startup', 'test_client_resource_startup_recovery', 'test_client_author_snapshot_recovery') }
             # Generated pixels exercise real S0/S1 geometry; not real-game or end-to-end timing.
             'fit-simulation' { $modules = @(
-                'test_observation_residual_reuse', 'test_structure_cache_memory',
+                # The donor has distinct default observation domains; P3's
+                # one-kernel default-domain optimization is not a requirement.
+                'test_observation_residual_reuse.ObservationResidualReuse.test_full_solver_reuses_one_kernel_and_next_frame_recomputes',
+                'test_observation_residual_reuse.ObservationResidualReuse.test_sensor_success_without_visible_map_is_still_rejected',
+                'test_observation_residual_reuse.ObservationResidualReuse.test_local_room_additions_preserve_pose_without_relaxation',
+                'test_observation_residual_reuse.ObservationResidualReuse.test_direct_calls_are_not_cached',
+                'test_observation_residual_reuse.ObservationResidualReuse.test_exact_key_and_consumer_isolation',
+                'test_observation_residual_reuse.ObservationResidualReuse.test_exception_and_cancel_do_not_retain_cache',
+                'test_structure_cache_memory',
                 'test_idvb0059_runtime', 'test_idvb0059_retained_display', 'test_client_idvb0059_adapter',
-                'test_entry_evidence_after_scan',
+                # Race's two independent terminal evidence lanes are retired.
                 'test_client_providers', 'test_feature_test_round_lock', 'test_s1_playtest_round_lock',
                 'test_s1_playtest_round_lock_qml', 'test_s1_formal_round_lock', 'test_s1_resources_changed_chain',
                 'test_s1_native_candidate_preview', 'test_wall_raster_local_distances', 'test_marker_implicit_domain',
-                'test_marker_occluded_structure', 'test_explicit_component_alignment',
+                # Keep every donor marker test; the five later entry-proposal
+                # injection tests require a removed fit_one argument.
+                'test_marker_occluded_structure.MarkerOccludedStructureTests.test_single_pixel_marker_exclusions_only_propose_walls',
+                'test_marker_occluded_structure.MarkerOccludedStructureTests.test_clean_scales_and_partial_exploration_keep_existing_fit',
+                'test_marker_occluded_structure.MarkerOccludedStructureTests.test_unexplained_dark_gaps_and_soft_fog_do_not_become_proposals',
+                'test_marker_occluded_structure.MarkerOccludedStructureTests.test_repeated_whole_structure_is_ambiguous',
+                'test_marker_occluded_structure.MarkerOccludedStructureTests.test_locally_similar_wrong_reference_cannot_discard_conflicting_walls',
+                'test_marker_occluded_structure.MarkerOccludedStructureTests.test_budget_exhaustion_is_never_unique_after_truncation',
+                'test_marker_occluded_structure.MarkerOccludedStructureTests.test_validation_budget_is_also_fail_closed',
+                'test_marker_occluded_structure.MarkerOccludedStructureTests.test_new_recovery_checks_wall_only_peer_components',
+                'test_marker_occluded_structure.MarkerOccludedStructureTests.test_proposal_cache_is_frame_local_and_invalidated_by_filtered_evidence',
+                'test_marker_occluded_structure.MarkerOccludedStructureTests.test_scan_reuses_only_source_independent_proposals',
+                'test_marker_occluded_structure.MarkerOccludedStructureTests.test_marker_cannot_override_the_observation_crop_unknown_band',
+                'test_marker_occluded_structure.MarkerOccludedStructureTests.test_marker_secondary_recovery_cannot_hide_contradictory_primary',
+                'test_marker_occluded_structure.MarkerOccludedStructureTests.test_three_wall_hud_peer_is_unknown_not_a_contradiction',
+                'test_marker_occluded_structure.MarkerOccludedStructureTests.test_new_proposal_cancellation_and_component_budget_remain_fail_closed',
+                'test_marker_occluded_structure.MarkerOccludedStructureTests.test_proposal_counts_and_selected_source_survive_bounded_diagnostics',
+                'test_marker_occluded_structure.MarkerOccludedStructureTests.test_explicit_known_wall_reference_keeps_the_same_strict_solver',
+                'test_marker_occluded_structure.MarkerOccludedStructureTests.test_source_unknown_peer_cannot_become_a_contradiction',
+                'test_marker_occluded_structure.MarkerOccludedStructureTests.test_added_proposals_cannot_hide_existing_measured_seed_budget',
+                'test_explicit_component_alignment',
                 'test_s1_scan_observation_reuse.ScanObservationReuseTests.test_binary_membership_matches_old_kernel_for_every_uint8_value',
                 'test_s1_scan_observation_reuse.ScanObservationReuseTests.test_observation_is_lazy_and_candidate_contexts_do_not_share_projections',
                 'test_s1_scan_observation_reuse.ScanObservationReuseTests.test_chain_cache_is_rejected_after_candidate_specific_filtering',
                 'test_s1_scan_observation_reuse.ScanObservationReuseTests.test_component_arbitration_and_cancel_remain_fail_closed',
                 'test_s1_scan_observation_reuse.ScanObservationReuseTests.test_pre_cancelled_scan_does_not_extract_pixels',
                 'test_s1_fit_diagnostics', 'test_s1_manual_alignment',
-                'test_s1_structure_selection', 'test_pose_prior_contract', 'test_s1_runtime_pose_prior',
+                # The original scanner has no cross-lane pending-pose transfer.
+                'test_s1_structure_selection.ScannerContracts.test_selected_catalog_only_without_icon_or_entry_input',
+                'test_s1_structure_selection.ScannerContracts.test_single_success_never_means_unique_identity',
+                'test_s1_structure_selection.ScannerContracts.test_budget_retains_unknown_unscanned_competitors',
+                'test_s1_structure_selection.ScannerContracts.test_cancellation_after_fit_revokes_partial_success',
+                'test_s1_structure_selection.ScannerContracts.test_invalid_or_wrong_coordinate_pose_is_unknown',
+                'test_s1_structure_selection.ScannerContracts.test_floor_source_and_floor_are_explicit',
+                'test_s1_structure_selection.ScannerContracts.test_s0_cannot_construct_s1_catalog',
+                'test_s1_structure_selection.ScannerContracts.test_rank_rows_have_no_entry_or_hard_gate_authority',
+                'test_s1_structure_selection.EvidenceContracts',
+                'test_pose_prior_contract', 'test_s1_runtime_pose_prior',
                 'test_shared_recovery_residual_contract', 'test_diagnostic_redaction', 'test_diagnostic_evidence',
                 'test_g_cycle_replay', 'test_client_live_runtime'
               )

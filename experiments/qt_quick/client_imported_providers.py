@@ -120,6 +120,19 @@ class ImportedEngineFactories(EngineFactories):
     def _get(self, mode, season='s0'):
         key = context_key(mode, season)
         engine = super()._get(mode, season)
+        check = getattr(engine, 'qt_assert_resource_current', None)
+        if check is not None:
+            try:
+                check()
+            except (OSError, ValueError) as error:
+                with self._lock:
+                    if self._engines.get(key) is engine:
+                        self._engines.pop(key)
+                        self._reports[key].update(prepared=True,
+                            reason='resource-context-superseded', resourceGaps=['resource-context-superseded'],
+                            **self._unavailable_engine_fields('resource-context-superseded'))
+                raise ImportedProviderUnavailable('resource-context-superseded',
+                                                   ('resource-context-superseded',)) from error
         def entry_failed():
             with self._lock:
                 if self._engines.get(key) is engine:
@@ -138,19 +151,6 @@ class ImportedEngineFactories(EngineFactories):
                 entry_failed()
                 raise ImportedProviderUnavailable('original-entry-index-unavailable',
                     ('original-entry-index-unavailable',)) from error
-        check = getattr(engine, 'qt_assert_resource_current', None)
-        if check is not None:
-            try:
-                check()
-            except (OSError, ValueError) as error:
-                with self._lock:
-                    if self._engines.get(key) is engine:
-                        self._engines.pop(key)
-                        self._reports[key].update(prepared=True,
-                            reason='resource-context-superseded', resourceGaps=['resource-context-superseded'],
-                            **self._unavailable_engine_fields('resource-context-superseded'))
-                raise ImportedProviderUnavailable('resource-context-superseded',
-                                                   ('resource-context-superseded',)) from error
         with self._lock:
             if self._engines.get(key) is not engine:
                 raise ImportedProviderUnavailable('resource-context-superseded', ('resource-context-superseded',))

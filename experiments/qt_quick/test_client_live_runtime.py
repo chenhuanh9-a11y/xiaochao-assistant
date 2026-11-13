@@ -717,12 +717,18 @@ class LiveRuntimeContracts(unittest.TestCase):
 
     def test_current_floor_and_residual_cannot_be_supplied_by_payload(self):
         first = self.begin_and_capture()
-        self.assertEqual(self.runtime.render_payload(first["renderToken"])["floor"], "1")
+        source = self.runtime.render_payload(first["renderToken"])
+        source_core = self.runtime._core
+        self.assertEqual(source["floor"], "1")
         self.fit["selectedRouteCurrentFrameResidual"]["verified"] = False
         result = self.dispatch("capture_now", floor="2", verified=True, liveAuthorization=True)
         self.assertFalse(result["success"])
-        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
-        self.assertIsNone(self.runtime.render_payload(first["renderToken"]))
+        self.assertNotIn("renderToken", result)
+        self.assertIs(self.runtime._core, source_core)
+        retained = self.runtime.render_payload(first["renderToken"])
+        for field in ("floor", "frameId", "generation", "authorizationId"):
+            self.assertEqual(retained[field], source[field])
+        self.assertNotEqual(self.runtime._frame_id, retained["frameId"])
 
     def test_explicit_prepare_then_ordered_g_and_close_preserves_round_reference(self):
         self.assertNotIn("map", self.runtime.snapshot()["availableCommands"])
@@ -952,8 +958,10 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertEqual(self.runtime.render_payload(output[0]["renderToken"])["floor"], "2")
         self.assertEqual(events[-1]["event"], "render-ready")
 
-    def test_failed_current_residual_hides_before_recovery_and_cancellation(self):
+    def test_failed_current_residual_retains_completed_material_without_new_authority(self):
         first = self.begin_and_capture()
+        source = self.runtime.render_payload(first["renderToken"])
+        source_core = self.runtime._core
         events = []
         self.runtime.set_event_callback(lambda row: events.append(row) if row["event"] != "recognition-diagnostic" else None)
         entered, release, cancelled = threading.Event(), threading.Event(), threading.Event()
@@ -968,14 +976,18 @@ class LiveRuntimeContracts(unittest.TestCase):
              patch.object(_AlignmentHost, "fit", side_effect=slow):
             worker = threading.Thread(target=lambda: output.append(self.runtime.dispatch("refresh_map", {}, cancelled)))
             worker.start(); self.assertTrue(entered.wait(5))
-            self.assertIsNone(self.runtime.render_payload(first["renderToken"]))
-            self.assertEqual(next(row["reason"] for row in events if row["event"] == "render-revoked"), "current-frame-residual-failed")
+            self.assertIsNotNone(self.runtime.render_payload(first["renderToken"]))
+            self.assertFalse(any(row["event"] == "render-revoked" for row in events))
             cancelled.set(); release.set(); worker.join(5)
         self.assertFalse(output[0]["success"])
         self.assertTrue(output[0]["stale"])
-        self.assertFalse(self.runtime.snapshot()["core"]["displayAuthorized"])
+        self.assertIs(self.runtime._core, source_core)
+        retained = self.runtime.render_payload(first["renderToken"])
+        for field in ("frameId", "generation", "authorizationId"):
+            self.assertEqual(retained[field], source[field])
+        self.assertNotEqual(self.runtime._frame_id, source["frameId"])
 
-    def test_unknown_floor_and_closed_frame_revoke_without_solver(self):
+    def test_unknown_floor_retains_completed_material_and_confirmed_close_revokes_without_solver(self):
         first = self.begin_and_capture()
         events = []
         self.runtime.set_event_callback(lambda row: events.append(row) if row["event"] != "recognition-diagnostic" else None)
@@ -983,22 +995,25 @@ class LiveRuntimeContracts(unittest.TestCase):
              patch.object(_AlignmentHost, "fit", side_effect=AssertionError("unknown must not solve")):
             unknown = self.dispatch("refresh_map")
         self.assertEqual(unknown["reason"], "current-floor-unavailable")
-        self.assertIsNone(self.runtime.render_payload(first["renderToken"]))
+        self.assertIsNotNone(self.runtime.render_payload(first["renderToken"]))
         self.assertTrue(self.runtime.snapshot()["mapOpen"], "transient unknown must keep passive observation active")
         with patch("map_interface_observation.detect_map_interface", return_value=dict(detected=False)), \
              patch.object(_AlignmentHost, "fit", side_effect=AssertionError("closed must not solve")):
             self.dispatch("refresh_map")
-            self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
+            self.assertIsNotNone(self.runtime.render_payload(first["renderToken"]))
             self.dispatch("refresh_map")
         self.assertFalse(self.runtime.snapshot()["mapOpen"])
+        self.assertIsNone(self.runtime.render_payload(first["renderToken"]))
         evidence = [row for row in events if row["event"] == "automatic-failure-sample"]
         self.assertEqual(len(evidence), 1)
         self.assertEqual(evidence[0]["failureSample"]["missingReason"], "automatic-sampling-disabled")
         self.assertTrue(all(row["event"] == "render-revoked" for row in events
             if row["event"] != "automatic-failure-sample"))
 
-    def test_cancel_steady_verification_discards_old_authority_and_coalesces_duplicates(self):
+    def test_cancel_steady_verification_retains_completed_authority_and_coalesces_duplicates(self):
         first = self.begin_and_capture()
+        source = self.runtime.render_payload(first["renderToken"])
+        source_core = self.runtime._core
         events = []
         self.runtime.set_event_callback(lambda row: events.append(row) if row["event"] != "recognition-diagnostic" else None)
         entered, release, cancelled = threading.Event(), threading.Event(), threading.Event()
@@ -1018,8 +1033,38 @@ class LiveRuntimeContracts(unittest.TestCase):
             cancelled.set(); release.set(); worker.join(5)
         self.assertFalse(output[0]["success"])
         self.assertTrue(output[0]["stale"])
+        self.assertIs(self.runtime._core, source_core)
+        retained = self.runtime.render_payload(first["renderToken"])
+        for field in ("frameId", "generation", "authorizationId"):
+            self.assertEqual(retained[field], source[field])
+        self.assertEqual([row["event"] for row in events], ["pose-attempt"])
+
+    def test_rejected_refresh_core_commit_keeps_only_completed_source_authority(self):
+        first = self.begin_and_capture()
+        source = self.runtime.render_payload(first["renderToken"])
+        source_core = self.runtime._core
+        with patch.object(_AlignmentHost, "_canonical_geometry_current_frame_residual",
+                          return_value=(self.fit["selectedRouteCurrentFrameResidual"], None)), \
+                patch.object(type(source_core), "commit", return_value=False):
+            result = self.dispatch("refresh_map")
+        self.assertFalse(result["success"])
+        self.assertNotIn("renderToken", result)
+        self.assertIs(self.runtime._core, source_core)
+        retained = self.runtime.render_payload(source["token"])
+        for field in ("frameId", "generation", "authorizationId"):
+            self.assertEqual(retained[field], source[field])
+
+    def test_changed_resource_cannot_keep_completed_material_on_capture_failure(self):
+        first = self.begin_and_capture()
+        # Resource checker and acquisition failure are the only substitutions;
+        # the real capture dispatch, retention decision and invalidation run.
+        self.engine.qt_assert_resource_current = Mock(side_effect=ValueError("fixture-resource-replaced"))
+        with patch.object(self.capture, "capture", side_effect=OSError("fixture-capture-failure")):
+            result = self.dispatch("capture_now")
+        self.assertTrue(result["error"])
+        self.engine.qt_assert_resource_current.assert_called()
         self.assertIsNone(self.runtime.render_payload(first["renderToken"]))
-        self.assertEqual([row["event"] for row in events], ["pose-attempt", "render-revoked"])
+        self.assertFalse(self.runtime.snapshot()["displayAuthorized"])
 
     def test_same_floor_full_fit_keeps_original_sensor_classification(self):
         self.begin_and_capture()
