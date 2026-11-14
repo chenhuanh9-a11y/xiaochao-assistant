@@ -7,6 +7,7 @@ from copy import deepcopy
 from pathlib import Path
 import re
 import threading
+import traceback
 
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, Qt, QUrl, Signal, Slot
 from backend import ResourceRows
@@ -36,10 +37,14 @@ class _Signals(QObject):
 
 
 def _failure(error):
+    from diagnostic_privacy import stack_text
+
     code = getattr(error, 'code', None) or getattr(error, 'reason', None) or str(error)
     if not isinstance(code, str) or not re.fullmatch('[a-z0-9-]{1,120}', code):
         code = 'resource-operation-failed'
-    result = dict(code=code, errorType=type(error).__name__)
+    trace = traceback.TracebackException.from_exception(error, lookup_lines=False)
+    result = dict(code=code, errorType=type(error).__name__,
+                  traceback=stack_text(''.join(trace.format(chain=True))))
     details = getattr(error, 'details', {})
     if isinstance(details, dict) and details.get('stagingRetained') is True:
         result['stagingRetained'] = True
@@ -712,7 +717,7 @@ class ImportedResourceService(QObject):
                 self._finish_automatic_import(False)
                 self.changed.emit()
             elif error:
-                self._problem(error['code'], operation=kind)
+                self._problem(error['code'], operation=kind, failure=error)
                 self._finish_automatic_import(False)
             elif plan.rows:
                 self._show_activation_plan(plan)
@@ -723,7 +728,7 @@ class ImportedResourceService(QObject):
             if self._cancel.is_set():
                 self._message = '已取消删除核对，资源文件未改变。'
             elif error:
-                self._problem(error['code'], operation=kind)
+                self._problem(error['code'], operation=kind, failure=error)
             else:
                 self._removal_plan, self._removal_plan_id = value, str(token)
                 self._message = '请核对删除范围；确认前不会改变资源。'
@@ -738,7 +743,7 @@ class ImportedResourceService(QObject):
                 self._inventory_loaded = False
                 self._set_rows([])
                 self._set_available_contexts(())
-            self._problem(error['code'], operation=kind)
+            self._problem(error['code'], operation=kind, failure=error)
         else:
             self._message = ('资源切换尚未完成，请处理后再使用。' if self.recoveryRequired else
                              '资源选择记录无法读取；已保存的版本仍予保留。' if self._catalog_issue else
@@ -857,7 +862,7 @@ class ImportedResourceService(QObject):
             self.model.reconcile(rows)
             self.inventoryChanged.emit()
 
-    def _problem(self, code, *, operation=None):
+    def _problem(self, code, *, operation=None, failure=None):
         self._message = ('软件资源目录已有内容，无法整库迁入；请使用单包导入，已有资源已保留。' if code == 'resource-migration-target-exists' else
                          '迁移未完成，旧资源已保留。请核对源目录、目标空间和占用后重试。' if code.startswith('resource-migration-') else
                          '旧图包格式已停用，请获取新版资源包；已有文件已保留。' if code == 'legacy-format-unsupported' else
@@ -879,6 +884,8 @@ class ImportedResourceService(QObject):
                          '资源操作未完成，请检查资源包或重新核对本地版本。')
         self.errorReported.emit(dict(title='资源操作未完成', summary=self._message,
                                      raw=code, errorCode=code, action='resource:' + (operation or self._kind),
+                                     exceptionType=(failure or {}).get('errorType', ''),
+                                     traceback=(failure or {}).get('traceback', ''),
                                      phase='operation', kind='error'))
         self.changed.emit()
 

@@ -1592,3 +1592,242 @@ CODES = CODES | frozenset({
     'resource-migration-staging-content-changed', 'resource-migration-source-replaced',
     'resource-migration-interrupted',
 })
+
+
+# Imported-resource failures use fixed producer codes. Register their source
+# vocabulary and stack symbols here; never learn diagnostic values from a pack.
+_RESOURCE_FAILURE_SUFFIXES = {
+    'imported-array-': """
+archive-size dtype-size expanded-size header-size invalid member-count member-format npy-version
+object-dtype payload-size shape
+""".split(),
+    'imported-author-display-': """
+base-dependency-mismatch base-reference-unavailable component-changed component-context-invalid
+context-invalid decode-failed duplicate-or-foreign-layer image-declaration-invalid invalid
+layer-fields-invalid layer-unavailable layers-invalid path-unregistered reference-file-mismatch
+role-invalid schema-invalid unlisted-display-file validated-components-required
+""".split(),
+    'imported-controls-': """
+component-context-unsupported component-contexts-invalid component-root-changed
+component-type-unsupported context-invalid context-unsupported contexts-component-mismatch
+detector-unsupported entrypoint-fields-invalid entrypoint-invalid-json floor-contract-mismatch
+floor-duplicate floor-invalid floors-invalid npy-header-invalid npy-nonfinite npy-payload-invalid
+npy-payload-length-invalid npy-shape-or-dtype-invalid npy-vector-normalization-invalid
+npy-version-unsupported package-view-required template-family-invalid template-label-count-mismatch
+template-labels-incomplete template-metadata-invalid template-path-invalid template-shape-unsupported
+visual-order-invalid
+""".split(),
+    'imported-fast-structure-': """
+arrays-invalid binding-invalid binding-mismatch chains-invalid component-root-changed
+derived-mismatch index-invalid inventory-incomplete members-invalid metadata-invalid
+metadata-mismatch reference-mismatch reference-not-declared reference-unavailable
+resource-binding-invalid roles-invalid values-invalid
+""".split(),
+    'imported-native-base-': """
+canvas-invalid component-root-changed component-type-invalid coordinate-canvas-invalid
+coordinate-floor-inventory-invalid coordinate-index-invalid coordinate-lookup-invalid
+coordinate-map-inventory-invalid entry-complexity entry-context-invalid entry-directory-invalid
+entry-index-binding-invalid entry-loader-invalid entry-reference-anchor-invalid
+entry-reference-invalid entry-typed-binding-invalid entry-version-binding-invalid
+exit-template-invalid identity-context-invalid identity-context-inventory-invalid
+identity-crop-invalid identity-layer-contract-invalid identity-typed-reference-mismatch
+interfaces-invalid local-entry-geometry-invalid local-entry-next-invalid local-gates-invalid
+main-entry-geometry-invalid main-entry-room-invalid matrix-shape-invalid neutral-index-invalid
+neutral-reference-invalid numeric-field-invalid package-view-required point-shape-invalid
+proposal-entry-authority-invalid proposal-entry-semantics-invalid proposal-local-role-invalid
+proposal-side-evidence-invalid ray-invalid reference-invalid reference-type-invalid
+resource-root-invalid s1-coordinate-assets-invalid s1-coordinate-directory-invalid
+s1-coordinate-entry-invalid s1-coordinate-floor-inventory s1-coordinate-map-inventory
+search-field-invalid search-grid-invalid search-key-invalid search-metadata-invalid
+search-schema-invalid search-values-invalid search-version-invalid shared-canvas-adapter-invalid
+shared-canvas-matrix-invalid text-field-invalid typed-binding-invalid typed-index-invalid
+typed-product-invalid typed-source-kind-invalid typed-store-invalid version-binding-invalid
+version-reference-invalid version-registry-invalid
+""".split(),
+    'imported-reader-': """
+json-complexity json-invalid json-nonfinite json-size path-outside-component scope-owner-mismatch
+""".split(),
+    'imported-reviewed-groups-': """
+binding-invalid binding-not-typed binding-type-invalid bindings-invalid context-unsupported
+declarations-invalid group-not-declared member-id-invalid members-invalid reference-type-invalid
+scope-invalid structure-binding-mismatch text-invalid
+""".split(),
+    'imported-s1-controls-': """
+component-context-unsupported component-contexts-invalid component-root-changed component-unsupported
+context-fields-invalid contexts-component-mismatch detector-unsupported
+expanded-search-region-does-not-contain-fixed floor-contract-mismatch floor-invalid floors-invalid
+map-ui-correlations-invalid map-ui-fields-invalid map-ui-search-regions-invalid map-ui-sizes-invalid
+package-view-required profile-fields-invalid profile-size visual-order-invalid
+""".split(),
+    'resource-archive-': """
+archive-inventory-mismatch archive-size-limit cancelled changed corrupt-entry directory-format
+directory-size duplicate-archive-path expanded-file-size-limit expanded-size-limit
+file-directory-conflict file-integrity-mismatch file-size-limit file-size-mismatch
+file-size-or-case-mismatch invalid-components invalid-entry-count invalid-manifest invalid-zip
+io-error local-file-required manifest-missing manifest-too-large member-count not-regular-file
+publish-failed published-package-identity-mismatch read-size resource-archive-storage-conflict
+resource-archive-storage-path-invalid resource-root-not-directory stage-already-published
+stage-candidate-changed stage-candidate-missing stage-changed stage-contains-unknown-object
+stage-directory-changed stage-directory-inventory-mismatch stage-incomplete stage-path-invalid
+staged-file-changed staging-conflict staging-object-conflict staging-unavailable storage-conflict
+storage-path-invalid storage-unavailable unavailable unsafe-path unsupported-entry
+unsupported-manifest-format version-conflict
+""".split(),
+    'resource-catalog-': """
+backup-changed changed-reinspect-required commit-outcome-changed commit-outcome-uncertain
+committed-target-changed context-invalid display-duplicate format-unsupported generation-invalid
+generation-reused invalid invalid-journal invalid-object invalid-pending journal-changed
+pending-changed recovery-required reference-invalid retained-catalog-changed rollback-backup-missing
+rollback-catalog-changed rollback-target-changed staged-catalog-changed staged-metadata-changed
+superseded too-large unreadable
+""".split(),
+    'resource-package-': """
+component-identity-mismatch component-reference-changed component-root-changed
+component-root-unavailable duplicate-component-id duplicate-dependency-alias duplicate-file-path
+entrypoint-not-in-inventory entrypoint-not-regular entrypoint-unavailable extension-mismatch
+extension-unsupported file-integrity-mismatch file-not-declared file-size-mismatch file-unavailable
+incomplete-file-inventory invalid-client-compatibility invalid-component invalid-component-contexts
+invalid-component-reference invalid-components invalid-dependencies invalid-dependency-reference
+invalid-display-name invalid-entrypoint invalid-file-inventory invalid-file-path
+invalid-file-reference invalid-file-row invalid-file-size invalid-manifest invalid-manifest-fields
+invalid-package-id invalid-package-layout invalid-provenance invalid-resource-version
+inventory-invalid inventory-unreadable kind-unsupported manifest-changed manifest-replaced
+manifest-unavailable non-regular-package-entry non-regular-package-file optional-read-discarded
+package-identity-mismatch package-unavailable read-scope-closed required-read-cannot-be-discarded
+resource-root-unavailable total-size-limit undeclared-directory undeclared-file
+unexpected-package-entry unknown-component-directory unknown-component-file unknown-component-type
+unknown-file-component unknown-local-dependency unreadable unsafe-package-path
+unsupported-component-schema unsupported-manifest-format version-unavailable
+""".split(),
+    'resource-removal-': """
+catalog-pending-changed cleanup-required confirmed-file-changed dependency-limit directory-changed
+directory-not-owned entry-not-owned invalid-directory invalid-entry invalid-journal invalid-manifest
+invalid-pending invalid-plan inventory-limit journal-changed manifest-changed manifest-linked
+manifest-provenance-required metadata-too-large pending-changed plan-changed-reinspect-required
+plan-too-large recovery-required restore-conflict root-changed source-changed-before-commit
+staged-metadata-changed unavailable unknown-retained-object
+""".split(),
+}
+CODES = CODES | frozenset(prefix + suffix
+    for prefix, suffixes in _RESOURCE_FAILURE_SUFFIXES.items() for suffix in suffixes)
+CODES = CODES | frozenset("""
+imported-gallery-author-reference-unavailable imported-gallery-base-context-invalid
+imported-gallery-base-external-path-unsupported imported-gallery-default-floor-invalid
+imported-gallery-layer-unavailable imported-gallery-layer-unregistered
+imported-gallery-legacy-binding-invalid imported-gallery-reference-version-mismatch
+imported-gallery-typed-binding-invalid imported-gallery-typed-index-invalid
+imported-home-preview-encoding-failed imported-original legacy-format-unsupported
+native-base-author-entry-unsupported native-base-context-duplicate native-base-context-unsupported
+native-base-contexts-invalid native-base-coordinate-contract-unsupported
+native-base-dependencies-unsupported native-base-exit-contract-unsupported
+native-base-extractor-runtime-mismatch native-base-legacy-coordinates-unsupported
+native-base-schema-unsupported native-base-semantic-passports-unsupported
+original-controls-floor-context-mismatch original-entry-index-unavailable
+original-qt-base-component-root-changed original-qt-base-context-invalid
+original-qt-base-context-mismatch original-qt-base-external-path-unsupported
+original-qt-base-identity-season-mismatch original-qt-base-interface-invalid
+original-qt-base-layer-inventory-incomplete original-qt-base-legacy-scope-invalid
+original-qt-base-reference-unavailable original-qt-base-required
+original-qt-base-resource-owner-changed original-qt-base-typed-index-unavailable
+original-qt-base-typed-product-invalid original-qt-base-version-binding-invalid
+original-qt-resources-v1 resource-activation-unavailable resource-author-plan-conflict
+resource-binding-invalid resource-client-capability-unsupported resource-component-context-mismatch
+resource-component-invalid resource-component-not-installed resource-component-not-selected
+resource-component-role-mismatch resource-component-unavailable resource-component-unreadable
+resource-context-unavailable resource-context-unsupported resource-dependency-context-mismatch
+resource-dependency-count-limit resource-dependency-not-selected
+resource-display-base-context-not-active resource-display-base-version-mismatch
+resource-display-component-type-mismatch resource-display-identity-mismatch
+resource-display-no-usable-layers resource-display-profile-conflict
+resource-display-removal-duplicate resource-display-removal-not-selected
+resource-display-selection-ambiguous resource-display-update-removal-conflict
+resource-download-binding-invalid resource-file-reference-invalid
+resource-import-base-context-ambiguous resource-import-base-controls-pair-required
+resource-inventory-cancelled resource-inventory-catalog-limit resource-inventory-limit
+resource-inventory-linked-or-unreadable-object resource-inventory-superseded
+resource-inventory-unavailable resource-inventory-unexpected-object
+resource-previous-display-metadata-unavailable resource-reviewed-group-registry-untrusted
+resource-root-invalid resource-root-mismatch resource-root-not-directory resource-root-unavailable
+resource-root-unreadable resource-validation-failed resource-version __call__ __enter__ __exit__
+__init__ __post_init__ _activate _activate_contexts_locked _activate_imported_base
+_activate_imported_displays _activate_locked _activation_refs _admission_owner_state _affine
+_apply_inventory _archive_inventory _assert_directories _assert_observed_manifests_current
+_assert_owners _assert_retained_source_state _author_pixels _base_row _begin _bind_bundle_live_reader
+_bind_live_readers _binding_for_path _bounded_list _bounded_points _bounds _browse_declarations
+_build _build_resources _cached _canvas _catalog_failure_code _catalog_proposal _catalog_references
+_catalog_state _catalog_token _check _check_cancelled _check_open _check_payload _check_size
+_checked_reference_matches _clear_activation_plan _clear_pending _clear_prepared _clear_removal_plan
+_complete _component_context _component_for_context _component_root _context _context_base
+_context_plan _context_resources _coordinates _current _current_path_info _current_view_root _damaged
+_decode _decode_component _decode_s0_difficult _decoded _digest _directory_identity _directory_sync
+_discard_prepared_locked _display_options _display_segment _encoded _ensure_directory
+_ensure_owned_directories _ensure_resource_root _entry_policy _entry_reference _entry_rows
+_entrypoint_check _existing_version _extract_archive _fail _failure _field_header _finish
+_finish_automatic_import _finish_locked _floor_contract _get _home_profile_rows _identity
+_identity_matrix _import _inspect_locked _inventory_display_refs _is_one_exact_base_dependency
+_issue_code _json _key _known _legacy_operation _load _load_actual _load_pending _load_retained
+_managed_reference _manifest _manifest_reject _map_ui _matching_choices _metadata _model_state
+_mutate _new_stage_ownership _npy_vectors _number _object _observation_gaps _open_archive
+_owner_state _package_root _parse_manifest _paths _pending_catalog_issue _pixels_owned _plan_complete
+_plan_result _plan_summary _plan_title _points _preflight _preflight_original_entries _prepare_batch
+_prepare_display_updates _prepared_arrays _problem _progress _prove_inputs _prune_version_directories
+_qualify_missing _raise_transient _read _read_identity _read_inventory _read_manifest_bytes
+_read_many _read_member _read_operation _read_paths _read_payload _read_removal_metadata _read_scope
+_read_state _read_succeeded _read_version _ready _reference _reference_key _region _reject
+_reject_file_prefix_conflicts _reject_legacy _release_lease _removal_summary _remove_empty_directory
+_remove_owned_stage _report_import _resolved_root _resolver _resource_binding
+_resource_failure_fields _row_key _rows _s0_contexts _safe_segment _same _same_archive _scan
+_scan_packages _search_declarations _search_region _segment _selected_contexts _selected_path
+_set_available_contexts _set_rows _show_activation_plan _single_file _single_file_metadata _snapshot
+_snapshot_catalog_token _snapshot_for_root _stable_code _stamp _submit_activation_plan _summary _text
+_typed_declarations _validate_all _validate_archive_payloads _validate_context _validate_disk_tree
+_validate_manifest _validate_plan _validate_staged _value_state _verify_owned_stage
+_verify_typed_products _version_ref _view_state _walk_stage _wire _write_bound _write_owned_file
+_write_removal_metadata acquire_prepared_use activate activateDisplayComponent activatePackage
+activate_catalog_locked activate_context activate_contexts activate_display activate_displays
+admission_read_scope admit_import assert_catalog_ready assert_current assert_layer_current
+assert_removal_ready attach_legacy_entry_metadata available_base_contexts before_move
+binding_available build_imported_engine_factories build_native_engine bundle_state
+cancelActivationPlan cancelRemoval catalog_stamp check check_updates chooseActivationAuthor cleanup
+cleanupLegacyResources cleanup_migrated_resources commitActivationPlan component_ref component_view
+confirmRemoval consume contains contextAvailable decode decode_author_display decode_native_base
+decode_original_base decode_prepared decode_resource_json decode_s0_difficult dependencies depends
+discard_optional dismissActivationPlan displayModelForPackage display_reference entry_failed
+expanded_search_region field_header file_ref fixed_search_region floor_observation_capability
+for_admission for_context has_reference_binding image_bytes image_path importArchive
+importVerifiedArchive imported_home_rows infer_package_suffix inspect_archive inspect_migration
+inspect_saved_version_removal inspect_selection inventory legacy_keys legacy_reference
+legacy_route_to_native listPackages list_saved_versions live_gaps load_imported_browse_context
+load_native_resources map_ui matches matrix_profile_to_canonical migrateLegacyResources
+migrate_resources needs_display_revalidation neutral_relative observation_parameters
+operation_current parse_catalog pending_native_bindings plan_context_activation
+plan_context_activations preferred_download_suffix prepare_batch preserve qualify read_binding
+read_display_identity read_many read_owner_state read_paths read_preflighted read_resource
+read_s1_coordinate_assets read_scope read_state ready_for_validation reconcile record_consumed
+recording_for_admission recover_catalog_locked recover_saved_version_removal_locked register_owner
+relative_path release_metadata remember removal_recovery_required remove_saved_version
+rendered_display_layer requestImage requestRecovery requestRemoval require_original_base
+require_original_controls resolve_context retained_catalog_outcome_locked route_path run save
+save_archive seek seekable selected_resource_validator setLeaseProvider setStartupCompatibilityReport
+set_resource_read_scope stamp structure_candidate_capability target_still_complete tell
+unbound_layers validate validate_all validate_available validate_components validate_contexts
+validate_front_group_members validate_inventory validate_legacy_structure_declarations
+validate_namespace validate_npz_bytes validate_package_filename validate_selected_resources
+validate_structure_declarations validate_zip_directory verified_binding walk
+""".split())
+MODULES = MODULES | frozenset("""
+client_imported_activation.py client_imported_activation_plan.py client_imported_admission.py
+client_imported_browse.py client_imported_gallery_images.py client_imported_providers.py
+client_imported_resources.py imported_array_archive.py imported_author_display.py
+imported_author_displays.py imported_controls_profile.py imported_difficult_native_base.py
+imported_difficult_native_context.py imported_fast_structure.py imported_group_registry.py
+imported_legacy_references.py imported_native_base.py imported_native_context.py
+imported_original_base.py imported_original_controls.py imported_resource_activation.py
+imported_resource_archive.py imported_resource_catalog.py imported_resource_inventory.py
+imported_resource_migration.py imported_resource_packages.py imported_resource_reader.py
+imported_resource_removal.py imported_resource_selection.py imported_s1_controls_profile.py
+imported_s1_native_context.py imported_structure_declarations.py resource_package_types.py
+resource_zip_io.py
+""".split())
+EXCEPTIONS = EXCEPTIONS | frozenset({'ImportRejected', 'ResourceCatalogError', 'BadZipFile',
+    'BadZipfile', 'LargeZipFile', 'ResourceTransactionError', 'ResourceMigrationError'})
