@@ -33,7 +33,7 @@ def qtifw_component_version(product_version, *, release):
     # versions unchanged. QtIFW needs a higher package version to extract it
     # over an already installed 1.1.8 package.
     if product_version == "1.1.8":
-        return "1.1.8.1"
+        return "1.1.8.2"
     return product_version
 
 

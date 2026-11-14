@@ -27,6 +27,8 @@ PREVIOUS_VERSIONS = frozenset({"1.1.2", "1.1.3", "1.1.4", "1.1.5", "1.1.6", "1.1
 BRAND_MIGRATIONS = frozenset({"_internal/assets/brand/xingtu.ico", "_internal/assets/brand/xingtu-round.png"})
 SAME_VERSION_REPAIR_VERSION = "1.1.8"
 SAME_VERSION_REPAIR_SOURCE = "d8f195861f950ac809c3f4465493f3f42da671b1"
+SAME_VERSION_REPAIR_SOURCES = frozenset({SAME_VERSION_REPAIR_SOURCE,
+    "1925b5cb7b874c04f35f310ad51c99a51d5c56bd"})
 
 
 def _component_version(policy):
@@ -236,11 +238,11 @@ def _old_install(policy, target, *, verify_files=True):
         raise ValueError("unsupported-upgrade-source")
     if report["displayVersion"] == policy["targetVersion"]["displayVersion"] and (old["payloadSource"] != policy["payloadSource"]
             or old["instance"] != policy["instance"]):
-        # Keep same-version installs closed to other builds. This one exact
-        # 1.1.8 source is the authorized base for the emergency repair.
-        if (policy["targetVersion"]["version"], policy["targetVersion"]["displayVersion"],
-                old["payloadSource"]) != (SAME_VERSION_REPAIR_VERSION, SAME_VERSION_REPAIR_VERSION,
-                                           SAME_VERSION_REPAIR_SOURCE):
+        # Admit only the two delivered 1.1.8 builds, after the same original
+        # owner/profile/report/file checks as an ordinary native upgrade.
+        if ((policy["targetVersion"]["version"], policy["targetVersion"]["displayVersion"])
+                != (SAME_VERSION_REPAIR_VERSION, SAME_VERSION_REPAIR_VERSION)
+                or old["payloadSource"] not in SAME_VERSION_REPAIR_SOURCES):
             raise ValueError("different-same-version-installation")
     maintenance = _safe(target / "trial-maintenance.exe")
     if not maintenance.is_file() or maintenance.stat().st_nlink != 1:

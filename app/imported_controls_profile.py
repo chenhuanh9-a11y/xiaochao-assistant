@@ -207,6 +207,9 @@ class S0ControlsProfile:
         if not isinstance(view, PackageView):
             _reject('package-view-required')
         self._view, self._root = view, view.root
+        manifest = view.manifest
+        self.bank_id = manifest.get('bankId')
+        self.generator_version = manifest.get('generatorVersion')
         self.detector_id = DETECTOR_ID
         component = view.component
         declared_s0 = _s0_contexts(component)

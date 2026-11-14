@@ -4,6 +4,9 @@ The font-only producer is tools/generate_s0_floor_templates.py. Both the client
 reference and resource exporter read this same fixed numerical asset.
 """
 from functools import lru_cache
+import hashlib
+from io import BytesIO
+import json
 from pathlib import Path
 import sys
 
@@ -13,6 +16,20 @@ import numpy as np
 HEIGHT, WIDTH, DIGIT_HEIGHT = 64, 96, 40
 TEMPLATE_FAMILY = "synthetic-hershey-plain-v1"
 LABELS = (1, 2, -1, -2, 3, 4, 7, 9, -3, -4, -7, -9)
+BANK_SPEC_VERSION = TEMPLATE_FAMILY
+GENERATOR_VERSION = 's0-hershey-static-v1'
+# The explicit development generator consumes this same canonical grid.
+BANK_GRID = tuple((label, aspect, thickness, shear, sw, gap)
+    for label in LABELS
+    for aspect in ((.12, .18, .24, .30, .36) if abs(label) == 1 else (.35, .45, .55, .65, .75))
+    for thickness in (1, 2)
+    for shear in (-.12, 0., .12)
+    for sw, gap in (((.3, .1), (.45, .2), (.6, .2)) if label < 0 else ((.45, .2),)))
+BANK_ID = hashlib.sha256(json.dumps(dict(specVersion=BANK_SPEC_VERSION,
+    grid=BANK_GRID, shapeHW=[HEIGHT, WIDTH], digitHeight=DIGIT_HEIGHT),
+    sort_keys=True, separators=(',', ':'), allow_nan=False).encode('ascii')).hexdigest()[:32]
+BANK_ASSET_SHA256 = '97a02f7b075deaaf3b43241e3bac6fbd8b753b3b3f494cc1c2f560b4fd7c9fa9'
+BANK_CAPABILITY = 's0-controls-bank-identity-v1'
 
 
 def _center_ink(ink):
@@ -57,7 +74,10 @@ def _bank():
     path = root / 'control-data' / 's0-floor-templates-v1.npz'
     # Missing/broken program data is an installation error. Regeneration here
     # would recreate the CPU-dependent reference that made valid packs fail.
-    with np.load(path, allow_pickle=False) as source:
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != BANK_ASSET_SHA256:
+        raise ValueError('s0-template-resource-invalid')
+    with np.load(BytesIO(raw), allow_pickle=False) as source:
         if set(source.files) != {'vectors', 'labels'}:
             raise ValueError('s0-template-resource-invalid')
         bank, label_array = source['vectors'], source['labels']

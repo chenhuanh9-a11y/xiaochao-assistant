@@ -56,15 +56,6 @@ def assert_source_equal(name, expected, actual, *, max_report=5):
     raise ValueError('; '.join(parts))
 
 
-def _validate_controls_source(controls):
-    from s0_floor_templates import _bank
-    vectors, labels = _bank()
-    assert_source_equal('data/controls/templates.npy', vectors, controls.templates.vectors)
-    # Labels have different serialization dtypes but the client compares values.
-    if not np.array_equal(labels, controls.templates.labels):
-        raise ValueError('data/controls/profile.json: template labels differ')
-
-
 def _prepared_difference(bundle, provider):
     from fast_structure_alignment import prepare
     source = bundle.fast_structure_source
@@ -106,8 +97,8 @@ def validate_original_package(resource_root, component_refs, *, season, mode):
         try:
             bundle, controls, native, provider, check_current = load_native_resources(
                 base_view, controls_view, season=season, mode=mode)
-            if season == 's0':
-                _validate_controls_source(controls)
+            # load_native_resources has already qualified the control bank by
+            # identity/labels/row cosine; do not compare the same bank twice.
             bundle.fast_structure_source.validate_all(provider, compare_derived=True)
             check_current()
         except ValueError as error:

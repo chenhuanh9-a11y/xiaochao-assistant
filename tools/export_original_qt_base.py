@@ -1,6 +1,7 @@
 """Package the original Qt engine's data without converting its coordinates.
 
-The public archive/components are unchanged. Only resource bytes from the
+S0 manifest v2 declares its portable bank identity; v1 remains readable.
+Only resource bytes from the
 explicit source namespaces enter the base; author pixels and executables do
 not. This producer never activates a catalog or changes its source tree.
 """
@@ -105,6 +106,10 @@ def export_original_package(source_root, output, *, package_id, resource_version
         files=[dict(componentId=component, path=relative, bytes=len(raw),
                     sha256=hashlib.sha256(raw).hexdigest())
                for component, members in payloads.items() for relative, raw in sorted(members.items())])
+    if season == 's0':
+        from s0_floor_templates import BANK_ID, GENERATOR_VERSION, BANK_CAPABILITY
+        manifest.update(formatVersion=2, bankId=BANK_ID, generatorVersion=GENERATOR_VERSION)
+        manifest['clientCompatibility']['requiredCapabilities'].append(BANK_CAPABILITY)
     manifest_raw = _encoded(manifest)
     digest = hashlib.sha256(manifest_raw).hexdigest()
     ref = ComponentRef(package_id, resource_version, 'base', digest)

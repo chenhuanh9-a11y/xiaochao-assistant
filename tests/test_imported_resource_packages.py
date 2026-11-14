@@ -298,6 +298,27 @@ class ImportedResourcePackageTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, expected):
                     self.view().root
 
+    def test_control_bank_manifest_v2_preserves_typed_identity(self):
+        self.manifest.update(formatVersion=2, bankId='a' * 32, generatorVersion='s0-hershey-static-v1')
+        self.write_manifest()
+        self.assertEqual(self.view().manifest['bankId'], 'a' * 32)
+        self.assertEqual(self.view().manifest['generatorVersion'], 's0-hershey-static-v1')
+
+    def test_control_bank_manifest_rejects_missing_or_malformed_identity(self):
+        for identity in ({}, {'bankId': 'a' * 32},
+                         {'bankId': 'not-an-id', 'generatorVersion': 's0-hershey-static-v1'},
+                         {'bankId': 'a' * 32, 'generatorVersion': 'Private Player Secret'}):
+            self.manifest = copy.deepcopy(self.original_manifest)
+            self.manifest.update(formatVersion=2, **identity)
+            self.write_manifest()
+            with self.assertRaisesRegex(ValueError, 'invalid-bank-identity'):
+                self.view().manifest
+        self.manifest = copy.deepcopy(self.original_manifest)
+        self.manifest.update(bankId='a' * 32, generatorVersion='s0-hershey-static-v1')
+        self.write_manifest()
+        with self.assertRaisesRegex(ValueError, 'invalid-bank-identity'):
+            self.view().manifest
+
     def test_client_compatibility_is_canonical_and_preserves_unknown_capabilities(self):
         self.manifest['clientCompatibility']['requiredCapabilities'] = ['future-decoder']
         self.write_manifest()

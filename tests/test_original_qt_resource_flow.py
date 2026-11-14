@@ -335,7 +335,7 @@ class OriginalQtResourceFlowTests(unittest.TestCase):
             factories.invalidate()
         self.assertFalse((self.root/'transactions/pending-catalog.json').exists())
 
-    def test_s0_control_rounding_is_not_compared_with_a_local_reference(self):
+    def test_s0_control_rounding_uses_portable_comparison_without_generation(self):
         def rounded(members):
             key = 'data/controls/templates.npy'
             vectors = np.load(BytesIO(members[key]),allow_pickle=False).copy()
@@ -345,7 +345,7 @@ class OriginalQtResourceFlowTests(unittest.TestCase):
             members[key] = target.getvalue()
 
         refs = self.variant('rounded-controls',rounded)
-        with patch('s0_floor_templates._bank', side_effect=AssertionError('client reference comparison')):
+        with patch('s0_floor_templates.make_template', side_effect=AssertionError('client generation')):
             result = activate_context(self.resolver,self.paths,refs['base'],refs['controls'],
                 season='s0',mode='nightmare')
         self.assertEqual(result['status'],'catalog-activated')

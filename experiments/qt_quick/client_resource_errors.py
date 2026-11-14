@@ -6,6 +6,7 @@ start of their reason; arbitrary text (including filenames) never classifies it.
 from __future__ import annotations
 
 import re
+import math
 from resource_compatibility import safe_dependency_path
 
 
@@ -28,7 +29,7 @@ def legacy_code(reason):
 
 
 def safe_error_details(value):
-    """Accept only the dependency proof, never arbitrary exception metadata."""
+    """Keep bounded dependency/control evidence, never arbitrary exception text."""
     if not isinstance(value, dict):
         return {}
     result = {}
@@ -49,6 +50,23 @@ def safe_error_details(value):
             result[name] = None
     if type(value.get("missing")) is bool:
         result["missing"] = value["missing"]
+    shape = value.get('shape')
+    if (isinstance(shape, (list, tuple)) and len(shape) == 2
+            and all(type(dimension) is int and 0 <= dimension <= 65536 for dimension in shape)):
+        result['shape'] = list(shape)
+    for name, lower, upper in (('maxAbsDiff', 0.0, 1e12), ('worstCos', -1.000001, 1.000001)):
+        item = value.get(name)
+        if type(item) in (int, float) and lower <= item <= upper and math.isfinite(item):
+            result[name] = item
+    for name in ('worstRowIndex', 'label'):
+        item = value.get(name)
+        if type(item) is int and -4096 <= item <= 4096:
+            result[name] = item
+    bank_id = value.get('bankId')
+    if isinstance(bank_id, str) and re.fullmatch('[a-f0-9]{32}', bank_id):
+        result['bankId'] = bank_id
+    if value.get('generatorVersion') == 's0-hershey-static-v1':
+        result['generatorVersion'] = value['generatorVersion']
     return result
 
 

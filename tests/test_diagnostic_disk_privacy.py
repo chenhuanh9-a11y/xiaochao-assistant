@@ -6,6 +6,10 @@ sys.path.insert(0,str(Path(__file__).parents[1]/'app'))
 from async_event_log import AsyncEventLog
 
 class DiskPrivacyTests(unittest.TestCase):
+    def test_numeric_control_details_drop_unbounded_integers(self):
+        from client_resource_errors import safe_error_details
+        self.assertEqual(safe_error_details(dict(maxAbsDiff=10**400, worstCos=10**400)), {})
+
     def test_resource_error_codes_survive_without_exposing_paths(self):
         from diagnostic_privacy import safe_record
         for code in ('original-controls-parameters-not-source-equivalent',
@@ -18,6 +22,21 @@ class DiskPrivacyTests(unittest.TestCase):
                 self.assertNotIn('AliceSecret',json.dumps(result))
         self.assertEqual(safe_record(dict(errorCode='AliceSecret-custom-error'))['errorCode'],
                          '<redacted-text>')
+
+    def test_resource_codes_and_exception_chain_survive_repeated_sanitization(self):
+        from diagnostic_privacy import safe_record
+        code = 'imported-controls-npy-vector-normalization-invalid'
+        record = dict(errorCode=code, raw=code, exceptionType='ImportRejected',
+            traceback='File "C:/Users/AliceSecret/imported_controls_profile.py", line 199, in _npy_vectors\n'
+                      'ValueError: PrivatePlayerSecret\nImportRejected: AliceSecret')
+        cleaned = safe_record(record)
+        self.assertEqual(cleaned['raw'], code)
+        self.assertIn('ValueError', cleaned['traceback'])
+        self.assertIn('ImportRejected', cleaned['traceback'])
+        self.assertIn('imported_controls_profile.py', cleaned['traceback'])
+        self.assertEqual(safe_record(cleaned), cleaned)
+        self.assertNotIn('AliceSecret', json.dumps(cleaned))
+        self.assertNotIn('PrivatePlayerSecret', json.dumps(cleaned))
 
     def test_nested_private_fields_and_exception_text_are_removed_before_write(self):
         with tempfile.TemporaryDirectory() as folder:
