@@ -123,11 +123,14 @@ class ImportedPackageActivationTests(unittest.TestCase):
             with patch.object(activation.publication, 'activate_catalog_locked',
                               wraps=activation.publication.activate_catalog_locked) as publish, \
                     patch.object(activation, 'build_native_engine',
-                                 wraps=activation.build_native_engine) as build:
+                                 wraps=activation.build_native_engine) as build, \
+                    patch.object(activation.selection, 'inspect_selection',
+                                 wraps=inspect_selection) as inspected:
                 result = activation.activate_contexts(self.resolver, self.paths, self.contexts,
                     expected_catalog_stamp=plan.catalog_stamp)
             publish.assert_called_once()
-            self.assertEqual(build.call_count, 4)
+            self.assertEqual(inspected.call_count, 2)
+            self.assertEqual(build.call_count, 2)
             self.assertTrue(all(call.kwargs['require_rank'] is False
                                 for call in build.call_args_list))
 

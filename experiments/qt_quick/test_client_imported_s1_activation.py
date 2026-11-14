@@ -108,11 +108,14 @@ class ImportedS1ActivationTests(unittest.TestCase):
 
         with resource_runtime_lease(self.root):
             with patch.object(imported_activation, 'build_native_engine',
-                              side_effect=record_prospective):
+                              side_effect=record_prospective), \
+                    patch.object(imported_activation.selection, 'inspect_selection',
+                                 wraps=inspect_selection) as inspected:
                 result = self.activate(season='s1', mode='difficult')
 
             self.assertEqual(result['status'], 'catalog-activated')
-            self.assertEqual(len(prospective), 2)
+            self.assertEqual(inspected.call_count, 2)
+            self.assertEqual(len(prospective), 1)
             self.assertTrue(all(engine.qt_season == 's1' and not engine.qt_live_ready
                                 for engine in prospective))
             active = self.resolver.snapshot()

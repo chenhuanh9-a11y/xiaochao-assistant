@@ -1,4 +1,5 @@
 """Atomic B/C/display dependency updates through the actual activation entry."""
+from contextlib import contextmanager
 import json
 from unittest.mock import patch
 import zipfile
@@ -11,7 +12,9 @@ from client_route_preferences import prepare_display_layer
 from client_providers import DisplayResourceChanged
 from imported_author_display import decode_author_display
 from imported_resource_archive import save_archive
+from imported_resource_activation import activate_catalog_locked
 from imported_resource_catalog import ResourceCatalogError
+from imported_resource_selection import inspect_selection
 from resource_transaction import resource_runtime_lease
 import star_map_import as files
 from test_client_imported_author_selection import _AuthorSelectionFixture, changed_png
@@ -45,6 +48,28 @@ class ClientImportedAuthorJointActivationTests(_AuthorSelectionFixture):
         self.assertIn(author.component_ref, snapshot.displays)
         self.assertFalse((self.resources/'transactions/pending-catalog.json').exists())
         return snapshot
+
+    @contextmanager
+    def cancel_in_published_check(self):
+        state = dict(published=False, cancelled=False)
+
+        def publish(root, document, **kwargs):
+            def stage(name):
+                if name == 'catalog-published':
+                    state['published'] = True
+            return activate_catalog_locked(root, document, on_stage=stage, **kwargs)
+
+        def inspect_then_cancel(*args, **kwargs):
+            inspected = inspect_selection(*args, **kwargs)
+            if state['published']:
+                state['cancelled'] = True
+            return inspected
+
+        with patch.object(activation.publication, 'activate_catalog_locked', side_effect=publish), \
+                patch.object(activation.selection, 'inspect_selection', side_effect=inspect_then_cancel):
+            yield state
+        self.assertTrue(state['published'])
+        self.assertTrue(state['cancelled'])
 
     def test_joint_update_retires_broken_old_payloads_and_displays_new_pixels_atomically(self):
         dormant = _inert_component(self.resources, 'display', 'display')
@@ -121,19 +146,9 @@ class ClientImportedAuthorJointActivationTests(_AuthorSelectionFixture):
         second, _, _ = self.package(package_id='author-versioned', resource_version='v2',
                                    dependency=self.wire(next_refs['base']))
         before = (self.resources/'catalog.json').read_bytes()
-        state = dict(calls=0, cancelled=False)
-
-        def decode_then_cancel(*args):
-            display = decode_author_display(*args)
-            state['calls'] += 1
-            if state['calls'] == 2:
-                state['cancelled'] = True
-            return display
-
-        with patch('imported_author_display.decode_author_display', side_effect=decode_then_cancel):
+        with self.cancel_in_published_check() as state:
             with self.assertRaisesRegex(files.ImportRejected, 'import-cancelled'):
                 self.joint(next_refs, [second], cancelled=lambda:state['cancelled'])
-        self.assertEqual(state['calls'], 2)
         self.assertEqual((self.resources/'catalog.json').read_bytes(), before)
         self.assert_selected(self.refs, first)
 
@@ -220,21 +235,10 @@ class ClientImportedAuthorJointActivationTests(_AuthorSelectionFixture):
         registration = first.path('display.json')
         registration.write_bytes(b'{}')
         before = (self.resources/'catalog.json').read_bytes()
-        state = dict(calls=0, cancelled=False)
-        build = activation.build_native_engine
-
-        def build_then_cancel(*args, **kwargs):
-            engine = build(*args, **kwargs)
-            state['calls'] += 1
-            if state['calls'] == 2:
-                state['cancelled'] = True
-            return engine
-
-        with patch.object(activation, 'build_native_engine', side_effect=build_then_cancel):
+        with self.cancel_in_published_check() as state:
             with self.assertRaisesRegex(files.ImportRejected, 'import-cancelled'):
                 self.joint(next_refs, [], remove_display_refs=(first.component_ref,),
                     cancelled=lambda:state['cancelled'])
-        self.assertEqual(state['calls'], 2)
         self.assertEqual((self.resources/'catalog.json').read_bytes(), before)
         self.assert_selected(self.refs, first)
         self.assertEqual(registration.read_bytes(), b'{}')

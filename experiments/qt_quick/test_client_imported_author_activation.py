@@ -49,16 +49,19 @@ class ClientImportedAuthorActivationTests(_AuthorDisplayFixture):
         self.assertIsNone(self.resolver().snapshot().contexts['s1:difficult']['recognitionBase'])
         self.assertFalse((self.resources/'transactions/pending-catalog.json').exists())
 
-    def test_selected_display_is_decoded_in_both_prospective_checks_and_idempotent_retry(self):
+    def test_selected_display_is_decoded_once_with_two_input_checks_and_idempotent_retry(self):
         from imported_author_display import decode_author_display
         view, _, _ = self.package()
         self.seed_before_base_activation([view])
         resolver = self.resolver()
         with resource_runtime_lease(self.resources):
-            with patch('imported_author_display.decode_author_display', wraps=decode_author_display) as decoded:
+            with patch('imported_author_display.decode_author_display', wraps=decode_author_display) as decoded, \
+                    patch.object(activation.selection, 'inspect_selection',
+                                 wraps=inspect_selection) as inspected:
                 outcome = self.activate_base(resolver)
             self.assertEqual(outcome['status'], 'catalog-activated')
-            self.assertEqual(decoded.call_count, 2)
+            self.assertEqual(inspected.call_count, 2)
+            self.assertEqual(decoded.call_count, 1)
             before = (self.resources/'catalog.json').read_bytes()
             with patch('imported_author_display.decode_author_display', wraps=decode_author_display) as decoded:
                 repeated = self.activate_base(resolver)
@@ -83,24 +86,30 @@ class ClientImportedAuthorActivationTests(_AuthorDisplayFixture):
                 self.activate_base()
         self.assertEqual(catalog_path.read_bytes(), before)
 
-    def test_cancellation_after_second_author_decode_restores_previous_selection(self):
-        from imported_author_display import decode_author_display
+    def test_cancellation_in_published_input_check_restores_previous_selection(self):
         view, _, _ = self.package()
         catalog_path = self.seed_before_base_activation([view])
         before = catalog_path.read_bytes()
-        state = dict(calls=0, cancelled=False)
+        state = dict(published=False, cancelled=False)
 
-        def decode_then_cancel(*args):
-            display = decode_author_display(*args)
-            state['calls'] += 1
-            if state['calls'] == 2:
+        def publish(root, document, **kwargs):
+            def stage(name):
+                if name == 'catalog-published':
+                    state['published'] = True
+            return activate_catalog_locked(root, document, on_stage=stage, **kwargs)
+
+        def inspect_then_cancel(*args, **kwargs):
+            inspected = inspect_selection(*args, **kwargs)
+            if state['published']:
                 state['cancelled'] = True
-            return display
+            return inspected
 
         with resource_runtime_lease(self.resources):
-            with patch('imported_author_display.decode_author_display', side_effect=decode_then_cancel):
+            with patch.object(activation.publication, 'activate_catalog_locked', side_effect=publish), \
+                    patch.object(activation.selection, 'inspect_selection', side_effect=inspect_then_cancel):
                 with self.assertRaisesRegex(files.ImportRejected, 'import-cancelled'):
                     self.activate_base(cancelled=lambda:state['cancelled'])
-        self.assertEqual(state['calls'], 2)
+        self.assertTrue(state['published'])
+        self.assertTrue(state['cancelled'])
         self.assertEqual(catalog_path.read_bytes(), before)
         self.assertFalse((self.resources/'transactions/pending-catalog.json').exists())
