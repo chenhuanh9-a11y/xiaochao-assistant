@@ -1,0 +1,12 @@
+{
+  "format": "xingtu-recorded-frame-v1",
+  "id": "global-large",
+  "synthetic": true,
+  "note": "Synthetic geometry for the phase-1 grid slice. Not a game capture.",
+  "edgeWidth": 96,
+  "edgeHeight": 96,
+  "preparedWidth": 188,
+  "preparedHeight": 188,
+  "scale": 2.0,
+  "prior": null
+}
