@@ -24,7 +24,7 @@ from client_custom_gallery import CustomGalleryService
 from client_route_plaza import RoutePlazaService
 from custom_maps import CustomMapLibrary, GalleryStore
 from test_custom_maps import write_package
-from test_route_plaza import FakeServer
+from test_route_plaza import FakeServer, package_bytes, synthetic_navigation_catalog
 import route_plaza
 
 APP = QGuiApplication.instance() or QGuiApplication([])
@@ -67,6 +67,9 @@ class Router(QObject):
 
 class PlazaTests(unittest.TestCase):
     def setUp(self):
+        navigation = patch.object(route_plaza, "NAVIGATION_TEMPLATES", synthetic_navigation_catalog())
+        navigation.start()
+        self.addCleanup(navigation.stop)
         WORK_ROOT.mkdir(exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(prefix="qt-plaza-test-", dir=WORK_ROOT)
         self.root = Path(self.temp.name)
@@ -586,6 +589,134 @@ ClientAccount {}
             APP.processEvents()
 
 
+class NavigationDownloadTests(unittest.TestCase):
+    """Real worker/converter/gallery writer; synthetic grants and archive transport.
+
+    No socket or account storage, so the new coordinate checks can also run in
+    restricted Linux environments. Existing localhost HTTP tests stay intact.
+    """
+    load = PlazaTests.load
+    download = PlazaTests.download
+
+    def setUp(self):
+        import hashlib
+        from types import SimpleNamespace
+        navigation = patch.object(route_plaza, "NAVIGATION_TEMPLATES", synthetic_navigation_catalog())
+        navigation.start()
+        self.addCleanup(navigation.stop)
+        WORK_ROOT.mkdir(exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(prefix="qt-plaza-navigation-", dir=WORK_ROOT)
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        (self.root / ".qt-lab-owner").write_text("qt-quick-isolated-v1")
+        write_package(self.root / "maps")
+        path = self.root / "maps/manifest.json"
+        data = json.loads(path.read_text())
+        data["maps"][0]["templateId"] = "nightmare-layout-01"
+        path.write_text(json.dumps(data))
+        self.galleries = CustomGalleryService(self.root, library=CustomMapLibrary(self.root / "maps"),
+                                              default_path=self.root / "none.json")
+        self.addCleanup(self.galleries.shutdown)
+        until(lambda: not self.galleries.busy and bool(self.galleries.snapshot["galleries"]))
+        archive, length = package_bytes()
+        self.server = SimpleNamespace(archive=archive, manifest_bytes=length)
+        route = route_plaza.PlazaRoute("ver-2", "work-1", 2, "合成路线", "", "synthetic", 2, 0, "")
+        def authorized(method, endpoint, body):
+            self.assertEqual((method, endpoint, body),
+                ("POST", "/v1/community/map-galleries/ver-2/packages/nightmare/download", dict(confirmed=True)))
+            return dict(version_id=route.version_id, work_id=route.work_id, content_kind=route_plaza.CONTENT_KIND,
+                download_url="https://fixture.oss-cn-hangzhou.aliyuncs.com/package.zip",
+                package=dict(package_id="pkg-1", revision=2, object_bytes=len(self.server.archive),
+                             manifest_bytes=self.server.manifest_bytes, sha256=hashlib.sha256(self.server.archive).hexdigest()))
+        def fetch(url, length, digest):
+            self.assertEqual(length, len(self.server.archive))
+            self.assertEqual(digest, hashlib.sha256(self.server.archive).hexdigest())
+            return self.server.archive
+        transport = patch.object(route_plaza, "fetch_archive", side_effect=fetch)
+        transport.start()
+        self.addCleanup(transport.stop)
+        account = SimpleNamespace(username="synthetic", persistent=False, pending_recovery_code="", identity_context="fixture",
+                                  authorized=authorized, shutdown=lambda: None)
+        self.service = RoutePlazaService(self.root, self.galleries, account=account, listing=lambda _: [route])
+        self.addCleanup(self.service.shutdown)
+        self.threads = []
+        self.service.changed.connect(lambda: self.threads.append(threading.get_ident()))
+
+    def test_current_and_compatible_signature_preserve_real_pc_road_targets(self):
+        import io
+        import zipfile
+        self.load()
+        gallery_id = None
+        for signature in ("0" * 64, "1" * 64):
+            with self.subTest(signature=signature):
+                with zipfile.ZipFile(io.BytesIO(self.server.archive)) as bundle:
+                    maps = json.loads(bundle.read("map-gallery.json"))["maps"]
+                maps[0]["routePlan"]["navigationSignature"] = signature
+                self.server.archive, self.server.manifest_bytes = package_bytes(maps=maps)
+                gallery = self.download()
+                if gallery_id is not None:
+                    self.assertEqual(gallery["id"], gallery_id)
+                gallery_id = gallery["id"]
+                points = self.galleries.display_snapshot(gallery_id, "m")["points"]
+                self.assertEqual([(p["floor"], p["kind"], p["x"], p["y"], p["color"], p.get("start", False))
+                                  for p in points],
+                    [("1", "room", 30., 30., "#FFD54F", False),
+                     ("1", "via", 150., 30., "#FF6B81", False),
+                     ("2", "via", 30., 30., "#FFD54F", True)])
+                self.assertNotIn(route_plaza.NAVIGATION_UPDATE_MESSAGE, self.service.snapshot["message"])
+
+    def test_missing_navigation_fields_import_with_visible_historical_assumption(self):
+        import io
+        import zipfile
+        with zipfile.ZipFile(io.BytesIO(self.server.archive)) as bundle:
+            maps = json.loads(bundle.read("map-gallery.json"))["maps"]
+        del maps[0]["routePlan"]["navigationVersion"]
+        del maps[0]["routePlan"]["navigationSignature"]
+        self.server.archive, self.server.manifest_bytes = package_bytes(maps=maps)
+        self.load()
+        gallery = self.download()
+        self.assertEqual(len(self.galleries.display_snapshot(gallery["id"], "m")["points"]), 3)
+        self.assertIn("1 张旧路线缺少导航版本字段", self.service.snapshot["message"])
+        self.assertNotIn(route_plaza.NAVIGATION_UPDATE_MESSAGE, self.service.snapshot["message"])
+
+    def test_partial_download_distinguishes_version_missing_and_out_of_range(self):
+        import io
+        import zipfile
+        with zipfile.ZipFile(io.BytesIO(self.server.archive)) as bundle:
+            maps = json.loads(bundle.read("map-gallery.json"))["maps"]
+        for fields in (dict(navigationSignature="f" * 64), dict(navigationVersion=2)):
+            plan = dict(maps[0]["routePlan"], **fields)
+            maps.append(dict(routePlan=plan))
+        self.server.archive, self.server.manifest_bytes = package_bytes(maps=maps)
+        self.load()
+        gallery = self.download()
+        message = self.service.snapshot["message"]
+        self.assertIn("2 张图底图版本不符", message)
+        self.assertIn("1 张图本软件没有", message)
+        self.assertIn("1 个点超出网格范围", message)
+        self.assertIn(route_plaza.NAVIGATION_UPDATE_MESSAGE, message)
+        self.assertNotIn("不在道路上", message)
+        points = self.galleries.display_snapshot(gallery["id"], "m")["points"]
+        self.assertEqual(len(points), 3)
+        self.assertEqual((points[1]["x"], points[1]["y"]), (150.0, 30.0))
+        self.assertEqual(set(self.threads), {threading.get_ident()})
+
+    def test_all_incompatible_download_keeps_saved_gallery(self):
+        self.load()
+        gallery = self.download()
+        saved = self.galleries.path.read_bytes()
+        plan = dict(templateId="nightmare-layout-01", navigationVersion=2, navigationSignature="0" * 64,
+                    points=[dict(floor="1", cell=0, kind="via")])
+        self.server.archive, self.server.manifest_bytes = package_bytes(maps=[dict(routePlan=plan)])
+        self.service.downloadRoute("ver-2")
+        until(lambda: not self.service.snapshot["busy"] and not self.galleries.busy)
+        self.assertTrue(self.service.snapshot["error"])
+        self.assertIn(route_plaza.NAVIGATION_UPDATE_MESSAGE, self.service.snapshot["message"])
+        self.assertEqual(self.galleries.path.read_bytes(), saved)
+        self.assertEqual(len(self.galleries.display_snapshot(gallery["id"], "m")["points"]), 3)
+
+
+
 class PlazaCompositionTests(unittest.TestCase):
     def test_actual_client_navigation_screenshots_and_normal_close(self):
         import subprocess
@@ -625,7 +756,8 @@ def composition(*, submitting=False):
     try:
         WORK_ROOT.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="qt-plaza-composition-", dir=WORK_ROOT) as directory, \
-             patch.dict(os.environ, XINGTU_ACCOUNT_API_URL=server.url):
+             patch.dict(os.environ, XINGTU_ACCOUNT_API_URL=server.url), \
+             patch.object(route_plaza, "NAVIGATION_TEMPLATES", synthetic_navigation_catalog()):
             root = Path(directory)
             (root / ".qt-lab-owner").write_text("qt-quick-isolated-v1")
             library = root / "_internal/assets/custom-maps"

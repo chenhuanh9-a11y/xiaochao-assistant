@@ -523,10 +523,19 @@ class RoutePlazaService(QObject):
             lost = []
             if report["missingMaps"]:
                 lost.append(f"{report['missingMaps']} 张图本软件没有")
-            if report["droppedPoints"]:
-                lost.append(f"{report['droppedPoints']} 个点不在道路上")
+            if report.get("versionMismatchMaps"):
+                lost.append(f"{report['versionMismatchMaps']} 张图底图版本不符")
+            out_of_range = report.get("outOfRangePoints", 0)
+            if out_of_range:
+                lost.append(f"{out_of_range} 个点超出网格范围")
+            other_dropped = report["droppedPoints"] - out_of_range
+            if other_dropped:
+                lost.append(f"{other_dropped} 个点无效或不在道路上")
             self._note(f"已下载「{route.title}」：{report['maps']} 张图的路线" +
-                       (f"（{'，'.join(lost)}，已跳过）" if lost else "") + "。到「自定义地图」里选用。")
+                       (f"（{'，'.join(lost)}，已跳过）" if lost else "") + "。" +
+                       (route_plaza.NAVIGATION_UPDATE_MESSAGE + "。" if report.get("versionMismatchMaps") else "") +
+                       (f"{report['legacyNavigationMaps']} 张旧路线缺少导航版本字段，已按历史网格校验导入。"
+                        if report.get("legacyNavigationMaps") else "") + "到「自定义地图」里选用。")
 
     @Slot()
     def cancelDownload(self):

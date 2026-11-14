@@ -26,6 +26,12 @@ ROOM_CELL = 22 * 60 + 22  # Image (45, 45) -> native (90, 90): room "big" on flo
 VIA_CELL = 7 * 60 + 37    # Image (75, 15) -> native (150, 30): corridor tile on floor 1.
 
 
+def synthetic_navigation_catalog():
+    """Identity fixture for the 120x90 art; never whitelist it in production."""
+    return {"nightmare-layout-01": dict(navigationSignature="0" * 64, compatibleNavigationSignatures=["1" * 64],
+        floors={floor: dict(width=120, height=90, step=2, cols=60, rows=45) for floor in ("1", "2")})}
+
+
 def stamp(seconds):
     return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
 
@@ -146,6 +152,9 @@ class MemoryVault(SessionVault):
 
 class RoutePlazaTests(unittest.TestCase):
     def setUp(self):
+        self.navigation = mock.patch.object(route_plaza, "NAVIGATION_TEMPLATES", synthetic_navigation_catalog())
+        self.navigation.start()
+        self.addCleanup(self.navigation.stop)
         self.server = FakeServer()
         self.env = mock.patch.dict(os.environ, {"XINGTU_ACCOUNT_API_URL": self.server.url})
         self.env.start()
@@ -201,7 +210,8 @@ class RoutePlazaTests(unittest.TestCase):
         self.account.login("alice", "secret1")
         route = route_plaza.list_routes()[0]
         gallery, report = route_plaza.install(self.account, self.library, self.store, route)
-        self.assertEqual(report, dict(maps=1, missingMaps=1, droppedPoints=1))
+        self.assertEqual(report, dict(maps=1, missingMaps=1, droppedPoints=1, versionMismatchMaps=0,
+                                     versionMismatches=[], outOfRangePoints=1, legacyNavigationMaps=0))
         points = self.store.route(gallery, "m")
         self.assertEqual([(p["floor"], p["kind"], p["room"], p["x"], p["y"], p["color"], p.get("start", False))
                           for p in points],
