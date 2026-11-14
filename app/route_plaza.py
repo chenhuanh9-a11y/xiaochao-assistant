@@ -30,6 +30,8 @@ import numpy as np
 from account_service import AccountError, AccountService, USER_AGENT, api_root, call, quoted
 from custom_maps import DEFAULT_COLOR, MAX_POINTS, CustomMapLibrary, RouteError
 
+from route_scopes import SCOPES, scope_for
+
 CONTENT_KIND = "nightmare-routes"
 PACKAGE_SCHEMA = 3
 MANIFEST_NAME = "map-gallery.json"
@@ -54,6 +56,10 @@ class PlazaRoute:
     map_count: int
     download_count: int
     updated_at: str
+    scenario: str = "lady-of-misfortune"
+    mode: str = "nightmare"
+    like_count: int = 0
+    comment_count: int = 0
 
     @property
     def updated_date(self) -> str:
@@ -68,27 +74,33 @@ def _count(value) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
-def parse_summary(row) -> PlazaRoute | None:
+def parse_summary(row, *, scope_id="legacy-nightmare") -> PlazaRoute | None:
+    scope = SCOPES[scope_id]
     if not isinstance(row, dict) or row.get("content_kind") != CONTENT_KIND or row.get("status") != "approved":
         return None
     version_id, work_id = _text(row.get("id"), 64), _text(row.get("work_id"), 64)
-    if not version_id or not work_id or "nightmare" not in (row.get("modes") or ["nightmare"]):
+    if (not version_id or not work_id or scope.mode not in (row.get("modes") or ["nightmare"])
+            or row.get("scenario", "lady-of-misfortune") != scope.scenario):
         return None
     return PlazaRoute(version_id=version_id, work_id=work_id, revision=_count(row.get("revision")),
                       title=_text(row.get("title"), 80) or "未命名路线", description=_text(row.get("description"), 500),
                       author=_text(row.get("owner_username"), 40) or "匿名",
-                      map_count=_count(row.get("nightmare_map_count")), download_count=_count(row.get("download_count")),
-                      updated_at=_text(row.get("updated_at"), 40))
+                      map_count=_count(row.get(scope.mode + "_map_count")), download_count=_count(row.get("download_count")),
+                      updated_at=_text(row.get("updated_at"), 40), scenario=scope.scenario, mode=scope.mode,
+                      like_count=_count(row.get("like_count")), comment_count=_count(row.get("comment_count")))
 
 
-def list_routes(query: str = "", *, api=call) -> list[PlazaRoute]:
-    params = dict(mode="nightmare", content_kind=CONTENT_KIND, limit=50)
+def list_routes(query: str = "", *, api=call, scope_id="legacy-nightmare", sort="latest") -> list[PlazaRoute]:
+    scope = SCOPES[scope_id]
+    if sort not in ("latest", "likes", "comments"):
+        raise AccountError("路线排序无效")
+    params = dict(mode=scope.mode, scenario=scope.scenario, content_kind=CONTENT_KIND, limit=50, sort=sort)
     if str(query or "").strip():
         params["query"] = str(query).strip()[:80]
     rows = api("GET", "/v1/community/map-galleries?" + urlencode(params))
     if not isinstance(rows, list):
         raise AccountError("路线广场返回的内容无法识别")
-    return [route for route in map(parse_summary, rows) if route is not None]
+    return [route for row in rows if (route := parse_summary(row, scope_id=scope_id)) is not None]
 
 
 # Download -------------------------------------------------------------------
@@ -148,22 +160,27 @@ def read_manifest(archive: bytes, package: dict, version: dict) -> dict:
         manifest = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
         raise AccountError("路线包内容无法识别") from None
-    expected = dict(schemaVersion=PACKAGE_SCHEMA, contentKind=CONTENT_KIND, mode="nightmare",
+    scope = scope_for(version.get("scenario", "lady-of-misfortune"), package.get("mode", "nightmare"))
+    expected = dict(schemaVersion=scope.schema_version, contentKind=CONTENT_KIND, mode=scope.mode,
                     packageId=package.get("package_id"), revision=package.get("revision"), workId=version.get("work_id"))
     if not isinstance(manifest, dict) or any(manifest.get(key) != value for key, value in expected.items()):
         raise AccountError("路线包与广场记录不一致")
-    if not isinstance(manifest.get("maps"), list) or len(manifest["maps"]) > 32:
+    if scope.schema_version == 4 and (manifest.get("routeCatalogId"), manifest.get("scenario")) != (scope.id, scope.scenario):
+        raise AccountError("路线包场景与下载授权不一致")
+    if not isinstance(manifest.get("maps"), list) or not 1 <= len(manifest["maps"]) <= scope.max_maps:
         raise AccountError("路线包地图数量异常")
     return manifest
 
 
 def download(account: AccountService, route: PlazaRoute) -> tuple[dict, dict]:
     """Returns (manifest, server version record)."""
-    grant = account.authorized("POST", f"/v1/community/map-galleries/{quoted(route.version_id)}/packages/nightmare/download",
+    grant = account.authorized("POST", f"/v1/community/map-galleries/{quoted(route.version_id)}/packages/{route.mode}/download",
                                dict(confirmed=True))
     package = grant.get("package") if isinstance(grant, dict) else None
     if (not isinstance(package, dict) or grant.get("content_kind") != CONTENT_KIND
-            or grant.get("version_id") != route.version_id or grant.get("work_id") != route.work_id):
+            or grant.get("version_id") != route.version_id or grant.get("work_id") != route.work_id
+            or grant.get("scenario", "lady-of-misfortune") != route.scenario
+            or package.get("mode", "nightmare") != route.mode):
         raise AccountError("下载授权与所选路线不一致")
     sha = package.get("sha256")
     if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha):
@@ -224,6 +241,8 @@ def convert_plan(library: CustomMapLibrary, map_id: str, plan: dict) -> tuple[li
 
 def convert_manifest(library: CustomMapLibrary, manifest: dict) -> tuple[dict, dict]:
     """Galleries maps {map id: {points}} plus a report of what did not carry over."""
+    if hasattr(library, "import_maps"):
+        return library.import_maps(manifest)
     templates = {}
     for map_id, template in library.templates().items():
         if template in templates:

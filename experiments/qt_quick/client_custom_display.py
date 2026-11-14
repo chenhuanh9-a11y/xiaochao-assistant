@@ -17,6 +17,7 @@ from custom_maps import (RouteError, gallery_of, profile_id as custom_profile_id
                          mask_sha256, render_game_layer)
 from shared_structure_reference import SharedStructureReference
 from season_context import normalize_season, season_label
+from route_scopes import SCOPES
 
 
 def _route_hash(points):
@@ -42,14 +43,25 @@ class CustomGalleryDisplay:
 
     def eligibility(self, gallery_id, mode, season="s0"):
         """Prepare a preference request; this does not apply it or mark it active."""
-        if normalize_season(season) != "s0":
-            return dict(allowed=False, reason=f"season-resources-unavailable:{season}", message=f"{season_label(season)} 自定义地图资源尚不可用")
-        if mode != "nightmare":
-            return dict(allowed=False, message="切换到噩梦模式后才能使用自定义图集")
+        normalize_season(season)
+        if not any((s.season, s.runtime_mode) == (season, mode) for s in SCOPES.values()):
+            return dict(allowed=False, reason=f"season-resources-unavailable:{season}",
+                        message=f"{season_label(season)} 自定义路线资源尚不可用")
+        scope_id = str(gallery_id).partition("~")[0] if "~" in str(gallery_id) else "legacy-nightmare"
+        scope = SCOPES.get(scope_id)
+        if scope is None or (scope.season, scope.runtime_mode) != (season, mode):
+            return dict(allowed=False, reason="custom-gallery-scope-mismatch", message="图库不属于当前场景或难度")
         try:
             state = self.service.display_snapshot(str(gallery_id))
             if state is None:
                 return dict(allowed=False, message="图集不存在、正在准备或已被其他操作修改")
+            scope = getattr(state["library"], "scope", None)
+            if scope is not None:
+                if (scope.season, scope.runtime_mode) != (season, mode):
+                    return dict(allowed=False, message="请在主页面切换到「" + scope.label + "」后使用此图库")
+            elif season != "s0" or mode != "nightmare":
+                return dict(allowed=False, reason=f"season-resources-unavailable:{season}",
+                            message="此图库用于灾厄之女噩梦模式")
             if not state["library"].available:
                 return dict(allowed=False, message=state["library"].error or "自定义地图资源未安装")
             return dict(allowed=True, galleryId=state["galleryId"],
@@ -57,9 +69,13 @@ class CustomGalleryDisplay:
         except (OSError, ValueError, TypeError, KeyError) as error:
             return dict(allowed=False, message=f"图集不可用：{error}")
 
-    def use_request(self, gallery_id, mode, season="s0", *, fallback_profile="wang-qingxin"):
-        if normalize_season(season) != "s0":
-            return dict(success=False, applied=False, reason=f"season-resources-unavailable:{season}", message=f"{season_label(season)} 资源尚不可用")
+    def use_request(self, gallery_id, mode, season="s0", *, fallback_profile=None):
+        normalize_season(season)
+        if not any((s.season, s.runtime_mode) == (season, mode) for s in SCOPES.values()):
+            return dict(success=False, applied=False, reason=f"season-resources-unavailable:{season}",
+                        message=f"{season_label(season)} 自定义路线资源尚不可用")
+        if fallback_profile is None:
+            fallback_profile = "shared-structure" if season == "s1" else "wang-qingxin"
         if not gallery_id:
             return dict(success=True, applied=False, galleryId="", profileId=fallback_profile,
                         message="正在恢复作者路线")
@@ -99,16 +115,10 @@ class CustomGalleryDisplay:
 
     def layer(self, profile, map_id, floor, reference, mode, season="s0"):
         """Return BGRA for the runtime's existing single BGRA→RGBA conversion."""
-        if normalize_season(season) != "s0":
-            with self._lock:
-                self._last_error = f"season-resources-unavailable:{season}"
-            return None
         gallery_id = gallery_of(profile)
         if gallery_id is None:
             return None
         try:
-            if mode != "nightmare":
-                raise ValueError("custom-gallery-nightmare-only")
             if not isinstance(reference, SharedStructureReference):
                 raise ValueError("custom-gallery-typed-reference-required")
             binding = reference.metadata.get("binding")
@@ -119,6 +129,12 @@ class CustomGalleryDisplay:
             if state is None:
                 raise ValueError("custom-gallery-unavailable-or-changed")
             library = state["library"]
+            scope = getattr(library, "scope", None)
+            if scope is not None:
+                if (scope.season, scope.runtime_mode) != (season, mode):
+                    raise ValueError("custom-gallery-scope-mismatch")
+            elif season != "s0" or mode != "nightmare":
+                raise ValueError("custom-gallery-nightmare-only")
             if not library.available or not library.has(map_id):
                 raise ValueError(library.error or "custom-map-unavailable")
             # The production contract checks BOTH native shape and exact clean
@@ -138,7 +154,8 @@ class CustomGalleryDisplay:
             with self._lock:
                 cached = self._layers.get(key)
             if cached is None:
-                pixels = render_game_layer(library, str(map_id), str(floor), state["points"], point_numbers=point_numbers)
+                pixels = (library.render_layer(str(map_id), str(floor), reference, state["points"], point_numbers=point_numbers)
+                          if scope is not None else render_game_layer(library, str(map_id), str(floor), state["points"], point_numbers=point_numbers))
                 if (pixels.dtype != np.uint8 or pixels.ndim != 3 or pixels.shape[2] != 4
                         or tuple(pixels.shape[:2]) != tuple(reference.shape)):
                     raise ValueError("custom-gallery-native-canvas-mismatch")

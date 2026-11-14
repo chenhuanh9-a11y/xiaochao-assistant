@@ -23,9 +23,10 @@ ApplicationWindow {
             return {id: row.runtimeProfileId || row.id, name: row.name}
         })
         var custom = customGalleryService.snapshot
-        if (!routeChoices.busy && routeChoices.season === "s0" && routeChoices.mode === "nightmare" && custom.available)
+        if (!routeChoices.busy && routeChoices.season === (custom.scenario === "phosphorescence" ? "s1" : "s0")
+                && routeChoices.mode === (custom.mode === "hard" ? "difficult" : "nightmare") && custom.available)
             for (var i = 0; i < custom.galleries.length; i++)
-                options.push({id: "custom:" + custom.galleries[i].id, name: custom.galleries[i].name})
+                options.push({id: "custom:" + (custom.scopeId && custom.scopeId !== "legacy-nightmare" ? custom.scopeId + "~" : "") + custom.galleries[i].id, name: custom.galleries[i].name})
         return options
     }
     Connections { target: clientCoordinator; function onPageRequested(name) { root.page = name } }

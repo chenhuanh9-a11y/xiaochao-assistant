@@ -24,6 +24,8 @@ from account_service import AccountError, quoted
 from custom_maps import DEFAULT_COLOR
 from route_plaza import CONTENT_KIND, MANIFEST_NAME, MAX_MANIFEST_BYTES, _download_url_allowed
 
+from route_scopes import SCOPES
+
 BASE = "/v1/community/map-galleries"
 CONTENT_TYPE = "application/x-xingtu-gallery"
 MAX_PACKAGE_BYTES = 64 * 1024 * 1024
@@ -264,8 +266,10 @@ def _json(value):
 
 
 def prepare_maps(library, gallery, *, cancelled=lambda: False):
-    if gallery.get("readonly") or gallery.get("source") or gallery.get("id") == "default":
-        raise AccountError("请选择自己的可编辑图库；下载作品请先复制后编辑")
+    if gallery.get("readonly") or gallery.get("source") or gallery.get("originWorkId") or gallery.get("id") == "default":
+        raise AccountError("请选择自己的可编辑图库；下载作品及其副本仅供个人使用")
+    if hasattr(library, "package_maps"):
+        return library.package_maps(gallery, cancelled)
     maps, seen = [], set()
     for map_id, row in gallery.get("maps", {}).items():
         if not row.get("points"):
@@ -289,22 +293,31 @@ class Package:
     payload: dict
 
 
-def build_package(draft, gallery_id, maps, title, author, *, upload_identity=None):
+def build_package(draft, gallery_id, maps, title, author, *, upload_identity=None, scope_id="legacy-nightmare", source_work_id=None):
+    scope = SCOPES[scope_id]
     validate_version(draft)
-    packages = [p for p in draft["packages"] if p.get("mode") == "nightmare"]
-    if len(packages) > 1 or any(p.get("mode") != "nightmare" for p in draft["packages"]):
+    if draft.get("scenario", "lady-of-misfortune") != scope.scenario:
+        raise AccountError("投稿场景与所选图库不一致")
+    packages = [p for p in draft["packages"] if p.get("mode") == scope.mode]
+    if len(packages) > 1 or any(p.get("mode") != scope.mode for p in draft["packages"]):
         raise AccountError("服务器返回的投稿包模式重复或不一致")
     work = identity(draft["work_id"])
     # Java UUID.nameUUIDFromBytes: MD5 without a namespace prefix.
-    seed = f"xingtu-map-gallery:{work}:nightmare:{gallery_id.strip().lower()}"
+    seed = f"xingtu-map-gallery:{work}:{scope.mode}:{gallery_id.strip().lower()}"
     package_id = identity(packages[0].get("package_id")) if packages else str(uuid.UUID(bytes=hashlib.md5(seed.encode()).digest(), version=3))
     revision = _integer(packages[0].get("revision"), 1, 2**31 - 2) + 1 if packages else 1
     if upload_identity is not None:
         package_id = identity(upload_identity[0])
         revision = _integer(upload_identity[1], 1, 2**31 - 1)
-    manifest = dict(schemaVersion=3, contentKind=CONTENT_KIND, mode="nightmare", workId=work,
+    manifest = dict(schemaVersion=scope.schema_version, contentKind=CONTENT_KIND, mode=scope.mode, workId=work,
                     packageId=package_id, revision=revision, title=title, author=author,
-                    minClientVersion="1.11.2", imageCount=0, maps=maps, routeEntryFloor="1")
+                    minClientVersion="1.11.2", imageCount=0, maps=maps, routeEntryFloor="b1" if scope.season == "s1" else "1")
+    if scope.schema_version == 4:
+        manifest.update(scenario=scope.scenario, routeCatalogId=scope.id, minClientVersion="1.11.12")
+    if source_work_id:
+        manifest["sourceWorkId"] = source_work_id
+    if not 1 <= len(maps) <= scope.max_maps:
+        raise AccountError("路线地图数量不符合当前难度")
     raw = _json(manifest)
     if len(raw) > MAX_MANIFEST_BYTES:
         raise AccountError("路线清单超过 6 MiB")
@@ -317,10 +330,12 @@ def build_package(draft, gallery_id, maps, title, author, *, upload_identity=Non
     if len(archive) > MAX_PACKAGE_BYTES:
         raise AccountError("路线包超过 64 MiB")
     sha = hashlib.sha256(archive).hexdigest()
-    payload = dict(schema_version=3, work_id=work, package_id=package_id, package_revision=revision,
-                   mode="nightmare", map_count=len(maps), image_count=0, manifest_bytes=len(raw),
+    payload = dict(schema_version=scope.schema_version, work_id=work, package_id=package_id, package_revision=revision,
+                   mode=scope.mode, map_count=len(maps), image_count=0, manifest_bytes=len(raw),
                    object_bytes=len(archive), sha256=sha, content_type=CONTENT_TYPE,
                    idempotency_key=f"{draft['id']}-{package_id}-{revision}-{sha[:16]}")
+    if scope.schema_version == 4:
+        payload["scenario"] = scope.scenario
     return Package(archive, payload)
 
 
@@ -376,9 +391,12 @@ class Submission:
     retry first reads the server state; a lost submit response cannot create a
     duplicate work or re-upload an already bound package.
     """
-    def __init__(self, gallery_id, maps, title, description, *, version=None):
+    def __init__(self, gallery_id, maps, title, description, *, version=None, scope_id="legacy-nightmare"):
+        self.scope_id = scope_id
         self.gallery_id, self.maps = gallery_id, maps
         self.metadata = metadata(title, description)
+        if scope_id != "legacy-nightmare":
+            self.metadata["scenario"] = SCOPES[scope_id].scenario
         self.version = version
         self.draft = None
         self.package = None
@@ -414,7 +432,7 @@ class Submission:
         if draft["status"] not in ("draft", "rejected"):
             raise AccountError("投稿状态已变化，请刷新「我的投稿」后重试", 409)
         if self.package is None:
-            self.package = build_package(draft, self.gallery_id, self.maps, self.metadata["title"], account.username)
+            self.package = build_package(draft, self.gallery_id, self.maps, self.metadata["title"], account.username, scope_id=self.scope_id)
         package = self.package
         path = BASE + "/" + quoted(draft["id"])
         if not self.bound:
@@ -428,7 +446,7 @@ class Submission:
                 if failure.status != 409 or failure.upload_identity is None:
                     raise
                 self.package = package = build_package(draft, self.gallery_id, self.maps,
-                    self.metadata["title"], account.username, upload_identity=failure.upload_identity)
+                    self.metadata["title"], account.username, upload_identity=failure.upload_identity, scope_id=self.scope_id)
                 session = api("POST", path + "/upload-sessions", package.payload)
             if (not isinstance(session, dict) or session.get("status") not in ("created", "completed")
                     or session.get("gallery_version_id") != draft["id"] or session.get("work_id") != draft["work_id"]

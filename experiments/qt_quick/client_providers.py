@@ -929,15 +929,13 @@ class EngineFactories(dict):
                 self._attach_custom_display(engine, mode, season)
 
     def _attach_custom_display(self, engine, mode, season="s0"):
-        if normalize_season(season) != "s0":
-            engine.qt_custom_display = engine.qt_base_display = None
-            return
         provider = self._custom_display
         engine.qt_custom_display = (lambda profile, map_id, floor, reference:
-            provider(profile, map_id, floor, reference, mode)) if provider is not None else None
+            provider(profile, map_id, floor, reference, mode) if season == "s0" else
+            provider(profile, map_id, floor, reference, mode, season)) if provider is not None else None
         base = self._base_display
         engine.qt_base_display = (lambda map_id, floor, reference:
-            base(map_id, floor, reference, mode)) if base is not None else None
+            base(map_id, floor, reference, mode)) if base is not None and season == "s0" else None
 
     def prepare(self, cancelled=None, *, season="s0"):
         for mode in modes_for_season(season):
