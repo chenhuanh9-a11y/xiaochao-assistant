@@ -79,8 +79,10 @@ def _validate_context(inspected, paths, base_ref, controls_ref, *, season, mode,
                     raise catalog.ResourceCatalogError('resource-display-no-usable-layers')
             operation_current()
             if not base_qualified:
+                # Validate declared data and bindings here. Source-equivalent
+                # numerical rederivation belongs to the export environment.
                 engine.qt_fast_structure_source.validate_all(
-                    engine.qt_shared_provider, compare_derived=True, cancelled=cancelled)
+                    engine.qt_shared_provider, compare_derived=False, cancelled=cancelled)
                 if engine.qt_logical_group_registry is not None:
                     engine.qt_logical_group_registry.validate_available(engine.qt_shared_provider)
             operation_current()

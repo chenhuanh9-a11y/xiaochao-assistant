@@ -303,7 +303,7 @@ class OriginalQtResourceFlowTests(unittest.TestCase):
                 self.assertFalse((self.root/'catalog.json').exists())
                 self.assertFalse((self.root/'transactions/pending-catalog.json').exists())
 
-    def test_fast_values_must_equal_original_preparation_before_activation(self):
+    def test_activation_consumes_stored_preparation_without_client_recomputation(self):
         source = OriginalS1SourceFixture(self.paths.installation_root/'wrong-fast')
         mid,floor = next(iter(source.prepared_resources))
         source.export()
@@ -317,12 +317,58 @@ class OriginalQtResourceFlowTests(unittest.TestCase):
             np.savez_compressed(target,**arrays)
             members[key] = target.getvalue()
 
-        refs = self.variant('bad-fast',invalid,archive_path=source.output)
-        with self.assertRaisesRegex((OSError,ValueError),'derived-mismatch'):
-            activate_context(self.resolver,self.paths,refs['base'],refs['controls'],
+        refs = self.variant('stored-fast',invalid,archive_path=source.output)
+        # Numeric source equivalence is checked by the producer. The client
+        # checks the declared bytes/schema/bindings and consumes stored arrays;
+        # hardware-dependent rederivation must not decide package availability.
+        with patch('fast_structure_alignment.prepare', side_effect=AssertionError('client rederivation')):
+            result = activate_context(self.resolver,self.paths,refs['base'],refs['controls'],
                 season='s1',mode='difficult')
-        self.assertFalse((self.root/'catalog.json').exists())
+        self.assertEqual(result['status'], 'catalog-activated')
+        factories = build_imported_engine_factories(self.resolver,self.paths)
+        try:
+            engine = factories.get_engine('difficult',season='s1')
+            reference = engine.qt_shared_provider('shared-structure',mid,floor)
+            prepared = engine.qt_fast_structure_source.read(reference,strict=True)
+            self.assertTrue(np.all(prepared.distance == 12345))
+        finally:
+            factories.invalidate()
         self.assertFalse((self.root/'transactions/pending-catalog.json').exists())
+
+    def test_s0_control_rounding_is_not_compared_with_a_local_reference(self):
+        def rounded(members):
+            key = 'data/controls/templates.npy'
+            vectors = np.load(BytesIO(members[key]),allow_pickle=False).copy()
+            vectors[0,0] = np.nextafter(vectors[0,0],np.float32(np.inf))
+            target = BytesIO()
+            np.save(target,vectors,allow_pickle=False)
+            members[key] = target.getvalue()
+
+        refs = self.variant('rounded-controls',rounded)
+        with patch('s0_floor_templates._bank', side_effect=AssertionError('client reference comparison')):
+            result = activate_context(self.resolver,self.paths,refs['base'],refs['controls'],
+                season='s0',mode='nightmare')
+        self.assertEqual(result['status'],'catalog-activated')
+
+    def test_invalid_s0_template_data_still_fails_before_activation(self):
+        for case in ('nonfinite','wrong-dtype'):
+            with self.subTest(case=case):
+                def invalid(members):
+                    key = 'data/controls/templates.npy'
+                    vectors = np.load(BytesIO(members[key]),allow_pickle=False).copy()
+                    if case == 'nonfinite':
+                        vectors[0,0] = np.nan
+                    else:
+                        vectors = vectors.astype(np.float64)
+                    target = BytesIO()
+                    np.save(target,vectors,allow_pickle=False)
+                    members[key] = target.getvalue()
+
+                refs = self.variant('invalid-controls-'+case,invalid)
+                with self.assertRaises((OSError,ValueError)):
+                    activate_context(self.resolver,self.paths,refs['base'],refs['controls'],
+                        season='s0',mode='nightmare')
+                self.assertFalse((self.root/'catalog.json').exists())
 
     def test_entry_complexity_and_nested_coordinates_are_rejected_at_admission(self):
         from export_native_base_package import ENTRIES

@@ -25,6 +25,13 @@ PACKAGE = "org.xingtu.qtifw.realtrial"
 DATA_PACKAGE = "org.xingtu.qtifw.trialdata"
 PREVIOUS_VERSIONS = frozenset({"1.1.2", "1.1.3", "1.1.4", "1.1.5", "1.1.6", "1.1.7"})
 BRAND_MIGRATIONS = frozenset({"_internal/assets/brand/xingtu.ico", "_internal/assets/brand/xingtu-round.png"})
+SAME_VERSION_REPAIR_VERSION = "1.1.8"
+SAME_VERSION_REPAIR_SOURCE = "d8f195861f950ac809c3f4465493f3f42da671b1"
+
+
+def _component_version(policy):
+    """QtIFW package version, separate from the public product version."""
+    return policy.get("packageVersion", policy["targetVersion"]["version"])
 
 
 def _installed_resource_root(target):
@@ -229,7 +236,12 @@ def _old_install(policy, target, *, verify_files=True):
         raise ValueError("unsupported-upgrade-source")
     if report["displayVersion"] == policy["targetVersion"]["displayVersion"] and (old["payloadSource"] != policy["payloadSource"]
             or old["instance"] != policy["instance"]):
-        raise ValueError("different-same-version-installation")
+        # Keep same-version installs closed to other builds. This one exact
+        # 1.1.8 source is the authorized base for the emergency repair.
+        if (policy["targetVersion"]["version"], policy["targetVersion"]["displayVersion"],
+                old["payloadSource"]) != (SAME_VERSION_REPAIR_VERSION, SAME_VERSION_REPAIR_VERSION,
+                                           SAME_VERSION_REPAIR_SOURCE):
+            raise ValueError("different-same-version-installation")
     maintenance = _safe(target / "trial-maintenance.exe")
     if not maintenance.is_file() or maintenance.stat().st_nlink != 1:
         raise ValueError("qtifw-maintenance-unavailable")
@@ -330,7 +342,7 @@ def _prepare(policy, target):
 def _native_complete(policy, target, *, maintenance_check=False):
     from qtifw_trial_helper import verify_program
     verify_program(policy, target)
-    wanted = policy["targetVersion"]["version"]
+    wanted = _component_version(policy)
     versions = _versions(target)
     if any(versions.get(name) != wanted for name in (PACKAGE, DATA_PACKAGE)):
         raise ValueError("qtifw-update-component-version-incomplete")

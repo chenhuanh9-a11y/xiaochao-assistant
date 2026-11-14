@@ -361,12 +361,13 @@ class TrialTests(unittest.TestCase):
         policy = json.loads((output / 'qtifw-trial-policy.json').read_bytes())
         self.assertTrue(policy['upgradeCapable'])
         self.assertEqual(policy['targetVersion'], record['version'])
+        self.assertEqual(policy['packageVersion'], builder.qtifw_component_version(record['version']['version'], release=True))
         self.assertEqual(policy['mapPackages'], [])
         self.assertNotIn('scope', policy)
         self.assertFalse(any('managed-base-resources' in name or name.endswith('/base.json') for name in policy['files']))
         for package in (builder.PACKAGE, builder.DATA_PACKAGE):
             metadata = ET.parse(output / 'packages' / package / 'meta/package.xml').getroot()
-            self.assertEqual(metadata.findtext('Version'), record['version']['version'])
+            self.assertEqual(metadata.findtext('Version'), policy['packageVersion'])
         component = (output / 'packages' / builder.PACKAGE / 'meta/component.js').read_text(encoding='utf8')
         self.assertNotIn('install-maps', component)
         self.assertIn('TrialUpgradeActive', component)
@@ -375,6 +376,7 @@ class TrialTests(unittest.TestCase):
         self.assertFalse((output / 'upgrade-support/boot/native-setup.exe').exists())
         receipt = json.loads((output / 'qtifw-build-record.json').read_bytes())
         self.assertEqual(receipt['payloadSource'], source['commit'])
+        self.assertEqual(receipt['qtifwPackageVersion'], policy['packageVersion'])
         self.assertFalse(receipt['installed'])
         self.assertEqual(receipt['bridgeMode'], 'native-qtifw-offline-maintenance-handoff')
 

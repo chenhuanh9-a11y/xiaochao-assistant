@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import qtifw_trial_helper as helper
 import qtifw_upgrade as upgrade
+import build_qtifw_trial as builder
 from resource_transaction import assert_resources_ready, resource_write_lock, resource_runtime_lease
 
 
@@ -123,7 +124,7 @@ class UpgradeTests(unittest.TestCase):
                     (self.program/name).unlink(missing_ok=True)
                 for name, data in self.new_values.items():
                     write(self.program/name, data)
-                self.components(self.policy["targetVersion"]["version"])
+                self.components(upgrade._component_version(self.policy))
                 write(self.target/"_installer-support/_internal/qtifw-trial-policy.json",
                       json.dumps(self.policy).encode())
             return self.native_process()
@@ -253,6 +254,69 @@ class UpgradeTests(unittest.TestCase):
     def test_native_117_upgrade_to_118_keeps_native_owner_database_and_user_bytes(self):
         self.assert_native_owner_upgrade("aa6b4384c296c5fbf3f2d808062236a0ccb40449", "1.1.7", "1.1.8")
 
+    def test_previous_112_through_117_sources_upgrade_to_the_118_package_revision(self):
+        report = json.loads(self.new_values["release-report.json"])
+        report["displayVersion"] = "1.1.8"
+        self.new_values["release-report.json"] = json.dumps(report).encode()
+        self.policy.update(targetVersion=dict(version="1.1.8", displayVersion="1.1.8"),
+                           packageVersion="1.1.8.1", files=inventory(self.new_values))
+        previous = (
+            ("1.1.2", "a" * 40),
+            ("1.1.3", "d7063612fc847067f58b71940071228721d79fe0"),
+            ("1.1.4", "4" * 40),
+            ("1.1.5", "6e5792dd5cae3dde2a2c68de320d433700743ca0"),
+            ("1.1.6", "03e1622e43603a7e3f2fc98bf97386406adc7945"),
+            ("1.1.7", "aa6b4384c296c5fbf3f2d808062236a0ccb40449"),
+        )
+        for version, source in previous:
+            with self.subTest(previous=version):
+                self.old_values = dict(self.new_values)
+                self.old["payloadSource"] = self.owner["payloadSource"] = source
+                for name, data in self.old_values.items():
+                    write(self.program/name, data)
+                for name in ("_internal/installation-profile.json", "release-report.json"):
+                    metadata = json.loads(self.old_values[name])
+                    metadata["sourceCommit"] = source
+                    if name == "release-report.json":
+                        metadata["displayVersion"] = version
+                    self.old_values[name] = json.dumps(metadata).encode()
+                    write(self.program/name, self.old_values[name])
+                self.old["files"] = inventory(self.old_values)
+                helper.write_owner(self.target, self.owner)
+                write(self.target/"_installer-support/_internal/qtifw-trial-policy.json",
+                      json.dumps(self.old).encode())
+                self.components(version)
+                result = self.perform_update_with_native_substitute()
+                self.assertTrue(result["success"])
+                self.assert_protected()
+                self.assertEqual(upgrade._versions(self.target)[upgrade.PACKAGE], "1.1.8.1")
+                self.assertFalse((self.program/upgrade.PENDING).exists())
+
+    def test_same_version_hotfix_updates_only_the_exact_original_118_source_and_is_repeatable(self):
+        self.configure_same_version_upgrade(upgrade.SAME_VERSION_REPAIR_SOURCE)
+        self.assertEqual(upgrade.check(self.policy, self.target)["mode"], "update")
+        result = self.perform_update_with_native_substitute()
+        self.assertTrue(result["success"])
+        self.assert_protected()
+        self.assertEqual(upgrade._versions(self.target)[upgrade.PACKAGE], "1.1.8.1")
+        self.assertEqual(self.policy["targetVersion"]["version"], "1.1.8")
+        self.assertEqual(upgrade.check(self.policy, self.target)["mode"], "update")
+        with patch("game_startup_watcher.control", return_value=0), \
+                patch("qtifw_upgrade._native_start", return_value=self.native_process()) as native:
+            repeated = upgrade.run(self.policy, self.target, support=self.support())
+        self.assertTrue(repeated["success"])
+        self.assertEqual(native.call_count, 2)  # QtIFW update command and persisted-controller check.
+
+    def test_same_version_unrecognized_source_remains_rejected(self):
+        self.configure_same_version_upgrade("e" * 40)
+        with self.assertRaisesRegex(ValueError, "different-same-version-installation"):
+            upgrade.check(self.policy, self.target)
+
+    def test_qtifw_package_revision_does_not_change_public_release_versions(self):
+        self.assertEqual(builder.qtifw_component_version("1.1.8", release=True), "1.1.8.1")
+        self.assertEqual(builder.qtifw_component_version("1.1.9", release=True), "1.1.9")
+        self.assertEqual(builder.qtifw_component_version("1.1.8", release=False), "1.0.0")
+
     def assert_native_owner_upgrade(self, previous, old_version, target_version):
         self.old["payloadSource"] = self.owner["payloadSource"] = previous
         for name in ("_internal/installation-profile.json", "release-report.json"):
@@ -271,16 +335,37 @@ class UpgradeTests(unittest.TestCase):
         report = json.loads(self.new_values["release-report.json"])
         report["displayVersion"] = target_version
         self.new_values["release-report.json"] = json.dumps(report).encode()
+        package_version = target_version + ".1" if target_version == "1.1.8" else target_version
         self.policy.update(targetVersion=dict(version=target_version, displayVersion=target_version),
+                           packageVersion=package_version,
                            files=inventory(self.new_values))
         self.assertEqual(upgrade.check(self.policy, self.target)["mode"], "update")
         result = self.perform_update_with_native_substitute()
         self.assertTrue(result["success"])
         self.assert_protected()
         self.assertEqual((database.read_bytes(), database.stat().st_ino), database_before)
-        self.assertEqual(upgrade._versions(self.target)[upgrade.PACKAGE], target_version)
+        self.assertEqual(upgrade._versions(self.target)[upgrade.PACKAGE], package_version)
         self.assertEqual((self.target/result["backup"]/"trial-maintenance.dat").read_bytes(), database_before[0])
         self.assertFalse((self.program/upgrade.PENDING).exists())
+
+    def configure_same_version_upgrade(self, previous):
+        self.old["payloadSource"] = self.owner["payloadSource"] = previous
+        for name in ("_internal/installation-profile.json", "release-report.json"):
+            metadata = json.loads(self.old_values[name])
+            metadata["sourceCommit"] = previous
+            if name == "release-report.json":
+                metadata["displayVersion"] = "1.1.8"
+            self.old_values[name] = json.dumps(metadata).encode()
+            write(self.program/name, self.old_values[name])
+        self.old["files"] = inventory(self.old_values)
+        helper.write_owner(self.target, self.owner)
+        write(self.target/"_installer-support/_internal/qtifw-trial-policy.json", json.dumps(self.old).encode())
+        self.components("1.1.8")
+        report = json.loads(self.new_values["release-report.json"])
+        report["displayVersion"] = "1.1.8"
+        self.new_values["release-report.json"] = json.dumps(report).encode()
+        self.policy.update(targetVersion=dict(version="1.1.8", displayVersion="1.1.8"),
+                           packageVersion="1.1.8.1", files=inventory(self.new_values))
 
     def cancel_native(self):
         with patch("game_startup_watcher.control", return_value=0), \

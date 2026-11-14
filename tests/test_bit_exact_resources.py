@@ -122,7 +122,7 @@ class OriginalExportNumericAdmissionTests(unittest.TestCase):
         # profile decoder and downstream semantic validator are all real.
         with patch.object(exporter, '_controls_payloads', side_effect=shifted):
             with self.assertRaisesRegex(ValueError,
-                    r'original-controls-parameters-not-source-equivalent.*templates.npy:.*maxULP=1;.*\[0,0\]'):
+                    r'original-base-export-semantic-invalid:.*templates.npy:.*maxULP=1;.*\[0,0\]'):
                 fixture.export()
         self.assertFalse(fixture.output.exists())
         self.assertEqual(self.snapshot(fixture.source.sourceRoot), before)

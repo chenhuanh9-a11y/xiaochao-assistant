@@ -1,4 +1,4 @@
-"""Qualify external control data for the unchanged original pixel observers."""
+"""Check observer metadata; numeric resource equivalence belongs to export."""
 import numpy as np
 
 
@@ -13,13 +13,13 @@ def require_original_controls(controls, *, season, mode):
         raise ValueError('original-controls-floor-context-mismatch')
     if season == 's0':
         from floor_control_region import VERTICAL_SEARCH_AREA, AUTO_VERTICAL_SEARCH_AREA
-        from s0_floor_templates import _bank, TEMPLATE_FAMILY
-        vectors, labels = _bank()
+        from s0_floor_templates import TEMPLATE_FAMILY
+        # S0ControlsProfile already validates the declared vectors, labels,
+        # shape, dtype, finiteness and normalization. Never generate/load a
+        # second numeric reference just to decide whether a package can enable.
         valid = (tuple(controls.fixed_search_region) == tuple(VERTICAL_SEARCH_AREA)
             and tuple(controls.expanded_search_region) == tuple(AUTO_VERTICAL_SEARCH_AREA)
-            and controls.templates.family == TEMPLATE_FAMILY
-            and np.array_equal(controls.templates.vectors, vectors)
-            and np.array_equal(controls.templates.labels, labels))
+            and controls.templates.family == TEMPLATE_FAMILY)
     else:
         from imported_s1_controls_profile import _bounds
         from s1_floor_observation import SEARCH_BOUNDS, EXPANDED_SEARCH_BOUNDS, ORDER

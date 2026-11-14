@@ -1,7 +1,8 @@
 """Use the real client readers to qualify a producer's temporary package.
 
-This never activates a catalog. Numeric diagnostics run only after a client
-validator has rejected data; they do not replace or relax its comparisons.
+This never activates a catalog. Source-equivalent control vectors and derived
+arrays are verified here before publication, rather than recomputed as a
+hardware-dependent requirement for enabling a package on the user's machine.
 """
 from contextlib import ExitStack
 from pathlib import Path
@@ -55,16 +56,13 @@ def assert_source_equal(name, expected, actual, *, max_report=5):
     raise ValueError('; '.join(parts))
 
 
-def _controls_difference(view):
-    from imported_controls_profile import S0ControlsProfile
+def _validate_controls_source(controls):
     from s0_floor_templates import _bank
-    controls = S0ControlsProfile(view)
     vectors, labels = _bank()
     assert_source_equal('data/controls/templates.npy', vectors, controls.templates.vectors)
     # Labels have different serialization dtypes but the client compares values.
     if not np.array_equal(labels, controls.templates.labels):
-        return 'data/controls/profile.json: template labels differ'
-    return ''
+        raise ValueError('data/controls/profile.json: template labels differ')
 
 
 def _prepared_difference(bundle, provider):
@@ -108,14 +106,14 @@ def validate_original_package(resource_root, component_refs, *, season, mode):
         try:
             bundle, controls, native, provider, check_current = load_native_resources(
                 base_view, controls_view, season=season, mode=mode)
+            if season == 's0':
+                _validate_controls_source(controls)
             bundle.fast_structure_source.validate_all(provider, compare_derived=True)
             check_current()
         except ValueError as error:
             detail = ''
             try:
-                if season == 's0' and str(error) == 'original-controls-parameters-not-source-equivalent':
-                    detail = _controls_difference(controls_view)
-                elif bundle is not None and str(error).startswith('original-qt-base-fast-derived-mismatch:'):
+                if bundle is not None and str(error).startswith('original-qt-base-fast-derived-mismatch:'):
                     detail = _prepared_difference(bundle, provider)
             except (OSError, ValueError, TypeError) as diagnostic:
                 detail = str(diagnostic)
