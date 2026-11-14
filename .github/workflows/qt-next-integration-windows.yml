@@ -258,7 +258,7 @@ jobs:
                 'test_imported_controls_profile.ImportedControlsProfileTests.test_cached_context_checks_catalog_and_actual_manifest_identity',
                 'test_imported_controls_profile.ImportedControlsProfileTests.test_undeclared_npy_and_stale_catalog_guard_fail_without_fallback',
                 'test_imported_s0_observation.OriginalS0ControlsLifecycleTests', 'test_identity_metadata_package_io',
-                'test_s0_fixed_template_resource', 'test_bit_exact_resources',
+                'test_s0_fixed_template_resource', 'test_original_controls_portability', 'test_bit_exact_resources',
                 'test_shared_structure_package_io', 'test_shared_version_package_io',
                 # Guarded readers remain; the restored low-level algorithm's
                 # old constructor shape is no longer the admission boundary.

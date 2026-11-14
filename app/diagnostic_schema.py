@@ -1831,3 +1831,19 @@ resource_zip_io.py
 """.split())
 EXCEPTIONS = EXCEPTIONS | frozenset({'ImportRejected', 'ResourceCatalogError', 'BadZipFile',
     'BadZipfile', 'LargeZipFile', 'ResourceTransactionError', 'ResourceMigrationError'})
+
+# Portable S0 controls qualification, including its bounded numeric evidence.
+FIELDS = FIELDS | frozenset({'bankId', 'generatorVersion', 'maxAbsDiff', 'worstRowIndex', 'worstCos'})
+CODES = CODES | frozenset('''
+original-controls-bank-version-mismatch original-controls-generator-version-mismatch
+original-controls-fixed-region-mismatch original-controls-expanded-region-mismatch
+original-controls-template-family-mismatch original-controls-template-labels-mismatch
+original-controls-template-vector-shape-mismatch original-controls-template-vector-degenerate
+original-controls-template-vector-mismatch original-controls-visual-order-mismatch
+original-controls-map-ui-sizes-mismatch original-controls-map-ui-correlation-mismatch
+original-controls-map-ui-search-mismatch controls-base-floors-mismatch
+resource-package-invalid-bank-identity s0-template-resource-invalid
+s0-controls-bank-identity-v1 s0-hershey-static-v1
+_require_s0_source_equivalent _require_s1_source_equivalent
+'''.split())
+EXCEPTIONS = EXCEPTIONS | frozenset({'OriginalControlsError'})

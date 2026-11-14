@@ -28,6 +28,8 @@ MANIFEST_NAME = 'manifest.json'
 MANIFEST_LIMIT = 4 * 1024 * 1024
 SCHEMA = 'xingtu-resource-package'
 FORMAT_VERSION = 1
+CONTROL_BANK_FORMAT_VERSION = 2
+SUPPORTED_FORMAT_VERSIONS = frozenset({FORMAT_VERSION, CONTROL_BANK_FORMAT_VERSION})
 COMPONENT_TYPES = frozenset({
     'recognition-base', 'controls-profile', 'display',
     'recognition-hints', 'reviewed-group-registry',
@@ -42,7 +44,7 @@ _COMPONENT_FIELDS = frozenset({
 _FILE_FIELDS = frozenset({'componentId', 'path', 'bytes', 'sha256'})
 _MANIFEST_FIELDS = frozenset({
     'schema', 'formatVersion', 'packageId', 'resourceVersion',
-    'clientCompatibility', 'components', 'files', 'provenance', 'displayName',
+    'clientCompatibility', 'components', 'files', 'provenance', 'displayName', 'bankId', 'generatorVersion',
 })
 
 
@@ -187,8 +189,18 @@ class PackageView:
                         'clientCompatibility', 'components', 'files'} <= set(manifest)):
             _reject('invalid-manifest-fields')
         if (manifest['schema'] != SCHEMA or type(manifest['formatVersion']) is not int
-                or manifest['formatVersion'] != FORMAT_VERSION):
+                or manifest['formatVersion'] not in SUPPORTED_FORMAT_VERSIONS):
             _reject('unsupported-manifest-format')
+        bank_fields = {'bankId', 'generatorVersion'}
+        if manifest['formatVersion'] == CONTROL_BANK_FORMAT_VERSION:
+            if (not bank_fields <= set(manifest)
+                    or not isinstance(manifest['bankId'], str)
+                    or not re.fullmatch('[a-f0-9]{32}', manifest['bankId'])
+                    or not isinstance(manifest['generatorVersion'], str)
+                    or not re.fullmatch('[a-z0-9][a-z0-9.-]{0,63}', manifest['generatorVersion'])):
+                _reject('invalid-bank-identity')
+        elif bank_fields & set(manifest):
+            _reject('invalid-bank-identity')
         package_id = _segment(manifest['packageId'], 'package-id')
         version = _segment(manifest['resourceVersion'], 'resource-version')
         if package_id != ref.package_id or version != ref.resource_version:

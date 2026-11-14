@@ -1,0 +1,50 @@
+{
+  "sourceCommit": "396eed7d1529d615d30e1da3a321dae6f4094389",
+  "generatorSource": "work/control-plan-20261114/golden/captured-source (captured with git show from sourceCommit)",
+  "capturedSourceSha256": {
+    "app/s0_floor_templates.py": "cadeb509fc70fa1ec14f02b986c2b81c7eb4a4023aafcbd0d81cbd08b6b34e7f",
+    "tools/generate_s0_floor_templates.py": "b7fa4b711192129921b8ad6eb63429188ebd89b5e1eff302ec4d2abce38afbcf"
+  },
+  "generationCommand": "python work/control-plan-20261114/golden/generate_second_golden.py --output tests/fixtures/s0-controls-golden/opencv-5.0.0-numpy-2.2.5.npz",
+  "verificationCommand": "python work/control-plan-20261114/golden/verify_golden.py --candidate tests/fixtures/s0-controls-golden/opencv-5.0.0-numpy-2.2.5.npz --baseline app/control-data/s0-floor-templates-v1.npz --report work/control-plan-20261114/golden/comparison-report.json --provenance tests/fixtures/s0-controls-golden/provenance.json",
+  "python": "3.13.3",
+  "pythonEnvironment": "alternate",
+  "opencv": "5.0.0",
+  "opencvDistribution": "5.0.0.93",
+  "opencvEnvironment": "alternate",
+  "numpy": "2.2.5",
+  "numpyEnvironment": "alternate",
+  "opencvOptimized": true,
+  "baseline": {
+    "path": "app/control-data/s0-floor-templates-v1.npz",
+    "environment": "production",
+    "bytes": 2006327,
+    "sha256": "97a02f7b075deaaf3b43241e3bac6fbd8b753b3b3f494cc1c2f560b4fd7c9fa9"
+  },
+  "candidate": {
+    "path": "tests/fixtures/s0-controls-golden/opencv-5.0.0-numpy-2.2.5.npz",
+    "environment": "alternate",
+    "bytes": 1929410,
+    "sha256": "3d5fb809fcc8b19746e94e158633bd2c1beb9cd7db13f46a8c829424e46f767c",
+    "members": [
+      "vectors",
+      "labels"
+    ],
+    "shape": [
+      720,
+      6144
+    ],
+    "vectorsDtype": "float32",
+    "labelsDtype": "int64",
+    "finite": true,
+    "labelsInExpectedOrder": true
+  },
+  "comparison": {
+    "report": "work/control-plan-20261114/golden/comparison-report.json",
+    "differentVectorElements": 4423678,
+    "maxAbsoluteVectorDifference": 0.10858726338483393,
+    "worstCos": 0.5797574121680589,
+    "cosineMean": 0.869655626380205,
+    "cosineMax": 0.954982842309719
+  }
+}

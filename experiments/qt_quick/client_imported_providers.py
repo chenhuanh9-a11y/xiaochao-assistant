@@ -15,7 +15,8 @@ from client_providers import EngineFactories, ProviderResourceBinding, ProviderU
 
 # Capabilities are granted by completed program decoders, never package claims.
 SUPPORTED_CAPABILITIES = frozenset({'native-s0-nightmare-base-v1', 'native-s0-difficult-base-v1', 's0-signed-templates-v1',
-    'native-s1-difficult-base-v1', 'native-s1-nightmare-base-v1', 's1-signed-column-geometry-v1', 'original-qt-resources-v1'})
+    'native-s1-difficult-base-v1', 'native-s1-nightmare-base-v1', 's1-signed-column-geometry-v1',
+    'original-qt-resources-v1', 's0-controls-bank-identity-v1'})
 
 
 class ImportedProviderUnavailable(ProviderUnavailable):
@@ -36,7 +37,7 @@ def load_native_resources(base_view, controls_view, *, season='s0', mode='nightm
     from client_providers import SharedReferenceProvider
     bundle = decode_original_base(base_view, season=season, mode=mode)
     controls = S1ControlsProfile(controls_view) if season == 's1' else S0ControlsProfile(controls_view)
-    require_original_controls(controls, season=season, mode=mode)
+    controls.source_qualification = require_original_controls(controls, season=season, mode=mode)
     context = controls.for_context(season, mode)
     if context is None or set(context.contract.floor_ids) != set(bundle.pack.floors):
         raise ImportedProviderUnavailable('controls-base-floors-mismatch', ('controls-base-floors-mismatch',))

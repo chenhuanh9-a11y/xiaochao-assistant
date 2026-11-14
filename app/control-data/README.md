@@ -16,3 +16,9 @@ python -B tools/generate_s0_floor_templates.py --output <新文件路径>.npz
 ```
 
 普通导出和安装构建不运行生成器。缺少或损坏该文件时应修复安装，禁止自动重建来掩盖错误。
+
+客户端按源码中的 `BANK_ASSET_SHA256` 读取固定资产；`BANK_ID` 来自生成参数规范 JSON，
+不来自浮点渲染值。新的 S0 结构包 manifest 格式为 2，声明 `bankId`、`generatorVersion`；
+旧格式 1 结构包保持兼容。两种格式均检查整数标签、形状、数值有效性和逐行余弦
+`>= 1 - 1e-6`，不做浮点逐位比较。生成器使用同一 `BANK_GRID`，只在显式开发命令中绘制。
+跨构建黄金样本位于 `tests/fixtures/s0-controls-golden/`，不含游戏素材。

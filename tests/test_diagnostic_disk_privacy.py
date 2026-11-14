@@ -6,6 +6,10 @@ sys.path.insert(0,str(Path(__file__).parents[1]/'app'))
 from async_event_log import AsyncEventLog
 
 class DiskPrivacyTests(unittest.TestCase):
+    def test_numeric_control_details_drop_unbounded_integers(self):
+        from client_resource_errors import safe_error_details
+        self.assertEqual(safe_error_details(dict(maxAbsDiff=10**400, worstCos=10**400)), {})
+
     def test_resource_error_codes_survive_without_exposing_paths(self):
         from diagnostic_privacy import safe_record
         for code in ('original-controls-parameters-not-source-equivalent',

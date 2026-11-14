@@ -15,23 +15,17 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'app'))
-from s0_floor_templates import LABELS, TEMPLATE_FAMILY, make_template
+from s0_floor_templates import BANK_GRID, BANK_ID, GENERATOR_VERSION, TEMPLATE_FAMILY, make_template
 
 
 def generate_bank():
     vectors, labels = [], []
-    for label in LABELS:
-        aspects = (.12, .18, .24, .30, .36) if abs(label) == 1 else (.35, .45, .55, .65, .75)
-        for aspect in aspects:
-            for thickness in (1, 2):
-                for shear in (-.12, 0., .12):
-                    signs = ((.3, .1), (.45, .2), (.6, .2)) if label < 0 else ((.45, .2),)
-                    for sw, gap in signs:
-                        vector = make_template(label, aspect, thickness, shear, sw, gap).ravel()
-                        vector = vector - vector.mean()
-                        vector /= max(1e-9, float(np.linalg.norm(vector)))
-                        vectors.append(vector)
-                        labels.append(label)
+    for label, aspect, thickness, shear, sw, gap in BANK_GRID:
+        vector = make_template(label, aspect, thickness, shear, sw, gap).ravel()
+        vector = vector - vector.mean()
+        vector /= max(1e-9, float(np.linalg.norm(vector)))
+        vectors.append(vector)
+        labels.append(label)
     return np.array(vectors, np.float32), np.array(labels, np.int64)
 
 
@@ -42,14 +36,15 @@ def main():
     vectors, labels = generate_bank()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open('xb') as target:
-        np.savez_compressed(target, vectors=vectors, labels=labels, allow_pickle=False)
+        np.savez_compressed(target, vectors=vectors, labels=labels)
     with np.load(args.output, allow_pickle=False) as stored:
         if (stored['vectors'].dtype != vectors.dtype
-                or not np.array_equal(stored['vectors'], vectors)
+                or stored['vectors'].tobytes() != vectors.tobytes()
                 or not np.array_equal(stored['labels'], labels)):
             raise ValueError('s0-template-asset-roundtrip-mismatch')
     print(json.dumps(dict(generator='tools/generate_s0_floor_templates.py',
-        family=TEMPLATE_FAMILY, python=platform.python_version(), numpy=np.__version__,
+        family=TEMPLATE_FAMILY, bankId=BANK_ID, generatorVersion=GENERATOR_VERSION,
+        python=platform.python_version(), numpy=np.__version__,
         opencv=cv2.__version__, optimized=cv2.useOptimized(),
         shape=list(vectors.shape), dtype=str(vectors.dtype), labelsDtype=str(labels.dtype)),
         ensure_ascii=False))

@@ -312,8 +312,19 @@ class UpgradeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "different-same-version-installation"):
             upgrade.check(self.policy, self.target)
 
+    def test_same_version_controls_repair_updates_the_delivered_first_hotfix(self):
+        self.configure_same_version_upgrade('1925b5cb7b874c04f35f310ad51c99a51d5c56bd')
+        self.components('1.1.8.1')
+        self.policy['packageVersion'] = '1.1.8.2'
+        self.assertEqual(upgrade.check(self.policy, self.target)['mode'], 'update')
+        result = self.perform_update_with_native_substitute()
+        self.assertTrue(result['success'])
+        self.assert_protected()
+        self.assertEqual(upgrade._versions(self.target)[upgrade.PACKAGE], '1.1.8.2')
+        self.assertEqual(self.policy['targetVersion']['version'], '1.1.8')
+
     def test_qtifw_package_revision_does_not_change_public_release_versions(self):
-        self.assertEqual(builder.qtifw_component_version("1.1.8", release=True), "1.1.8.1")
+        self.assertEqual(builder.qtifw_component_version("1.1.8", release=True), "1.1.8.2")
         self.assertEqual(builder.qtifw_component_version("1.1.9", release=True), "1.1.9")
         self.assertEqual(builder.qtifw_component_version("1.1.8", release=False), "1.0.0")
 

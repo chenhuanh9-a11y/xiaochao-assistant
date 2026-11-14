@@ -38,6 +38,7 @@ class _Signals(QObject):
 
 def _failure(error):
     from diagnostic_privacy import stack_text
+    from client_resource_errors import safe_error_details
 
     code = getattr(error, 'code', None) or getattr(error, 'reason', None) or str(error)
     if not isinstance(code, str) or not re.fullmatch('[a-z0-9-]{1,120}', code):
@@ -46,6 +47,7 @@ def _failure(error):
     result = dict(code=code, errorType=type(error).__name__,
                   traceback=stack_text(''.join(trace.format(chain=True))))
     details = getattr(error, 'details', {})
+    result['errorDetails'] = safe_error_details(details)
     if isinstance(details, dict) and details.get('stagingRetained') is True:
         result['stagingRetained'] = True
         path = details.get('stagingPath')
@@ -882,8 +884,13 @@ class ImportedResourceService(QObject):
                          '资源删除尚未完成，请先处理未完成的操作。' if code == 'resource-removal-recovery-required' else
                          '操作已取消；若版本已经保存，可在列表中重新核对。' if code.endswith('-cancelled') else
                          '资源操作未完成，请检查资源包或重新核对本地版本。')
+        if code in {'original-controls-bank-version-mismatch', 'original-controls-generator-version-mismatch'}:
+            self._message = '楼层控件包与当前客户端版本不兼容，请使用配套版本的工具出包。'
+        elif code.startswith('original-controls-'):
+            self._message = '楼层控件校验未通过，请在帮助页查看具体错误码和资源校验详情。'
         self.errorReported.emit(dict(title='资源操作未完成', summary=self._message,
                                      raw=code, errorCode=code, action='resource:' + (operation or self._kind),
+                                     errorDetails=(failure or {}).get('errorDetails', {}),
                                      exceptionType=(failure or {}).get('errorType', ''),
                                      traceback=(failure or {}).get('traceback', ''),
                                      phase='operation', kind='error'))

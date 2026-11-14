@@ -105,7 +105,7 @@ class OriginalExportNumericAdmissionTests(unittest.TestCase):
                             self.assertEqual(arrays['pitch'].dtype, np.float64)
                             self.assertEqual(arrays['shape'].dtype, np.int64)
 
-    def test_valid_npy_one_ulp_is_rejected_before_output_publication(self):
+    def test_valid_control_npy_one_ulp_is_accepted_by_portable_preflight(self):
         fixture = OriginalS0NightmareSourceFixture(self.root)
         original = exporter._controls_payloads
 
@@ -121,10 +121,12 @@ class OriginalExportNumericAdmissionTests(unittest.TestCase):
         # Only the produced resource is fault-injected. The archive, hashes,
         # profile decoder and downstream semantic validator are all real.
         with patch.object(exporter, '_controls_payloads', side_effect=shifted):
-            with self.assertRaisesRegex(ValueError,
-                    r'original-base-export-semantic-invalid:.*templates.npy:.*maxULP=1;.*\[0,0\]'):
-                fixture.export()
-        self.assertFalse(fixture.output.exists())
+            result = fixture.export()
+        self.assertTrue(result['semanticValidated'])
+        with zipfile.ZipFile(fixture.output) as archive:
+            stored = np.load(BytesIO(archive.read('data/controls/templates.npy')), allow_pickle=False)
+        original_vectors = np.load(BytesIO(original('nightmare')['templates.npy']), allow_pickle=False)
+        self.assertEqual(stored[0, 0], np.nextafter(original_vectors[0, 0], np.float32(np.inf)))
         self.assertEqual(self.snapshot(fixture.source.sourceRoot), before)
         self.assertFalse(any(self.root.rglob('catalog.json')))
 

@@ -87,7 +87,8 @@ class ImportedResourceServiceTests(unittest.TestCase):
         self.service.importArchive(QUrl.fromLocalFile(str(self.archive)).toString())
         self.wait()
 
-    def assert_import_failure_diagnostics(self, code, module, function, *, operation='save'):
+    def assert_import_failure_diagnostics(self, code, module, function, *, operation='save',
+                                          exception_type='ImportRejected'):
         from client_problems import ProblemsService
         from diagnostic_export import export_safe_diagnostic_bundle
 
@@ -127,11 +128,56 @@ class ImportedResourceServiceTests(unittest.TestCase):
             self.assertEqual(row['errorCode'], code)
             self.assertEqual(row['raw'], code)
             self.assertEqual(row['action'], 'resource:' + operation)
-            self.assertEqual(row['exceptionType'], 'ImportRejected')
+            self.assertEqual(row['exceptionType'], exception_type)
             self.assertIn(module, row['traceback'])
             self.assertRegex(row['traceback'], r'line \d+, in ' + function)
             self.assertNotIn('PrivatePlayerSecret', text)
             self.assertNotIn(str(self.root), text)
+        return row
+
+    def rewrite_archive(self, edit):
+        with zipfile.ZipFile(self.archive) as archive:
+            members = {name: archive.read(name) for name in archive.namelist()}
+        manifest = json.loads(members['manifest.json'])
+        edit(manifest, members)
+        for item in manifest['files']:
+            raw = members['data/' + item['componentId'] + '/' + item['path']]
+            item.update(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+        members['manifest.json'] = json.dumps(manifest).encode()
+        with zipfile.ZipFile(self.archive, 'w') as archive:
+            for name, raw in members.items():
+                archive.writestr(name, raw)
+
+    def test_bank_identity_mismatch_reports_version_incompatibility(self):
+        self.rewrite_archive(lambda manifest, _: manifest.update(bankId='0' * 32))
+        self.assert_import_failure_diagnostics('original-controls-bank-version-mismatch',
+            'imported_original_controls.py', '_require_s0_source_equivalent',
+            operation='activate', exception_type='OriginalControlsError')
+        self.assertIn('版本不兼容', self.errors[-1]['summary'])
+
+    def test_changed_glyph_records_numeric_proof_through_actual_export(self):
+        from io import BytesIO
+        import numpy as np
+        from s0_floor_templates import BANK_ID
+
+        def changed(_manifest, members):
+            vectors = np.load(BytesIO(members['data/controls/templates.npy']), allow_pickle=False).copy()
+            glyph = vectors[42]
+            glyph += np.float32(.02) * np.roll(glyph, 97)
+            glyph -= glyph.mean()
+            glyph /= np.linalg.norm(glyph)
+            output = BytesIO()
+            np.save(output, vectors, allow_pickle=False)
+            members['data/controls/templates.npy'] = output.getvalue()
+        self.rewrite_archive(changed)
+        row = self.assert_import_failure_diagnostics('original-controls-template-vector-mismatch',
+            'imported_original_controls.py', '_require_s0_source_equivalent',
+            operation='activate', exception_type='OriginalControlsError')
+        self.assertEqual(row['errorDetails']['shape'], [720, 6144])
+        self.assertEqual(row['errorDetails']['bankId'], BANK_ID)
+        self.assertEqual(row['errorDetails']['worstRowIndex'], 42)
+        self.assertLess(row['errorDetails']['worstCos'], 1 - 1e-6)
+        self.assertGreater(row['errorDetails']['maxAbsDiff'], 0)
 
     def test_actual_bad_archive_keeps_failure_in_disk_and_export(self):
         self.archive = self.root / 'PrivatePlayerSecret.xingtu-base'
