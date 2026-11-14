@@ -130,7 +130,7 @@ QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
 
 ## 坐标换算
 
-安卓的路线点存的是导航网格的格子编号。网格画在旧版模板底图上，和本软件自定义地图资源包用的是同一套图：72 层的尺寸、网格全部一致，每格 2 像素，`cols = ceil(宽 / 2)`。
+安卓的路线点存的是导航网格的格子编号。换算使用自定义地图资源的旧模板尺寸与 `template_to_native`（缺省为显示图尺寸与矩阵），不能用后来重绘的显示图替代模板。已登记的网格每格 2 像素，`cols = ceil(宽 / 2)`、`rows = ceil(高 / 2)`；转换前必须通过下面的身份和尺寸校验。
 
 ```
 图片 x = min(宽 - 1, (cell % cols) * 2 + 1)
@@ -140,8 +140,44 @@ QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
 
 - 换算后按本软件的道路网落点：房间点取所在房间（落在走廊上就成为必经点），必经点取最近的道路格；保留颜色（缺省用 `lineColor`）和「新起点」。
 - 连线不沿用安卓的 `segments`，在本软件的道路网上重新规划，跟手动加点一样。
-- 模板 17–19 等本软件没有的图会跳过；不在道路上的点会丢弃。下载完成后提示跳过了多少。
+- 模板 17–19 等本地没有的图会跳过；负数或 `cell >= cols*rows` 的点丢弃并单独计数；无效点或不在 PC 道路上的点仍按原规则丢弃。下载完成后分别提示原因。
 - PR #23 原记录曾对 72 层的 1026 个房间中心、388 个楼梯端点做过检查；本次没有取得或重跑这些真实资源，不能将该历史记录算作本次验收。当前测试只使用临时合成图包。
+
+### 导入导航版本校验
+
+`app/route_plaza_navigation.py` 保存 PC 公式对应的公开网格身份，作为普通 Python 模块随导入链加载，不要求旧资源包增加投稿导航文件。清单来自安卓只读分支 `github/codex/android-1.11.8-windows-validation-20261107` 的 `aa8712c3f2779e2d9f7a49801632a49ff410d53e`：26 个模板（01–16、20–29）、78 层、26 个当前签名、26 个兼容签名。历史“24 套/72 层”不含后来增加的 28/29 两套；清单登记不代表本地一定装有对应资源。
+
+1. 先按 `templateId` 找本地唯一绑定；没有本地模板仍计 `missingMaps`，不混入版本不符。
+2. `navigationVersion` 仅支持整数 `1`，布尔值、浮点数、字符串、null 和其他版本均拒绝。`navigationSignature` 必须属于该模板的当前或明确登记的兼容签名，不能跨模板借用，也不凭 cell 看似合法而接受未知签名。
+3. 对实际会转换的点所引用的每层，核对登记的 `width/height/step/cols/rows` 与本地实际采用的模板尺寸及 2px 公式；缺层或尺寸不符时跳过整张地图，避免只保留半张坐标错误的路线。显示图大小与模板不同时，校验模板。
+4. 兼容旧签名的网格与当前相同，可以沿用原 cell 换算。安卓 `migration.json` 还包含旧 room ID 到新目标的迁移，原生迁移同时需要当前道路吸附、丢点检查及重规划。本次不复制安卓道路/房间数据，不在 PC 实现该迁移；仍按旧 cell 落到 PC 道路上，不承诺和安卓迁移后的目标、连线完全相同。签名同步时校对迁移表的签名集合，并核对固定旧目录的底图身份和网格尺寸。
+5. 历史包**缺少键** `navigationSignature` 或 `navigationVersion` 时，暂按已登记模板的历史 2px 网格和缺省版本 1 谨慎导入，仍要求本地模板尺寸一致及 cell 不越界，计 `legacyNavigationMaps` 并提示“旧路线缺少导航版本字段，已按历史网格校验导入”。显式空签名、null 或不支持的版本不走此兼容路径。缺字段无法证明来源网格身份；同尺寸但原点/底图不同的历史包仍存在不可辨识风险，不能把这个回退用于新生产格式。
+
+未知签名、不支持版本、未登记网格或网格不匹配均跳过整图，提示：**“这张路线的底图版本与 PC 不匹配，请更新 PC 版/资源包”**。部分成功时在下载完成消息中列出版本不符图数；全部失败时明确报此原因，不调用图库写入，也不覆盖已下载图库。旧的取消、资源代际校验、UI 线程收取和单写者保存链路保持。
+
+`convert_manifest` 的报告保留原字段并增加以下字段；`convert_plan` 仍返回 `(points, dropped)`，直接调用同样先校验导航身份：
+
+| 字段 | 含义 |
+| --- | --- |
+| `maps` | 成功产出非空路线的地图条目数，沿用原口径 |
+| `missingMaps` | 无本地模板的地图条目数 |
+| `droppedPoints` | 通过版本校验的地图中所有丢点数（含越界、无效、道路落点失败和数量上限），沿用原口径 |
+| `versionMismatchMaps` | 因导航身份/网格校验失败而整图跳过的条目数；其点不混入 `droppedPoints` |
+| `versionMismatches` | `{templateId, reason}` 列表；原因是 `unsupportedNavigationVersion`、`unknownNavigationSignature`、`unknownTemplateGrid`、`gridMismatch`，直接转换还可报 `templateBindingMismatch` |
+| `outOfRangePoints` | 已处理点中 `cell < 0` 或 `cell >= cols*rows` 的数量，是 `droppedPoints` 的子集；非整数属于其他无效点 |
+| `legacyNavigationMaps` | 成功产出非空路线、缺少一个或两个导航字段并采用历史假设的地图条目数 |
+
+### 同步签名清单
+
+只从明确授权的安卓仓库及指定 Git 引用读取固定目录，不 fetch、不 checkout、不扫描工作区，也不读取图片或作者路线。生成前先人工确认安卓的兼容登记确实只改变道路、没有改变网格坐标或底图配准；`compatibleNavigationSignatures` 本身不是未来网格变动的通行证。
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 /tmp/xiaochao-qt-venv/bin/python tools/maps/sync_route_plaza_navigation.py \
+  --android-repo /workspace/projects/identityv-map \
+  --ref github/codex/android-1.11.8-windows-validation-20261107
+```
+
+追加 `--check` 只比较生成字节，不写文件。生成模块记录解析后的 commit、输入引用及 153 个 JSON 输入的 SHA256，只导出版本、签名、网格尺寸和来源哈希；不导出边、房间、迁移目标、图片或原始游戏数据。兼容签名必须被固定的 `mobile/scripts/assets/nightmare-route-legacy/editor/` 目录覆盖，并与当前 `nightmare-route-editor/` 的网格尺寸及 `navigationSourceSha256` 底图身份一致；新签名链缺少该证据时脚本拒绝生成，须明确复核并扩展授权来源后再同步，不能直接把签名加进白名单。未来改变格子尺寸或坐标系需要同时更新 PC 换算/资源契约，不能仅刷新清单。
 
 ## 异步与状态接缝
 
@@ -158,6 +194,42 @@ QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
 线程和弹窗生命周期参考 Qt 官方 [QThreadPool](https://doc.qt.io/qtforpython-6/PySide6/QtCore/QThreadPool.html)、[Thread Signals 示例](https://doc.qt.io/qtforpython-6.10/examples/example_widgets_thread_signals.html)、[Popup.closePolicy](https://doc.qt.io/qt-6/qml-qtquick-controls-popup.html#closePolicy-prop)；采用项目既有 queued signal、阶段取消和关闭排空方式，无新依赖或流程工具。
 
 ## 验证范围
+
+### 导航版本校验补测（2026-11-14）
+
+新增 `test_route_plaza_navigation` 的 13 项合成测试，遍历全部 26 个模板的 52 个当前/兼容签名和三层首格、内格、末格，检查原公式、模板/显示尺寸分离、版本拒绝、跨模板签名、网格不符、历史字段、越界分类、直接转换入口，以及同步脚本拒绝无证据签名和变更网格。坐标消费者使用 echo pick，不代表生产道路或实际像素。`test_client_route_plaza.NavigationDownloadTests` 的 4 项使用合成授权响应/ZIP、内存下载 transport，实际经过 `read_manifest` → 版本校验 → PC 合成道路落点 → Qt queued signal → 原图库单写者/磁盘保存，验证兼容坐标、中文提示、缺字段提示与失败保留旧图库；没有把此 transport 当成 HTTP 验收。
+
+本轮环境 Linux / Python 3.13.5 / PySide6-Essentials 6.11.1。可运行的相关模块命令如下（`LOCALAPPDATA` 仅为既有生产路径测试提供临时目录，须先创建该目录）：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 LOCALAPPDATA=/tmp/xiaochao-route-version-localappdata \
+PYTHONPATH=app:tests:tools:tools/maps:experiments/qt_quick \
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
+/tmp/xiaochao-qt-venv/bin/python -m unittest -q \
+  test_route_plaza_navigation test_client_route_plaza.NavigationDownloadTests \
+  test_custom_maps test_client_custom_gallery test_client_composition test_client_custom_display \
+  test_client_gallery_export_dialog test_client_downloads test_client_shutdown test_client_coordinator \
+  test_client_resources test_client_import_upgrade_parity test_client_recapture_composition \
+  test_account_concurrency test_route_plaza_redirect test_build_custom_map_package \
+  test_extend_custom_map_package test_prepare_qt_editor_base test_client_route_point_numbers \
+  test_client_route_preferences test_client_route_reprojection test_client_settings
+```
+
+结果 316 项：315 通过、1 跳过（未提供 `QT_RESOURCE_PRIVATE_ZIP`），含新增 17 项全部通过。先前相同可运行模块组因未设置 `LOCALAPPDATA` 有 1 项环境错误，提供临时目录后整组重跑通过，未改断言。
+
+原有假 HTTP 服务器组（`test_route_plaza`、`test_client_route_plaza`、`test_route_submission`、`test_client_route_submission`）在实现时因 Codex 沙箱禁止创建本地 socket 未能启动。随后在同一工作树、同一解释器、非沙箱环境用以下命令重跑：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 LOCALAPPDATA=/tmp/xiaochao-route-version-localappdata \
+PYTHONPATH=app:tests:tools:tools/maps:experiments/qt_quick \
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
+/tmp/xiaochao-qt-venv/bin/python -m unittest -q \
+  test_route_plaza test_client_route_plaza test_route_submission test_client_route_submission
+```
+
+结果 **56 项全部通过**（37.084 秒，0 失败、0 错误、0 跳过），覆盖原假 HTTP 服务器、包校验、模板坐标换算，以及完整客户端离屏冒烟。另跑 `test_client_account_lifecycle` 5 项全部通过。历史联合命令中的 `test_custom_map_editor` 已不在当前树。系统无 Tk，未能按文档解压 `python3.13-tk`；未安装依赖、未造 Tk 替身或窗口。
+
+清单 `--check` 与指定安卓 commit 重导出一致；这只证明元数据同步和合成坐标合同。本轮未取得实际已部署 PC 编辑资源、线上路线或真实安卓互通输入，未验证 Windows 实机/游戏/安装/Setup，也未采集首贴或重新开图的端到端性能样本。历史房间/楼梯统计不算本轮实测。
 
 `tests/test_route_plaza.py` 为 PR #23 的本机假服务器测试：登录/注册/找回密码、令牌刷新与失效、列表、包校验、篡改拒绝、模板坐标换算。新增 `test_client_route_plaza.py` 覆盖真实 Qt 服务/磁盘图库、搜索刷新、只读/复制/删除、版本替换、错误、取消重试、资源撤销、关闭弹窗后迟到登录、隐藏页面任务与 UI 线程结果收取。
 

@@ -29,11 +29,13 @@ import numpy as np
 
 from account_service import AccountError, AccountService, USER_AGENT, api_root, call, quoted
 from custom_maps import DEFAULT_COLOR, MAX_POINTS, CustomMapLibrary, RouteError
+from route_plaza_navigation import NAVIGATION_VERSION, TEMPLATES as NAVIGATION_TEMPLATES
 
 CONTENT_KIND = "nightmare-routes"
 PACKAGE_SCHEMA = 3
 MANIFEST_NAME = "map-gallery.json"
-GRID_STEP = 2  # Every Android navigation grid (all 72 floors) uses 2 image pixels per cell.
+GRID_STEP = 2  # Only the registered grids with this coordinate contract are accepted.
+NAVIGATION_UPDATE_MESSAGE = "这张路线的底图版本与 PC 不匹配，请更新 PC 版/资源包"
 FLOORS = {"minus-1": "B1", "-1": "B1", "1": "1", "2": "2"}
 TEMPLATE = re.compile(r"^nightmare-layout-(0[1-9]|[12]\d)$")  # 28/29 are the 2.104.3085069 maps.
 COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
@@ -173,6 +175,46 @@ def download(account: AccountService, route: PlazaRoute) -> tuple[dict, dict]:
 
 
 # Conversion -----------------------------------------------------------------
+class NavigationMismatch(AccountError):
+    def __init__(self, reason):
+        super().__init__(NAVIGATION_UPDATE_MESSAGE)
+        self.reason = reason
+
+
+def _check_navigation(library, map_id, plan):
+    """Check identity before any cell is converted, including direct convert_plan callers."""
+    template = plan.get("templateId")
+    version = plan.get("navigationVersion", NAVIGATION_VERSION)
+    if type(version) is not int or version != NAVIGATION_VERSION:
+        raise NavigationMismatch("unsupportedNavigationVersion")
+    if template != library.templates().get(map_id):
+        raise NavigationMismatch("templateBindingMismatch")
+    metadata = NAVIGATION_TEMPLATES.get(template)
+    if metadata is None:
+        raise NavigationMismatch("unknownTemplateGrid")
+    if "navigationSignature" in plan:
+        signature = plan["navigationSignature"]
+        if (not isinstance(signature, str) or signature not in
+                (metadata["navigationSignature"], *metadata["compatibleNavigationSignatures"])):
+            raise NavigationMismatch("unknownNavigationSignature")
+    # Historical documents without either identity field retain the registered
+    # 2px-grid assumption, but must still match the local template and cell range.
+    raw_points = plan.get("points") if isinstance(plan.get("points"), list) else []
+    floors = {FLOORS.get(str(p.get("floor"))) for p in raw_points[:MAX_POINTS] if isinstance(p, dict)} - {None}
+    for floor in floors:
+        try:
+            asset = library.floor(map_id, floor)
+            size = getattr(asset, "template_size", None) or asset.image_size
+            grid = metadata["floors"][floor]
+            if (tuple(size) != (grid["width"], grid["height"]) or grid["step"] != GRID_STEP
+                    or grid["cols"] != math.ceil(size[0] / GRID_STEP)
+                    or grid["rows"] != math.ceil(size[1] / GRID_STEP)):
+                raise NavigationMismatch("gridMismatch")
+        except KeyError:
+            raise NavigationMismatch("gridMismatch") from None
+    return "navigationSignature" not in plan or "navigationVersion" not in plan
+
+
 def cell_to_image(cell: int, width: int, height: int) -> tuple[float, float]:
     cols = math.ceil(width / GRID_STEP)
     if not 0 <= cell < cols * math.ceil(height / GRID_STEP):
@@ -181,8 +223,9 @@ def cell_to_image(cell: int, width: int, height: int) -> tuple[float, float]:
     return (min(width - 1.0, col * GRID_STEP + GRID_STEP / 2), min(height - 1.0, row * GRID_STEP + GRID_STEP / 2))
 
 
-def convert_plan(library: CustomMapLibrary, map_id: str, plan: dict) -> tuple[list[dict], int]:
+def convert_plan(library: CustomMapLibrary, map_id: str, plan: dict, *, report=None) -> tuple[list[dict], int]:
     """Android targets -> this app's points (native pixels). Returns (points, dropped)."""
+    legacy = _check_navigation(library, map_id, plan)
     graph = library.graph(map_id)
     line_color = plan.get("lineColor") if isinstance(plan.get("lineColor"), str) and COLOR.match(plan["lineColor"]) else None
     points, dropped = [], 0
@@ -198,6 +241,11 @@ def convert_plan(library: CustomMapLibrary, map_id: str, plan: dict) -> tuple[li
             # Cells live on the legacy template art, which may differ from the display art.
             size = getattr(asset, "template_size", None) or asset.image_size
             matrix = getattr(asset, "template_to_native", None)
+            if not 0 <= cell < math.ceil(size[0] / GRID_STEP) * math.ceil(size[1] / GRID_STEP):
+                if report is not None:
+                    report["outOfRangePoints"] += 1
+                dropped += 1
+                continue
             x, y = cell_to_image(cell, *size)
         except (KeyError, RouteError):
             dropped += 1
@@ -219,6 +267,8 @@ def convert_plan(library: CustomMapLibrary, map_id: str, plan: dict) -> tuple[li
             continue  # Two cells of one room collapse to the same target.
         points.append(picked)
     dropped += max(0, len(raw_points) - MAX_POINTS)
+    if report is not None and legacy and points:
+        report["legacyNavigationMaps"] += 1
     return points, dropped
 
 
@@ -229,7 +279,8 @@ def convert_manifest(library: CustomMapLibrary, manifest: dict) -> tuple[dict, d
         if template in templates:
             raise AccountError(f"自定义地图资源缺口：模板 {template} 重复绑定到 {templates[template]} 和 {map_id}")
         templates[template] = map_id
-    maps, report = {}, dict(maps=0, missingMaps=0, droppedPoints=0)
+    maps, report = {}, dict(maps=0, missingMaps=0, droppedPoints=0, versionMismatchMaps=0,
+                           versionMismatches=[], outOfRangePoints=0, legacyNavigationMaps=0)
     for entry in manifest.get("maps") or ():
         plan = entry.get("routePlan") if isinstance(entry, dict) else None
         template = plan.get("templateId") if isinstance(plan, dict) else None
@@ -237,7 +288,12 @@ def convert_manifest(library: CustomMapLibrary, manifest: dict) -> tuple[dict, d
         if map_id is None:
             report["missingMaps"] += 1
             continue
-        points, dropped = convert_plan(library, map_id, plan)
+        try:
+            points, dropped = convert_plan(library, map_id, plan, report=report)
+        except NavigationMismatch as error:
+            report["versionMismatchMaps"] += 1
+            report["versionMismatches"].append(dict(templateId=template, reason=error.reason))
+            continue
         report["droppedPoints"] += dropped
         if points:
             maps[map_id] = dict(points=points)
@@ -258,6 +314,8 @@ def prepare_install(account: AccountService, library: CustomMapLibrary, route: P
     maps, report = convert_manifest(library, manifest)
     check_cancelled()
     if not maps:
+        if report["versionMismatchMaps"]:
+            raise AccountError(NAVIGATION_UPDATE_MESSAGE + "；没有可导入的地图")
         raise AccountError("这套路线里没有本软件能显示的地图")
     source = dict(workId=route.work_id, versionId=route.version_id, revision=_count(manifest.get("revision")),
                   author=route.author, title=route.title)
