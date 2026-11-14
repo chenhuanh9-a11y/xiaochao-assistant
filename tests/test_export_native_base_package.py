@@ -298,6 +298,9 @@ class NativeBaseExporterTests(unittest.TestCase):
         self.assertFalse(inside.exists())
 
     def test_partial_output_copy_failure_allows_a_complete_retry(self):
+        from original_qt_resource_fixtures import OriginalS0NightmareSourceFixture
+        fixture = OriginalS0NightmareSourceFixture(self.root / 'original-source', ids=('nightmare-01',))
+        self.source = fixture.source.sourceRoot
         before = (self.source / exporter.PACK).read_bytes()
 
         def partial_copy(source, target, **kwargs):
@@ -307,11 +310,11 @@ class NativeBaseExporterTests(unittest.TestCase):
 
         with patch.object(exporter.shutil, 'copyfileobj', side_effect=partial_copy):
             with self.assertRaisesRegex(OSError, 'injected-after-64-bytes'):
-                self.export()
+                self.export(source_inventory=fixture.source.inventory)
         self.assertFalse(self.output.exists())
         self.assertEqual(list(self.root.glob('.package.zip.*.tmp')), [])
         self.assertEqual((self.source / exporter.PACK).read_bytes(), before)
-        result = self.export()
+        result = self.export(source_inventory=fixture.source.inventory)
         self.assertEqual(result['sha256'], hashlib.sha256(self.output.read_bytes()).hexdigest())
         self.assertEqual(archives.inspect_archive(self.output).status, 'inspected')
 

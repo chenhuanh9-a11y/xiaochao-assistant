@@ -25,6 +25,18 @@ PACKAGE = "org.xingtu.qtifw.realtrial"
 DATA_PACKAGE = "org.xingtu.qtifw.trialdata"
 
 
+def qtifw_component_version(product_version, *, release):
+    """Keep QtIFW's package revision independent from the public product version."""
+    if not release:
+        return "1.0.0"
+    # The emergency 1.1.8 repair keeps the shipped product and executable
+    # versions unchanged. QtIFW needs a higher package version to extract it
+    # over an already installed 1.1.8 package.
+    if product_version == "1.1.8":
+        return "1.1.8.1"
+    return product_version
+
+
 def check_archive_inventory(prior_policy_path, compiled, inventory, program_copies=()):
     if program_copies:
         raise ValueError("Deduplicated program archives cannot be reused without their copy plan")
@@ -212,8 +224,9 @@ def main():
     if args.release:
         policy.pop("scope")
     policy_path = output / "qtifw-trial-policy.json"
+    component_version = qtifw_component_version(record["version"]["version"], release=args.upgrade_capable)
     if args.upgrade_capable:
-        policy.update(upgradeCapable=True, targetVersion=record["version"])
+        policy.update(upgradeCapable=True, targetVersion=record["version"], packageVersion=component_version)
     policy_path.write_text(json.dumps(policy, ensure_ascii=False), encoding="utf-8")
     # Small asInvoker helper, independent of the application's administrator EXE.
     exclusions = ["--exclude-module", "numpy", "--exclude-module", "cv2"]
@@ -260,7 +273,6 @@ def main():
             text = text.replace("安装器试用向导", "安装向导").replace("本测试安装", "星图")
             text = text.replace("本试用版", "星图")
             path.write_text(text, encoding="utf-8")
-    component_version = record["version"]["version"] if args.upgrade_capable else "1.0.0"
     write_xml(meta / "package.xml", "Package", dict(DisplayName="星图",
         Description="星图桌面程序。", Version=component_version, ReleaseDate="2026-11-08",
         Default="true", Script="component.js", Dependencies=DATA_PACKAGE))
@@ -331,7 +343,7 @@ def main():
     result = dict(installerSource=installer_source["commit"], payloadSource=compiled,
         programFiles=len(inventory["files"]), instance=instance, root=str(output), setup=str(setup),
         bytes=setup.stat().st_size, sha256=build.sha256(setup), installed=False, published=False,
-        portable=args.release,
+        portable=args.release, qtifwPackageVersion=component_version,
         compression=9 if args.release else 3, deduplication=deduplication, programCopies=program_copies,
         mapPackages=packages,
         runtimeEntry="Use --self-check or isolated --probe-output only; production IPC identity is unchanged")

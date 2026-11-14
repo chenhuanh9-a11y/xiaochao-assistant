@@ -2,6 +2,7 @@
 import json
 import hashlib
 from io import BytesIO
+import os
 from pathlib import Path
 import tempfile
 import subprocess
@@ -42,8 +43,8 @@ class OriginalQtResourceFlowTests(unittest.TestCase):
         return activate_context(self.resolver, self.paths, self.refs['base'], self.refs['controls'],
             season='s0', mode='nightmare')
 
-    def variant(self, version, edit):
-        with zipfile.ZipFile(OriginalNightmareBaseFixture.archive) as archive:
+    def variant(self, version, edit, *, archive_path=None):
+        with zipfile.ZipFile(archive_path or OriginalNightmareBaseFixture.archive) as archive:
             members = {name:archive.read(name) for name in archive.namelist()}
         edit(members)
         manifest = json.loads(members['manifest.json'])
@@ -281,37 +282,93 @@ class OriginalQtResourceFlowTests(unittest.TestCase):
             with self.subTest(declared=declared):
                 source = OriginalS1SourceFixture(self.paths.installation_root/('s1-season-'+str(declared)),
                     resource_version='season-'+str(declared))
-                identity = source.read_json('references/map-pack.json')
-                if declared is None:
-                    identity.pop('season',None)
-                else:
-                    identity['season'] = declared
-                source.write_json('references/map-pack.json',identity)
                 source.export()
-                saved = save_archive(source.output,self.root)
-                refs = {ref.component_id:ref for ref in saved.component_refs}
+
+                def invalid(members):
+                    key = 'data/base/references/map-pack.json'
+                    identity = json.loads(members[key])
+                    if declared is None:
+                        identity.pop('season',None)
+                    else:
+                        identity['season'] = declared
+                    members[key] = json.dumps(identity).encode()
+
+                # The producer now rejects invalid semantics before publication.
+                # Preserve activation coverage using an externally changed ZIP
+                # with correct manifest hashes and actual archive admission.
+                refs = self.variant('bad-season-'+str(declared),invalid,archive_path=source.output)
                 with self.assertRaises((OSError,ValueError)):
                     activate_context(self.resolver,self.paths,refs['base'],refs['controls'],
                         season='s1',mode='difficult')
                 self.assertFalse((self.root/'catalog.json').exists())
                 self.assertFalse((self.root/'transactions/pending-catalog.json').exists())
 
-    def test_fast_values_must_equal_original_preparation_before_activation(self):
+    def test_activation_consumes_stored_preparation_without_client_recomputation(self):
         source = OriginalS1SourceFixture(self.paths.installation_root/'wrong-fast')
         mid,floor = next(iter(source.prepared_resources))
-        path = source.prefixRoot/source.prepared_resources[mid,floor]
-        with np.load(path,allow_pickle=False) as archive:
-            arrays = {field:archive[field].copy() for field in archive.files}
-        arrays['distance'][:] = 12345
-        np.savez_compressed(path,**arrays)
         source.export()
-        saved = save_archive(source.output,self.root)
-        refs = {ref.component_id:ref for ref in saved.component_refs}
-        with self.assertRaisesRegex((OSError,ValueError),'derived-mismatch'):
-            activate_context(self.resolver,self.paths,refs['base'],refs['controls'],
+
+        def invalid(members):
+            key = 'data/base/'+source.prepared_resources[mid,floor]
+            with np.load(BytesIO(members[key]),allow_pickle=False) as archive:
+                arrays = {field:archive[field].copy() for field in archive.files}
+            arrays['distance'][:] = 12345
+            target = BytesIO()
+            np.savez_compressed(target,**arrays)
+            members[key] = target.getvalue()
+
+        refs = self.variant('stored-fast',invalid,archive_path=source.output)
+        # Numeric source equivalence is checked by the producer. The client
+        # checks the declared bytes/schema/bindings and consumes stored arrays;
+        # hardware-dependent rederivation must not decide package availability.
+        with patch('fast_structure_alignment.prepare', side_effect=AssertionError('client rederivation')):
+            result = activate_context(self.resolver,self.paths,refs['base'],refs['controls'],
                 season='s1',mode='difficult')
-        self.assertFalse((self.root/'catalog.json').exists())
+        self.assertEqual(result['status'], 'catalog-activated')
+        factories = build_imported_engine_factories(self.resolver,self.paths)
+        try:
+            engine = factories.get_engine('difficult',season='s1')
+            reference = engine.qt_shared_provider('shared-structure',mid,floor)
+            prepared = engine.qt_fast_structure_source.read(reference,strict=True)
+            self.assertTrue(np.all(prepared.distance == 12345))
+        finally:
+            factories.invalidate()
         self.assertFalse((self.root/'transactions/pending-catalog.json').exists())
+
+    def test_s0_control_rounding_is_not_compared_with_a_local_reference(self):
+        def rounded(members):
+            key = 'data/controls/templates.npy'
+            vectors = np.load(BytesIO(members[key]),allow_pickle=False).copy()
+            vectors[0,0] = np.nextafter(vectors[0,0],np.float32(np.inf))
+            target = BytesIO()
+            np.save(target,vectors,allow_pickle=False)
+            members[key] = target.getvalue()
+
+        refs = self.variant('rounded-controls',rounded)
+        with patch('s0_floor_templates._bank', side_effect=AssertionError('client reference comparison')):
+            result = activate_context(self.resolver,self.paths,refs['base'],refs['controls'],
+                season='s0',mode='nightmare')
+        self.assertEqual(result['status'],'catalog-activated')
+
+    def test_invalid_s0_template_data_still_fails_before_activation(self):
+        for case in ('nonfinite','wrong-dtype'):
+            with self.subTest(case=case):
+                def invalid(members):
+                    key = 'data/controls/templates.npy'
+                    vectors = np.load(BytesIO(members[key]),allow_pickle=False).copy()
+                    if case == 'nonfinite':
+                        vectors[0,0] = np.nan
+                    else:
+                        vectors = vectors.astype(np.float64)
+                    target = BytesIO()
+                    np.save(target,vectors,allow_pickle=False)
+                    members[key] = target.getvalue()
+
+                refs = self.variant('invalid-controls-'+case,invalid)
+                with self.assertRaises((OSError,ValueError)):
+                    activate_context(self.resolver,self.paths,refs['base'],refs['controls'],
+                        season='s0',mode='nightmare')
+                self.assertFalse((self.root/'catalog.json').exists())
 
     def test_entry_complexity_and_nested_coordinates_are_rejected_at_admission(self):
         from export_native_base_package import ENTRIES
@@ -564,7 +621,9 @@ class OriginalQtResourceFlowTests(unittest.TestCase):
         command = [sys.executable,'-B',str(Path(producer.__file__)),
             '--source-root',str(fixture.source),'--output',str(output.with_name('default-cli.xingtu-base')),
             '--package-id','default-cli','--resource-version','v1']
-        completed = subprocess.run(command,capture_output=True,text=True,timeout=30)
+        environment = dict(os.environ)
+        environment.pop('PYTHONPATH',None)
+        completed = subprocess.run(command,capture_output=True,text=True,timeout=30,env=environment)
         self.assertEqual(completed.returncode,0,completed.stdout+completed.stderr)
         for path in (output,output.with_name('default-cli.xingtu-base')):
             with zipfile.ZipFile(path) as archive:

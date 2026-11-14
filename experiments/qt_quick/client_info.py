@@ -670,7 +670,7 @@ class ClientInfoService(QObject):
                 self.paths.work_root / "nightmare-live", destination=destination,
                 app_version=self._app_version, build_fingerprint=self._build_fingerprint,
                 package_metadata=package_metadata, window_environment=window_environment, export_id=export_id,
-                resource_root=(self.resource_resolver.root if self.resource_resolver is not None else self.paths.resource_root),
+                resource_root=self.paths.resource_root,
                 runtime_context=runtime_context, failure_roots=failure_roots, summary=report,
                 automatic_failure_only=automatic_only,
                 include_automatic_failure_evidence=include_automatic,

@@ -5,6 +5,8 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -14,6 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import qtifw_trial_helper as helper
 import qtifw_upgrade as upgrade
+import build_qtifw_trial as builder
 from resource_transaction import assert_resources_ready, resource_write_lock, resource_runtime_lease
 
 
@@ -38,7 +41,8 @@ class UpgradeTests(unittest.TestCase):
         environment = patch.dict(os.environ, LOCALAPPDATA=str(local))
         environment.start()
         self.addCleanup(environment.stop)
-        self.external = local / "Xingtu/resources"
+        self.legacy = local / "Xingtu/resources"
+        self.resources = self.program / "resources"
         self.protected = {}
         instance = dict(id="production", appId="D04394A0-DACE-4FF9-874D-3DCB43EE53D1")
         self.old_values = {
@@ -64,7 +68,7 @@ class UpgradeTests(unittest.TestCase):
         write(self.program/"_internal/references/user-resource.bin", b"user-resource")
         for root, names in ((self.program, ("_internal/assets/legacy-author.png", "work/map-packages/author.receipt.json",
                                             "work/user-routes/personal.json")),
-                            (self.external, ("catalog.json", "packages/base/1.0/recognition.bin",
+                            (self.resources, ("catalog.json", "packages/base/1.0/recognition.bin",
                                              "packages/author/1.0/route.png", "original-archives/author.zip"))):
             for name in names:
                 path = root / name
@@ -120,7 +124,7 @@ class UpgradeTests(unittest.TestCase):
                     (self.program/name).unlink(missing_ok=True)
                 for name, data in self.new_values.items():
                     write(self.program/name, data)
-                self.components(self.policy["targetVersion"]["version"])
+                self.components(upgrade._component_version(self.policy))
                 write(self.target/"_installer-support/_internal/qtifw-trial-policy.json",
                       json.dumps(self.policy).encode())
             return self.native_process()
@@ -250,6 +254,69 @@ class UpgradeTests(unittest.TestCase):
     def test_native_117_upgrade_to_118_keeps_native_owner_database_and_user_bytes(self):
         self.assert_native_owner_upgrade("aa6b4384c296c5fbf3f2d808062236a0ccb40449", "1.1.7", "1.1.8")
 
+    def test_previous_112_through_117_sources_upgrade_to_the_118_package_revision(self):
+        report = json.loads(self.new_values["release-report.json"])
+        report["displayVersion"] = "1.1.8"
+        self.new_values["release-report.json"] = json.dumps(report).encode()
+        self.policy.update(targetVersion=dict(version="1.1.8", displayVersion="1.1.8"),
+                           packageVersion="1.1.8.1", files=inventory(self.new_values))
+        previous = (
+            ("1.1.2", "a" * 40),
+            ("1.1.3", "d7063612fc847067f58b71940071228721d79fe0"),
+            ("1.1.4", "4" * 40),
+            ("1.1.5", "6e5792dd5cae3dde2a2c68de320d433700743ca0"),
+            ("1.1.6", "03e1622e43603a7e3f2fc98bf97386406adc7945"),
+            ("1.1.7", "aa6b4384c296c5fbf3f2d808062236a0ccb40449"),
+        )
+        for version, source in previous:
+            with self.subTest(previous=version):
+                self.old_values = dict(self.new_values)
+                self.old["payloadSource"] = self.owner["payloadSource"] = source
+                for name, data in self.old_values.items():
+                    write(self.program/name, data)
+                for name in ("_internal/installation-profile.json", "release-report.json"):
+                    metadata = json.loads(self.old_values[name])
+                    metadata["sourceCommit"] = source
+                    if name == "release-report.json":
+                        metadata["displayVersion"] = version
+                    self.old_values[name] = json.dumps(metadata).encode()
+                    write(self.program/name, self.old_values[name])
+                self.old["files"] = inventory(self.old_values)
+                helper.write_owner(self.target, self.owner)
+                write(self.target/"_installer-support/_internal/qtifw-trial-policy.json",
+                      json.dumps(self.old).encode())
+                self.components(version)
+                result = self.perform_update_with_native_substitute()
+                self.assertTrue(result["success"])
+                self.assert_protected()
+                self.assertEqual(upgrade._versions(self.target)[upgrade.PACKAGE], "1.1.8.1")
+                self.assertFalse((self.program/upgrade.PENDING).exists())
+
+    def test_same_version_hotfix_updates_only_the_exact_original_118_source_and_is_repeatable(self):
+        self.configure_same_version_upgrade(upgrade.SAME_VERSION_REPAIR_SOURCE)
+        self.assertEqual(upgrade.check(self.policy, self.target)["mode"], "update")
+        result = self.perform_update_with_native_substitute()
+        self.assertTrue(result["success"])
+        self.assert_protected()
+        self.assertEqual(upgrade._versions(self.target)[upgrade.PACKAGE], "1.1.8.1")
+        self.assertEqual(self.policy["targetVersion"]["version"], "1.1.8")
+        self.assertEqual(upgrade.check(self.policy, self.target)["mode"], "update")
+        with patch("game_startup_watcher.control", return_value=0), \
+                patch("qtifw_upgrade._native_start", return_value=self.native_process()) as native:
+            repeated = upgrade.run(self.policy, self.target, support=self.support())
+        self.assertTrue(repeated["success"])
+        self.assertEqual(native.call_count, 2)  # QtIFW update command and persisted-controller check.
+
+    def test_same_version_unrecognized_source_remains_rejected(self):
+        self.configure_same_version_upgrade("e" * 40)
+        with self.assertRaisesRegex(ValueError, "different-same-version-installation"):
+            upgrade.check(self.policy, self.target)
+
+    def test_qtifw_package_revision_does_not_change_public_release_versions(self):
+        self.assertEqual(builder.qtifw_component_version("1.1.8", release=True), "1.1.8.1")
+        self.assertEqual(builder.qtifw_component_version("1.1.9", release=True), "1.1.9")
+        self.assertEqual(builder.qtifw_component_version("1.1.8", release=False), "1.0.0")
+
     def assert_native_owner_upgrade(self, previous, old_version, target_version):
         self.old["payloadSource"] = self.owner["payloadSource"] = previous
         for name in ("_internal/installation-profile.json", "release-report.json"):
@@ -268,16 +335,37 @@ class UpgradeTests(unittest.TestCase):
         report = json.loads(self.new_values["release-report.json"])
         report["displayVersion"] = target_version
         self.new_values["release-report.json"] = json.dumps(report).encode()
+        package_version = target_version + ".1" if target_version == "1.1.8" else target_version
         self.policy.update(targetVersion=dict(version=target_version, displayVersion=target_version),
+                           packageVersion=package_version,
                            files=inventory(self.new_values))
         self.assertEqual(upgrade.check(self.policy, self.target)["mode"], "update")
         result = self.perform_update_with_native_substitute()
         self.assertTrue(result["success"])
         self.assert_protected()
         self.assertEqual((database.read_bytes(), database.stat().st_ino), database_before)
-        self.assertEqual(upgrade._versions(self.target)[upgrade.PACKAGE], target_version)
+        self.assertEqual(upgrade._versions(self.target)[upgrade.PACKAGE], package_version)
         self.assertEqual((self.target/result["backup"]/"trial-maintenance.dat").read_bytes(), database_before[0])
         self.assertFalse((self.program/upgrade.PENDING).exists())
+
+    def configure_same_version_upgrade(self, previous):
+        self.old["payloadSource"] = self.owner["payloadSource"] = previous
+        for name in ("_internal/installation-profile.json", "release-report.json"):
+            metadata = json.loads(self.old_values[name])
+            metadata["sourceCommit"] = previous
+            if name == "release-report.json":
+                metadata["displayVersion"] = "1.1.8"
+            self.old_values[name] = json.dumps(metadata).encode()
+            write(self.program/name, self.old_values[name])
+        self.old["files"] = inventory(self.old_values)
+        helper.write_owner(self.target, self.owner)
+        write(self.target/"_installer-support/_internal/qtifw-trial-policy.json", json.dumps(self.old).encode())
+        self.components("1.1.8")
+        report = json.loads(self.new_values["release-report.json"])
+        report["displayVersion"] = "1.1.8"
+        self.new_values["release-report.json"] = json.dumps(report).encode()
+        self.policy.update(targetVersion=dict(version="1.1.8", displayVersion="1.1.8"),
+                           packageVersion="1.1.8.1", files=inventory(self.new_values))
 
     def cancel_native(self):
         with patch("game_startup_watcher.control", return_value=0), \
@@ -410,12 +498,12 @@ class UpgradeTests(unittest.TestCase):
             upgrade.check(self.policy, self.target)
         self.assertFalse((self.program/upgrade.PENDING).exists())
 
-    def test_external_catalog_and_removal_pending_block_before_native_and_survive_retry(self):
+    def test_installed_catalog_and_removal_pending_block_before_native_and_survive_retry(self):
         self.prepare()
         for name, reason in (("pending-catalog.json", "resource-catalog-recovery-required"),
                              ("pending-removal.json", "resource-removal-recovery-required")):
             with self.subTest(name=name):
-                marker = self.external/"transactions"/name
+                marker = self.resources/"transactions"/name
                 write(marker, b"private pending transaction")
                 try:
                     with patch("qtifw_upgrade._native_start") as native:
@@ -437,10 +525,10 @@ class UpgradeTests(unittest.TestCase):
             native.assert_not_called()
         self.assert_protected()
 
-    def test_active_independent_resource_writer_blocks_before_program_backup(self):
+    def test_active_installed_resource_writer_blocks_before_program_backup(self):
         ready, release = threading.Event(), threading.Event()
         def writer():
-            with resource_write_lock(self.external):
+            with resource_write_lock(self.resources):
                 ready.set()
                 release.wait(10)
         thread = threading.Thread(target=writer)
@@ -458,6 +546,110 @@ class UpgradeTests(unittest.TestCase):
             release.set()
             thread.join(5)
         self.assertFalse(thread.is_alive())
+
+    def test_old_global_catalog_pending_does_not_block_or_change_program_upgrade(self):
+        markers = []
+        for name in ("pending-catalog.json", "pending-removal.json"):
+            marker = self.legacy / "transactions" / name
+            write(marker, b"unrelated legacy transaction")
+            markers.append(marker)
+        self.assertEqual(upgrade.check(self.policy, self.target)["mode"], "update")
+        result = self.perform_update_with_native_substitute()
+        self.assertTrue(result["success"])
+        self.assert_protected()
+        for marker in markers:
+            self.assertEqual(marker.read_bytes(), b"unrelated legacy transaction")
+
+    def test_program_upgrade_needs_no_local_app_data(self):
+        with patch.dict(os.environ):
+            os.environ.pop("LOCALAPPDATA", None)
+            self.assertTrue(self.perform_update_with_native_substitute()["success"])
+        self.assert_protected()
+
+    def test_installation_a_upgrade_isolated_from_installation_b_resources(self):
+        other = self.target.parent / "安装 B"
+        shutil.copytree(self.target, other)
+        helper.write_owner(other, dict(self.owner, target=str(other)))
+        marker = other / "program/resources/transactions/pending-catalog.json"
+        write(marker, b"only installation B is pending")
+        before = {path.relative_to(other): path.read_bytes() for path in other.rglob("*") if path.is_file()}
+        with self.assertRaisesRegex(ValueError, "resource-catalog-recovery-required"):
+            upgrade.check(self.policy, other)
+        self.assertTrue(self.perform_update_with_native_substitute()["success"])
+        self.assert_protected()
+        self.assertEqual({path.relative_to(other): path.read_bytes() for path in other.rglob("*") if path.is_file()}, before)
+        self.assertFalse(any(name.startswith("resources/") for name in self.policy["files"]))
+
+    def test_separate_resource_writer_process_blocks_update_before_backup(self):
+        root = Path(__file__).resolve().parents[1]
+        code = ("import sys;sys.path.insert(0,sys.argv[1]);"
+                "from resource_transaction import resource_write_lock;"
+                "lock=resource_write_lock(sys.argv[2]);lock.__enter__();"
+                "print('locked',flush=True);sys.stdin.read(1);lock.__exit__(None,None,None)")
+        # This child is a real resource writer, without the program/runtime
+        # lease. Only native QtIFW extraction is absent from this rejection path.
+        with subprocess.Popen([sys.executable, "-B", "-c", code, str(root / "app"), str(self.resources)],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0) as process:
+            try:
+                self.assertEqual(process.stdout.readline().strip(), "locked")
+                with patch("qtifw_upgrade._native_start") as native:
+                    with self.assertRaisesRegex(ValueError, "resource-busy"):
+                        upgrade.run(self.policy, self.target, support=self.support())
+                    native.assert_not_called()
+                self.assertFalse((self.program / upgrade.PENDING).exists())
+                self.assertFalse((self.target / "recovery-files").exists())
+                self.assert_protected()
+            finally:
+                process.communicate("x", timeout=10)
+        self.assertEqual(process.returncode, 0)
+
+    def test_resource_created_before_program_lock_and_held_by_writer_blocks_update(self):
+        preserved = self.target.parent / "resources-before-race"
+        self.resources.rename(preserved)
+        self.protected = {
+            preserved / path.relative_to(self.resources) if path.is_relative_to(self.resources) else path: expected
+            for path, expected in self.protected.items()
+        }
+        self.assertFalse(self.resources.exists())
+        root = Path(__file__).resolve().parents[1]
+        code = ("import sys;from pathlib import Path;sys.path.insert(0,sys.argv[1]);"
+                "from resource_transaction import resource_write_lock;"
+                "root=Path(sys.argv[2]);root.mkdir();"
+                "lock=resource_write_lock(root);lock.__enter__();"
+                "(root/'catalog.json').write_bytes(b'writer-created-catalog');"
+                "print('locked',flush=True);sys.stdin.read(1);lock.__exit__(None,None,None)")
+        processes = []
+        real_program_lock = upgrade.resource_write_lock
+
+        @contextlib.contextmanager
+        def race_before_program_lock(program):
+            # Interleave an actual independent writer exactly where the old
+            # adapter had already skipped the absent resource plane. Keep all
+            # program/resource locks and native adapter checks unchanged.
+            process = subprocess.Popen([sys.executable, "-B", "-c", code,
+                    str(root / "app"), str(self.resources)], stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            processes.append(process)
+            self.assertEqual(process.stdout.readline().strip(), "locked")
+            with real_program_lock(program):
+                yield
+
+        try:
+            with patch.object(upgrade, "resource_write_lock", side_effect=race_before_program_lock), \
+                    patch.object(upgrade, "_prepare", wraps=upgrade._prepare) as prepare:
+                with self.assertRaisesRegex(ValueError, "resource-busy"):
+                    self.perform_update_with_native_substitute()
+                prepare.assert_not_called()
+            self.assertEqual((self.resources / "catalog.json").read_bytes(), b"writer-created-catalog")
+            self.assertFalse((self.program / upgrade.PENDING).exists())
+            self.assertFalse((self.target / "recovery-files").exists())
+            self.assert_protected()
+        finally:
+            for process in processes:
+                process.communicate("x", timeout=10)
+        self.assertEqual(processes[0].returncode, 0)
 
     def test_real_old_layout_is_recognized_without_writes(self):
         before = {p: p.read_bytes() for p in self.target.rglob("*") if p.is_file()}
@@ -738,7 +930,7 @@ class UpgradeTests(unittest.TestCase):
         finally:
             api.SetThreadErrorMode(previous, None)
 
-    def test_external_resource_transaction_is_not_ignored_on_retry(self):
+    def test_program_resource_transaction_is_not_ignored_on_retry(self):
         record = self.prepare()
         self.assertEqual(record["stage"], "prepared")
         write(self.program/"work/map-packages/pending-removal.json", b"{}")

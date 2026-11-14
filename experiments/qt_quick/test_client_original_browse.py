@@ -25,7 +25,7 @@ from imported_resource_packages import PackageView
 from client_imported_providers import SUPPORTED_CAPABILITIES
 from test_imported_author_display import _AuthorDisplayFixture
 import test_imported_author_displays as author_fixtures
-import test_export_native_base_package as nightmare_fixtures
+from original_qt_resource_fixtures import OriginalS0NightmareSourceFixture
 
 
 class OriginalBrowseTests(_AuthorDisplayFixture):
@@ -274,15 +274,25 @@ class OriginalBrowseTests(_AuthorDisplayFixture):
 
 class S0NightmareOriginalBrowseTests(unittest.TestCase):
     def test_original_schema_two_without_floor_or_mode_fields_uses_original_structure_declarations(self):
-        from export_original_qt_base import export_original_package
+        import tempfile
         from imported_resource_archive import save_archive
-        fixture=nightmare_fixtures.NativeBaseExporterTests()
-        fixture.setUp()
-        self.addCleanup(fixture.doCleanups)
-        output=fixture.root/'original-base.zip'
-        export_original_package(fixture.source,output,package_id='original-s0n',resource_version='v1')
-        root=fixture.root/'installed'
-        saved=save_archive(output,root)
+        temporary=tempfile.TemporaryDirectory(prefix='original-s0n-browse-')
+        self.addCleanup(temporary.cleanup)
+        fixture=OriginalS0NightmareSourceFixture(Path(temporary.name),ids=('nightmare-01',))
+        source=fixture.source
+        pack_path=source.sourceRoot/'references/nightmare-map-pack.json'
+        pack=json.loads(pack_path.read_bytes())
+        pack.pop('mode',None)
+        pack.pop('floors',None)
+        pack['defaultEntryFloor']=2
+        self.assertEqual(pack['schemaVersion'],2)
+        self.assertNotIn('mode',pack)
+        self.assertNotIn('floors',pack)
+        pack_path.write_text(json.dumps(pack),encoding='utf-8')
+        source.refresh_inventory()
+        fixture.export()
+        root=source.root/'installed'
+        saved=save_archive(fixture.output,root)
         refs={ref.component_id:ref for ref in saved.component_refs}
         wire=author_fixtures.ImportedAuthorDisplaysTests.wire
         catalog=dict(schema='xingtu-resource-catalog-v1',generation=str(uuid4()),

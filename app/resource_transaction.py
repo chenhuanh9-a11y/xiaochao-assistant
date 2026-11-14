@@ -258,6 +258,82 @@ def preflight_hardlinks(root, relatives):
             _capability_details('hardlink-probe', hardlinks='unavailable')) from error
 
 
+def remove_owned_empty_directory(path, expected_identity, *, validate_namespace=None):
+    """Delete one original empty directory through the same Windows handle.
+
+    ``validate_namespace`` may return a preservation reason; it runs before
+    opening and again while the original DELETE handle prevents replacement.
+    FileDispositionInfo rejects nonempty directories in the kernel. Platforms
+    without this same-handle operation retain the directory, with no pathname
+    rmdir fallback. Return None only on removal, otherwise a preservation reason.
+    """
+    if (not isinstance(expected_identity, list) or len(expected_identity) != 2
+            or any(type(number) is not int or not 0 <= number < 2 ** 256
+                   for number in expected_identity)):
+        raise ResourceTransactionError('resource-directory-invalid-identity')
+    if os.name != 'nt':
+        return 'empty-directory-platform-unsupported'
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+    api = ctypes.WinDLL('kernel32', use_last_error=True)
+    api.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+        ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    api.CreateFileW.restype = wintypes.HANDLE
+    api.CloseHandle.argtypes = [wintypes.HANDLE]
+    api.CloseHandle.restype = wintypes.BOOL
+    api.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int,
+        ctypes.c_void_p, wintypes.DWORD]
+    api.SetFileInformationByHandle.restype = wintypes.BOOL
+    path = Path(os.path.abspath(path))
+    native, descriptor = None, None
+
+    def matches(info):
+        return (stat.S_ISDIR(info.st_mode)
+                and [info.st_dev, info.st_ino] == expected_identity
+                and not getattr(info, 'st_file_attributes', 0) & 0x400)
+
+    try:
+        _safe(path)
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return 'directory-missing-or-changed'
+        if validate_namespace is not None:
+            reason = validate_namespace()
+            if reason is not None:
+                return reason
+        # READ|DELETE, share READ only. OPEN_REPARSE_POINT prevents following a
+        # replaced link; BACKUP_SEMANTICS permits opening the directory itself.
+        native = api.CreateFileW(str(path), 0x80010000, 1, None, 3, 0x02200000, None)
+        if native == ctypes.c_void_p(-1).value:
+            native = None
+            return 'directory-not-empty-or-unavailable'
+        descriptor = msvcrt.open_osfhandle(int(native), os.O_RDONLY | os.O_BINARY)
+        native = None  # The CRT descriptor now owns this exact DELETE handle.
+        if not matches(os.fstat(descriptor)):
+            return 'directory-changed'
+        _safe(path)
+        if not matches(path.lstat()):
+            return 'directory-changed'
+        if validate_namespace is not None:
+            reason = validate_namespace()
+            if reason is not None:
+                return reason
+        disposition = ctypes.c_ubyte(1)
+        if not api.SetFileInformationByHandle(msvcrt.get_osfhandle(descriptor), 4,
+                                             ctypes.byref(disposition), ctypes.sizeof(disposition)):
+            return 'directory-not-empty-or-unavailable'
+        return None
+    except (OSError, ValueError):
+        return 'directory-changed-or-unavailable'
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if native is not None:
+            api.CloseHandle(native)
+
+
 def rename_no_replace(source, target):
     """Atomically move an object without replacing any existing destination.
 

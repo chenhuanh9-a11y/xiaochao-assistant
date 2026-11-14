@@ -6,6 +6,19 @@ sys.path.insert(0,str(Path(__file__).parents[1]/'app'))
 from async_event_log import AsyncEventLog
 
 class DiskPrivacyTests(unittest.TestCase):
+    def test_resource_error_codes_survive_without_exposing_paths(self):
+        from diagnostic_privacy import safe_record
+        for code in ('original-controls-parameters-not-source-equivalent',
+                     'resource-migration-target-exists', 'resource-migration-interrupted'):
+            with self.subTest(code=code):
+                result=safe_record(dict(errorCode=code,action='resource:migrate',
+                    raw='C:/Users/AliceSecret/private.dat'))
+                self.assertEqual(result['errorCode'],code)
+                self.assertEqual(result['action'],'resource:migrate')
+                self.assertNotIn('AliceSecret',json.dumps(result))
+        self.assertEqual(safe_record(dict(errorCode='AliceSecret-custom-error'))['errorCode'],
+                         '<redacted-text>')
+
     def test_nested_private_fields_and_exception_text_are_removed_before_write(self):
         with tempfile.TemporaryDirectory() as folder:
             writer=AsyncEventLog(Path(folder)/'events-privacy.jsonl')

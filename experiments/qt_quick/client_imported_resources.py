@@ -39,7 +39,14 @@ def _failure(error):
     code = getattr(error, 'code', None) or getattr(error, 'reason', None) or str(error)
     if not isinstance(code, str) or not re.fullmatch('[a-z0-9-]{1,120}', code):
         code = 'resource-operation-failed'
-    return dict(code=code, errorType=type(error).__name__)
+    result = dict(code=code, errorType=type(error).__name__)
+    details = getattr(error, 'details', {})
+    if isinstance(details, dict) and details.get('stagingRetained') is True:
+        result['stagingRetained'] = True
+        path = details.get('stagingPath')
+        if isinstance(path, str):
+            result['stagingPath'] = path
+    return result
 
 
 def _activation_refs(row, season, mode):
@@ -124,6 +131,8 @@ class ImportedResourceService(QObject):
         self._activation_plan, self._activation_choices = None, {}
         self._activation_plan_id = ''
         self._removal_plan, self._removal_plan_id = None, ''
+        self._legacy_resource_directory = ''
+        self._resource_directory_exists = False
 
     packageModel = Property(QObject, lambda s: s.model, constant=True)
     packageRows = Property('QVariantList', lambda s: deepcopy(s._rows), notify=inventoryChanged)
@@ -138,7 +147,8 @@ class ImportedResourceService(QObject):
     operationGeneration = Property(int, lambda s: s._token, notify=changed)
     message = Property(str, lambda s: '\n'.join(filter(None, (s._startup_notice, s._message))), notify=changed)
     canCancel = Property(bool, lambda s: s._busy and s._kind != 'recover' and not s._cancel.is_set(), notify=changed)
-    pendingWrites = Property(bool, lambda s: s._busy and s._kind in {'save', 'activate', 'remove', 'recover'}, notify=changed)
+    pendingWrites = Property(bool, lambda s: s._busy and s._kind in {
+        'save', 'activate', 'remove', 'recover', 'migrate', 'cleanup-legacy'}, notify=changed)
     recoveryRequired = Property(bool, lambda s: s._catalog_issue in {
         'resource-catalog-recovery-required', 'resource-removal-recovery-required'}, notify=changed)
     activationPlanModel = Property(QObject, lambda s: s._activation_model, constant=True)
@@ -150,6 +160,12 @@ class ImportedResourceService(QObject):
     removalPlanOpen = Property(bool, lambda s: s._removal_plan is not None, notify=changed)
     removalPlanId = Property(str, lambda s: s._removal_plan_id, notify=changed)
     removalPlanSummary = Property(str, lambda s: s._removal_summary(), notify=changed)
+    resourceDirectory = Property(str, lambda s: str(s.resolver.root), constant=True)
+    legacyResourceDirectory = Property(str, lambda s: s._legacy_resource_directory, notify=changed)
+    canMigrateLegacyResources = Property(bool, lambda s: bool(s._legacy_resource_directory)
+        and not s._resource_directory_exists, notify=changed)
+    canCleanupLegacyResources = Property(bool, lambda s: bool(s._legacy_resource_directory)
+        and s._resource_directory_exists, notify=changed)
 
     def setLeaseProvider(self, provider):
         if self._busy or self._lease or self._activation_plan is not None or self._removal_plan is not None:
@@ -168,7 +184,7 @@ class ImportedResourceService(QObject):
         return model
 
     def setStartupCompatibilityReport(self, report):
-        self._startup_notice = ('旧版资源操作记录已保留；新版资源从独立目录导入。'
+        self._startup_notice = ('旧版资源操作记录已保留；新版资源保存在软件目录内。'
                                 if report.get('legacyPending') else '')
         self.changed.emit()
 
@@ -185,6 +201,8 @@ class ImportedResourceService(QObject):
                          'plan': '正在核对基础版本与已选作者的配套关系…',
                          'inspect-remove': '正在核对删除范围与受影响资源…',
                          'remove': '正在删除已确认的资源文件…',
+                         'migrate': '正在复制并校验旧版资源，原目录暂时保留…',
+                         'cleanup-legacy': '正在核对并清理已迁入的旧版资源副本…',
                          'recover': '正在处理未完成的资源切换…'}[kind]
         job = _Work(self._token, lambda: function(self._cancel.is_set))
         self._jobs[self._token] = job
@@ -218,9 +236,40 @@ class ImportedResourceService(QObject):
             if include_availability:
                 available = available_base_contexts(snapshot, cancelled=cancelled)
         result = dict(inventory=inventory)
+        try:
+            legacy = self.paths.legacy_imported_resource_root if self.paths is not None else None
+            if (legacy is not None and legacy != self.resolver.root
+                    and (legacy/'packages').is_dir() and any((legacy/'packages').iterdir())):
+                result['legacyResourceDirectory'] = str(legacy)
+            else:
+                result['legacyResourceDirectory'] = ''
+        except (OSError, ValueError, AttributeError):
+            # An old user profile must not prevent use of this installation.
+            result['legacyResourceDirectory'] = ''
+        result['resourceDirectoryExists'] = self.resolver.root.exists()
         if include_availability:
             result['availableContexts'] = available
         return result
+
+    def _legacy_operation(self, cleanup):
+        source = self._legacy_resource_directory
+        if not source:
+            return False
+        def operation(cancelled):
+            from imported_resource_migration import migrate_resources, cleanup_migrated_resources
+            action = cleanup_migrated_resources if cleanup else migrate_resources
+            return action(Path(source), self.resolver.root,
+                supported_capabilities=self.resolver.supported_capabilities,
+                project_registry_refs=self.resolver.project_registry_refs, cancelled=cancelled)
+        return self._mutate(operation, 'cleanup-legacy' if cleanup else 'migrate')
+
+    @Slot(result=bool)
+    def migrateLegacyResources(self):
+        return self._legacy_operation(False)
+
+    @Slot(result=bool)
+    def cleanupLegacyResources(self):
+        return self._legacy_operation(True)
 
     @Slot(str, str, result=bool)
     def contextAvailable(self, season, mode):
@@ -626,6 +675,8 @@ class ImportedResourceService(QObject):
             self._lease = ''
 
     def _apply_inventory(self, value):
+        self._legacy_resource_directory = value.get('legacyResourceDirectory', self._legacy_resource_directory)
+        self._resource_directory_exists = value.get('resourceDirectoryExists', self._resource_directory_exists)
         inventory = value['inventory']
         self._inventory_loaded = inventory is not None
         self._catalog_issue = inventory.catalog_issue or '' if inventory is not None else 'resource-inventory-unavailable'
@@ -661,7 +712,7 @@ class ImportedResourceService(QObject):
                 self._finish_automatic_import(False)
                 self.changed.emit()
             elif error:
-                self._problem(error['code'])
+                self._problem(error['code'], operation=kind)
                 self._finish_automatic_import(False)
             elif plan.rows:
                 self._show_activation_plan(plan)
@@ -672,7 +723,7 @@ class ImportedResourceService(QObject):
             if self._cancel.is_set():
                 self._message = '已取消删除核对，资源文件未改变。'
             elif error:
-                self._problem(error['code'])
+                self._problem(error['code'], operation=kind)
             else:
                 self._removal_plan, self._removal_plan_id = value, str(token)
                 self._message = '请核对删除范围；确认前不会改变资源。'
@@ -687,7 +738,7 @@ class ImportedResourceService(QObject):
                 self._inventory_loaded = False
                 self._set_rows([])
                 self._set_available_contexts(())
-            self._problem(error['code'])
+            self._problem(error['code'], operation=kind)
         else:
             self._message = ('资源切换尚未完成，请处理后再使用。' if self.recoveryRequired else
                              '资源选择记录无法读取；已保存的版本仍予保留。' if self._catalog_issue else
@@ -753,6 +804,28 @@ class ImportedResourceService(QObject):
                 self._finish_automatic_import(True)
         if error and kind == 'activate':
             self._finish_automatic_import(False)
+        if kind in {'migrate', 'cleanup-legacy'}:
+            if error and error.get('stagingRetained'):
+                self._message += ' 有无法确认的迁移暂存文件已保留待核对：' + error.get('stagingPath', '')
+            if not error:
+                outcome = value['activated']
+                if kind == 'migrate':
+                    self._message = ('旧版资源已迁入软件目录。旧副本仍保留在原位置；'
+                                     '确认不再供其他旧安装使用后，可清理旧副本以释放空间。')
+                else:
+                    removed = outcome.get('removedVersions', ())
+                    count = len(removed) if isinstance(removed, (tuple, list)) else removed
+                    self._message = f'已清理 {count} 个旧版资源副本；未知、改动或未迁入的文件保留。'
+                    if outcome.get('cancelled'):
+                        self._message += ' 清理已取消；已经完成的版本删除已保留，其余副本未清理。'
+                    if outcome.get('recoveryRequired'):
+                        self._message += ' 旧目录有未完成的删除操作，请先处理该目录的恢复记录。'
+                if inventory is None:
+                    self._message += ' 列表暂时无法读取，请重新核对。'
+            if kind == 'migrate':
+                # Also invalidate after a post-publication error: a committed
+                # directory must not remain hidden behind an empty-root cache.
+                self.resourcesChanged.emit()
         if error and kind in {'activate', 'remove', 'recover'} and self.recoveryRequired:
             self.resourcesChanged.emit()
         if kind == 'list' and self._import_report is not None:
@@ -784,8 +857,10 @@ class ImportedResourceService(QObject):
             self.model.reconcile(rows)
             self.inventoryChanged.emit()
 
-    def _problem(self, code):
-        self._message = ('旧图包格式已停用，请获取新版资源包；已有文件已保留。' if code == 'legacy-format-unsupported' else
+    def _problem(self, code, *, operation=None):
+        self._message = ('软件资源目录已有内容，无法整库迁入；请使用单包导入，已有资源已保留。' if code == 'resource-migration-target-exists' else
+                         '迁移未完成，旧资源已保留。请核对源目录、目标空间和占用后重试。' if code.startswith('resource-migration-') else
+                         '旧图包格式已停用，请获取新版资源包；已有文件已保留。' if code == 'legacy-format-unsupported' else
                          '请选择星图结构包（.xingtu-base）或作者路线包（.xingtu-route）。' if code == 'resource-package-extension-unsupported' else
                          '文件后缀与包内类型不一致，请核对结构包和作者路线包。' if code == 'resource-package-extension-mismatch' else
                          '此文件的资源类型不能作为结构包或作者路线包导入。' if code == 'resource-package-kind-unsupported' else
@@ -803,7 +878,7 @@ class ImportedResourceService(QObject):
                          '操作已取消；若版本已经保存，可在列表中重新核对。' if code.endswith('-cancelled') else
                          '资源操作未完成，请检查资源包或重新核对本地版本。')
         self.errorReported.emit(dict(title='资源操作未完成', summary=self._message,
-                                     raw=code, errorCode=code, action='resource:' + self._kind,
+                                     raw=code, errorCode=code, action='resource:' + (operation or self._kind),
                                      phase='operation', kind='error'))
         self.changed.emit()
 

@@ -1576,3 +1576,19 @@ CODES = CODES | frozenset({"locked-map-resource-unavailable"})
 
 # Explicit cleanup receipt keys; never permit arbitrary paths or context keys.
 FIELDS = FIELDS | frozenset({'s1:nightmare', 's1:difficult'})
+
+# Installation-local resource migration: fixed codes, never source/target paths.
+CODES = CODES | frozenset({
+    'resource:migrate', 'resource:cleanup-legacy', 'ResourceMigrationError',
+    'resource:save', 'resource:activate', 'resource:plan', 'resource:remove',
+    'resource:recover', 'resource:list', 'resource:refresh', 'resource:inspect-remove',
+    'original-controls-parameters-not-source-equivalent',
+    'resource-migration-source-unavailable', 'resource-migration-overlapping-directories',
+    'resource-migration-target-parent-unavailable', 'resource-migration-target-exists',
+    'resource-migration-target-unavailable', 'resource-migration-linked-file',
+    'resource-migration-source-changed', 'resource-migration-source-version-invalid',
+    'resource-migration-staged-file-changed', 'resource-migration-staging-replaced',
+    'resource-migration-staging-incomplete', 'resource-migration-staging-directories-changed',
+    'resource-migration-staging-content-changed', 'resource-migration-source-replaced',
+    'resource-migration-interrupted',
+})
