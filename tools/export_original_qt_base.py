@@ -25,8 +25,11 @@ PRIVATE_FILES = ('s1_entrance_coordinate_index.json', 'template_manifest.json', 
 def export_original_package(source_root, output, *, package_id, resource_version,
                             source_inventory=None, season='s0', mode='nightmare',
                             s1_coordinate_asset_dir=None):
+    import cv2
+    import numpy as np
     from export_native_base_package import (_Source, _encoded, _controls_payloads,
         _s1_controls_payloads, _publish_output)
+    from export_resource_preflight import validate_original_package
     if season not in ('s0', 's1') or mode not in ('difficult', 'nightmare'):
         raise ValueError('original-base-context-unsupported')
     output = Path(output).absolute()
@@ -86,10 +89,15 @@ def export_original_package(source_root, output, *, package_id, resource_version
         originalManifest=original_manifest, runtimeInterfaces=interfaces))
     payloads = dict(base=base, controls=controls)
     contexts = [dict(season=season, mode=mode)]
+    provenance = dict(sourceAlgorithmCommit=DONOR, originalResourceLayout=True,
+        numericRuntime=dict(numpy=np.__version__, opencv=cv2.__version__,
+            opencvOptimized=bool(cv2.useOptimized()), referenceScope='export-and-preflight-runtime'))
+    if season == 's0':
+        provenance['fixedS0TemplateBank'] = 'control-data/s0-floor-templates-v1.npz'
     manifest = dict(schema='xingtu-resource-package', formatVersion=1,
         packageId=package_id, resourceVersion=resource_version,
         clientCompatibility=dict(resourceProtocol=1, requiredCapabilities=[CAPABILITY]),
-        provenance=dict(sourceAlgorithmCommit=DONOR, originalResourceLayout=True),
+        provenance=provenance,
         components=[dict(componentId=component, type=kind, schemaVersion=1,
             contexts=contexts, entrypoint=entrypoint, dependencies={})
             for component, kind, entrypoint in [('base','recognition-base','resource-context.json'),
@@ -109,8 +117,8 @@ def export_original_package(source_root, output, *, package_id, resource_version
                 for relative, raw in sorted(members.items()):
                     target.writestr(f'data/{component}/{relative}', raw)
         summary = archives.save_archive(staged, Path(temporary) / 'resources')
-        view = PackageView(Path(temporary) / 'resources', ref)
-        view.validate_inventory()
+        semantic = validate_original_package(Path(temporary) / 'resources', summary.component_refs,
+            season=season, mode=mode)
         with staged.open('rb') as handle:
             archive_digest = hashlib.file_digest(handle, 'sha256').hexdigest()
         _publish_output(staged, output, archive_digest)
@@ -118,4 +126,5 @@ def export_original_package(source_root, output, *, package_id, resource_version
         packageId=package_id, resourceVersion=resource_version, manifestSha256=digest,
         mapCount=len(pack['maps']), files=len(manifest['files']), sourceFiles=len(source.raw),
         originalAlgorithmCommit=DONOR, season=season, mode=mode, catalogActivated=False,
-        sourceInventoryChecked=source.inventory is not None)
+        sourceInventoryChecked=source.inventory is not None, semanticValidated=True,
+        semanticValidation=semantic)

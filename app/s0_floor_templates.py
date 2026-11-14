@@ -1,10 +1,11 @@
-"""Stored, programmatically defined S0 digit exemplars, not screenshot crops.
+"""Read the shipped S0 digit exemplars; never regenerate them on a user's CPU.
 
-OpenCV's bundled Hershey PLAIN strokes supply the digits; a drawn horizontal
-stroke supplies the minus. Shape/aspect/stroke variants are generated once and
-cached. User screenshots are never read by the generator or stored in the bank.
+The font-only producer is tools/generate_s0_floor_templates.py. Both the client
+reference and resource exporter read this same fixed numerical asset.
 """
 from functools import lru_cache
+from pathlib import Path
+import sys
 
 import cv2
 import numpy as np
@@ -27,7 +28,7 @@ def _center_ink(ink):
 
 
 def make_template(label, aspect, thickness, shear, sign_width=.45, sign_gap=.20):
-    """Only independent font/vector data enters this reproducible generator."""
+    """Font-only development fixture, also used by the explicit asset producer."""
     big = np.zeros((128, 128), np.uint8)
     cv2.putText(big, str(abs(label)), (16,96), cv2.FONT_HERSHEY_PLAIN,
                 3., 255, thickness*3, cv2.LINE_AA)
@@ -52,21 +53,22 @@ def make_template(label, aspect, thickness, shear, sign_width=.45, sign_gap=.20)
 
 @lru_cache(maxsize=1)
 def _bank():
-    vectors, labels = [], []
-    for label in LABELS:
-        aspects = (.12,.18,.24,.30,.36) if abs(label)==1 else (.35,.45,.55,.65,.75)
-        for aspect in aspects:
-            for thickness in (1,2):
-                for shear in (-.12,0.,.12):
-                    signs = ((.3,.1),(.45,.2),(.6,.2)) if label<0 else ((.45,.2),)
-                    for sw, gap in signs:
-                        vector = make_template(label,aspect,thickness,shear,sw,gap).ravel()
-                        vector = vector-vector.mean()
-                        vector /= max(1e-9,float(np.linalg.norm(vector)))
-                        vectors.append(vector); labels.append(label)
-    bank = np.array(vectors,np.float32)
+    root = Path(sys._MEIPASS) if getattr(sys, 'frozen', False) else Path(__file__).parent
+    path = root / 'control-data' / 's0-floor-templates-v1.npz'
+    # Missing/broken program data is an installation error. Regeneration here
+    # would recreate the CPU-dependent reference that made valid packs fail.
+    with np.load(path, allow_pickle=False) as source:
+        if set(source.files) != {'vectors', 'labels'}:
+            raise ValueError('s0-template-resource-invalid')
+        bank, label_array = source['vectors'], source['labels']
+    expected_labels = np.repeat(np.array(LABELS, dtype=np.int64),
+                                [90 if label < 0 else 30 for label in LABELS])
+    if (bank.dtype != np.float32 or bank.shape != (len(expected_labels), HEIGHT * WIDTH)
+            or not bank.flags.c_contiguous or not np.isfinite(bank).all()
+            or label_array.dtype != np.int64
+            or not np.array_equal(label_array, expected_labels)):
+        raise ValueError('s0-template-resource-invalid')
     bank.flags.writeable = False
-    label_array = np.array(labels)
     label_array.flags.writeable = False
     return bank, label_array
 

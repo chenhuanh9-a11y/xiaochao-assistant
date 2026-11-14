@@ -2,6 +2,7 @@
 import json
 import hashlib
 from io import BytesIO
+import os
 from pathlib import Path
 import tempfile
 import subprocess
@@ -42,8 +43,8 @@ class OriginalQtResourceFlowTests(unittest.TestCase):
         return activate_context(self.resolver, self.paths, self.refs['base'], self.refs['controls'],
             season='s0', mode='nightmare')
 
-    def variant(self, version, edit):
-        with zipfile.ZipFile(OriginalNightmareBaseFixture.archive) as archive:
+    def variant(self, version, edit, *, archive_path=None):
+        with zipfile.ZipFile(archive_path or OriginalNightmareBaseFixture.archive) as archive:
             members = {name:archive.read(name) for name in archive.namelist()}
         edit(members)
         manifest = json.loads(members['manifest.json'])
@@ -281,15 +282,21 @@ class OriginalQtResourceFlowTests(unittest.TestCase):
             with self.subTest(declared=declared):
                 source = OriginalS1SourceFixture(self.paths.installation_root/('s1-season-'+str(declared)),
                     resource_version='season-'+str(declared))
-                identity = source.read_json('references/map-pack.json')
-                if declared is None:
-                    identity.pop('season',None)
-                else:
-                    identity['season'] = declared
-                source.write_json('references/map-pack.json',identity)
                 source.export()
-                saved = save_archive(source.output,self.root)
-                refs = {ref.component_id:ref for ref in saved.component_refs}
+
+                def invalid(members):
+                    key = 'data/base/references/map-pack.json'
+                    identity = json.loads(members[key])
+                    if declared is None:
+                        identity.pop('season',None)
+                    else:
+                        identity['season'] = declared
+                    members[key] = json.dumps(identity).encode()
+
+                # The producer now rejects invalid semantics before publication.
+                # Preserve activation coverage using an externally changed ZIP
+                # with correct manifest hashes and actual archive admission.
+                refs = self.variant('bad-season-'+str(declared),invalid,archive_path=source.output)
                 with self.assertRaises((OSError,ValueError)):
                     activate_context(self.resolver,self.paths,refs['base'],refs['controls'],
                         season='s1',mode='difficult')
@@ -299,14 +306,18 @@ class OriginalQtResourceFlowTests(unittest.TestCase):
     def test_fast_values_must_equal_original_preparation_before_activation(self):
         source = OriginalS1SourceFixture(self.paths.installation_root/'wrong-fast')
         mid,floor = next(iter(source.prepared_resources))
-        path = source.prefixRoot/source.prepared_resources[mid,floor]
-        with np.load(path,allow_pickle=False) as archive:
-            arrays = {field:archive[field].copy() for field in archive.files}
-        arrays['distance'][:] = 12345
-        np.savez_compressed(path,**arrays)
         source.export()
-        saved = save_archive(source.output,self.root)
-        refs = {ref.component_id:ref for ref in saved.component_refs}
+
+        def invalid(members):
+            key = 'data/base/'+source.prepared_resources[mid,floor]
+            with np.load(BytesIO(members[key]),allow_pickle=False) as archive:
+                arrays = {field:archive[field].copy() for field in archive.files}
+            arrays['distance'][:] = 12345
+            target = BytesIO()
+            np.savez_compressed(target,**arrays)
+            members[key] = target.getvalue()
+
+        refs = self.variant('bad-fast',invalid,archive_path=source.output)
         with self.assertRaisesRegex((OSError,ValueError),'derived-mismatch'):
             activate_context(self.resolver,self.paths,refs['base'],refs['controls'],
                 season='s1',mode='difficult')
@@ -564,7 +575,9 @@ class OriginalQtResourceFlowTests(unittest.TestCase):
         command = [sys.executable,'-B',str(Path(producer.__file__)),
             '--source-root',str(fixture.source),'--output',str(output.with_name('default-cli.xingtu-base')),
             '--package-id','default-cli','--resource-version','v1']
-        completed = subprocess.run(command,capture_output=True,text=True,timeout=30)
+        environment = dict(os.environ)
+        environment.pop('PYTHONPATH',None)
+        completed = subprocess.run(command,capture_output=True,text=True,timeout=30,env=environment)
         self.assertEqual(completed.returncode,0,completed.stdout+completed.stderr)
         for path in (output,output.with_name('default-cli.xingtu-base')):
             with zipfile.ZipFile(path) as archive:
