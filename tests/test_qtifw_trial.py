@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "tools"), str(ROOT / "app")]
 import qtifw_trial_helper as helper
 import build_qtifw_trial as builder
+from resource_transaction import resource_runtime_lease, resource_write_lock
 from qtifw_trial_helper import OWNER, prepare, verify, verify_program, clear_data, scoped, check_target
 from build_qtifw_trial import check_archive_inventory
 
@@ -58,6 +59,118 @@ def program_only_stage(folder):
     _, record['fileProjection'] = build.write_production_files_include(stage, inputs, output, source=source)
     build.write_program_ownership(stage, record)
     return stage, record, source
+
+
+@unittest.skipUnless(os.name == "nt", "Win32 exclusive handles and native parent lifetime")
+class UninstallLeaseTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.target = Path(temporary.name) / "安装 中文"
+        self.program = self.target / "program"
+        self.resources = self.program / "resources"
+        self.program.mkdir(parents=True)
+        (self.target / "trial-maintenance.exe").write_bytes(b"synthetic expected parent, never executed")
+
+    def native_parent(self):
+        # Python stands in for the native maintenance EXE. Its child runs the
+        # real hold function, native locks, DuplicateHandle and all parent
+        # identity/time/byte validation, substituting only the expected image.
+        child_code = """
+import hashlib, json, sys
+from pathlib import Path
+sys.path[:0] = sys.argv[2:4]
+import qtifw_trial_lease as lease
+actual_image = Path(sys.executable)
+actual_digest = hashlib.sha256(actual_image.read_bytes()).hexdigest()
+validate = lease._parent
+lease._parent = lambda api, handle, pid, created, expected, digest: validate(
+    api, handle, pid, created, actual_image, actual_digest)
+try:
+    result = dict(success=True, **lease.hold_uninstaller_lease(sys.argv[1]))
+except (OSError, ValueError) as error:
+    result = dict(success=False, reason=str(error))
+print(json.dumps(result), flush=True)
+"""
+        parent_code = """
+import json, subprocess, sys
+child = subprocess.run([sys.executable, '-B', '-c', *sys.argv[1:]],
+    capture_output=True, text=True, encoding='utf-8')
+print(json.dumps(dict(code=child.returncode, output=child.stdout, errors=child.stderr)), flush=True)
+sys.stdin.read(1)
+"""
+        # A Windows venv python.exe is a redirector. Use the actual interpreter
+        # here so the helper's direct parent is our intended maintenance stand-in.
+        process = subprocess.Popen([getattr(sys, '_base_executable', sys.executable), "-B", "-c", parent_code, child_code,
+                str(self.target), str(ROOT / "tools"), str(ROOT / "app")],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", creationflags=subprocess.CREATE_NO_WINDOW)
+        self.addCleanup(lambda: process.communicate("x", timeout=10) if process.poll() is None else None)
+        report = json.loads(process.stdout.readline())
+        self.assertEqual(report["code"], 0, report["errors"])
+        return process, json.loads(report["output"])
+
+    def assert_busy(self, root):
+        with self.assertRaisesRegex(ValueError, "resource-busy"):
+            with resource_runtime_lease(root):
+                pass
+
+    def test_both_leases_survive_helper_exit_until_native_parent_exit_with_pending_catalog(self):
+        pending = self.resources / "transactions/pending-catalog.json"
+        pending.parent.mkdir(parents=True)
+        pending.write_bytes(b"unfinished resource catalog, explicitly uninstalling")
+        process, result = self.native_parent()
+        self.assertTrue(result["success"], result)
+        self.assertEqual(result["roots"], 2)
+        self.assertEqual(result["parentPid"], process.pid)
+        self.assertEqual(result["release"], "native-parent-exit")
+        self.assertIsNone(process.poll())
+        self.assert_busy(self.program)
+        self.assert_busy(self.resources)
+        self.assertEqual(pending.read_bytes(), b"unfinished resource catalog, explicitly uninstalling")
+        process.communicate("x", timeout=10)
+        self.assertEqual(process.returncode, 0)
+        for root in (self.program, self.resources):
+            with resource_runtime_lease(root):
+                pass
+
+    def test_missing_resources_are_not_created_by_uninstall(self):
+        process, result = self.native_parent()
+        self.assertTrue(result["success"], result)
+        self.assertEqual(result["roots"], 1)
+        self.assertFalse(self.resources.exists())
+        self.assert_busy(self.program)
+        process.communicate("x", timeout=10)
+        self.assertFalse(self.resources.exists())
+        with resource_runtime_lease(self.program):
+            pass
+
+    def test_resource_only_writer_blocks_uninstall_and_releases_partial_program_lease(self):
+        self.resources.mkdir()
+        with resource_write_lock(self.resources):
+            process, result = self.native_parent()
+            self.assertFalse(result["success"], result)
+            self.assertEqual(result["reason"], "uninstall-resource-busy")
+            # A resource writer in this process never owned the program root;
+            # failure must close the helper's first, partially acquired lease.
+            with resource_runtime_lease(self.program):
+                pass
+            process.communicate("x", timeout=10)
+
+    def test_resources_with_outside_hardlink_still_block_full_uninstall(self):
+        self.resources.mkdir()
+        original = self.resources / "package.bin"
+        original.write_bytes(b"resource bytes shared outside this installation")
+        outside = self.target.parent / "outside.bin"
+        os.link(original, outside)
+        process, result = self.native_parent()
+        self.assertFalse(result["success"], result)
+        self.assertEqual(result["reason"], "installation-hardlink-outside-target")
+        for root in (self.program, self.resources):
+            with resource_runtime_lease(root):
+                pass
+        self.assertEqual(outside.read_bytes(), original.read_bytes())
+        process.communicate("x", timeout=10)
 
 
 class TrialTests(unittest.TestCase):

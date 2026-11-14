@@ -243,6 +243,7 @@ jobs:
                 'test_imported_resource_packages', 'test_imported_resource_catalog',
                 'test_imported_resource_selection', 'test_imported_resource_activation',
                 'test_imported_resource_inventory', 'test_imported_resource_removal', 'test_owned_directory_publication',
+                'test_imported_resource_migration',
                 'test_imported_array_archive', 'test_imported_resource_reader',
                 'test_imported_structure_declarations', 'test_imported_legacy_structure_reader',
                 'test_imported_legacy_references',
@@ -356,7 +357,7 @@ jobs:
                 'test_imported_author_display', 'test_export_author_display_component',
                 'test_export_author_display_component_modes',
                 # 8165 runtime reached the 25m cap during service tests.
-                'test_client_imported_resources', 'test_client_imported_resource_startup',
+                'test_client_imported_resources', 'test_client_resource_location', 'test_client_imported_resource_startup',
                 'test_client_imported_file_dialog'
               )
             }
@@ -445,7 +446,7 @@ jobs:
             }
             # The user retired the integrated direct/local/race/prepared solver
             # contracts. Exercise the restored pipeline and real C# ownership.
-            'original-csharp' { $modules = @('test_hybrid_grid_backend', 'test_qt_csharp_grid_runtime', 'test_qt_csharp_grid_package', 'test_original_qt_resource_flow', 'test_qtifw_upgrade') }
+            'original-csharp' { $modules = @('test_hybrid_grid_backend', 'test_qt_csharp_grid_runtime', 'test_qt_csharp_grid_package', 'test_original_qt_resource_flow', 'test_qtifw_upgrade', 'test_qtifw_trial.UninstallLeaseTests') }
             'next-version-contracts' { $modules = @('test_g_cycle_evidence', 'test_g_cycle_replay', 'test_client_g_cycle_evidence', 'test_client_g_cycle_solver_input', 'test_client_g_cycle_reporter', 'test_client_g_cycle_recovery', 'test_client_g_cycle_admission', 'test_client_g_cycle_composition', 'test_managed_base_absent_rollback', 'test_legacy_receipt_startup_retention', 'test_managed_base_resources', 'test_s1_normal_resource_retirement.NormalRetirementTests', 'test_resource_compatibility', 'test_game_startup', 'test_game_startup_service', 'test_game_startup_control', 'test_qt_startup_state', 'test_qt_startup_splash', 'test_client_startup_splash', 'test_client_lazy_pages', 'test_client_performance', 'test_client_package_progress', 'test_qt_game_watcher_packaging', 'test_qt_installer_reuse_guard', 'test_qt_installer_projection', 'test_uninstall_data_wizard', 'test_mixed_retired_author_package') }
             # Synthetic contracts only; unittest -v preserves each genuine skip reason.
             'map-defaults' { $modules = @('test_bundled_author_resources', 'test_package_profiles', 'test_client_paths', 'test_client_editor_upgrade', 'test_map_resource_context', 'test_qt_installer_projection') }

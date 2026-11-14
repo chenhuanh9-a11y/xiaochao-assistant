@@ -67,14 +67,14 @@ class RuntimePathTests(unittest.TestCase):
         self.assertEqual(paths.memory_root("difficult"), self.root / "work/difficult-memory")
         self.assertEqual(paths.resource_root, self.internal)
         self.assertEqual(paths.program_root, self.internal)
-        self.assertEqual(imported_root, self.local_app_data / "Xingtu" / "resources")
+        self.assertEqual(imported_root, self.root / "resources")
         self.assertFalse(imported_root.exists())
         self.assertEqual(legacy.read_text(encoding="utf-8"), '{"unknown":42}')
         self.assertEqual(before, sorted(p.relative_to(self.container).as_posix() for p in self.container.rglob("*")))
         with self.assertRaises(ValueError):
             module.runtime_paths(self.root / "arbitrary")
 
-    def test_production_imported_root_is_independent_of_program_installation(self):
+    def test_production_installations_keep_separate_resource_roots(self):
         imported_root = self.local_app_data / "Xingtu" / "resources"
         imported_root.mkdir(parents=True)
         resource_bytes = b"existing imported resource bytes"
@@ -89,23 +89,21 @@ class RuntimePathTests(unittest.TestCase):
             imported_a = paths_a.imported_resource_root
             imported_b = paths_b.imported_resource_root
         self.assertNotEqual(paths_a.program_root, paths_b.program_root)
-        expected = self.local_app_data / "Xingtu" / "resources"
-        self.assertEqual(imported_a, expected)
-        self.assertEqual(imported_b, expected)
+        self.assertEqual(imported_a, self.root / 'resources')
+        self.assertEqual(imported_b, install_b / 'resources')
+        self.assertNotEqual(imported_a, imported_b)
         self.assertEqual(resource_file.read_bytes(), resource_bytes)
 
-    def test_production_requires_valid_local_app_data(self):
+    def test_production_default_does_not_depend_on_local_app_data(self):
         module = self.load()
         with patch.dict(os.environ):
             os.environ.pop("LOCALAPPDATA", None)
-            with self.assertRaisesRegex(ValueError, "LOCALAPPDATA"):
-                module.runtime_paths()
+            self.assertEqual(module.runtime_paths().imported_resource_root, self.root/'resources')
         for value in ("", "relative-profile", str(self.container / "missing")):
             with self.subTest(value=value), patch.dict(os.environ, {"LOCALAPPDATA": value}):
-                with self.assertRaisesRegex(ValueError, "LOCALAPPDATA"):
-                    module.runtime_paths()
+                self.assertEqual(module.runtime_paths().imported_resource_root, self.root/'resources')
 
-    def test_production_rejects_linked_local_app_data_parent(self):
+    def test_linked_legacy_profile_does_not_block_local_resources(self):
         target = self.container / "real-profile"
         target.mkdir()
         (target / "LocalAppData").mkdir()
@@ -113,14 +111,13 @@ class RuntimePathTests(unittest.TestCase):
         self.create_directory_symlink(target, linked_parent)
         module = self.load()
         with patch.dict(os.environ, {"LOCALAPPDATA": str(linked_parent / "LocalAppData")}):
+            self.assertEqual(module.runtime_paths().imported_resource_root, self.root/'resources')
             with self.assertRaisesRegex(ValueError, "links or reparse points"):
-                module.runtime_paths()
+                module.runtime_paths().legacy_imported_resource_root
 
     def test_production_rejects_imported_root_file(self):
         module = self.load()
-        imported_parent = self.local_app_data / "Xingtu"
-        imported_parent.mkdir()
-        imported_root = imported_parent / "resources"
+        imported_root = self.root / "resources"
         imported_root.write_bytes(b"not a directory")
         with patch.dict(os.environ, {"LOCALAPPDATA": str(self.local_app_data)}):
             with self.assertRaisesRegex(ValueError, "Imported resource root must be a directory"):
@@ -128,21 +125,20 @@ class RuntimePathTests(unittest.TestCase):
 
     def test_production_rejects_linked_imported_root(self):
         module = self.load()
-        imported_parent = self.local_app_data / "Xingtu"
-        imported_parent.mkdir()
         target = self.container / "external-resources"
         target.mkdir()
-        self.create_directory_symlink(target, imported_parent / "resources")
+        self.create_directory_symlink(target, self.root / "resources")
         with patch.dict(os.environ, {"LOCALAPPDATA": str(self.local_app_data)}):
             with self.assertRaisesRegex(ValueError, "links or reparse points"):
                 module.runtime_paths()
 
-    def test_production_rejects_file_in_imported_root_ancestry(self):
+    def test_invalid_legacy_root_does_not_block_local_resources(self):
         module = self.load()
         (self.local_app_data / "Xingtu").write_text("not a directory", encoding="utf-8")
         with patch.dict(os.environ, {"LOCALAPPDATA": str(self.local_app_data)}):
+            self.assertEqual(module.runtime_paths().imported_resource_root, self.root/'resources')
             with self.assertRaisesRegex(ValueError, "parent must be a directory"):
-                module.runtime_paths()
+                module.runtime_paths().legacy_imported_resource_root
 
     def test_source_profile_cannot_select_production(self):
         module = self.load(frozen=False)

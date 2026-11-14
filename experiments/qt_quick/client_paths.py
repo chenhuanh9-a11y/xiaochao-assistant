@@ -61,25 +61,6 @@ def _no_links(path):
             raise ValueError("Runtime paths cannot use links or reparse points")
 
 
-def _local_app_data_root():
-    value = os.environ.get("LOCALAPPDATA")
-    if not value or not value.strip():
-        raise ValueError("LOCALAPPDATA must name an existing absolute user data directory")
-    if "\0" in value:
-        raise ValueError("LOCALAPPDATA must name an existing absolute user data directory")
-    root = Path(value)
-    if not root.is_absolute():
-        raise ValueError("LOCALAPPDATA must name an existing absolute user data directory")
-    try:
-        _no_links(root)
-        is_directory = root.is_dir()
-    except OSError as exc:
-        raise ValueError("LOCALAPPDATA must name an existing absolute user data directory") from exc
-    if not is_directory:
-        raise ValueError("LOCALAPPDATA must name an existing absolute user data directory")
-    return root
-
-
 def _validate_future_directory(path):
     try:
         _no_links(path)
@@ -109,8 +90,17 @@ class RuntimePaths:
     @property
     def imported_resource_root(self):
         if self.production:
-            return _validate_future_directory(_local_app_data_root() / "Xingtu" / "resources")
+            from resource_locations import installed_resource_root
+            return _validate_future_directory(installed_resource_root(self.installation_root))
         return _validate_future_directory(self.installation_root / "work" / "imported-resources")
+
+    @property
+    def legacy_imported_resource_root(self):
+        if not self.production:
+            return None
+        from resource_locations import legacy_resource_root
+        path = legacy_resource_root()
+        return _validate_future_directory(path) if path is not None else None
 
     @property
     def work_root(self):

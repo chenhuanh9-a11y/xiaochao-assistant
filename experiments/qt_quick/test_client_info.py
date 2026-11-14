@@ -325,6 +325,25 @@ class InfoTests(unittest.TestCase):
         self.assertTrue(service.hasError)
         self.assertEqual(self.calls, [])
 
+    def test_diagnostics_reads_program_files_with_separate_resource_store(self):
+        service = self.service()
+        internal = service.paths.resource_root
+        internal.mkdir(parents=True, exist_ok=True)
+        (internal/'Main.qml').write_bytes(b'program-file-identity-fixture')
+        resources = self.root/'resources'
+        resources.mkdir()
+        service.resource_resolver = SimpleNamespace(root=resources)
+        service.setTextOnlyDiagnostics(True)
+        destination = self.root/'resource-location-diagnostics.zip'
+        service.exportDiagnosticsTo(QUrl.fromLocalFile(str(destination)).toString())
+        self.wait(lambda: not service.checking)
+        self.assertTrue(service.diagnosticsReceipt['success'],service.diagnosticsReceipt)
+        with zipfile.ZipFile(destination) as archive:
+            manifest = json.loads(archive.read('diagnostic-manifest.json'))
+        witness = manifest['packageIdentity']['files']['_internal/Main.qml']
+        self.assertEqual(witness['status'],'hashed')
+        self.assertEqual(witness['bytes'],len(b'program-file-identity-fixture'))
+
     def test_zip_uses_existing_safe_window_snapshot_and_saved_frame_opt_in(self):
         service = self.service()
         service.setProviders(
