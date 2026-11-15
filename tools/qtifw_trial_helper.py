@@ -238,7 +238,7 @@ def receipt(policy, target, name, value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("discover-installation", "bootstrap-check", "bootstrap-start", "bootstrap-status", "bootstrap-run", "check-target", "prepare", "verify-program", "verify", "disable-watcher", "inspect-data", "hold-uninstall", "select-data", "undo-data", "noop", "data", "pause", "fail"))
+    parser.add_argument("action", choices=("discover-installation", "hold-setup-instance", "close-background-start", "close-background-run", "bootstrap-check", "bootstrap-start", "bootstrap-status", "bootstrap-run", "check-target", "prepare", "verify-program", "verify", "disable-watcher", "inspect-data", "hold-uninstall", "select-data", "undo-data", "noop", "data", "pause", "fail"))
     parser.add_argument("target", type=Path, nargs="?")
     parser.add_argument("choice", nargs="?", default="keep")
     parser.add_argument("operation", nargs="?", default="none", choices=("none", "purge"))
@@ -248,18 +248,35 @@ def main():
     parser.add_argument("--interactive", action="store_true", help="Show the native maintenance update progress")
     parser.add_argument("--process-id", type=int)
     parser.add_argument("--process-created")
+    parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
     if args.action != "discover-installation" and args.target is None:
         parser.error("target is required for this action")
     policy = json.loads(Path(__file__).with_name("qtifw-trial-policy.json").read_text(encoding="utf-8"))
     try:
+        if args.action == "hold-setup-instance":
+            from qtifw_setup_instance import hold
+            print(json.dumps(hold(policy, args.target), ensure_ascii=True))
+            return 0
+        if args.action == "close-background-run":
+            from qtifw_process_control import close_background
+            result = dict(close_background(policy, args.target, force=args.force), target=str(args.target.resolve()))
+            if args.result_file:
+                from qtifw_update_job import publish
+                publish(policy, args.target, args.result_file, result)
+            print(json.dumps(result, ensure_ascii=True))
+            return 0
         if args.action == "discover-installation":
             from qtifw_installation import discover
             print(json.dumps(discover(policy), ensure_ascii=True))
             return 0
-        if args.action in {"bootstrap-start", "bootstrap-status"}:
+        if args.action in {"bootstrap-start", "bootstrap-status", "close-background-start"}:
             from qtifw_update_job import start, status
-            if args.action == "bootstrap-start":
+            if args.action == "close-background-start":
+                if args.result_file is None:
+                    raise ValueError("native-close-job-arguments-required")
+                result = start(policy, args.target, args.result_file, operation="close", force=args.force)
+            elif args.action == "bootstrap-start":
                 if args.result_file is None or args.setup_source is None:
                     raise ValueError("native-update-job-arguments-required")
                 result = start(policy, args.target, args.result_file,
@@ -359,7 +376,7 @@ def main():
         print(json.dumps(result, ensure_ascii=True))
         return 0
     except (ValueError, OSError, KeyError) as error:
-        if args.result_file and args.action not in {"bootstrap-start", "bootstrap-status"}:
+        if args.result_file and args.action not in {"bootstrap-start", "bootstrap-status", "close-background-start"}:
             from qtifw_update_job import publish
             publish(policy, args.target, args.result_file, dict(success=False, reason=str(error)))
         if args.action in {"data", "undo-data", "verify", "verify-program"}:

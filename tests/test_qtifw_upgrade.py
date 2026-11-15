@@ -324,20 +324,30 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(self.policy['targetVersion']['version'], '1.1.8')
 
     def test_qtifw_package_revision_does_not_change_public_release_versions(self):
-        self.assertEqual(builder.qtifw_component_version("1.1.8", release=True), "1.1.8.3")
+        self.assertEqual(builder.qtifw_component_version("1.1.8", release=True), "1.1.8.4")
         self.assertEqual(builder.qtifw_component_version("1.1.9", release=True), "1.1.9")
         self.assertEqual(builder.qtifw_component_version("1.1.8", release=False), "1.0.0")
 
     def test_route_compatibility_repair_covers_the_delivered_controls_setup(self):
         self.configure_same_version_upgrade('c16d45f46ea22c26f3b2ca942fb19a5a5fbdeec2')
         self.components('1.1.8.2')
-        self.policy['packageVersion'] = '1.1.8.3'
+        self.policy['packageVersion'] = '1.1.8.4'
         self.assertEqual(upgrade.check(self.policy, self.target)['mode'], 'update')
         result = self.perform_update_with_native_substitute()
         self.assertTrue(result['success'])
         self.assert_protected()
-        self.assertEqual(upgrade._versions(self.target)[upgrade.PACKAGE], '1.1.8.3')
+        self.assertEqual(upgrade._versions(self.target)[upgrade.PACKAGE], '1.1.8.4')
         self.assertEqual(self.policy['targetVersion']['version'], '1.1.8')
+
+    def test_same_version_repair_accepts_the_new_delivered_source(self):
+        self.configure_same_version_upgrade('fb27ee468a58e25018f42f8250fc182a4a1a0811')
+        self.components('1.1.8.3')
+        self.policy['packageVersion'] = '1.1.8.4'
+        self.assertEqual(upgrade.check(self.policy, self.target)['mode'], 'update')
+        result = self.perform_update_with_native_substitute()
+        self.assertTrue(result['success'])
+        self.assert_protected()
+        self.assertEqual(upgrade._versions(self.target)[upgrade.PACKAGE], '1.1.8.4')
 
     def assert_native_owner_upgrade(self, previous, old_version, target_version):
         self.old["payloadSource"] = self.owner["payloadSource"] = previous
@@ -742,6 +752,43 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(record["stage"], "prepared")
         for name, data in self.old_values.items():
             self.assertEqual((self.target/record["backup"]/"program"/name).read_bytes(), data)
+
+    def test_copy_checked_uses_short_same_folder_temp_for_real_long_windows_path(self):
+        parent = Path(self.temporary.name) / ("p" * 100) / ("q" * 80)
+        parent = upgrade._safe_io_path(parent)
+        parent.mkdir(parents=True)
+        source = parent / "source.bin"
+        payload = b"long-path backup payload"
+        source.write_bytes(payload)
+        destination = parent / ("d" * 150)
+        legacy_temporary = destination.with_name(destination.name + "." + "0" * 32 + ".new")
+        self.assertGreater(len(str(legacy_temporary)), 260)
+        expected = dict(bytes=len(payload), sha256=hashlib.sha256(payload).hexdigest())
+        with patch("qtifw_upgrade.rename_no_replace", wraps=upgrade.rename_no_replace) as publish:
+            upgrade._copy_checked(source, destination, expected)
+        self.assertEqual(upgrade._safe_io_path(destination).read_bytes(), payload)
+        temporary, published = publish.call_args.args
+        self.assertEqual(Path(temporary).parent, Path(published).parent)
+        self.assertTrue(Path(temporary).name.startswith(".qtifw-"))
+        self.assertLessEqual(len(Path(temporary).name), 48)
+        self.assertEqual(list(parent.glob(".qtifw-*.new")), [])
+
+    def test_copy_checked_long_path_rejects_changed_source_and_preserves_conflict(self):
+        parent = upgrade._safe_io_path(Path(self.temporary.name) / ("p" * 100) / ("q" * 80))
+        parent.mkdir(parents=True)
+        source = parent / "source.bin"
+        source.write_bytes(b"source")
+        destination = parent / ("d" * 150)
+        wrong = dict(bytes=6, sha256=hashlib.sha256(b"tamper").hexdigest())
+        with self.assertRaisesRegex(ValueError, "upgrade-backup-source-changed"):
+            upgrade._copy_checked(source, destination, wrong)
+        self.assertFalse(upgrade._safe_io_path(destination).exists())
+
+        destination.write_bytes(b"existing backup")
+        with self.assertRaisesRegex(ValueError, "upgrade-backup-conflict"):
+            upgrade._copy_checked(source, destination, dict(
+                bytes=6, sha256=hashlib.sha256(b"source").hexdigest()))
+        self.assertEqual(upgrade._safe_io_path(destination).read_bytes(), b"existing backup")
 
     def test_pending_old_owner_only_authorizes_this_new_policy_and_root(self):
         self.prepare()

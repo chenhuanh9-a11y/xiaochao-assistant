@@ -29,7 +29,44 @@ SAME_VERSION_REPAIR_VERSION = "1.1.8"
 SAME_VERSION_REPAIR_SOURCE = "d8f195861f950ac809c3f4465493f3f42da671b1"
 SAME_VERSION_REPAIR_SOURCES = frozenset({SAME_VERSION_REPAIR_SOURCE,
     "1925b5cb7b874c04f35f310ad51c99a51d5c56bd",
-    "c16d45f46ea22c26f3b2ca942fb19a5a5fbdeec2"})
+    "c16d45f46ea22c26f3b2ca942fb19a5a5fbdeec2",
+    "fb27ee468a58e25018f42f8250fc182a4a1a0811"})
+
+
+def _windows_io_path(path):
+    """Add the Windows extended prefix when ordinary Win32 paths are near MAX_PATH.
+
+    Keep lexical paths unchanged for normal operations. Long backup paths use
+    ``\\\\?\\`` so their file I/O does not depend on LongPathsEnabled or the
+    executable manifest. UNC paths use the corresponding extended UNC form.
+    """
+    path = Path(path)
+    if os.name != "nt":
+        return path
+    value = os.fspath(path)
+    if value.startswith("\\\\?\\"):
+        return path
+    absolute = os.path.abspath(value)
+    # Leave enough headroom for callers that create a child under this path.
+    if len(absolute) < 248:
+        return path
+    if absolute.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + absolute[2:])
+    return Path("\\\\?\\" + absolute)
+
+
+def _safe_io_path(path):
+    """Reparse-check a path, using an extended spelling for long Windows I/O."""
+    path = Path(path)
+    # Do not let abspath normalization erase a lexical traversal before the
+    # established reparse checks inspect it. Callers may still use _safe's
+    # original short-path behavior for such inputs.
+    if os.name == "nt" and ".." in path.parts:
+        _safe(path)
+        return path
+    result = _windows_io_path(path)
+    _safe(result)
+    return result
 
 
 def _component_version(policy):
@@ -102,16 +139,16 @@ def _native_start(command, **kwargs):
 
 
 def _read(path):
-    path = _safe(Path(path))
+    path = _safe_io_path(Path(path))
     if not path.is_file() or path.stat().st_size > 16 * 1024 * 1024:
         raise ValueError("upgrade-record-unavailable:" + path.name)
     return json.loads(path.read_bytes())
 
 
 def _write(path, data):
-    path = _safe(Path(path))
+    path = _safe_io_path(Path(path))
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = _safe(path.with_name(path.name + "." + uuid.uuid4().hex + ".new"))
+    temporary = _safe_io_path(path.with_name(path.name + "." + uuid.uuid4().hex + ".new"))
     with temporary.open("x", encoding="utf-8") as stream:
         json.dump(data, stream, ensure_ascii=False)
         stream.flush()
@@ -159,7 +196,7 @@ def accepts_previous_owner(policy, target, owner):
 
 
 def _versions(target):
-    path = _safe(target / "components.xml")
+    path = _safe_io_path(target / "components.xml")
     if not path.is_file() or path.stat().st_size > 4 * 1024 * 1024:
         raise ValueError("qtifw-component-record-unavailable")
     tree = ET.parse(path)
@@ -167,7 +204,7 @@ def _versions(target):
 
 
 def _matches(path, row):
-    path = _safe(path)
+    path = _safe_io_path(path)
     if not path.exists():
         return False
     info = path.stat()
@@ -291,9 +328,12 @@ def check(policy, target):
 
 
 def _copy_checked(source, destination, expected=None):
-    source, destination = _safe(source), _safe(destination)
-    if source.stat().st_nlink != 1 or not stat.S_ISREG(source.stat().st_mode):
+    source, destination = _safe_io_path(source), _safe_io_path(destination)
+    source_info = source.stat()
+    if source_info.st_nlink != 1 or not stat.S_ISREG(source_info.st_mode):
         raise ValueError("upgrade-source-not-exclusive-file")
+    if expected and source_info.st_size != expected["bytes"]:
+        raise ValueError("upgrade-backup-source-changed")
     data = source.read_bytes()
     if expected and (len(data) != expected["bytes"] or hashlib.sha256(data).hexdigest() != expected["sha256"]):
         raise ValueError("upgrade-backup-source-changed")
@@ -302,7 +342,10 @@ def _copy_checked(source, destination, expected=None):
         if destination.read_bytes() != data:
             raise ValueError("upgrade-backup-conflict")
     else:
-        temporary = _safe(destination.with_name(destination.name + "." + uuid.uuid4().hex + ".new"))
+        # A temporary based on destination.name can exceed MAX_PATH even when
+        # the final backup path fits. Keep it short and in the same directory
+        # so the existing exclusive-create/no-replace publication stays atomic.
+        temporary = _safe_io_path(destination.with_name(".qtifw-" + uuid.uuid4().hex + ".new"))
         with temporary.open("xb") as stream:
             stream.write(data)
             stream.flush()

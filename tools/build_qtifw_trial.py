@@ -33,7 +33,7 @@ def qtifw_component_version(product_version, *, release):
     # versions unchanged. QtIFW needs a higher package version to extract it
     # over an already installed 1.1.8 package.
     if product_version == "1.1.8":
-        return "1.1.8.3"
+        return "1.1.8.4"
     return product_version
 
 
@@ -221,6 +221,7 @@ def main():
     (output / ".qtifw-trial-scope").write_text(instance + "\n", encoding="ascii")
     policy = dict(scope=str(output), instance=instance, payloadSource=compiled, allowNewTargets=True, fullUninstall=True,
                   files=inventory["files"], faultsAllowed=not args.release, portable=args.release, mapPackages=packages)
+    policy["localCacheDir"] = "xingtu-setup" if args.release else "xingtu-trial-" + instance
     if args.release:
         policy.pop("scope")
     policy_path = output / "qtifw-trial-policy.json"
@@ -294,6 +295,7 @@ def main():
         TargetDir=str(output / "targets/trial"), MaintenanceToolName="trial-maintenance",
         RemoveTargetDir="true", AllowNonAsciiCharacters="true", AllowSpaceInPath="true",
         AllowRepositoriesForOfflineInstaller="false", SaveDefaultRepositories="false", PersistentLocalCache="false",
+        LocalCacheDir=policy["localCacheDir"],
         ControlScript="controller.js", StyleSheet="trial.qss", WizardStyle="Modern",
         InstallerApplicationIcon="xingtu", InstallerWindowIcon="xingtu-window.png",
         WizardShowPageList="false", WizardDefaultWidth="680", WizardDefaultHeight="440"))

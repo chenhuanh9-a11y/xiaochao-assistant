@@ -20,26 +20,28 @@ var calls=[], values={TargetDir:"E:/default", HomeDir:"C:/Users/fixture", Instal
 function signal(){return {connect:function(){}};}
 function label(){return {text:"",clicked:signal(),textChanged:signal()};}
 var location={InstallPath:label(), BrowseButton:label(), FinalPath:label(),LocationError:label(),LocationHelp:label()};
-var update={ExistingPath:label(),UpdateButton:label(),CloseButton:label(),UpdateStatus:label(),UpdatePollButton:label()};
+var update={ExistingPath:label(),UpdateButton:label(),CloseButton:label(),CloseBackgroundButton:label(),UpdateStatus:label(),UpdatePollButton:label()};
 var pending=[],resultReady=false,resultBroken=false,jobRunning=true;
 var QInstaller={Introduction:0,TargetDirectory:1,ComponentSelection:2,LicenseCheck:3,StartMenuSelection:4,
 ReadyForInstallation:5,PerformInstallation:6,InstallationFinished:7,Success:0};
-var buttons={NextButton:1,CommitButton:3,FinishButton:4}; var QMessageBox={Yes:1,No:0};var QSettings={NativeFormat:0};
+var buttons={NextButton:1,CommitButton:3,FinishButton:4,CancelButton:5}; var QMessageBox={Yes:1,No:0,question:function(){return 0;}};var QSettings={NativeFormat:0};
 var installer={
 value:function(k,d){return values[k]===undefined?(d===undefined?"":d):values[k];},
 setValue:function(k,v){values[k]=v;},
 isInstaller:function(){return true;},isCommandLineInstance:function(){return false;},isUninstaller:function(){return false;},
 environmentVariable:function(k){return k==="TEMP"?"E:/fixture/temp":k==="SystemRoot"?"C:/Windows":"";},
-fileExists:function(p){return p.indexOf("update-attempt-")>=0?resultReady:true;},
+fileExists:function(p){return p.indexOf("update-attempt-")>=0||p.indexOf("close-attempt-")>=0?resultReady:true;},
 readFile:function(){return resultBroken?"broken-json":JSON.stringify(Object.assign({},outcome,{job:instance.updateJob,target:values.TargetDir}));},
 performOperation:function(){calls.push(["operation"].concat(Array.prototype.slice.call(arguments)));return true;},
 execute:function(p,a){calls.push(["execute",a]);if(a[0]==="discover-installation")return[JSON.stringify(discovery),0];
-if(a[0]==="bootstrap-start")return[JSON.stringify({started:true,pid:123,created:"fixture-created",instance:"fixture",target:a[1],resultFile:a[3]}),0];
+if(a[0]==="hold-setup-instance")return[JSON.stringify({primary:true}),0];
+if(a[0]==="bootstrap-start"||a[0]==="close-background-start")return[JSON.stringify({started:true,pid:123,created:"fixture-created",instance:"fixture",target:a[1],resultFile:a[3]}),0];
 if(a[0]==="bootstrap-status")return[JSON.stringify({running:jobRunning}),0];return["{}",0];},
 setDefaultPageVisible:function(p,v){calls.push(["page",p,v]);},setMessageBoxAutomaticAnswer:function(){},
 toNativeSeparators:function(p){return p;},addWizardPage:function(c,n,p){calls.push(["custom",n,p]);return true;},
 setValidatorForCustomPage:function(c,n,v){calls.push(["validator",n,v]);},
 valueChanged:signal(),installationFinished:signal(),uninstallationStarted:signal()
+ ,setCanceled:function(){calls.push(["canceled"]);}
 };
 var component={loaded:signal(),createOperations:function(){calls.push(["native-fresh-operation"]);},addOperation:function(){}};
 var gui={pageWidgetByObjectName:function(n){return n==="DynamicExistingUpdate"?(values.TrialNativeHandoff==="true"?update:null):location;},
@@ -52,6 +54,55 @@ function complete(){prepare();resultReady=true;tick();}
 
 
 class NativeUiTests(unittest.TestCase):
+    def test_duplicate_controller_stops_before_discovery_and_does_not_advance(self):
+        engine = self.scripts(dict(mode="fresh"))
+        value = engine.evaluate('calls=[];var original=installer.execute;installer.execute=function(p,a){'
+            'return a[0]==="hold-setup-instance"?[JSON.stringify({primary:false}),0]:original(p,a);};'
+            'var duplicate=new Controller();duplicate.IntroductionPageCallback();')
+        self.assertFalse(value.isError(), value.toString())
+        calls = self.value(engine, 'calls')
+        self.assertIn(['canceled'], calls)
+        self.assertIn(['queued', 5, 0], calls)
+        self.assertNotIn(['queued', 1, None], calls)
+        self.assertFalse(any(row[0] == 'execute' and row[1][0] == 'discover-installation' for row in calls))
+
+    def test_background_close_is_queued_and_blocks_update_until_verified_completion(self):
+        engine = self.scripts(dict(mode="update", target="D:/fixture/old"))
+        engine.evaluate('calls=[];instance.closeBackground();instance.updateExisting();')
+        self.assertFalse(any(row[0] == "execute" for row in self.value(engine, "calls")))
+        engine.evaluate('prepare();complete();')
+        self.assertNotEqual(self.value(engine, 'values.TrialHandoffSuccess || ""'), "true")
+        self.assertTrue(self.value(engine, 'update.UpdateButton.enabled'))
+        self.assertIn("后台已退出", self.value(engine, 'update.UpdateStatus.text'))
+
+    def test_no_running_client_is_reported_without_blame_for_backup_failure(self):
+        engine = self.scripts(dict(mode="update", target="D:/fixture/old"),
+                              outcome=dict(success=True, matchedCount=0))
+        engine.evaluate('instance.closeBackground();complete();')
+        self.assertIn("未发现", self.value(engine, 'update.UpdateStatus.text'))
+        self.assertTrue(self.value(engine, 'update.UpdateButton.enabled'))
+        engine.evaluate('instance.finishExistingUpdate(false,"[Errno 2] backup/path",true);')
+        self.assertNotIn("请关闭正在运行", self.value(engine, 'update.UpdateStatus.text'))
+
+    def test_live_update_disables_close_and_unknown_worker_cannot_be_force_closed(self):
+        engine = self.scripts(dict(mode="update", target="D:/fixture/old"))
+        engine.evaluate('instance.updateExisting();instance.closeBackground();prepare();jobRunning=false;for(var n=0;n<5;++n)tick();instance.closeBackground();')
+        self.assertFalse(self.value(engine, 'update.CloseBackgroundButton.enabled'))
+        self.assertFalse(any(row[0] == 'execute' and row[1][0] == 'close-background-start'
+                             for row in self.value(engine, 'calls')))
+
+    def test_force_close_requires_explicit_yes_and_preserves_terminal_failure(self):
+        engine = self.scripts(dict(mode="update", target="D:/fixture/old"),
+                              outcome=dict(success=False, reason="still-running", remaining=[1]))
+        engine.evaluate('instance.closeBackground();complete();')
+        self.assertIn("强制结束", self.value(engine, 'update.CloseBackgroundButton.text'))
+        engine.evaluate('calls=[];instance.closeBackground();')
+        self.assertFalse(self.value(engine, 'calls'))
+        engine.evaluate('QMessageBox.question=function(){return QMessageBox.Yes;};resultReady=false;instance.closeBackground();prepare();')
+        started = [row[1] for row in self.value(engine, 'calls') if row[0] == 'execute' and row[1][0] == 'close-background-start']
+        self.assertEqual(len(started), 1)
+        self.assertIn('--force', started[0])
+
     def test_update_click_returns_before_slow_native_boundary(self):
         engine = self.scripts(dict(mode="update", target="D:/fixture/old"))
         class SlowNative(QObject):

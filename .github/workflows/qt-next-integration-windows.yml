@@ -468,7 +468,7 @@ jobs:
             $modules += 'test_client_original_browse'
           }
           if ('${{ matrix.group }}' -eq 'original-csharp') {
-            $modules += @('test_qtifw_native_ui', 'test_qtifw_update_job', 'test_qtifw_bootstrap_packaging')
+            $modules += @('test_qtifw_native_ui', 'test_qtifw_update_job', 'test_qtifw_bootstrap_packaging', 'test_qtifw_setup_instance', 'test_qtifw_process_control')
           }
           foreach ($module in $modules) {
             if ($module -eq 'test_runtime_environment_diagnostics') {
