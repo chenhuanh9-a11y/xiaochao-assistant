@@ -108,7 +108,7 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertEqual(state["mapId"], "")
         self.assertFalse(state["identityLocked"])
         self.assertTrue(state["manualMapLockEnabled"])
-        self.assertEqual([row["mapId"] for row in state["candidateRows"]], ["fixture-map"])
+        self.assertEqual([row["mapId"] for row in state["candidateRows"]], ["fixture-map", "fixture-map-2"])
         self.assertIn("select_candidate", state["availableCommands"])
         selected = self.dispatch("select_candidate", index=0)
         self.assertTrue(selected["success"], selected)
