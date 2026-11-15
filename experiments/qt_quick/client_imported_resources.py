@@ -306,7 +306,7 @@ class ImportedResourceService(QObject):
             return False
         path = Path(url.toLocalFile())
         def save(cancelled):
-            from imported_resource_archive import inspect_archive, save_archive
+            from imported_resource_archive import save_archive
             from client_imported_admission import admit_import
             from imported_resource_catalog import ResourceCatalogError
             from imported_resource_removal import assert_removal_ready
@@ -314,14 +314,12 @@ class ImportedResourceService(QObject):
             sha = None
             if expected is not None:
                 if (set(expected) != {'packageId', 'bytes', 'sha256'}
+                        or not isinstance(expected['packageId'], str) or not expected['packageId']
                         or type(expected['bytes']) is not int or expected['bytes'] <= 0
                         or not isinstance(expected['sha256'], str)
                         or not re.fullmatch('[0-9a-f]{64}', expected['sha256'])):
                     raise ResourceCatalogError('resource-download-binding-invalid')
                 sha = expected['sha256']
-                inspected = inspect_archive(path, expected_archive_sha256=sha, cancelled=cancelled)
-                if inspected.package_id != expected['packageId'] or inspected.archive_bytes != expected['bytes']:
-                    raise ResourceCatalogError('resource-download-binding-invalid')
             admission = {}
             def validate_components(views):
                 assert_removal_ready(self.resolver.root)
@@ -335,7 +333,9 @@ class ImportedResourceService(QObject):
                 admission['displayRefs'] = tuple(view.component_ref for view in views
                                                  if view.component['type'] == 'display')
             summary = save_archive(path, self.resolver.root, expected_archive_sha256=sha, cancelled=cancelled,
-                                   validate_components=validate_components)
+                                   validate_components=validate_components,
+                                   expected_package_id=expected['packageId'] if expected is not None else None,
+                                   expected_archive_bytes=expected['bytes'] if expected is not None else None)
             # A completed save is reported even if a cancellation arrives during
             # the following read. The immutable version may already be present.
             try:

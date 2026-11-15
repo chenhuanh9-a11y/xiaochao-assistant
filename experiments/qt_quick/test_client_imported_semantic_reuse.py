@@ -191,6 +191,27 @@ class ImportedSemanticReuseTests(unittest.TestCase):
             self.assertEqual(manifest_path.read_bytes(), damaged_manifest)
             self.assertEqual(decode.call_count, 1)
 
+    def test_final_input_proof_rejects_payload_changed_during_author_identity_check(self):
+        self.activate()
+        catalog_before = (self.root / 'catalog.json').read_bytes()
+        document = json.loads(catalog_before)
+        inspected = imported_activation.selection.inspect_selection(
+            self.root, document, supported_capabilities=SUPPORTED_CAPABILITIES)
+        base = inspected.views[self.refs['base']]
+        target = base.path(base.component['entrypoint'])
+        original = target.read_bytes()
+
+        def author_identity_check():
+            # A concurrent write during the identity phase must be covered by
+            # the actual final byte proof, even with a cached semantic result.
+            target.write_bytes(b'X' * len(original))
+
+        validator = imported_activation._SelectionValidator(
+            self.root, self.paths, self.resolver, check_updates=author_identity_check)
+        with self.assertRaisesRegex(ValueError, 'resource-package-file-integrity-mismatch'):
+            validator._prove_inputs(inspected)
+        self.assertEqual((self.root / 'catalog.json').read_bytes(), catalog_before)
+
     def test_same_base_with_new_author_decodes_the_new_pixels(self):
         first_author = self.author_component(
             'first', profile_id='author-first-profile', bgra=(21, 34, 55, 255))

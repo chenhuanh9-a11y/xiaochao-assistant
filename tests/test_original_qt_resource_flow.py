@@ -200,13 +200,13 @@ class OriginalQtResourceFlowTests(unittest.TestCase):
         session.reconfigure('nightmare','shared-structure','s0');settle()
         dispatch('inspect_engine_resources');self.assertTrue(dispatch('start_round')['success'])
         old=runtime._engine
-        original=ComponentResourceReader.__call__
+        original=ComponentResourceReader._read
         injected=[]
-        def once(reader,path):
+        def once(reader,path,**kwargs):
             if reader is old.qt_native_base.reader and Path(path).name=='difficult-exit-icon.json' and not injected:
                 injected.append(True);raise PermissionError('one actual lazy resource read')
-            return original(reader,path)
-        with patch.object(ComponentResourceReader,'__call__',once):
+            return original(reader,path,**kwargs)
+        with patch.object(ComponentResourceReader,'_read',once):
             failed=dispatch('capture_now')
         self.assertTrue(injected,'the actual Session never entered the lazy original resource consumer')
         self.assertFalse(failed['success']);self.assertTrue(failed.get('error'))
@@ -233,7 +233,7 @@ class OriginalQtResourceFlowTests(unittest.TestCase):
         Image.fromarray(frame[:,:,::-1]).save(path)
         payload=dict(path=str(path),floor='1')
         injected.clear()
-        with patch.object(ComponentResourceReader,'__call__',once):
+        with patch.object(ComponentResourceReader,'_read',once):
             failed=dispatch('rank_saved_frame',payload)
         self.assertTrue(injected)
         self.assertFalse(failed['success']);self.assertTrue(failed['offline'].get('error'))
