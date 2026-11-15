@@ -9570,6 +9570,8 @@ def selected_route_current_frame_residual(
         return {"verified": False, "reason": "no-visible-map-component"}
     patch, bounds, _component = visible
     query = map_color_mask(patch, live=True).astype(np.uint8)
+    from season_optional_room import filter_query
+    query = filter_query(frame, query, bounds)
     evaluation_scale = 1.0
     if maximum_dimension is not None and max(query.shape) > maximum_dimension:
         evaluation_scale = float(maximum_dimension) / float(max(query.shape))

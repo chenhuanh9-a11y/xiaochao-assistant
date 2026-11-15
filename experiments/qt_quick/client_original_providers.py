@@ -246,7 +246,9 @@ def attach_original_s1_scanner(engine, native, bundle):
         from s1_private_experiment import PrivateCoordinateObserver
         if private_observer is None:
             private_observer = PrivateCoordinateObserver(engine, catalog, root / "s1-private-assets", read_resource=bundle.reader)
-        return private_observer.prepare(frame, pool_ids, floor, cancelled=cancelled, stage=stage)
+        from season_optional_room import observation_scope
+        with observation_scope(frame, enabled=True, cancelled=cancelled):
+            return private_observer.prepare(frame, pool_ids, floor, cancelled=cancelled, stage=stage)
     engine.qt_s1_private_coordinate_prepare = private_coordinate_prepare
     pose_index = None
     def pose_prior(source, floor, owner_scope):
@@ -270,8 +272,11 @@ def attach_original_s1_scanner(engine, native, bundle):
         host = _AlignmentHost(engine, pose_priors=pose_priors,
             collect_fit_diagnostics=collect_fit_diagnostics)
         fixed = private_coordinate_report is not None and private_coordinate_report.get("coordinateVerified") is True
-        fit = (lambda f, mid, fl, cancel, **kw: private_observer.fixed_fit(
-            f, mid, fl, cancel, report=private_coordinate_report, **kw)) if fixed else host.fit
+        def fixed_fit(f, mid, fl, cancel, **kw):
+            from season_optional_room import observation_scope
+            with observation_scope(f, enabled=True, cancelled=cancel):
+                return private_observer.fixed_fit(f, mid, fl, cancel, report=private_coordinate_report, **kw)
+        fit = fixed_fit if fixed else host.fit
         scanner = StructureCandidateScanner(catalog, fit,
             prepare_fit=None if fixed else host.prepare_structure_scan)
         report = scanner.scan(frame, floor=floor, floor_source=floor_source,

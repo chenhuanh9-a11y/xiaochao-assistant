@@ -84,6 +84,8 @@ def structure_current_map_evidence(frame: np.ndarray | None, *, observation_boun
         return None
     result = dict(query=(current[0] > .22).astype(np.uint8),
                   observationBounds=tuple(visible[1]), visible=visible)
+    from season_optional_room import filter_query
+    result['query'] = filter_query(frame, result['query'], result['observationBounds'])
     _test_evidence("structure-input", frame, result)
     return result
 
