@@ -230,7 +230,7 @@ def _read_version(root, package_id, version, *, verify, budget):
         row['issue'] = 'resource-package-manifest-unavailable'
         return row
     try:
-        manifest_sha = hashlib.sha256(raw).hexdigest()
+        manifest_sha = stamp['sha256']
         row['_manifestObservation'] = dict(
             sha256=manifest_sha, identity=tuple(stamp['identity']))
         manifest = files._json(raw)

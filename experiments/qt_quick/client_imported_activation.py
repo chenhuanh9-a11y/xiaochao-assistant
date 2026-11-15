@@ -17,7 +17,7 @@ import imported_resource_catalog as catalog
 import imported_resource_selection as selection
 import client_imported_activation_plan as activation_plan
 from client_imported_providers import build_native_engine
-from imported_resource_packages import ComponentRef, FileRef, PackageView
+from imported_resource_packages import ComponentRef, PackageView
 from map_package_upgrade import _identity
 from resource_transaction import resource_write_lock
 import star_map_import as files
@@ -139,23 +139,19 @@ class _SelectionValidator:
             and self.qualifications.contains(key))
 
     def _prove_inputs(self, inspected):
-        with ExitStack() as stack:
-            scopes = {ref: stack.enter_context(view.read_scope(self.cancelled))
-                      for ref, view in inspected.views.items()}
-            checked_packages = set()
-            for ref, view in inspected.views.items():
-                self._current()
-                package = (ref.package_id, ref.resource_version, ref.manifest_sha256)
-                if package not in checked_packages:
-                    view.validate_inventory()
-                    checked_packages.add(package)
-                # The tree has just been read successfully. Each selected
-                # component separately joins the final actual byte proof.
-                for relative in view.inventory:
-                    scopes[ref].record_consumed(FileRef(ref, relative))
-            if self.check_updates is not None:
-                self.check_updates()
+        # This is a byte proof, not a decoder consuming cached payloads. The
+        # complete inventory read already verifies actual bytes and the final
+        # manifest, so a read scope rereading those same files adds no proof.
+        if self.check_updates is not None:
+            self.check_updates()
+        checked_packages = set()
+        for ref, view in inspected.views.items():
             self._current()
+            package = (ref.package_id, ref.resource_version, ref.manifest_sha256)
+            if package not in checked_packages:
+                view.validate_inventory()
+                checked_packages.add(package)
+        self._current()
 
     def _qualify_missing(self, inspected, pending):
         if not pending:

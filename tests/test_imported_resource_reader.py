@@ -17,6 +17,7 @@ import imported_resource_archive as archives
 import test_shared_structure_package_io as fixture_module
 from imported_resource_packages import ComponentRef, PackageView
 from imported_resource_reader import ComponentResourceReader
+import imported_resource_reader as readers
 from shared_structure_reference import SharedStructureResourceStore
 import star_map_import as files
 import test_export_native_base_package as native_base_fixtures
@@ -174,6 +175,32 @@ class ComponentResourceReaderTests(unittest.TestCase):
                 side_effect=AssertionError('oversized JSON payload read')):
             with self.assertRaisesRegex(files.ImportRejected, 'json-size'):
                 reader(path)
+
+    def test_json_is_decoded_once_and_success_observer_keeps_original_order(self):
+        view, relative = self.add_file(b'{"key":"value"}', 'metadata.JSON')
+        reader = ComponentResourceReader(view)
+        events = []
+        decode = readers.decode_resource_json
+
+        def decoded(raw):
+            events.append('decode')
+            return decode(raw)
+
+        with patch.object(readers, 'decode_resource_json', side_effect=decoded), \
+                patch.object(reader, '_read_succeeded', side_effect=lambda paths: events.append(tuple(paths))):
+            self.assertEqual(reader.json(relative), {'key': 'value'})
+        self.assertEqual(events, ['decode', (relative,)])
+
+        # Invalid JSON with a non-JSON name originally notifies a successful
+        # raw read before JSON decoding; a JSON name notifies only after decode.
+        for name, expected in (('bad.json', []), ('bad.bin', [('bad.bin',)])):
+            view, relative = self.add_file(b'{"key":NaN}', name)
+            reader = ComponentResourceReader(view)
+            events = []
+            with patch.object(reader, '_read_succeeded', side_effect=lambda paths: events.append(tuple(paths))):
+                with self.assertRaisesRegex(files.ImportRejected, 'json-nonfinite'):
+                    reader.json(relative)
+            self.assertEqual(events, expected)
 
     def test_uppercase_extensions_do_not_bypass_json_and_npz_preflight(self):
         view, relative = self.add_file(b'{"key":1,"key":2}', 'metadata.JSON')

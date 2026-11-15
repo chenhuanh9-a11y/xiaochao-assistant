@@ -86,19 +86,19 @@ class ImportedNativeBaseTests(unittest.TestCase):
 
     def test_empty_io_errors_during_entry_construction_reject_partial_bundles(self):
         from imported_resource_reader import ComponentResourceReader
-        original = ComponentResourceReader.__call__
+        original = ComponentResourceReader._read
         for target in ('entries.json', 'entry-passports.json', 'side-door-anchors.json', 'side-entry-search.npz'):
             with self.subTest(target=target):
                 view, reads = self.view(), []
-                def read(reader, path):
+                def read(reader, path, **kwargs):
                     if Path(path).name == target:
                         reads.append(path)
                         # The first read validates the actual resource DTO;
                         # fail only when its owning entry loader reads it.
                         if len(reads) == 2:
                             raise PermissionError()
-                    return original(reader, path)
-                with patch.object(ComponentResourceReader, '__call__', read):
+                    return original(reader, path, **kwargs)
+                with patch.object(ComponentResourceReader, '_read', read):
                     with self.assertRaisesRegex(files.ImportRejected, 'entry-loader-invalid'):
                         native.decode_native_base(view)
                 self.assertGreaterEqual(len(reads), 2)

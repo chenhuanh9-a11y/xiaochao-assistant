@@ -94,10 +94,19 @@ class ComponentResourceReader:
         return raw
 
     def __call__(self, path):
+        return self._read(path)
+
+    def _read(self, path, *, json_result=False):
         relative = self.relative_path(path)
         extension = self._check_size(relative)
-        raw = self._check_payload(self.view.read(relative), extension)
+        raw = self.view.read(relative)
+        if json_result and extension == '.json':
+            parsed = decode_resource_json(raw)
+        else:
+            self._check_payload(raw, extension)
         self._read_succeeded((relative,))
+        if json_result:
+            return parsed if extension == '.json' else decode_resource_json(raw)
         return raw
 
     def _read_succeeded(self, relatives):
@@ -135,7 +144,7 @@ class ComponentResourceReader:
         return result
 
     def json(self, relative):
-        return decode_resource_json(self(self.view.path(relative)))
+        return self._read(self.view.path(relative), json_result=True)
 
     def _owner_state(self):
         return id(self.view), self.root, self._canonical_root, id(self._inventory)
