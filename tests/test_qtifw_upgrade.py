@@ -328,6 +328,28 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(builder.qtifw_component_version("1.1.9", release=True), "1.1.9")
         self.assertEqual(builder.qtifw_component_version("1.1.8", release=False), "1.0.0")
 
+    def test_119_upgrades_delivered_1184_and_preserves_user_data(self):
+        self.configure_same_version_upgrade('03ea9cd16df36c98fb2b310cfccf91ddd31db56a')
+        self.old['packageVersion'] = '1.1.8.4'
+        write(self.target/'_installer-support/_internal/qtifw-trial-policy.json',
+              json.dumps(self.old).encode())
+        self.components('1.1.8.4')
+        report = json.loads(self.new_values['release-report.json'])
+        report['displayVersion'] = '1.1.9'
+        self.new_values['release-report.json'] = json.dumps(report).encode()
+        self.policy.update(targetVersion=dict(version='1.1.9', displayVersion='1.1.9',
+                                             numericVersion='1.0.0.31'),
+                           packageVersion='1.1.9', files=inventory(self.new_values))
+        maintenance_before = (self.target/'trial-maintenance.dat').read_bytes()
+        self.assertEqual(upgrade.check(self.policy, self.target)['mode'], 'update')
+        result = self.perform_update_with_native_substitute()
+        self.assertTrue(result['success'])
+        self.assertEqual(upgrade._versions(self.target)[upgrade.PACKAGE], '1.1.9')
+        self.assertEqual(json.loads((self.program/'release-report.json').read_bytes())['displayVersion'], '1.1.9')
+        self.assertEqual((self.target/'trial-maintenance.dat').read_bytes(), maintenance_before)
+        self.assert_protected()
+        self.assertFalse((self.program/upgrade.PENDING).exists())
+
     def test_route_compatibility_repair_covers_the_delivered_controls_setup(self):
         self.configure_same_version_upgrade('c16d45f46ea22c26f3b2ca942fb19a5a5fbdeec2')
         self.components('1.1.8.2')

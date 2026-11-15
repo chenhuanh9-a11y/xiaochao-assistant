@@ -23,7 +23,7 @@ from resource_locations import installed_resource_root
 PENDING = "work/pending-installer-upgrade.json"
 PACKAGE = "org.xingtu.qtifw.realtrial"
 DATA_PACKAGE = "org.xingtu.qtifw.trialdata"
-PREVIOUS_VERSIONS = frozenset({"1.1.2", "1.1.3", "1.1.4", "1.1.5", "1.1.6", "1.1.7"})
+PREVIOUS_VERSIONS = frozenset({"1.1.2", "1.1.3", "1.1.4", "1.1.5", "1.1.6", "1.1.7", "1.1.8"})
 BRAND_MIGRATIONS = frozenset({"_internal/assets/brand/xingtu.ico", "_internal/assets/brand/xingtu-round.png"})
 SAME_VERSION_REPAIR_VERSION = "1.1.8"
 SAME_VERSION_REPAIR_SOURCE = "d8f195861f950ac809c3f4465493f3f42da671b1"
