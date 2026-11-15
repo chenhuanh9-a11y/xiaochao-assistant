@@ -5,6 +5,7 @@ S1 placeholders are declared for ownership; no test treats them as calibration.
 Recorded algorithm parity uses the separate real-data Session probe.
 """
 from io import BytesIO
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -17,6 +18,44 @@ import test_export_native_base_package as nightmare
 import test_export_s0_difficult_native_base_package as difficult
 import test_export_s1_native_base_package as s1
 from s0_nightmare_group_source_fixture import S0NightmareGroupSourceFixture
+
+
+def save_s1_base_revision(source, output, resources, version, *, snapshot=None, source_kind=None):
+    """Save a real fixture revision, optionally with a different reference snapshot."""
+    import numpy as np
+    from imported_resource_archive import save_archive
+    with zipfile.ZipFile(source) as archive:
+        members = {name:archive.read(name) for name in archive.namelist()}
+    manifest = json.loads(members['manifest.json'])
+    manifest['resourceVersion'] = version
+    if snapshot is not None or source_kind is not None:
+        for name, raw in tuple(members.items()):
+            if not name.startswith('data/base/'):
+                continue
+            if name.endswith('.json') and snapshot is not None:
+                members[name] = raw.replace(b'fixture-base-s1-v1', snapshot.encode('ascii'))
+            elif name.endswith('.npz'):
+                with np.load(BytesIO(raw), allow_pickle=False) as archive:
+                    arrays = {key:archive[key] for key in archive.files}
+                for key in ('metadata', 'sourceMetadata'):
+                    if key in arrays:
+                        text = str(arrays[key].item())
+                        if snapshot is not None:
+                            text = text.replace('fixture-base-s1-v1', snapshot)
+                        if source_kind is not None:
+                            text = text.replace('game-rendered-shared-structure', source_kind)
+                        arrays[key] = np.asarray(text)
+                stream = BytesIO()
+                np.savez_compressed(stream, **arrays)
+                members[name] = stream.getvalue()
+        for row in manifest['files']:
+            raw = members['data/'+row['componentId']+'/'+row['path']]
+            row.update(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+    members['manifest.json'] = json.dumps(manifest).encode('utf-8')
+    with zipfile.ZipFile(output, 'x', compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, raw in members.items():
+            archive.writestr(name, raw)
+    return {ref.component_id:ref for ref in save_archive(output, resources).component_refs}
 
 
 def _similarity():

@@ -37,6 +37,8 @@ Qt 交互沿用持久页面和稳定卡片 ID：重复点击当前页/标签应�
 
 ## 四模式与资源独立化计划
 
+作者路线的 manifest 仍记录制包时的完整基础引用。当前客户端允许它针对同一基础组件的其他版本使用，不要求用户保留或下载制包时的旧结构版本。导入、选择、浏览和删除按本模式当前启用的基础版本解析这条依赖；启用和显示仍逐层验证实际地图、楼层、结构版本键、来源快照、坐标空间、参考画布与配准矩阵。仅修改包版本或控件数据而结构参照不变时，路线可继续使用；实际结构或坐标不兼容仍拒绝。结构切换规划复用逐层参考验证，兼容作者保持启用；删除未使用的历史基础版本不会停用使用当前版本的路线。此规则仅适用于独立作者显示，控件、登记组、包完整性和文件所有权检查不放宽。
+
 S0/S1 困难、噩梦的资源外置及此前整合设计见 [四模式识别、贴合与资源导入统一方案](unified-recognition-resources-plan.md)。其中整合识别、竞态和 prepared solver 的设计属于历史方案；当前运行链按下面的原分支实现维护。
 
 识别、贴合、楼层判断与轻提示恢复到 `codex/qt-csharp-grid-20261110` 的 `d7063612fc847067f58b71940071228721d79fe0`。默认程序入口使用 C# 网格候选搜索；Python 继续执行原分支的识别、精化和最终接受/拒绝。实际入口由 Qt Session worker 的 C# request scope 进入 `client_live_runtime.LiveRuntime` 及其原 `_AlignmentHost`；S0 噩梦使用原 `MapIdentityEngine`，其余模式使用原 `NativeDifficultCandidateEngine` 和原 S1 scanner。`RecognitionRace`、direct/local structure recognition、`StructurePoseSolver` 与 prepared inputs 不参与默认生产调用链；保留的历史单元或辅助定义不能作为接回它们的理由。C# 服务失败拒绝当前请求，后续请求可重新启动服务，没有自动切回 Python 网格的策略。

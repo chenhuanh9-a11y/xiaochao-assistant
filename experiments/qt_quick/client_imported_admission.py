@@ -1,5 +1,6 @@
 """Product import prerequisites, read under the existing resource write lock."""
 from imported_author_display import read_display_identity
+from imported_author_dependencies import matches_display_base
 from imported_resource_catalog import CONTEXTS, ResourceCatalogError
 from imported_resource_reader import ComponentResourceReader
 import star_map_import as files
@@ -84,8 +85,9 @@ def admit_import(views, resolver, *, cancelled=None):
             identity = read_display_identity(view)
             base = _context_base(snapshot, identity.season, identity.mode,
                                  cancelled=cancelled, validated=validated)
-            dependencies = tuple(view.dependencies.values())
-            if dependencies != (base,):
+            # This is routing admission only. Automatic activation validates
+            # every route layer against this selected base before publication.
+            if not matches_display_base(view, base):
                 raise ResourceCatalogError('resource-display-base-version-mismatch')
         snapshot.assert_current()
     files._check_cancelled(cancelled)

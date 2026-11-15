@@ -256,11 +256,12 @@ class ClientImportedAuthorSelectionTests(_AuthorSelectionFixture):
         historical = decode_native_base(PackageView(self.resources, historical_ref), season='s1', mode='difficult')
         self.assertTrue(historical.ready)
         view, _, _ = self.package(dependency=self.wire(historical_ref))
-        before = (self.resources/'catalog.json').read_bytes()
-        with self.assertRaisesRegex(ResourceCatalogError, 'dependency-not-selected'):
-            self.activate(view)
-        self.assertEqual((self.resources/'catalog.json').read_bytes(), before)
+        self.assertEqual(self.activate(view)['status'], 'catalog-activated')
+        selected = self.resolver().snapshot()
+        self.assertEqual(selected.displays, (view.component_ref,))
         self.assertEqual(self.resolver().snapshot().contexts['s1:difficult']['recognitionBase'], self.refs['base'])
+        display = self.decode(view)
+        self.assertEqual(display.base_ref, self.refs['base'])
 
     def test_cancel_in_published_input_check_restores_previous_author_version(self):
         self.seed()

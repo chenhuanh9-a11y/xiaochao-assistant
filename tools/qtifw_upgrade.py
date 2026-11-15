@@ -28,7 +28,8 @@ BRAND_MIGRATIONS = frozenset({"_internal/assets/brand/xingtu.ico", "_internal/as
 SAME_VERSION_REPAIR_VERSION = "1.1.8"
 SAME_VERSION_REPAIR_SOURCE = "d8f195861f950ac809c3f4465493f3f42da671b1"
 SAME_VERSION_REPAIR_SOURCES = frozenset({SAME_VERSION_REPAIR_SOURCE,
-    "1925b5cb7b874c04f35f310ad51c99a51d5c56bd"})
+    "1925b5cb7b874c04f35f310ad51c99a51d5c56bd",
+    "c16d45f46ea22c26f3b2ca942fb19a5a5fbdeec2"})
 
 
 def _component_version(policy):
@@ -238,7 +239,7 @@ def _old_install(policy, target, *, verify_files=True):
         raise ValueError("unsupported-upgrade-source")
     if report["displayVersion"] == policy["targetVersion"]["displayVersion"] and (old["payloadSource"] != policy["payloadSource"]
             or old["instance"] != policy["instance"]):
-        # Admit only the two delivered 1.1.8 builds, after the same original
+        # Admit only the recorded delivered 1.1.8 builds, after the same original
         # owner/profile/report/file checks as an ordinary native upgrade.
         if ((policy["targetVersion"]["version"], policy["targetVersion"]["displayVersion"])
                 != (SAME_VERSION_REPAIR_VERSION, SAME_VERSION_REPAIR_VERSION)

@@ -324,9 +324,20 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(self.policy['targetVersion']['version'], '1.1.8')
 
     def test_qtifw_package_revision_does_not_change_public_release_versions(self):
-        self.assertEqual(builder.qtifw_component_version("1.1.8", release=True), "1.1.8.2")
+        self.assertEqual(builder.qtifw_component_version("1.1.8", release=True), "1.1.8.3")
         self.assertEqual(builder.qtifw_component_version("1.1.9", release=True), "1.1.9")
         self.assertEqual(builder.qtifw_component_version("1.1.8", release=False), "1.0.0")
+
+    def test_route_compatibility_repair_covers_the_delivered_controls_setup(self):
+        self.configure_same_version_upgrade('c16d45f46ea22c26f3b2ca942fb19a5a5fbdeec2')
+        self.components('1.1.8.2')
+        self.policy['packageVersion'] = '1.1.8.3'
+        self.assertEqual(upgrade.check(self.policy, self.target)['mode'], 'update')
+        result = self.perform_update_with_native_substitute()
+        self.assertTrue(result['success'])
+        self.assert_protected()
+        self.assertEqual(upgrade._versions(self.target)[upgrade.PACKAGE], '1.1.8.3')
+        self.assertEqual(self.policy['targetVersion']['version'], '1.1.8')
 
     def assert_native_owner_upgrade(self, previous, old_version, target_version):
         self.old["payloadSource"] = self.owner["payloadSource"] = previous

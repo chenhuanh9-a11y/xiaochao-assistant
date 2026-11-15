@@ -11,6 +11,7 @@ from types import MappingProxyType
 import star_map_import as files
 from imported_resource_catalog import ResourceCatalogError, ROLES, parse_catalog
 from imported_resource_packages import PackageView
+from imported_author_dependencies import selected_display_base
 
 
 @dataclass(frozen=True)
@@ -23,12 +24,13 @@ class SelectionInspection:
 
 def inspect_selection(resource_root, document, *, supported_capabilities=(), project_registry_refs=(),
                       cancelled=None, assert_current=None):
-    """Check real immutable package inventories and the exact selected closure.
+    """Check real immutable inventories and the effective selected closure.
 
     Dependencies may refer to historical packages only when they are not a
     selected recognition/control source. A display cannot reactivate an older
-    base by naming it as a dependency. Missing dependencies leave a saved package
-    inert; they never cause a fallback or a partial catalog publication.
+    base by naming it as a dependency. Author displays can target a different
+    selected version of the same base component; semantic admission must still
+    prove their actual per-layer structure and coordinate bindings.
     """
     root = Path(resource_root).absolute()
     files._no_links(root)
@@ -90,7 +92,10 @@ def inspect_selection(resource_root, document, *, supported_capabilities=(), pro
         index += 1
         owner_contexts = {f"{row['season']}:{row['mode']}" for row in owner.component['contexts']}
         edges[owner.component_ref] = []
+        display_base = selected_display_base(owner, contexts)
         for dependency in owner.dependencies.values():
+            if display_base is not None:
+                dependency = display_base
             target = load(dependency)
             component = target.component
             common = owner_contexts & {f"{row['season']}:{row['mode']}" for row in component['contexts']}

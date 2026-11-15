@@ -13,6 +13,7 @@ from generic_author_package import MAX_LAYERS, _label, is_generic_profile
 from imported_native_base import NativeBaseBundle
 from imported_resource_packages import FileRef, PackageView
 from imported_resource_reader import ComponentResourceReader
+from imported_author_dependencies import matches_display_base
 import star_map_import as files
 
 
@@ -152,7 +153,7 @@ def read_display_identity(view):
     return identity
 
 
-def _decode(view, base, reference_provider):
+def _decode(view, base, reference_provider, *, validate_images=True):
     if not isinstance(view, PackageView) or not isinstance(base, NativeBaseBundle):
         _reject('validated-components-required')
     base.assert_current()
@@ -174,7 +175,7 @@ def _decode(view, base, reference_provider):
     validate_display_authority(document, reject=_reject)
     alias = document['baseDependency']
     if (not isinstance(alias, str) or set(view.dependencies) != {alias}
-            or view.dependencies[alias] != base.component_ref):
+            or not matches_display_base(view, base.component_ref)):
         _reject('base-dependency-mismatch')
     rows = document['layers']
     if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_LAYERS:
@@ -215,8 +216,9 @@ def _decode(view, base, reference_provider):
             **{name:metadata.get(name) for name in ('structureVersionKey', 'baseSnapshot', 'sourceVersion')})
         validate_display_reference(row, expected, reject=_reject)
         base.reader(reference_path)
-        raw = reader(image_path)
-        validate_display_image(raw, encoding, row['displayShapeHW'], reject=_reject)
+        if validate_images:
+            raw = reader(image_path)
+            validate_display_image(raw, encoding, row['displayShapeHW'], reject=_reject)
         base.assert_current()
         view.root  # Do not admit a result decoded across a component change.
         owned.add(image.path)
@@ -234,13 +236,24 @@ def _decode(view, base, reference_provider):
     return result
 
 
-def decode_author_display(view, base, reference_provider):
+def _checked_decode(view, base, reference_provider, *, validate_images):
     from PIL import Image
     try:
-        return _decode(view, base, reference_provider)
+        return _decode(view, base, reference_provider, validate_images=validate_images)
     except files.ImportRejected:
         raise
     except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError,
             Image.DecompressionBombError) as error:
         code = 'imported-author-display-invalid'
         raise files.ImportRejected(code, code=code) from error
+
+
+def decode_author_display(view, base, reference_provider):
+    return _checked_decode(view, base, reference_provider, validate_images=True)
+
+
+def validate_author_base_compatibility(view, base, reference_provider):
+    """Planning-only reference proof; pixels are checked during activation."""
+    display = _checked_decode(view, base, reference_provider, validate_images=False)
+    if not display.layers:
+        _reject('reference-file-mismatch')

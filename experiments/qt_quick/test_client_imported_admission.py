@@ -182,9 +182,15 @@ class ImportedAdmissionTests(unittest.TestCase):
         self.assertEqual(len(changed), 1)
         self.assertEqual(changed[0].read_bytes(), b'changed after the successful payload read')
 
-    def test_active_base_version_must_match_author_dependency(self):
+    def test_another_version_of_the_same_base_can_reach_semantic_activation(self):
         base = self.active_base()
         other = dict(base, resourceVersion='2')
+        # This is admission only; the actual decoder still owns layer proof.
+        self.assertEqual(self.save(self.author_archive(other)).status, 'saved')
+
+    def test_another_base_component_cannot_be_substituted_by_the_author(self):
+        base = self.active_base()
+        other = dict(base, packageId='unrelated-base')
         with self.assertRaisesRegex(ValueError, 'base-version-mismatch'):
             self.save(self.author_archive(other))
         self.assertFalse((self.root / 'packages/author/v1').exists())
