@@ -42,6 +42,28 @@ def _path_key(path):
     return ntpath.normcase(ntpath.normpath(str(path)))
 
 
+def _image_key(path):
+    """Normalize DOS short-name spelling for exact image-path comparisons."""
+    value = ntpath.normpath(str(path))
+    if os.name == "nt":
+        # QueryFullProcessImageNameW can preserve the 8.3 spelling used to
+        # launch an image; QtIFW admission supplies the long spelling. Resolve
+        # only DOS aliases here, leaving installation-directory link checks
+        # on the lexical _path_key path.
+        api = ctypes.WinDLL("kernel32", use_last_error=True).GetLongPathNameW
+        api.argtypes = [wt.LPCWSTR, wt.LPWSTR, wt.DWORD]
+        api.restype = wt.DWORD
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = api(value, buffer, len(buffer))
+        if 0 < length < len(buffer):
+            value = buffer.value
+        else:
+            parent, leaf = ntpath.split(value)
+            if parent and parent != value and leaf:
+                value = ntpath.join(_image_key(parent), leaf)
+    return _path_key(value)
+
+
 def _exception_reason(prefix, error):
     detail = " ".join(str(error).split())
     if not detail:
@@ -94,8 +116,8 @@ def _admitted_process_images(policy, target):
             if relative.casefold() not in managed:
                 continue
             image_path = program.joinpath(*relative.split("/"))
-            images[_path_key(image_path)] = dict(name=image_name, role=role, path=str(image_path))
-        if _path_key(program / MAIN_NAME) not in images:
+            images[_image_key(image_path)] = dict(name=image_name, role=role, path=str(image_path))
+        if _image_key(program / MAIN_NAME) not in images:
             raise ValueError("managed-main-image-unavailable")
         return root, images, None
     except Exception as error:
@@ -243,7 +265,7 @@ class _WindowsProcesses:
                     self.close(record)
                     continue
                 actual_path = self._image(handle)
-                expected = expected_images.get(_path_key(actual_path))
+                expected = expected_images.get(_image_key(actual_path))
                 if expected is None:
                     self.close(record)  # Same basename in another install is not ours.
                     continue
@@ -267,7 +289,7 @@ class _WindowsProcesses:
                     else:
                         try:
                             same_process = (self._created(terminate_handle) == created
-                                            and _path_key(self._image(terminate_handle)) == _path_key(actual_path)
+                                            and _image_key(self._image(terminate_handle)) == _image_key(actual_path)
                                             and self._token_identity(terminate_handle)
                                             == (self.current_sid, self.current_session))
                         except OSError:
