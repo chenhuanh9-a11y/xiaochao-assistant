@@ -102,7 +102,8 @@ class LiveRuntimeContracts(unittest.TestCase):
         second = SimpleNamespace(id="fixture-map-2", name="Fixture Map Two")
         self.engine.pack.maps.append(second)
         self.engine.pack.by_id[second.id] = second
-        self.assertTrue(self.begin_and_capture()["success"])
+        locked = self.begin_and_capture()
+        self.assertTrue(locked["success"])
         state = self.runtime.snapshot()
         self.assertEqual(self.engine.rank_count, 1)
         self.assertEqual(state["mapId"], "")
@@ -115,12 +116,13 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertTrue(self.dispatch("confirm_route")["success"])
         self.assertEqual(self.runtime.snapshot()["mapId"], "fixture-map")
         self.assertIn("next_candidate", self.runtime.snapshot()["availableCommands"])
+        old_render_token = locked["renderToken"]
         switched = self.dispatch("next_candidate")
         self.assertTrue(switched["success"], switched)
         state = self.runtime.snapshot()
         self.assertEqual(state["mapId"], "fixture-map")
         self.assertEqual(state["selectedCandidate"]["mapId"], "fixture-map-2")
-        self.assertFalse(state["alignedVisible"])
+        self.assertIsNone(self.runtime.render_payload(old_render_token))
         self.assertIn("confirm_route", state["availableCommands"])
 
     def test_identity_rank_cannot_overwrite_new_group_intent_on_same_frame(self):

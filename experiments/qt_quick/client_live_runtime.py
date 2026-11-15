@@ -2839,7 +2839,9 @@ class LiveRuntime:
             if action in ("previous_candidate", "next_candidate", "select_candidate"):
                 if self._map_id and self._manual_map_lock_enabled():
                     self._candidate_edit = True
-                if self._map_id and not self._candidate_edit:
+                if (self._map_id and (action == "select_candidate" and not self._candidate_edit
+                        or action != "select_candidate" and not (
+                            self._candidate_edit and self._manual_map_lock_enabled()))):
                     return self._receipt(action, payload, success=False, reason="identity-locked")
                 if action == "select_candidate" and "structureFrameId" in payload:
                     session, ticket = self._s1_structure_session, self._s1_structure_ticket
