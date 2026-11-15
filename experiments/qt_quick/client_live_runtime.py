@@ -828,6 +828,11 @@ class LiveRuntime:
         """Manual mode waits for the player's pick instead of ranking identity."""
         return self._effective_map_selection_mode() == "manual" and not self._map_id
 
+    def _manual_map_lock_enabled(self):
+        """Keep ranked candidates visible until the player explicitly locks one."""
+        return (self._season == "s0" and self._effective_map_selection_mode() == "auto"
+                and bool(self._settings.get("manualMapLock", False)))
+
     def _s1_floor_observer_available(self, engine=None, *, report=None):
         """Separate selected-context floor capability, not live/identity readiness."""
         engine = self._engine if engine is None else engine
@@ -1900,13 +1905,16 @@ class LiveRuntime:
                 self._provisional_reference_context = None
             selected = (state.provisional_member_id if grouped and (state.context_snapshot()
                 or state.condition_reason=="registered-logical-family") and state.provisional_member_id in state.member_ids else None)
+            if self._manual_map_lock_enabled():
+                selected = None
             top = rows[0] if rows else None
             # Tk first consumes the optional native group, then independently
             # tests the final top-row auto-lock predicate. A hard unique native
             # proposal may have no established condition bindings/member list.
             from native_similarity_groups import should_auto_lock_candidate
-            if selected is None and not block_member_unique and not grouped and len(accepted) == 1 and should_auto_lock_candidate(
-                    top, self._floor_required, self._gate.confirmed_id):
+            if (selected is None and not self._manual_map_lock_enabled() and not block_member_unique
+                    and not grouped and len(accepted) == 1 and should_auto_lock_candidate(
+                    top, self._floor_required, self._gate.confirmed_id)):
                 selected = top["mapId"]
                 front_provisional = bool(top.get("frontDoorGroupState") == "GROUP_LOCKED"
                     and top.get("frontDoorProvisionalMemberId") == selected)
@@ -2829,6 +2837,8 @@ class LiveRuntime:
             if self._gate is None or (not self._active and not self._candidate_edit):
                 return self._receipt(action, payload, success=False, reason="candidate-control-unavailable")
             if action in ("previous_candidate", "next_candidate", "select_candidate"):
+                if self._map_id and self._manual_map_lock_enabled():
+                    self._candidate_edit = True
                 if self._map_id and (action != "select_candidate" or not self._candidate_edit):
                     return self._receipt(action, payload, success=False, reason="identity-locked")
                 if action == "select_candidate" and "structureFrameId" in payload:
@@ -3061,6 +3071,9 @@ class LiveRuntime:
                 if stale:
                     return self._receipt(action, payload, success=False, reason=str(stale), stale=True)
                 if not selected:
+                    if self._manual_map_lock_enabled():
+                        return self._receipt(action, payload, success=True, reason="manual-map-lock-awaiting-choice",
+                            posePending=True, manualMapLockPending=True)
                     if self._season == "s1":
                         return self._s1_structure_pending_receipt(action, payload)
                     grouped = self._identity_fields()["groupLocked"]
@@ -3123,9 +3136,10 @@ class LiveRuntime:
                 commands.append("cycle_floor")
                 if self._map_id or self._manual_selection_unlocked():
                     commands.append("reselect_map")
-                if self._candidate_rows and (not self._map_id or self._candidate_edit):
+                if self._candidate_rows and (not self._map_id or self._candidate_edit
+                        or self._manual_map_lock_enabled()):
                     commands.append("select_candidate")
-                    if not self._map_id:
+                    if not self._map_id or self._manual_map_lock_enabled():
                         commands += ["previous_candidate", "next_candidate"]
                     if self._gate is not None and self._gate.selected_id and self._floor:
                         commands.append("confirm_route")
@@ -3194,6 +3208,7 @@ class LiveRuntime:
                 mapRecoveryPending=recovery.get("pending", False), mapRecovery=recovery,
                 captureInProgress=self._capture_pending,
                 mapSelectionMode=self._effective_map_selection_mode(),
+                manualMapLockEnabled=self._manual_map_lock_enabled(),
                 manualSelectionPending=bool(self._active and self._manual_selection_unlocked()),
                 manualMapPickAvailable=manual_pick_available,
                 manualAlignmentSession=self._manual_alignment,
@@ -5810,6 +5825,9 @@ class LiveRuntime:
             if stale:
                 return self._receipt(action, payload, success=False, reason=str(stale), stale=True)
             if not map_id:
+                if self._manual_map_lock_enabled():
+                    return self._receipt(action, payload, success=True, reason="manual-map-lock-awaiting-choice",
+                        posePending=True, manualMapLockPending=True, observation=observation)
                 if self._season == "s1":
                     return self._s1_structure_pending_receipt(action, payload)
                 grouped = self._identity_fields()["groupLocked"]
