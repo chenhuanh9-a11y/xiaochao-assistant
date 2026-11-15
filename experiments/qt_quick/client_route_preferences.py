@@ -232,6 +232,14 @@ def shared_structure_display_current(engine, map_id, floor, prepared):
     managed, prepared native source is consumed from RAM in its current context.
     """
     from shared_structure_display import structure_display_identity
+    if prepared.get('displayKind') == 'base-rendered':
+        display = getattr(engine, 'qt_rendered_display', None)
+        if display is None:
+            return False
+        reference, check_current = _display_reference(engine, map_id, floor)
+        result = display.resolve(map_id, str(floor), reference)
+        check_current()
+        return result.layer is not None and result.layer['resourceIdentity'] == prepared['resourceIdentity']
     identity = _consume_owned_shared_display(engine, map_id, floor, structure_display_identity)
     if identity is not NotImplemented:
         return identity == prepared['resourceIdentity']
@@ -254,6 +262,13 @@ def prepare_display_layer(engine, map_id, floor, preferred, *, variant_id="varia
     from nightmare_candidate import imread_unicode
     from shared_structure_display import structure_display_layer
 
+    base_rendered = getattr(engine, 'qt_rendered_display', None)
+    if preferred == 'shared-structure' and base_rendered is not None:
+        reference, check_current = _display_reference(engine, map_id, floor)
+        result = base_rendered.resolve(map_id, str(floor), reference)
+        check_current()
+        if result.layer is not None:
+            return _display_metadata(result.layer, preferred)
     if preferred == 'shared-structure':
         provider = getattr(engine, 'qt_shared_provider', None)
         layer = _consume_owned_shared_display(engine, map_id, floor,
@@ -348,6 +363,10 @@ def prepare_display_layer(engine, map_id, floor, preferred, *, variant_id="varia
     elif status == "available":
         status = "load-error" if available else "registration-failed"
     native = getattr(engine, "qt_native_context", None)
+    if base_rendered is not None:
+        result = base_rendered.resolve(map_id, str(floor), reference)
+        if result.layer is not None:
+            return metadata(result.layer, author_status=status, fallback_reason=failure)
     rendered = getattr(native, "rendered_display_layer", None)
     if getattr(engine, "qt_season", "s0") == "s1" and callable(rendered):
         result = rendered(map_id, str(floor), reference)

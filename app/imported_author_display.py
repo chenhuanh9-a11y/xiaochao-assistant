@@ -18,6 +18,9 @@ import star_map_import as files
 
 
 SCHEMA = 'xingtu-author-display-component-v1'
+BASE_RENDERED_SCHEMA = 'xingtu-base-rendered-display-v1'
+BASE_RENDERED_ENTRYPOINT = 'rendered-display/display.json'
+BASE_RENDERED_CAPABILITY = 'original-qt-rendered-display-v1'
 _FIELDS = {'schema', 'profileId', 'authorName', 'displayName', 'season', 'mode',
     'baseDependency', 'layers', 'identityAuthority', 'structureValidationAuthority',
     'crossFloorProjectionAllowed', 'currentFrameGeometryFitRequired'}
@@ -62,11 +65,11 @@ class AuthorDisplayGap:
 
 
 class ImportedAuthorDisplay:
-    def __init__(self, view, base, reader, document, layers, gaps):
+    def __init__(self, view, base, reader, document, layers, gaps, *, entrypoint=None):
         self._view, self._root, self._ref = view, view.root, view.component_ref
         self._base, self._base_ref = base, base.component_ref
         self._reader = reader
-        self._entrypoint = view.component['entrypoint']
+        self._entrypoint = entrypoint or view.component['entrypoint']
         self._profile = document['profileId']
         self._author, self._name = document['authorName'], document['displayName']
         self._layers = {(layer.map_id, layer.floor):layer for layer in layers}
@@ -119,17 +122,17 @@ class ImportedAuthorDisplay:
         return self._view.path(layer.image.path) if layer is not None else None
 
 
-def _component_context(component, expected=None):
+def _component_context(component, expected=None, *, kind='display'):
     contexts = component.get('contexts')
-    if (component.get('type') != 'display' or component.get('schemaVersion') != 1
+    if (component.get('type') != kind or component.get('schemaVersion') != 1
             or not isinstance(contexts, list) or len(contexts) != 1
             or (expected is not None and contexts != [expected])):
         _reject('component-context-invalid')
     return contexts[0]
 
 
-def _identity(context, document):
-    if not isinstance(document, dict) or document.get('schema') != SCHEMA:
+def _identity(context, document, *, schema=SCHEMA):
+    if not isinstance(document, dict) or document.get('schema') != schema:
         _reject('schema-invalid')
     if (not is_generic_profile(document.get('profileId'))
             or (document.get('season'), document.get('mode')) != (context['season'], context['mode'])):
@@ -153,35 +156,43 @@ def read_display_identity(view):
     return identity
 
 
-def _decode(view, base, reference_provider, *, validate_images=True):
+def _decode(view, base, reference_provider, *, validate_images=True, embedded=False):
     if not isinstance(view, PackageView) or not isinstance(base, NativeBaseBundle):
         _reject('validated-components-required')
     base.assert_current()
     component = view.component
     wanted_context = dict(season=base.season, mode=base.mode)
-    context = _component_context(component, wanted_context)
+    context = _component_context(component, wanted_context,
+        kind='recognition-base' if embedded else 'display')
     if not base.ready or not callable(reference_provider):
         _reject('base-reference-unavailable')
     reader = ComponentResourceReader(view)
-    document = reader.json(component['entrypoint'])
+    entrypoint = BASE_RENDERED_ENTRYPOINT if embedded else component['entrypoint']
+    schema = BASE_RENDERED_SCHEMA if embedded else SCHEMA
+    document = reader.json(entrypoint)
     if (not isinstance(document, dict) or set(document) - (_FIELDS | {'provenance'})
-            or not _FIELDS <= set(document) or document.get('schema') != SCHEMA):
+            or not _FIELDS <= set(document) or document.get('schema') != schema):
         _reject('schema-invalid')
-    _identity(context, document)
+    _identity(context, document, schema=schema)
     if (not _label(document['authorName'])
             or not _label(document['displayName'])
             or ('provenance' in document and not isinstance(document['provenance'], dict))):
         _reject('context-invalid')
     validate_display_authority(document, reject=_reject)
     alias = document['baseDependency']
-    if (not isinstance(alias, str) or set(view.dependencies) != {alias}
-            or not matches_display_base(view, base.component_ref)):
+    if embedded:
+        if (alias is not None or view.component_ref != base.component_ref
+                or base.interfaces.get('renderedDisplay') != BASE_RENDERED_ENTRYPOINT
+                or BASE_RENDERED_CAPABILITY not in view.manifest['clientCompatibility']['requiredCapabilities']):
+            _reject('embedded-base-owner-mismatch')
+    elif (not isinstance(alias, str) or set(view.dependencies) != {alias}
+              or not matches_display_base(view, base.component_ref)):
         _reject('base-dependency-mismatch')
     rows = document['layers']
     if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_LAYERS:
         _reject('layers-invalid')
     inventory = view.inventory
-    owned = {component['entrypoint']}
+    owned = {entrypoint}
     seen, layers, gaps = set(), [], []
     base_view = base.reader.view
     base_inventory = base_view.inventory
@@ -194,6 +205,8 @@ def _decode(view, base, reference_provider, *, validate_images=True):
             _reject('duplicate-or-foreign-layer')
         seen.add(key)
         image = FileRef(view.component_ref, row['displayPath'])
+        if embedded and not image.path.startswith('rendered-display/images/'):
+            _reject('embedded-image-namespace-invalid')
         reference_file = FileRef(base.component_ref, row['referenceResource'])
         image_path, reference_path = view.path(image.path), base_view.path(reference_file.path)
         if (image.path not in inventory or reference_file.path not in base_inventory
@@ -229,17 +242,18 @@ def _decode(view, base, reference_provider, *, validate_images=True):
             tuple(row['displayShapeHW']), tuple(reference.shape), expected['coordinateSpace'],
             expected['structureVersionKey'], expected['sourceVersion'], expected['baseSnapshot'],
             tuple(tuple(value for value in line) for line in row['matrixDisplayToReference']), encoding))
-    if owned != set(inventory):
+    declared = {path for path in inventory if path.startswith('rendered-display/')} if embedded else set(inventory)
+    if owned != declared:
         _reject('unlisted-display-file')
-    result = ImportedAuthorDisplay(view, base, reader, document, layers, gaps)
+    result = ImportedAuthorDisplay(view, base, reader, document, layers, gaps, entrypoint=entrypoint)
     result.assert_current()
     return result
 
 
-def _checked_decode(view, base, reference_provider, *, validate_images):
+def _checked_decode(view, base, reference_provider, *, validate_images, embedded=False):
     from PIL import Image
     try:
-        return _decode(view, base, reference_provider, validate_images=validate_images)
+        return _decode(view, base, reference_provider, validate_images=validate_images, embedded=embedded)
     except files.ImportRejected:
         raise
     except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError,
@@ -250,6 +264,11 @@ def _checked_decode(view, base, reference_provider, *, validate_images):
 
 def decode_author_display(view, base, reference_provider):
     return _checked_decode(view, base, reference_provider, validate_images=True)
+
+
+def decode_base_rendered_display(view, base, reference_provider):
+    """Same per-layer proof, with direct ownership instead of a self dependency."""
+    return _checked_decode(view, base, reference_provider, validate_images=True, embedded=True)
 
 
 def validate_author_base_compatibility(view, base, reference_provider):

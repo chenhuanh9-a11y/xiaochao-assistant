@@ -117,6 +117,7 @@ def _build_original_engine(base_view, controls_view, paths, *, season, mode, req
     if similarity.error:
         raise ImportedProviderUnavailable('original-similarity-unavailable', (similarity.error,))
     engine.qt_native_base, engine.qt_controls_profile = bundle, controls
+    engine.qt_rendered_display = bundle._values.get('rendered_display')
     engine.qt_shared_provider, engine.qt_fast_structure_source = provider, bundle.fast_structure_source
     engine.qt_adapters, engine.qt_catalog, engine.qt_optional_displays = bundle.adapters, None, None
     engine.qt_native_context, engine.qt_resource_root, engine.qt_season = native, root, season
@@ -132,7 +133,7 @@ def _build_original_engine(base_view, controls_view, paths, *, season, mode, req
                 tuple(id(getattr(engine, name, None)) for name in (
                     'qt_native_base', 'qt_controls_profile', 'qt_native_context',
                     'qt_shared_provider', 'qt_fast_structure_source',
-                    'qt_adapters', 'qt_catalog', 'qt_optional_displays')),
+                    'qt_adapters', 'qt_catalog', 'qt_optional_displays', 'qt_rendered_display')),
                 provider._read_owner_state(), owners.read_state())
 
     def verify_resource_read_scope():

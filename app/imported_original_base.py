@@ -371,6 +371,15 @@ def decode_original_base(view, *, season='s0', mode='nightmare'):
     bundle._values['fast_structure_source'] = OriginalFastStructureSource(view, reader, versions)
     bundle._values['original_qt'] = True
     bundle._values['original_manifest'] = original
+    if 'renderedDisplay' in interfaces:
+        from imported_author_display import BASE_RENDERED_ENTRYPOINT
+        if interfaces['renderedDisplay'] != BASE_RENDERED_ENTRYPOINT:
+            raise NativeBaseUnavailable('original-qt-rendered-display-interface-invalid')
+        from client_providers import SharedReferenceProvider
+        from imported_base_rendered_display import ImportedBaseRenderedDisplay
+        provider = SharedReferenceProvider(view.root, bundle.resources, bundle.versions,
+            check_current=bundle.assert_current)
+        bundle._values['rendered_display'] = ImportedBaseRenderedDisplay(bundle, provider)
     bundle.assert_current()
     return bundle
 
@@ -460,4 +469,7 @@ class OriginalNativeContext(ImportedNativeContext):
     def rendered_display_layer(self, map_id, floor, reference):
         self.assert_current()
         from s1_native_display import NativeDisplayResult
+        display = self._bundle._values.get('rendered_display')
+        if display is not None:
+            return display.resolve(map_id, floor, reference)
         return NativeDisplayResult(None, 's1-native-display-not-installed')
