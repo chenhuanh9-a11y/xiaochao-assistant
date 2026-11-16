@@ -321,8 +321,10 @@ class _AlignmentHost:
         from nightmare_candidate import visible_map_components
         from single_map_structure import current_geometry, current_part, observed_corner_chains, marker_occluded_corner_proposals
         from fast_structure_alignment import sample_edges
+        from season_optional_room import Observation, observation_scope
         bounds = tuple(observation_bounds)
         observations, components = {}, None
+        optional_room = Observation(frame) if getattr(self.engine, 'qt_season', None) == 's1' else None
 
         def geometry(visible=None):
             key = None if visible is None else id(visible)
@@ -350,11 +352,14 @@ class _AlignmentHost:
         def fit_one(candidate_frame, map_id, floor, cancelled, *, observation_bounds=None):
             if candidate_frame is not frame or tuple(observation_bounds or ()) != bounds:
                 raise ValueError("structure-scan-observation-context-mismatch")
-            return self.fit(frame, map_id, floor, cancelled,
-                            observation_bounds=bounds, _scan_observation=(geometry, islands))
+            with observation_scope(frame, enabled=optional_room is not None,
+                                   observation=optional_room, cancelled=cancelled):
+                return self.fit(frame, map_id, floor, cancelled,
+                                observation_bounds=bounds, _scan_observation=(geometry, islands))
         return fit_one
 
     def fit(self, frame, map_id, floor, cancelled, entry_candidate=None, *, observation_bounds=None, _scan_observation=None):
+        from season_optional_room import observation_scope
         make_scope = getattr(self.engine, 'qt_resource_read_scope', None)
         resources = make_scope(cancelled=cancelled) if make_scope is not None else nullcontext()
         with resources:
@@ -362,9 +367,12 @@ class _AlignmentHost:
             if check_current is not None:
                 check_current()
             scope = self.grid_runtime.fit_scope(cancelled) if self.grid_runtime is not None else nullcontext()
-            with scope:
+            with scope, observation_scope(frame, enabled=getattr(self.engine, 'qt_season', None) == 's1',
+                                          cancelled=cancelled) as optional_room:
                 result = self._fit_owned(frame, map_id, floor, cancelled, entry_candidate,
                     observation_bounds=observation_bounds, _scan_observation=_scan_observation)
+                if optional_room is not None and optional_room.removed_pixels:
+                    result = dict(result, optionalRoomPixels=optional_room.removed_pixels)
             if check_current is not None:
                 check_current()
             return result
