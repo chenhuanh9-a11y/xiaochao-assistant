@@ -144,6 +144,32 @@ class MemoryVault(SessionVault):
         super().__init__(path, protect=lambda data: data[::-1], unprotect=lambda data: data[::-1])
 
 
+class AccountApiRootTests(unittest.TestCase):
+    """URL policy needs no HTTP fixture or local sockets."""
+
+    def test_only_local_test_servers_override_production(self):
+        rejected = ("", "https://evil.example", "http://127.0.0.1:80@evil.com",
+                    "http://localhost:80@evil.com", "http://localhost.evil.com:8080",
+                    "http://127.0.0.1.evil.com", "https://127.0.0.1:8080",
+                    "http://127.0.0.1:8080/#fragment", "http://localhost:8080/#",
+                    "http://user:password@localhost:8080", "http://@localhost:8080",
+                    "http://127.0.0.1:invalid", "http://localhost:65536", "http://[invalid")
+        for override in rejected:
+            with self.subTest(override=override), mock.patch.dict(os.environ, XINGTU_ACCOUNT_API_URL=override):
+                self.assertEqual(account_service.api_root(), account_service.PRODUCTION_ROOT)
+        for override in ("http://127.0.0.1:8080", "http://localhost:8080/", "http://localhost",
+                         "http://127.0.0.1:8080/test?key=value"):
+            with self.subTest(override=override), mock.patch.dict(os.environ, XINGTU_ACCOUNT_API_URL=override):
+                self.assertEqual(account_service.api_root(), override.rstrip("/"))
+        with mock.patch.dict(os.environ):
+            os.environ.pop("XINGTU_ACCOUNT_API_URL", None)
+            self.assertEqual(account_service.api_root(), account_service.PRODUCTION_ROOT)
+        with mock.patch.dict(os.environ, XINGTU_ACCOUNT_API_URL=""):
+            self.assertFalse(route_plaza._download_url_allowed("https://evil.example/x.zip"))
+            self.assertFalse(route_plaza._download_url_allowed("http://bucket.oss-cn-hangzhou.aliyuncs.com/x"))
+            self.assertTrue(route_plaza._download_url_allowed("https://bucket.oss-cn-hangzhou.aliyuncs.com/x"))
+
+
 class RoutePlazaTests(unittest.TestCase):
     def setUp(self):
         self.server = FakeServer()
@@ -163,16 +189,6 @@ class RoutePlazaTests(unittest.TestCase):
         self.env.stop()
         self.server.close()
         self.folder.cleanup()
-
-    def test_only_local_test_servers_override_production(self):
-        with mock.patch.dict(os.environ, {"XINGTU_ACCOUNT_API_URL": "https://evil.example"}):
-            with self.assertRaises(AccountError):
-                account_service.api_root()
-        with mock.patch.dict(os.environ, {"XINGTU_ACCOUNT_API_URL": ""}):
-            self.assertEqual(account_service.api_root(), "https://api.xingchenmap.cn")
-            self.assertFalse(route_plaza._download_url_allowed("https://evil.example/x.zip"))
-            self.assertFalse(route_plaza._download_url_allowed("http://bucket.oss-cn-hangzhou.aliyuncs.com/x"))
-            self.assertTrue(route_plaza._download_url_allowed("https://bucket.oss-cn-hangzhou.aliyuncs.com/x"))
 
     def test_login_errors_and_session_survives_restart(self):
         with self.assertRaisesRegex(AccountError, "密码错误"):

@@ -21,7 +21,7 @@ import sys
 import threading
 import time
 from urllib import error, request
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 import uuid
 
 PRODUCTION_ROOT = "https://api.xingchenmap.cn"
@@ -60,9 +60,15 @@ def api_root() -> str:
     override = os.environ.get("XINGTU_ACCOUNT_API_URL", "").rstrip("/")
     if not override:
         return PRODUCTION_ROOT
-    if not override.startswith(("http://127.0.0.1:", "http://localhost:")):
-        raise AccountError("XINGTU_ACCOUNT_API_URL 只能指向本机测试服务器")
-    return override
+    try:
+        parsed = urlsplit(override)
+        _ = parsed.port  # Reject malformed ports as well as malformed hosts.
+        if (parsed.scheme == "http" and parsed.hostname in ("127.0.0.1", "localhost")
+                and parsed.username is None and parsed.password is None and "#" not in override):
+            return override
+    except ValueError:
+        pass
+    return PRODUCTION_ROOT
 
 
 def _error_message(status: int, body: bytes) -> tuple[str, str]:
@@ -196,9 +202,10 @@ class SessionVault:
             return None
         return session
 
-    def save(self, session: Session) -> None:
+    def save(self, session: Session) -> bool:
+        """Return False only when a configured encrypted save fails."""
         if not self.persistent:
-            return
+            return True
         payload = json.dumps(dict(username=session.username, refreshToken=session.refresh_token,
                                   refreshExpires=session.refresh_expires)).encode("utf-8")
         try:
@@ -207,7 +214,8 @@ class SessionVault:
             temporary.write_bytes(self._protect(payload))
             os.replace(temporary, self.path)
         except OSError:
-            pass  # Staying signed in is a convenience; this launch keeps working.
+            return False
+        return True
 
     def clear(self) -> None:
         try:
@@ -243,6 +251,7 @@ class AccountService:
         self._auth_pending = None
         self._closed = False
         self._pending_recovery_code = ""
+        self._persistence_warning = ""
         self._session = self._vault.load()
         self.revision = 0
         self._vault_revision = 0
@@ -279,6 +288,11 @@ class AccountService:
         with self._lock:
             return self._pending_recovery_code
 
+    @property
+    def persistence_warning(self) -> str:
+        with self._lock:
+            return self._persistence_warning
+
     def acknowledge_recovery_code(self, code: str) -> bool:
         with self._lock:
             if not code or code != self._pending_recovery_code:
@@ -301,6 +315,7 @@ class AccountService:
     def _store_session(self, session: Session | None) -> int:
         # Caller owns _lock. Refresh rotates tokens without changing identity.
         self._session = session
+        self._persistence_warning = ""
         self.revision += 1
         self._vault_revision = self.revision
         return self.revision
@@ -314,10 +329,16 @@ class AccountService:
             with self._lock:
                 if revision != self._vault_revision:
                     return
+            warning = ""
             if session is None:
                 self._vault.clear()
-            else:
-                self._vault.save(session)
+            elif not self._vault.save(session):
+                warning = "这次没写入，重启后可能要重新登录"
+            # Keep accepted tokens in memory; stale saves cannot warn a new session.
+            with self._lock:
+                if not self._closed and revision == self._vault_revision and warning != self._persistence_warning:
+                    self._persistence_warning = warning
+                    self.revision += 1
 
     def _begin_auth(self, *, preserve_code=False) -> int:
         with self._lock:
@@ -363,6 +384,7 @@ class AccountService:
             self._auth_pending = None
             self._generation += 1
             self._pending_recovery_code = ""
+            self._persistence_warning = ""
             self._session = None
             self.revision += 1
 
