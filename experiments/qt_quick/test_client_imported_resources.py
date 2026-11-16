@@ -297,10 +297,15 @@ class ImportedResourceServiceTests(unittest.TestCase):
     def test_download_identity_checked_before_store(self):
         raw = self.archive.read_bytes()
         expected = dict(packageId='wrong-package', bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
-        self.assertTrue(self.service.importVerifiedArchive(QUrl.fromLocalFile(str(self.archive)).toString(), expected, 0))
-        self.wait()
-        self.assertEqual(self.errors[-1]['errorCode'], 'resource-download-binding-invalid')
-        self.assertFalse(self.resolver.root.exists())
+        for binding in (expected, dict(expected, packageId=None), dict(expected, packageId=''),
+                        dict(expected, packageId='fixture', bytes=len(raw) + 1)):
+            with self.subTest(binding=binding):
+                self.assertTrue(self.service.importVerifiedArchive(
+                    QUrl.fromLocalFile(str(self.archive)).toString(), binding,
+                    self.service.operationGeneration))
+                self.wait()
+                self.assertEqual(self.errors[-1]['errorCode'], 'resource-download-binding-invalid')
+                self.assertFalse(self.resolver.root.exists())
 
     def test_cancelled_integrity_scan_preserves_active_context_and_model(self):
         from imported_resource_inventory import ImportedResourceInventoryError

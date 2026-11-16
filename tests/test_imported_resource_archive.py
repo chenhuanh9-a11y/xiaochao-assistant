@@ -24,6 +24,20 @@ def canonical(value):
                       separators=(',', ':')).encode('utf-8')
 
 
+@contextmanager
+def after_extraction(callback):
+    """Inject faults after actual extraction, independent of validation passes."""
+    extract = archives._extract_archive
+
+    def extracted(archive, root, parsed, cancelled, ownership):
+        result = extract(archive, root, parsed, cancelled, ownership)
+        callback(root, parsed[3])
+        return result
+
+    with patch.object(archives, '_extract_archive', side_effect=extracted):
+        yield
+
+
 class ImportedResourceArchiveTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -111,6 +125,24 @@ class ImportedResourceArchiveTests(unittest.TestCase):
                             for ref in summary.component_refs))
         self.assertFalse(self.resource_root.exists())
         self.assertEqual(self.archive_path.read_bytes(), self.source_bytes)
+
+    def test_download_package_and_size_binding_reject_before_creating_store(self):
+        for expected in (dict(expected_package_id='wrong'),
+                         dict(expected_archive_bytes=len(self.source_bytes) + 1)):
+            with self.subTest(expected=expected):
+                with self.assertRaisesRegex(ValueError, '^resource-download-binding-invalid$'):
+                    archives.save_archive(self.archive_path, self.resource_root, **expected)
+                self.assertFalse(self.resource_root.exists())
+                self.assertEqual(self.archive_path.read_bytes(), self.source_bytes)
+
+    def test_staged_payload_changed_by_admission_is_not_published(self):
+        def corrupt(views):
+            target = views[0].path('index.json')
+            target.write_bytes(b'X' * target.stat().st_size)
+
+        with self.assertRaisesRegex(ValueError, 'object-changed'):
+            archives.save_archive(self.archive_path, self.resource_root, validate_components=corrupt)
+        self.assertFalse(self.package_path().exists())
 
     def test_forged_directory_count_is_rejected_before_inspect_or_save(self):
         candidate = bytearray(self.source_bytes)
@@ -239,7 +271,7 @@ class ImportedResourceArchiveTests(unittest.TestCase):
             self.assertTrue(state['locked'])
             self.assertTrue(state['source'].closed)
             self.assertEqual(events, ['source-open', 'format', 'lock', 'extract',
-                                      'original-source', 'reopened-open', 'reopened-source'])
+                                      'original-source', 'original-source'])
             events.append('publish')
             return move(*args, **kwargs)
 
@@ -252,19 +284,71 @@ class ImportedResourceArchiveTests(unittest.TestCase):
             summary = archives.save_archive(self.archive_path, self.resource_root)
         self.assertEqual(summary.status, 'saved')
         self.assertEqual(events, ['source-open', 'format', 'lock', 'extract', 'original-source',
-                                  'reopened-open', 'reopened-source', 'publish', 'unlock'])
+                                  'original-source', 'publish', 'unlock'])
+
+    @unittest.skipUnless(os.name == 'nt', 'requires real Windows file basic information')
+    def test_same_stamp_archive_rewrite_cannot_bypass_selected_digest(self):
+        import ctypes
+        from ctypes import wintypes
+
+        original = self.source_bytes
+        key = ('display', 'poster.webp')
+        self.payloads[key] = b'forged-display-data!'
+        self.assertEqual(len(self.payloads[key]), len(b'actual-display-bytes'))
+        for row in self.manifest['files']:
+            if (row['componentId'], row['path']) == key:
+                row['sha256'] = hashlib.sha256(self.payloads[key]).hexdigest()
+        self.write_archive()
+        replacement = self.source_bytes
+        self.assertEqual(len(original), len(replacement))
+        self.archive_path.write_bytes(original)
+
+        class BasicInfo(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_longlong) for name in
+                ('CreationTime', 'LastAccessTime', 'LastWriteTime', 'ChangeTime')] + [
+                ('FileAttributes', wintypes.DWORD)]
+
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+            ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        kernel.CreateFileW.restype = wintypes.HANDLE
+        kernel.GetFileInformationByHandleEx.argtypes = [wintypes.HANDLE, ctypes.c_int,
+            ctypes.c_void_p, wintypes.DWORD]
+        kernel.SetFileInformationByHandle.argtypes = kernel.GetFileInformationByHandleEx.argtypes
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        validate = archives.validate_zip_directory
+
+        def rewrite_with_original_metadata(stream, **kwargs):
+            before = archives._stamp(os.fstat(stream.fileno()))
+            handle = kernel.CreateFileW(str(self.archive_path), 0x100 | 0x80, 7, None, 3, 0, None)
+            self.assertNotEqual(handle, ctypes.c_void_p(-1).value)
+            basic = BasicInfo()
+            try:
+                self.assertTrue(kernel.GetFileInformationByHandleEx(handle, 0,
+                    ctypes.byref(basic), ctypes.sizeof(basic)))
+                self.archive_path.write_bytes(replacement)
+                self.assertTrue(kernel.SetFileInformationByHandle(handle, 0,
+                    ctypes.byref(basic), ctypes.sizeof(basic)))
+            finally:
+                kernel.CloseHandle(handle)
+            self.assertEqual(before, archives._stamp(os.fstat(stream.fileno())))
+            return validate(stream, **kwargs)
+
+        with patch.object(archives, 'validate_zip_directory', side_effect=rewrite_with_original_metadata):
+            with self.assertRaisesRegex(ValueError, '^selected-archive-changed$'):
+                archives.save_archive(self.archive_path, self.resource_root,
+                    expected_archive_sha256=hashlib.sha256(original).hexdigest())
+        self.assertFalse(self.package_path().exists())
+        self.assertFalse((self.resource_root / 'catalog.json').exists())
 
     def test_save_source_changed_after_extraction_is_rejected_before_publication(self):
-        validate = archives._validate_staged
-
         def touch_after_validation(root, refs):
-            validate(root, refs)
             if root.parent == self.resource_root / 'staging':
                 current = self.archive_path.stat()
                 os.utime(self.archive_path, ns=(current.st_atime_ns,
                                                 current.st_mtime_ns + 5_000_000_000))
 
-        with patch.object(archives, '_validate_staged', side_effect=touch_after_validation), \
+        with after_extraction(touch_after_validation), \
                 patch.object(resource_transaction, 'rename_owned_directory_no_replace',
                              side_effect=AssertionError('changed source reached publication')):
             with self.assertRaisesRegex(ValueError, '^resource-archive-changed$'):
@@ -512,10 +596,8 @@ class ImportedResourceArchiveTests(unittest.TestCase):
 
     def test_cancelled_save_preserves_replaced_stage_and_foreign_data(self):
         state = {'cancelled': False, 'foreign': None, 'displaced': None}
-        validate = archives._validate_staged
 
         def replace_after_validation(root, refs):
-            validate(root, refs)
             if root.parent == self.resource_root / 'staging':
                 state['displaced'] = root.with_name(root.name + '-displaced')
                 root.rename(state['displaced'])
@@ -524,7 +606,7 @@ class ImportedResourceArchiveTests(unittest.TestCase):
                 state['foreign'].write_bytes(b'foreign-owned')
                 state['cancelled'] = True
 
-        with patch.object(archives, '_validate_staged', side_effect=replace_after_validation):
+        with after_extraction(replace_after_validation):
             with self.assertRaisesRegex(ValueError, 'cancelled'):
                 archives.save_archive(self.archive_path, self.resource_root,
                                       cancelled=lambda: state['cancelled'])
@@ -534,10 +616,8 @@ class ImportedResourceArchiveTests(unittest.TestCase):
 
     def test_replaced_stage_after_validation_cannot_publish_foreign_candidate(self):
         state = {'foreign': None, 'displaced': None}
-        validate = archives._validate_staged
 
         def replace_after_validation(root, refs):
-            validate(root, refs)
             if root.parent == self.resource_root / 'staging':
                 state['displaced'] = root.with_name(root.name + '-displaced')
                 root.rename(state['displaced'])
@@ -546,7 +626,7 @@ class ImportedResourceArchiveTests(unittest.TestCase):
                 state['foreign'] = candidate / 'foreign-user-data.txt'
                 state['foreign'].write_bytes(b'foreign-owned')
 
-        with patch.object(archives, '_validate_staged', side_effect=replace_after_validation):
+        with after_extraction(replace_after_validation):
             with self.assertRaisesRegex(ValueError, 'resource-directory-source-changed'):
                 archives.save_archive(self.archive_path, self.resource_root)
         self.assertEqual(state['foreign'].read_bytes(), b'foreign-owned')
@@ -555,15 +635,13 @@ class ImportedResourceArchiveTests(unittest.TestCase):
 
     def test_unknown_file_added_after_validation_fails_before_directory_publication(self):
         state = {'foreign': None}
-        validate = archives._validate_staged
 
         def add_after_validation(root, refs):
-            validate(root, refs)
             if root.parent == self.resource_root / 'staging':
                 state['foreign'] = root / 'packages' / 'demo' / 'v1' / 'foreign-user-data.txt'
                 state['foreign'].write_bytes(b'foreign-owned')
 
-        with patch.object(archives, '_validate_staged', side_effect=add_after_validation):
+        with after_extraction(add_after_validation):
             with self.assertRaisesRegex(ValueError, 'object-changed'):
                 archives.save_archive(self.archive_path, self.resource_root)
         self.assertEqual(state['foreign'].read_bytes(), b'foreign-owned')
@@ -588,16 +666,14 @@ class ImportedResourceArchiveTests(unittest.TestCase):
 
     def test_cancelled_save_preserves_unknown_file_added_to_owned_stage(self):
         state = {'cancelled': False, 'foreign': None}
-        validate = archives._validate_staged
 
         def add_after_validation(root, refs):
-            validate(root, refs)
             if root.parent == self.resource_root / 'staging':
                 state['foreign'] = root / 'foreign-user-data.txt'
                 state['foreign'].write_bytes(b'new unowned object')
                 state['cancelled'] = True
 
-        with patch.object(archives, '_validate_staged', side_effect=add_after_validation):
+        with after_extraction(add_after_validation):
             with self.assertRaisesRegex(ValueError, 'cancelled'):
                 archives.save_archive(self.archive_path, self.resource_root,
                                       cancelled=lambda: state['cancelled'])
