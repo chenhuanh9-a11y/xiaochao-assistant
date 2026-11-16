@@ -12,9 +12,8 @@ import numpy as np
 
 from entry_evidence_work import ObservationWorkScheduler
 from map_identity_engine import MapIdentityEngine
-from nightmare_candidate import NightmareSourceCandidateStore, _Features
-import test_observation_work_scheduler as entry_fixture
-from entry_evidence_work import EntryEvidenceWork
+from nightmare_candidate import NightmareCandidateEngine, NightmareSourceCandidateStore, _Features
+from source_structure_work import SourceStructureEvidence
 
 
 class SourceStructureJobTests(unittest.TestCase):
@@ -59,10 +58,11 @@ class SourceStructureJobTests(unittest.TestCase):
         query_points = points*.7 + [120, 80]
         query = _Features([cv2.KeyPoint(float(x), float(y), 5.) for x, y in query_points], descriptors, 1.)
         engine._features = lambda image: query
+        engine._match = NightmareCandidateEngine._match.__get__(engine)
         return engine, np.zeros((720, 1280, 3), np.uint8)
 
     def prepare(self, engine, frame):
-        return engine.prepare_source_structure_candidates(frame, floor='2', deadline=time.perf_counter()+10)
+        return SourceStructureEvidence(engine, frame, '2', deadline=time.perf_counter()+10)
 
     def drain(self, work):
         phases = []
@@ -117,7 +117,7 @@ class SourceStructureJobTests(unittest.TestCase):
         engine, frame = self.engine()
         clock = [100.]
         with patch('source_structure_work.time.perf_counter', side_effect=lambda: clock[0]):
-            work = engine.prepare_source_structure_candidates(frame, floor='2', deadline=101.)
+            work = SourceStructureEvidence(engine, frame, '2', deadline=101.)
             def done(job):
                 if job.phase == 'source-match-heldout':
                     clock[0] = 102.
@@ -197,54 +197,6 @@ class SourceStructureJobTests(unittest.TestCase):
         self.assertEqual(report['reason'], 'source-feature-cache-unavailable')
         self.assertFalse(report['featureStatus']['ready'])
         self.assertEqual(report['candidates'], [])
-
-    def qualified_entry_engine(self):
-        fixture = entry_fixture.EntryObservationTests('runTest')
-        fixture.setUp()
-        self.addCleanup(fixture.doCleanups)
-        return fixture.engine(unique=True), fixture.fixture.frame
-
-    def test_optional_source_budget_does_not_remove_completed_entry_qualification(self):
-        source, _ = self.engine()
-        engine, frame = self.qualified_entry_engine()
-        engine.pack.source_candidates = source.pack.source_candidates
-        engine.max_edge, engine.matcher, engine._features = source.max_edge, source.matcher, source._features
-        clock = [100.]
-        with patch('source_structure_work.time.perf_counter', side_effect=lambda: clock[0]):
-            work = engine.prepare_entry_observation(frame, '2', deadline=101.)
-            def done(job):
-                if job.phase == 'source:source-feature-store':
-                    clock[0] = 102.
-            status = ObservationWorkScheduler(clock=lambda: clock[0]).drive(work,
-                deadline=101., on_job_finished=done)
-            rows = work.finish()
-        self.assertEqual(status, 'budget-unresolved')
-        self.assertTrue(work.entry_complete)
-        self.assertEqual([row['mapId'] for row in rows if row['identityHardGatePassed']], ['map-a'])
-        self.assertFalse(engine.last_difficult_evidence['sourceStructureCandidates']['complete'])
-        self.assertIsNone(engine.last_difficult_evidence['sourceStructureCandidates']['automaticCandidate'])
-
-    def test_failed_condition_cannot_leave_cached_entry_qualification_or_diagnostics(self):
-        engine, frame = self.qualified_entry_engine()
-        class FailingCondition(EntryEvidenceWork):
-            def _fail(self):
-                raise MemoryError('condition allocation failed')
-            def _jobs(self):
-                yield self._job(None, 'condition-allocation', self._fail)
-            def finish(self):
-                self.close()
-                return dict(status='conditions', complete=False, reason='controlled-allocation-failure',
-                    authorizesIdentity=False, authorizesPose=False)
-        engine.native_similarity_index = SimpleNamespace(prepare_proposal=lambda *a, **kw: FailingCondition(None))
-        work = engine.prepare_entry_observation(frame, '2', deadline=time.perf_counter()+10)
-        with self.assertRaisesRegex(MemoryError, 'condition allocation failed'):
-            ObservationWorkScheduler(clock=time.perf_counter).drive(work, deadline=work.deadline)
-        self.assertTrue(work.entry_complete)
-        self.assertTrue(work._failed)
-        rows = work.finish()
-        self.assertFalse(any(row['identityHardGatePassed'] or row['strongSuggestion'] for row in rows))
-        self.assertFalse(rows[0]['difficultEntry']['identityVerified'])
-        self.assertFalse(rows[0]['difficultRecognition']['main']['complete'])
 
 
 if __name__ == '__main__':

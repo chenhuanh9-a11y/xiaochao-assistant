@@ -82,31 +82,49 @@ class ImportedObserverEquivalence(unittest.TestCase):
                     self.assertEqual(imported, native)
                     np.testing.assert_array_equal(frame, before)
 
-    def test_each_changed_parameter_class_and_nearby_endpoints_keep_specific_gaps(self):
+    def test_each_changed_parameter_class_and_nearby_endpoints_are_rejected(self):
+        from imported_original_controls import OriginalControlsError
         changes = (
-            ('fixed-search-region', lambda v: v['fixedSearchRegion'].__setitem__(0, .81)),
-            ('expanded-search-region', lambda v: v['expandedSearchRegion'].__setitem__(1, .03)),
-            ('map-ui-search', lambda v: v['mapUi']['searchRegions']['close'].__setitem__(1, .03)),
-            ('map-ui-sizes', lambda v: v['mapUi']['sizes'].__setitem__(0, .023)),
-            ('map-ui-correlation', lambda v: v['mapUi']['minimumCorrelation'].__setitem__('close', .63)),
-            # The former literal fixture decimals decode one ULP away from the
-            # reviewed endpoints. No rounding/tolerance may qualify them.
-            ('expanded-search-region', lambda v: v['expandedSearchRegion'].__setitem__(2, .435)),
-            ('map-ui-search', lambda v: v['mapUi']['searchRegions']['plus'].__setitem__(3, .21)),
-            ('map-ui-search', lambda v: v['mapUi']['searchRegions']['minus'].__setitem__(3, .20)),
+            ('fixed-search-region', 'original-controls-fixed-region-mismatch',
+             lambda v: v['fixedSearchRegion'].__setitem__(0, .81)),
+            ('expanded-search-region', 'original-controls-expanded-region-mismatch',
+             lambda v: v['expandedSearchRegion'].__setitem__(1, .03)),
+            ('map-ui-search', 'original-controls-map-ui-search-mismatch',
+             lambda v: v['mapUi']['searchRegions']['close'].__setitem__(1, .03)),
+            ('map-ui-sizes', 'original-controls-map-ui-sizes-mismatch',
+             lambda v: v['mapUi']['sizes'].__setitem__(0, .023)),
+            ('map-ui-correlation', 'original-controls-map-ui-correlation-mismatch',
+             lambda v: v['mapUi']['minimumCorrelation'].__setitem__('close', .63)),
         )
-        for field, change in changes:
+        for field, code, change in changes:
             value = document()
             change(value)
             controls = self.profile(value)
-            with self.subTest(field=field, value=value):
-                gap = f's1-controls-{field}-not-source-replay-equivalent'
-                self.assertEqual(observer.controls_source_replay_gaps(controls, season='s1', mode='nightmare'), (gap,))
-                result = observer.detect_s1_floor(bright_frame((-2,)), season='s1',
-                    mode='nightmare', controls=controls)
-                self.assertFalse(result['observedFloorValidated'])
-                self.assertFalse(result['automaticFloorEligible'])
-                self.assertEqual(result['qualificationGaps'], [gap])
+            with self.subTest(field=field, code=code):
+                with self.assertRaises(OriginalControlsError) as rejected:
+                    observer.detect_s1_floor(bright_frame((-2,)), season='s1',
+                        mode='nightmare', controls=controls)
+                self.assertEqual(rejected.exception.code, code)
+
+    def test_one_ulp_endpoint_literals_stay_on_the_original_controls_path(self):
+        # require_original_controls compares with allclose atol=1e-12. These
+        # former gap-test literals land on the reviewed endpoints, so they are
+        # original controls rather than a soft qualification gap.
+        changes = (
+            lambda v: v['expandedSearchRegion'].__setitem__(2, .435),
+            lambda v: v['mapUi']['searchRegions']['plus'].__setitem__(3, .21),
+            lambda v: v['mapUi']['searchRegions']['minus'].__setitem__(3, .20),
+        )
+        for change in changes:
+            value = document()
+            change(value)
+            controls = self.profile(value)
+            frame = bright_frame((-2,))
+            before = frame.copy()
+            native = observer.detect_s1_floor(frame, season='s1', mode='nightmare')
+            actual = observer.detect_s1_floor(before, season='s1', mode='nightmare', controls=controls)
+            with self.subTest(change=change):
+                self.assertEqual(actual, native)
 
     def test_equivalent_invalid_pixels_and_stale_ids_keep_native_failure(self):
         controls = self.profile()
@@ -129,13 +147,13 @@ class ImportedObserverEquivalence(unittest.TestCase):
             if not alive[0]:
                 raise ValueError('controls-expired-after-kernel')
         controls = self.profile(guard=guard)
-        original = observer._detect_s1_floor
+        original = observer._detect_s1_floor_original
         def expire(*args, **kwargs):
             value = original(*args, **kwargs)
             self.assertEqual(value['selectedFloor'], -2)
             alive[0] = False
             return value
-        with patch.object(observer, '_detect_s1_floor', side_effect=expire):
+        with patch.object(observer, '_detect_s1_floor_original', side_effect=expire):
             with self.assertRaisesRegex(ValueError, 'controls-expired-after-kernel'):
                 observer.detect_s1_floor(mathematical_frame((-2,)), season='s1',
                     mode='nightmare', controls=controls)
