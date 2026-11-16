@@ -24,6 +24,45 @@ class SizedCapture(FixtureCapture):
 
 
 class WindowFeedbackTests(unittest.TestCase):
+    def test_original_controls_receipts_show_code_before_generic_failure_or_window_advice(self):
+        code = 'original-controls-map-ui-search-mismatch'
+        variants = (
+            dict(reason=code),
+            dict(reason='OriginalControlsError: ' + code),
+            dict(reason='OriginalControlsError: ' + code + ':row=42,cos=0.5,label=1'),
+            dict(reason='nightmare:OriginalControlsError:' + code),
+            dict(reason='ProviderUnavailable: difficult:OriginalControlsError:' + code),
+            dict(reason='entry-resource-unavailable', errorCode=code),
+            dict(reason='entry-resource-unavailable', message=code),
+            dict(reason='entry-resource-unavailable', exceptionType=code),
+            dict(reason='current-floor-unavailable', exceptionType='OriginalControlsError',
+                 message=code, preparationObservation=dict(frameWidth=999, frameHeight=600)),
+        )
+        for fields in variants:
+            with self.subTest(fields=fields):
+                receipt = dict(action='map', error=True, success=False, **fields)
+                problem = operation_problem(receipt, {})
+                self.assertEqual(problem['title'], '地图包与当前客户端不匹配')
+                self.assertEqual(problem['summary'], code +
+                    '：这个地图包和当前客户端不匹配，请重新导入当前版本工具打的配套包，改分辨率、DPI、缩放没有用')
+                self.assertEqual(problem['phase'], 'resource')
+                self.assertEqual(problem['raw'], fields['reason'])
+                self.assertNotIn('帮助页', problem['summary'])
+
+    def test_original_controls_exception_without_code_does_not_invent_one(self):
+        problem = operation_problem(dict(error=True, exceptionType='OriginalControlsError'), {})
+        self.assertEqual(problem['summary'],
+            'OriginalControlsError：这个地图包和当前客户端不匹配，请重新导入当前版本工具打的配套包，改分辨率、DPI、缩放没有用')
+
+    def test_unrelated_failures_do_not_become_controls_mismatches_from_prose_or_paths(self):
+        for raw in ('ValueError: invalid profile',
+                    'C:/private/original-controls-map-ui-search-mismatch',
+                    'failed to load original-controls-map-ui-search-mismatch'):
+            with self.subTest(raw=raw):
+                problem = operation_problem(dict(error=True, reason=raw, exceptionType='ValueError'), {})
+                self.assertEqual(problem['title'], '识别任务发生异常')
+                self.assertNotIn('改分辨率', problem['summary'])
+
     def run_map(self, width, height, capture=None):
         capture = capture or SizedCapture(width, height)
         runtime = LiveRuntime(engine_factories={'nightmare': fixture_engine},
