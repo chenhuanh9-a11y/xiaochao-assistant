@@ -236,6 +236,43 @@ class ImportedSemanticReuseTests(unittest.TestCase):
         np.testing.assert_array_equal(actual_pixels, self.author_pixels[next_author])
         self.assertEqual(self.resolver.snapshot().displays, (first_author, next_author))
 
+    def test_final_input_proof_rejects_earlier_author_changed_while_later_package_is_checked(self):
+        first = self.author_component('proof-first', profile_id='author-proof-first', bgra=(11, 22, 33, 255))
+        later = self.author_component('proof-later', profile_id='author-proof-later', bgra=(44, 55, 66, 255))
+        self.activate(display_refs=(first, later))
+        before = (self.root / 'catalog.json').read_bytes()
+        image = PackageView(self.root, first).path('route.png')
+        damaged = b'changed while the later package is checked'
+        state = dict(proving=False, first_checked=False, damaged=False)
+        prove = imported_activation._SelectionValidator._prove_inputs
+        inventory = PackageView.validate_inventory
+
+        def actual_final_proof(validator, inspected):
+            state['proving'] = True
+            try:
+                return prove(validator, inspected)
+            finally:
+                state['proving'] = False
+
+        def inventory_then_damage(view):
+            result = inventory(view)
+            if state['proving']:
+                if view.component_ref == first:
+                    state['first_checked'] = True
+                elif view.component_ref == later and state['first_checked']:
+                    image.write_bytes(damaged)
+                    state['damaged'] = True
+            return result
+
+        with patch.object(imported_activation._SelectionValidator, '_prove_inputs', actual_final_proof), \
+                patch.object(PackageView, 'validate_inventory', inventory_then_damage):
+            with self.assertRaisesRegex(ValueError, 'file-integrity-mismatch'):
+                self.activate()
+        self.assertTrue(state['damaged'], 'the real later-package inventory did not inject the write')
+        self.assertEqual(image.read_bytes(), damaged)
+        self.assertEqual((self.root / 'catalog.json').read_bytes(), before)
+        self.assertFalse((self.root / 'transactions/pending-catalog.json').exists())
+
     def test_separately_valid_authors_cannot_be_spliced_into_profile_conflict(self):
         first_author = self.author_component(
             'profile-first', profile_id='author-shared-profile', bgra=(10, 20, 30, 255))
