@@ -1,0 +1,61 @@
+{
+  "status": "passed",
+  "inputPackageCount": 8,
+  "completedResultCount": 24,
+  "groupCount": 8,
+  "perGroupSamples": 3,
+  "numericalRecomputation": "raw result JSONs; statistics.median/max",
+  "preservedInterruptedAttempts": 1,
+  "excludedEarlyPilots": 2,
+  "originalPackageReadback": [
+    {
+      "file": "S0噩梦.xingtu-base",
+      "bytes": 61971823,
+      "sha256": "3e22cd85ba0c1ce9ad78702f70ecf65fec27ddd8fc126e5f89f60819e6bebeb4",
+      "manifestSha256": "e64b11161b4584e309dbd8560fe5ee107589fa09d397e70180585e25952f64a0"
+    },
+    {
+      "file": "S0困难.xingtu-base",
+      "bytes": 62354179,
+      "sha256": "8587b6cae1bc2a61ba0784b80315b069cdbdc8ff16443b82468dcf39af730137",
+      "manifestSha256": "1fd8f43b05788fccfc10ee444acfd7000ce73a5b53aa548ffcd9d75231baca49"
+    },
+    {
+      "file": "S1噩梦.xingtu-base",
+      "bytes": 30684445,
+      "sha256": "9f9904c88c7327736985ca7d49467541b93cc80b3241b4bed7e083cf39698dd3",
+      "manifestSha256": "11a20ef0ee8e0fed76fdcd75c15e610ffc8d377b56dcc95296ba878767a1da31"
+    },
+    {
+      "file": "S1困难.xingtu-base",
+      "bytes": 28289568,
+      "sha256": "914930776c3478df159deb0e1bde68e219257eefd71aa5c77cd88f80fa3aacdc",
+      "manifestSha256": "1146754af55e73fd0f2145a4f2e9cd21f7f66d6691d51ac98e4dcfb8aa542005"
+    },
+    {
+      "file": "S0噩梦_爱吃醋_作者路线.xingtu-route",
+      "bytes": 11821567,
+      "sha256": "741751292f8e0aafb8ce5d4932ad26c8336ea96e300b4d9a821bd89c2823c949",
+      "manifestSha256": "36a6f43d6a3e03f5c5799bb1f2eb6a7fe7ff57e210364516f74755bc30427f35"
+    },
+    {
+      "file": "S0困难_爱吃醋_作者路线.xingtu-route",
+      "bytes": 12813801,
+      "sha256": "f2fe5c8a0b57fc820a0d290af2755c4183ebe0537737cba17b16170c461ba3d8",
+      "manifestSha256": "b6cf4e14ac8c80ecdf97c59d0c6c0aac10d6f56ea52c8d88ce387e48976a6a4e"
+    },
+    {
+      "file": "S1噩梦_爱吃醋_作者路线.xingtu-route",
+      "bytes": 8315571,
+      "sha256": "762f0e02a80f9b1b3ee89ac2a358c79362d6afce681035c77e4cacb49e893356",
+      "manifestSha256": "f402fc4751ed9a353610dc04c505ed78a79a07268103424167baac95c7fdae95"
+    },
+    {
+      "file": "S1困难_爱吃醋_作者路线.xingtu-route",
+      "bytes": 7542107,
+      "sha256": "228f867e9da2afd27c73b998ded8a7a703b12939685d2bed18ca1b44d4193277",
+      "manifestSha256": "3018e6452d4823ce0daa254450c80c1cabfab8df301c8a97b57b9822b7ef0b13"
+    }
+  ],
+  "scope": "resources and one author layer per context; no GUI/game/installation acceptance"
+}
