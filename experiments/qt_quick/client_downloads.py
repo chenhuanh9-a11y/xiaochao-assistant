@@ -58,7 +58,7 @@ class OnlinePackagesService(QObject):
         self._selection_generation = self._request_selection_generation = 0
         self._operation, self._stage = "", "idle"
         self._resource_generation = 0
-        self._message = "点击检查在线列表" if self._configured else "尚未配置地图下载地址，可继续使用本地图包导入。"
+        self._message = "点「检查在线列表」查看可下载的图包。" if self._configured else "还没有配置在线下载地址，仍可以从本机导入图包。"
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(1)
         self._timer = QTimer(self)

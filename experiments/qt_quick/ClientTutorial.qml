@@ -47,7 +47,7 @@ Popup {
         font.family: "Microsoft YaHei UI"; font.pixelSize: 13; color: "#526785"
         wrapMode: Text.WordWrap; Layout.fillWidth: true
     }
-    background: Rectangle { color: "#f3f5fa" }
+    background: Rectangle { color: "#f3f6fc" }
     contentItem: FocusScope {
         id: keys
         objectName: "tutorialKeys"
