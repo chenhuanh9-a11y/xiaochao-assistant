@@ -214,6 +214,7 @@ def _browse_declarations(resolver,snapshot,resources,source,check,cancel,stopped
     from imported_resource_packages import PackageView, FileRef
     from imported_resource_reader import ComponentResourceReader
     from imported_author_display import read_display_identity, _FIELDS, _LAYER_FIELDS
+    from imported_author_dependencies import matches_display_base
     from author_display_validation import validate_display_authority, validate_display_affine, valid_display_shape
     from generic_author_package import MAX_LAYERS, _label
 
@@ -271,7 +272,7 @@ def _browse_declarations(resolver,snapshot,resources,source,check,cancel,stopped
                     reject('header-invalid')
                 validate_display_authority(document, reject=reject)
                 alias = document['baseDependency']
-                if not isinstance(alias, str) or set(view.dependencies) != {alias} or view.dependencies[alias] != base_view.component_ref:
+                if not isinstance(alias, str) or set(view.dependencies) != {alias} or not matches_display_base(view, base_view.component_ref):
                     reject('base-dependency-mismatch')
                 if not isinstance(document['layers'], list) or not 1 <= len(document['layers']) <= MAX_LAYERS:
                     reject('layers-invalid')

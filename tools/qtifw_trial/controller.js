@@ -61,6 +61,21 @@ function Controller() {
     }
     installer.setValue("TrialSupport", support);
     installer.setValue("TrialHelper", helper);
+    if (portable && !upgradeInvocation && !installer.isCommandLineInstance() &&
+            installer.environmentVariable("XINGTU_QTIFW_VERIFY_MAINTENANCE") !== "1") {
+        var guarded = installer.execute(helper, ["hold-setup-instance", installer.value("InstallerFilePath")]);
+        var ownership = nativeHelperResult(guarded);
+        if (guarded[1] !== 0 || typeof ownership.primary !== "boolean")
+            throw new Error("无法确认安装器实例状态，请保留具体错误：" + (ownership.reason || guarded[0]));
+        if (!ownership.primary) {
+            installer.setValue("TrialDuplicateSetup", "true");
+            installer.setCanceled();
+            // QtIFW shows Introduction after the constructor. Defer its
+            // cancellation until the event loop, before metadata fetching.
+            gui.clickButton(buttons.CancelButton, 0);
+            return;
+        }
+    }
     if (installedSupport && !installer.fileExists(helper))
         throw new Error("安装维护文件不完整，请使用完整 Setup 修复。");
     if (installer.environmentVariable("XINGTU_QTIFW_VERIFY_MAINTENANCE") === "1") {
@@ -179,6 +194,7 @@ function Controller() {
 }
 
 Controller.prototype.IntroductionPageCallback = function() {
+    if (installer.value("TrialDuplicateSetup", "false") === "true") return;
     var page = gui.currentPageWidget();
     if (page && page.MessageLabel)
         page.MessageLabel.text = installer.isInstaller() ?

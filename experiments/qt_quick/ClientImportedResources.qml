@@ -10,7 +10,7 @@ Item {
     property bool refreshAllowed: true
     property bool refreshPending: false
     signal importSelectionCancelled()
-    readonly property bool operationPending: archiveDialog.visible || resourceService.busy || resourceService.activationPlanOpen || resourceService.removalPlanOpen
+    readonly property bool operationPending: archiveDialog.visible || legacyDialog.visible || resourceService.busy || resourceService.activationPlanOpen || resourceService.removalPlanOpen
     readonly property bool recoveryPending: resourceService.recoveryRequired
     readonly property var hostWindow: Window.window
     readonly property bool planVisible: hostWindow !== null && hostWindow.visible
@@ -68,6 +68,28 @@ Item {
         Label {
             Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#354f75"; font.pixelSize: 14
             text: "结构包（.xingtu-base）包含楼层控件，导入后自动启用对应模式。请先导入结构包，再导入作者路线包（.xingtu-route）；路线导入后会自动加入地图资源，可直接预览和选择作者。"
+        }
+        Label {
+            objectName: "resourceDirectoryLabel"
+            Layout.fillWidth: true; textFormat: Text.PlainText; wrapMode: Text.Wrap
+            text: "资源目录：" + resourceService.resourceDirectory
+            color: "#526785"; font.pixelSize: 12
+        }
+        RowLayout {
+            visible: resourceService.legacyResourceDirectory.length > 0
+            Layout.fillWidth: true; spacing: 8
+            Label { text: "发现旧版公共资源"; color: "#354f75"; font.pixelSize: 13 }
+            AppButton {
+                objectName: "migrateLegacyResourcesButton"; text: "迁入软件目录"; primary: true
+                enabled: resourceService.canMigrateLegacyResources && panel.refreshAllowed && !panel.operationPending
+                onClicked: { legacyDialog.cleanup = false; legacyDialog.open() }
+            }
+            AppButton {
+                objectName: "cleanupLegacyResourcesButton"; text: "清理旧副本"
+                enabled: resourceService.canCleanupLegacyResources && panel.refreshAllowed && !panel.operationPending
+                onClicked: { legacyDialog.cleanup = true; legacyDialog.open() }
+            }
+            Item { Layout.fillWidth: true }
         }
         RowLayout {
             spacing: 8; Layout.fillWidth: true
@@ -177,6 +199,43 @@ Item {
                       "星图结构包 (*.xingtu-base)", "作者路线包 (*.xingtu-route)"]
         onAccepted: resourceService.importArchive(selectedFile.toString())
         onRejected: panel.importSelectionCancelled()
+    }
+    Dialog {
+        id: legacyDialog; objectName: "legacyResourceLocationDialog"
+        property bool cleanup: false
+        parent: Overlay.overlay; anchors.centerIn: parent
+        width: Math.min(560, parent.width - 32)
+        title: cleanup ? "清理旧版公共资源" : "迁移已有资源"
+        modal: true; closePolicy: Popup.CloseOnEscape
+        contentItem: ColumnLayout {
+            spacing: 12
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap; textFormat: Text.PlainText
+                text: "旧目录：" + resourceService.legacyResourceDirectory + "\n软件资源目录：" + resourceService.resourceDirectory
+                color: "#354f75"
+            }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap; textFormat: Text.PlainText
+                text: legacyDialog.cleanup
+                    ? "将核对并删除已完整迁入本安装的旧资源版本，以释放旧目录空间。其他旧版星图将无法继续使用这些副本。未知、改动或未迁入的文件会保留。"
+                    : "复制并验证已有结构包、路线包和选择记录，无需重新下载。迁入需要目标磁盘有足够空间，完成后原目录仍保留；之后可明确选择清理旧副本。软件目录已有资源时不会覆盖或合并。"
+                color: legacyDialog.cleanup ? "#b8364a" : "#526785"
+            }
+        }
+        footer: DialogButtonBox {
+            AppButton { text: "取消"; onClicked: legacyDialog.reject() }
+            AppButton {
+                objectName: "confirmLegacyResourceLocationButton"
+                text: legacyDialog.cleanup ? "确认清理旧副本" : "开始迁移"; primary: true
+                enabled: !resourceService.busy && panel.refreshAllowed
+                onClicked: {
+                    const cleanup = legacyDialog.cleanup
+                    legacyDialog.close()
+                    if (cleanup) resourceService.cleanupLegacyResources()
+                    else resourceService.migrateLegacyResources()
+                }
+            }
+        }
     }
     Dialog {
         id: removalDialog; objectName: "resourceRemovalPlanDialog"

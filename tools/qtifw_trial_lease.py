@@ -1,7 +1,7 @@
 """Keep a trial uninstaller's resource lease in the actual native parent.
 
 The support helper is one-folder, so its direct parent is QtIFW. The native
-Windows cleanup waits for that EXE to exit, which also releases this handle.
+Windows cleanup waits for that EXE to exit, which also releases both handles.
 """
 import ctypes
 from ctypes import wintypes as wt
@@ -11,15 +11,18 @@ from pathlib import Path
 import stat
 
 from resource_transaction import _safe
+from resource_locations import installed_resource_root
 from installer_resource_lease import _kernel, _FileInfo, _final, _parent
 
 
 def inspect_installation_objects(target, lock_path):
     """Allow hard-link aliases only when every name stays in this installation."""
+    lock_paths = {lock_path} if isinstance(lock_path, (str, os.PathLike)) else set(lock_path)
+    lock_paths = {Path(path) for path in lock_paths}
     aliases = {}
     for path in Path(target).rglob("*"):
         _safe(path)
-        if path == lock_path:
+        if path in lock_paths:
             continue  # checked through the live exclusive native handle
         current = path.stat()
         if stat.S_ISDIR(current.st_mode):
@@ -40,15 +43,12 @@ def hold_uninstaller_lease(target):
     if os.name != "nt":
         raise ValueError("windows-uninstall-lease-required")
     program = _safe(Path(target) / "program")
-    directory = _safe(program / "work/map-packages")
-    lock_path = _safe(directory / "import.lock")
     expected_parent = _safe(Path(target) / "trial-maintenance.exe")
     parent_pid = os.getppid()
     api = _kernel()
     invalid = ctypes.c_void_p(-1).value
     parent = api.OpenProcess(0x100000 | 0x1000 | 0x40, False, parent_pid)
-    local = root_handle = None
-    remote = wt.HANDLE()
+    handles, lock_paths = [], []
     try:
         if not parent:
             raise ValueError("uninstaller-parent-open-denied")
@@ -59,30 +59,51 @@ def hold_uninstaller_lease(target):
         digest = hashlib.sha256(expected_parent.read_bytes()).hexdigest()
         _parent(api, parent, parent_pid, created, expected_parent, digest)
         program.mkdir(exist_ok=True)
-        directory.mkdir(parents=True, exist_ok=True)
-        # share=0 conflicts with both runtime leases and another uninstaller.
-        local = api.CreateFileW(str(lock_path), 0xC0000000, 0, None, 4, 0x80, None)
-        if local in (None, invalid):
-            raise ValueError("uninstall-resource-busy")
-        info = _FileInfo()
-        root_handle = api.CreateFileW(str(program), 0, 7, None, 3, 0x02000000, None)
-        if (root_handle in (None, invalid) or api.GetFileType(local) != 1
-                or not api.GetFileInformationByHandle(local, ctypes.byref(info))
-                or info.attributes & (0x10 | 0x400) or info.links != 1
-                or _final(api, local) != _final(api, root_handle) + "\\work\\map-packages\\import.lock"):
-            raise ValueError("uninstall-lock-object-mismatch")
-        # Enumerate only under the live exclusive lock. Pending journals are
+        roots = [program]
+        lease_handles = []
+        for root in roots:
+            directory = _safe(root / "work/map-packages")
+            lock_path = _safe(directory / "import.lock")
+            directory.mkdir(parents=True, exist_ok=True)
+            # share=0 conflicts with both runtime leases and another uninstaller.
+            local = api.CreateFileW(str(lock_path), 0xC0000000, 0, None, 4, 0x80, None)
+            if local in (None, invalid):
+                raise ValueError("uninstall-resource-busy")
+            handles.append(local)
+            lease_handles.append(local)
+            info = _FileInfo()
+            root_handle = api.CreateFileW(str(root), 0, 7, None, 3, 0x02000000, None)
+            if root_handle not in (None, invalid):
+                handles.append(root_handle)
+            if (root_handle in (None, invalid) or api.GetFileType(local) != 1
+                    or not api.GetFileInformationByHandle(local, ctypes.byref(info))
+                    or info.attributes & (0x10 | 0x400) or info.links != 1
+                    or _final(api, local) != _final(api, root_handle) + "\\work\\map-packages\\import.lock"):
+                raise ValueError("uninstall-lock-object-mismatch")
+            lock_paths.append(lock_path)
+            if root == program:
+                # Discover the optional resource plane only after startup and
+                # other program operations are excluded. An empty install
+                # must not acquire a new resource directory during uninstall.
+                resources = _safe(installed_resource_root(program))
+                if resources.exists():
+                    if not resources.is_dir():
+                        raise ValueError("uninstall-resource-root-invalid")
+                    roots.append(resources)
+        # Enumerate only under both live exclusive locks. Pending journals are
         # data to remove, not a requirement to make a broken install runnable.
-        inspect_installation_objects(target, lock_path)
+        inspect_installation_objects(target, lock_paths)
         _parent(api, parent, parent_pid, created, expected_parent, digest)
         if os.getppid() != parent_pid:
             raise ValueError("uninstaller-parent-changed")
-        if not api.DuplicateHandle(api.GetCurrentProcess(), local, parent, ctypes.byref(remote), 0, False, 2):
-            raise ValueError("uninstall-lease-transfer-failed")
-        return dict(leaseHeld=True, parentPid=parent_pid, release="native-parent-exit")
+        for local in lease_handles:
+            remote = wt.HANDLE()
+            if not api.DuplicateHandle(api.GetCurrentProcess(), local, parent, ctypes.byref(remote), 0, False, 2):
+                raise ValueError("uninstall-lease-transfer-failed")
+        return dict(leaseHeld=True, parentPid=parent_pid, release="native-parent-exit", roots=len(roots))
     finally:
         # Never close the parent's duplicate on Finished/cancel. Native process
         # exit is the lifetime boundary; its stock VBS then removes TargetDir.
-        for handle in (local, root_handle, parent):
+        for handle in (*reversed(handles), parent):
             if handle not in (None, invalid):
                 api.CloseHandle(handle)

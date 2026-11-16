@@ -10,7 +10,6 @@ import threading
 import time
 from unittest.mock import patch
 from uuid import uuid4
-import zipfile
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 os.environ.setdefault('QT_QUICK_BACKEND', 'software')
@@ -26,7 +25,7 @@ from client_imported_resources import ImportedResourceService
 from client_live_runtime import LiveRuntime
 from client_route_preferences import prepare_display_layer
 from client_session import SessionService
-from imported_resource_archive import save_archive
+from original_qt_resource_fixtures import save_s1_base_revision
 from test_client_imported_author_selection import _AuthorSelectionFixture, changed_png
 from test_client_live_runtime import FixtureCapture
 
@@ -75,26 +74,20 @@ class ClientImportedActivationPlanUiTests(_AuthorSelectionFixture):
         self.assertTrue(condition(), self.service.message)
 
     def revision(self):
-        with zipfile.ZipFile(self.source.output) as archive:
-            members = {name:archive.read(name) for name in archive.namelist()}
-        manifest = json.loads(members['manifest.json'])
-        manifest['resourceVersion'] = 'base-v2'
-        members['manifest.json'] = json.dumps(manifest).encode('utf-8')
-        path = self.root/'base-v2.zip'
-        with zipfile.ZipFile(path, 'x', compression=zipfile.ZIP_DEFLATED) as archive:
-            for name,raw in members.items():
-                archive.writestr(name, raw)
-        saved = save_archive(path, self.resources)
-        return {ref.component_id:ref for ref in saved.component_refs}
+        # The chooser is needed for different references, not release labels.
+        return save_s1_base_revision(self.source.output,self.root/'base-v2.zip',
+            self.resources,'base-v2',snapshot='fixture-base-s1-v2')
 
     def scenario(self):
         first, _, _ = self.package(package_id='author-versioned')
         other, _, _ = self.package(package_id='author-stopped', profile_id='author-stopped')
         self.seed(displays=[first.component_ref, other.component_ref])
         next_refs = self.revision()
-        second, _, _ = self.package(package_id='author-versioned', resource_version='v2',
+        second, _, _ = self.package(lambda d:d['layers'][0].update(baseSnapshot='fixture-base-s1-v2'),
+            package_id='author-versioned', resource_version='v2',
             dependency=self.wire(next_refs['base']), payloads={'images/route.png':changed_png()})
-        self.package(package_id='author-versioned', resource_version='v3',
+        self.package(lambda d:d['layers'][0].update(baseSnapshot='fixture-base-s1-v2'),
+                     package_id='author-versioned', resource_version='v3',
                      dependency=self.wire(next_refs['base']))
         self.service.listPackages()
         self.wait()

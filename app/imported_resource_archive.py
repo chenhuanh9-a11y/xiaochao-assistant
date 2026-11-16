@@ -157,7 +157,8 @@ def _parse_manifest(raw):
         _reject('invalid-manifest')
     if manifest.get('schema') != packages.SCHEMA:
         _reject_legacy()
-    if type(manifest.get('formatVersion')) is not int or manifest['formatVersion'] != packages.FORMAT_VERSION:
+    if (type(manifest.get('formatVersion')) is not int
+            or manifest['formatVersion'] not in packages.SUPPORTED_FORMAT_VERSIONS):
         _reject('unsupported-manifest-format')
     try:
         package_id = manifest['packageId']

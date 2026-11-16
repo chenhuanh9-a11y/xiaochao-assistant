@@ -218,10 +218,11 @@ class ExportAuthorDisplayComponentTests(unittest.TestCase):
                 self.image_root, self.output, package_id='author-synthetic-components', resource_version='v1')
         self.assertFalse(self.output.exists())
 
-    def test_public_decoder_rejects_wrong_dependency_and_component_context(self):
+    def test_public_decoder_checks_compatible_versions_foreign_dependencies_and_context(self):
         self.export()
         for change, expected in (('dependency', 'base-dependency-mismatch'),
-                                 ('context', 'component-context-invalid')):
+                                 ('context', 'component-context-invalid'),
+                                 ('compatible-version', None)):
             with self.subTest(change=change):
                 bad_archive = self.root / f'bad-{change}.zip'
                 with zipfile.ZipFile(self.output) as source, zipfile.ZipFile(bad_archive, 'x') as target:
@@ -231,7 +232,12 @@ class ExportAuthorDisplayComponentTests(unittest.TestCase):
                             manifest = json.loads(raw)
                             manifest['packageId'] = f'author-synthetic-bad-{change}'
                             if change == 'dependency':
-                                manifest['components'][0]['dependencies']['base']['manifestSha256'] = '0' * 64
+                                manifest['components'][0]['dependencies']['base']['packageId'] = 'unrelated-base'
+                            elif change == 'compatible-version':
+                                # An author's old release hint is not the
+                                # selected base's actual file-integrity proof.
+                                manifest['components'][0]['dependencies']['base'].update(
+                                    resourceVersion='not-installed',manifestSha256='0'*64)
                             else:
                                 manifest['components'][0]['contexts'] = [dict(season='s0', mode='nightmare')]
                             raw = json.dumps(manifest, ensure_ascii=False, sort_keys=True,
@@ -244,8 +250,14 @@ class ExportAuthorDisplayComponentTests(unittest.TestCase):
                 display_ref = next(ref for ref in installed.component_refs
                                    if ref.component_id == 'display-s1-difficult')
                 view = PackageView(bad_root, display_ref)
-                with self.assertRaisesRegex(files.ImportRejected, expected):
-                    decode_author_display(view, self.base, self.provider)
+                if expected is not None:
+                    with self.assertRaisesRegex(files.ImportRejected, expected):
+                        decode_author_display(view, self.base, self.provider)
+                else:
+                    decoded = decode_author_display(view, self.base, self.provider)
+                    self.assertEqual(decoded.base_ref,self.base_ref)
+                    self.assertTrue(decoded.layers)
+                    self.assertTrue(all(layer.reference.component == self.base_ref for layer in decoded.layers))
 
         self.registration(season='s0')
         invalid_output = self.root / 'invalid-context.zip'

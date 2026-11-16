@@ -17,6 +17,7 @@
     <item><widget class="QPushButton" name="UpdateButton"><property name="text"><string>开始更新</string></property></widget></item>
     <item><widget class="QPushButton" name="CloseButton"><property name="text"><string>关闭</string></property></widget></item>
    </layout></item>
+   <item><widget class="QPushButton" name="CloseBackgroundButton"><property name="text"><string>关闭星图后台</string></property><property name="toolTip"><string>仅关闭当前安装目录下的星图程序；先请求正常退出。</string></property></widget></item>
    <item><spacer name="UpdateSpace"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property></spacer></item>
   </layout>
  </widget>

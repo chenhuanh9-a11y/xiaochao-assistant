@@ -1,8 +1,6 @@
 """Atomic B/C/display dependency updates through the actual activation entry."""
 from contextlib import contextmanager
-import json
 from unittest.mock import patch
-import zipfile
 
 import numpy as np
 
@@ -11,7 +9,7 @@ from client_imported_providers import build_imported_engine_factories
 from client_route_preferences import prepare_display_layer
 from client_providers import DisplayResourceChanged
 from imported_author_display import decode_author_display
-from imported_resource_archive import save_archive
+from original_qt_resource_fixtures import save_s1_base_revision
 from imported_resource_activation import activate_catalog_locked
 from imported_resource_catalog import ResourceCatalogError
 from imported_resource_selection import inspect_selection
@@ -22,18 +20,9 @@ from test_client_imported_s1_activation import _inert_component
 
 
 class ClientImportedAuthorJointActivationTests(_AuthorSelectionFixture):
-    def revision(self, version):
-        with zipfile.ZipFile(self.source.output) as archive:
-            members = {name:archive.read(name) for name in archive.namelist()}
-        manifest = json.loads(members['manifest.json'])
-        manifest['resourceVersion'] = version
-        members['manifest.json'] = json.dumps(manifest).encode('utf-8')
-        path = self.root/(version+'.zip')
-        with zipfile.ZipFile(path, 'x', compression=zipfile.ZIP_DEFLATED) as archive:
-            for name,raw in members.items():
-                archive.writestr(name, raw)
-        saved = save_archive(path, self.resources)
-        return {ref.component_id:ref for ref in saved.component_refs}
+    def revision(self, version, *, snapshot=None):
+        return save_s1_base_revision(self.source.output,self.root/(version+'.zip'),
+                                    self.resources,version,snapshot=snapshot)
 
     def joint(self, refs, views, **kwargs):
         with resource_runtime_lease(self.resources):
@@ -124,11 +113,14 @@ class ClientImportedAuthorJointActivationTests(_AuthorSelectionFixture):
         other, _, _ = self.package(package_id='author-other', profile_id='author-other')
         self.activate(first)
         self.activate(other)
-        next_refs = self.revision('base-v2')
-        second, _, _ = self.package(package_id='author-versioned', resource_version='v2',
+        next_refs = self.revision('base-v2', snapshot='fixture-base-s1-v2')
+        second, _, _ = self.package(lambda d:d['layers'][0].update(baseSnapshot='fixture-base-s1-v2'),
+                                   package_id='author-versioned', resource_version='v2',
                                    dependency=self.wire(next_refs['base']))
         before = (self.resources/'catalog.json').read_bytes()
-        with self.assertRaisesRegex(ResourceCatalogError, 'dependency-not-selected'):
+        # A version-only change is compatible. This omitted author references
+        # a genuinely different snapshot and must still block partial commit.
+        with self.assertRaisesRegex(files.ImportRejected, 'reference-binding-mismatch:baseSnapshot'):
             self.joint(next_refs, [second])
         self.assertEqual((self.resources/'catalog.json').read_bytes(), before)
         selected = self.assert_selected(self.refs, first)

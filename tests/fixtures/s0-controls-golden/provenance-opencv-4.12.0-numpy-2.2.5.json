@@ -1,0 +1,49 @@
+{
+  "sourceCommit": "396eed7d1529d615d30e1da3a321dae6f4094389",
+  "generatorSource": "work/control-plan-20261114/golden/captured-source (captured with git show from sourceCommit)",
+  "capturedSourceSha256": {
+    "app/s0_floor_templates.py": "cadeb509fc70fa1ec14f02b986c2b81c7eb4a4023aafcbd0d81cbd08b6b34e7f",
+    "tools/generate_s0_floor_templates.py": "b7fa4b711192129921b8ad6eb63429188ebd89b5e1eff302ec4d2abce38afbcf"
+  },
+  "generationCommand": "python work/control-plan-20261114/golden/generate_opencv412_numpy225_golden.py --output tests/fixtures/s0-controls-golden/opencv-4.12.0-numpy-2.2.5.npz",
+  "verificationCommand": "python work/control-plan-20261114/golden/verify_opencv412_numpy225_golden.py",
+  "python": "3.13.3",
+  "pythonEnvironment": "alternate",
+  "opencv": "4.12.0",
+  "opencvDistribution": "4.12.0.88",
+  "opencvEnvironment": "production",
+  "numpy": "2.2.5",
+  "numpyEnvironment": "alternate",
+  "candidate": {
+    "path": "tests/fixtures/s0-controls-golden/opencv-4.12.0-numpy-2.2.5.npz",
+    "environment": "mixed production OpenCV and alternate NumPy",
+    "bytes": 2006327,
+    "sha256": "97a02f7b075deaaf3b43241e3bac6fbd8b753b3b3f494cc1c2f560b4fd7c9fa9",
+    "members": [
+      "vectors",
+      "labels"
+    ],
+    "shape": [
+      720,
+      6144
+    ],
+    "vectorsDtype": "float32",
+    "labelsDtype": "int64",
+    "finite": true,
+    "labelsInExpectedOrder": true
+  },
+  "baseline": {
+    "path": "app/control-data/s0-floor-templates-v1.npz",
+    "environment": "production",
+    "bytes": 2006327,
+    "sha256": "97a02f7b075deaaf3b43241e3bac6fbd8b753b3b3f494cc1c2f560b4fd7c9fa9"
+  },
+  "comparison": {
+    "differentVectorElements": 0,
+    "maxAbsoluteVectorDifference": 0.0,
+    "worstCos": 0.9999999999999172,
+    "cosineMean": 1.0000000000000029,
+    "cosineMax": 1.0000000000000926,
+    "privateReport": "work/control-plan-20261114/golden/comparison-opencv412-numpy225.json"
+  }
+}

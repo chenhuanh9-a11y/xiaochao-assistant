@@ -22,8 +22,8 @@ from imported_author_displays import ImportedAuthorDisplays
 from imported_native_base import decode_native_base
 from imported_resource_packages import PackageView
 import test_export_native_base_package as s0n_fixture_module
-from test_export_s0_difficult_native_base_package import LEGACY, S0DifficultSourceFixture
-from original_qt_resource_fixtures import OriginalS1SourceFixture
+from test_export_s0_difficult_native_base_package import LEGACY
+from original_qt_resource_fixtures import OriginalS0DifficultSourceFixture, OriginalS1SourceFixture
 
 
 def _synthetic_png():
@@ -77,7 +77,7 @@ class AuthorDisplayComponentModeTests(unittest.TestCase):
         finally:
             s0n_case.doCleanups()
 
-        s0d_source = S0DifficultSourceFixture(cls.root / 's0-difficult-source')
+        s0d_source = OriginalS0DifficultSourceFixture(cls.root / 's0-difficult-source')
         s0d_source.export()
         s1n_source = OriginalS1SourceFixture(cls.root / 's1-nightmare-source', mode='nightmare')
         s1n_source.export()

@@ -5,8 +5,10 @@ service owns those mutable decisions and must revalidate a chosen option via
 the normal ``activate_context`` path.
 """
 from dataclasses import dataclass
+from contextlib import ExitStack
 
 import imported_author_display
+from imported_author_dependencies import matches_display_base
 import imported_resource_catalog as catalog
 from imported_resource_packages import ComponentRef, PackageView
 import imported_resource_inventory
@@ -77,11 +79,47 @@ def _component_for_context(snapshot, ref, role, season, mode, operation_current)
     return view
 
 
-def _is_one_exact_base_dependency(view, base_ref, operation_current):
-    operation_current()
-    dependencies = view.dependencies
-    operation_current()
-    return len(dependencies) == 1 and next(iter(dependencies.values())) == base_ref
+def _base_compatibility(base_view, controls_view, season, mode, operation_current, cancelled):
+    """Prepare one proposed reference context, only for cross-version authors."""
+    reference_context = None
+
+    def compatible(view):
+        nonlocal reference_context
+        operation_current()
+        dependencies = tuple(view.dependencies.values())
+        if dependencies == (base_view.component_ref,):
+            operation_current()
+            return True
+        if not matches_display_base(view, base_view.component_ref):
+            return False
+        with ExitStack() as stack:
+            for owner in (base_view, controls_view, view):
+                stack.enter_context(owner.read_scope(cancelled))
+            if reference_context is None:
+                from client_imported_providers import load_native_resources
+                bundle, _, _, provider, current = load_native_resources(
+                    base_view, controls_view, season=season, mode=mode)
+                reference_context = bundle, provider, current
+            bundle, provider, current = reference_context
+            try:
+                imported_author_display.validate_author_base_compatibility(view, bundle, provider)
+            except files.ImportRejected as error:
+                # A readable route on a different structure is an affected
+                # author in its known context, not an unreadable identity.
+                if error.code not in {
+                    'imported-author-display-reference-binding-mismatch',
+                    'imported-author-display-reference-file-mismatch',
+                    'imported-author-display-duplicate-or-foreign-layer',
+                }:
+                    raise
+                current()
+                operation_current()
+                return False
+            current()
+            operation_current()
+        return True
+
+    return compatible
 
 
 def _read_identity(view, operation_current):
@@ -124,7 +162,7 @@ def _inventory_display_refs(inventory, operation_current):
     return tuple(refs)
 
 
-def _matching_choices(resolver, old_ref, old_identity, base_ref,
+def _matching_choices(resolver, old_ref, old_identity, check_base,
                       candidates, operation_current):
     matches = {}
     for candidate_ref in candidates:
@@ -140,7 +178,7 @@ def _matching_choices(resolver, old_ref, old_identity, base_ref,
         if identity != old_identity:
             continue
         try:
-            compatible = _is_one_exact_base_dependency(view, base_ref, operation_current)
+            compatible = check_base(view)
         except (OSError, ValueError, TypeError, KeyError) as error:
             _raise_transient(error)
             operation_current()
@@ -172,8 +210,9 @@ def _context_plan(snapshot, resolver, base_ref, controls_ref, *, season, mode, c
         snapshot.assert_current()
 
     operation_current()
-    _component_for_context(snapshot, base_ref, 'recognitionBase', season, mode, operation_current)
-    _component_for_context(snapshot, controls_ref, 'controls', season, mode, operation_current)
+    base_view = _component_for_context(snapshot, base_ref, 'recognitionBase', season, mode, operation_current)
+    controls_view = _component_for_context(snapshot, controls_ref, 'controls', season, mode, operation_current)
+    check_base = _base_compatibility(base_view, controls_view, season, mode, operation_current, cancelled)
 
     affected = []
     for old_ref in snapshot.displays:
@@ -187,7 +226,7 @@ def _context_plan(snapshot, resolver, base_ref, controls_ref, *, season, mode, c
         if (identity.season, identity.mode) != (season, mode):
             continue
         try:
-            compatible = _is_one_exact_base_dependency(old_view, base_ref, operation_current)
+            compatible = check_base(old_view)
         except (OSError, ValueError, TypeError, KeyError) as error:
             _raise_transient(error)
             operation_current()
@@ -230,7 +269,7 @@ def _context_plan(snapshot, resolver, base_ref, controls_ref, *, season, mode, c
             continue
 
         replacements = _matching_choices(
-            resolver, old_ref, identity, base_ref, candidates, operation_current)
+            resolver, old_ref, identity, check_base, candidates, operation_current)
         scope = f'{identity.season}/{identity.mode}'
         rows.append(ActivationAuthorRow(
             key='author:' + ref_key,

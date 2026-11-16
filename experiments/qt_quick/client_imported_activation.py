@@ -79,8 +79,10 @@ def _validate_context(inspected, paths, base_ref, controls_ref, *, season, mode,
                     raise catalog.ResourceCatalogError('resource-display-no-usable-layers')
             operation_current()
             if not base_qualified:
+                # Validate declared data and bindings here. Source-equivalent
+                # numerical rederivation belongs to the export environment.
                 engine.qt_fast_structure_source.validate_all(
-                    engine.qt_shared_provider, compare_derived=True, cancelled=cancelled)
+                    engine.qt_shared_provider, compare_derived=False, cancelled=cancelled)
                 if engine.qt_logical_group_registry is not None:
                     engine.qt_logical_group_registry.validate_available(engine.qt_shared_provider)
             operation_current()
@@ -384,7 +386,7 @@ def activate_context(resolver, paths, base_ref, controls_ref, *, season='s0', mo
     """Select B/C and explicitly requested display updates in one transaction.
 
     display_refs is an update subset, not a replacement list. Omitted authors
-    remain selected and their exact base dependencies must still be satisfied.
+    remain selected and their layer bindings must fit the proposed base.
     remove_display_refs explicitly stops exact globally selected components,
     preserving their files. It cannot overlap an updated logical component.
     A supplied expected_catalog_stamp binds a reviewed proposal to its catalog;

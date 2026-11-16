@@ -53,7 +53,8 @@ def context(policy, target, result_file, *, pid=None, handle=None):
     return value
 
 
-def start(policy, target, result_file, *, setup_source, interactive=False):
+def start(policy, target, result_file, *, setup_source=None, interactive=False,
+          operation="update", force=False):
     from resource_transaction import _safe
     result_file = _safe(Path(result_file).resolve())
     support = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
@@ -62,8 +63,16 @@ def start(policy, target, result_file, *, setup_source, interactive=False):
     command = [sys.executable]
     if not getattr(sys, "frozen", False):
         command += ["-B", str(Path(__file__).with_name("qtifw_trial_helper.py"))]
-    command += ["bootstrap-run", str(target), "--result-file", str(result_file),
-                "--setup-source", str(setup_source)]
+    if operation not in {"update", "close"}:
+        raise ValueError("native-job-operation-invalid")
+    command += ["bootstrap-run" if operation == "update" else "close-background-run",
+                str(target), "--result-file", str(result_file)]
+    if operation == "update":
+        if setup_source is None:
+            raise ValueError("native-update-setup-required")
+        command += ["--setup-source", str(setup_source)]
+    elif force:
+        command.append("--force")
     if interactive:
         command.append("--interactive")
     # The child retains the existing resource leases, native maintenance/UNDO

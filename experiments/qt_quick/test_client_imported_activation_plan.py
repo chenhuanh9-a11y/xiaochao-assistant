@@ -8,6 +8,7 @@ import zipfile
 import client_imported_activation_plan as planning
 import imported_author_display
 from imported_resource_archive import save_archive
+from original_qt_resource_fixtures import save_s1_base_revision
 from imported_resource_catalog import ResourceCatalogError
 from imported_resource_packages import PackageView
 import star_map_import as files
@@ -36,17 +37,10 @@ class ClientImportedActivationPlanTests(TestCase):
 
     def revision(self, version):
         fixture = self.fixture
-        with zipfile.ZipFile(fixture.source.output) as archive:
-            members = {name: archive.read(name) for name in archive.namelist()}
-        manifest = json.loads(members['manifest.json'])
-        manifest['resourceVersion'] = version
-        members['manifest.json'] = json.dumps(manifest).encode('utf-8')
-        path = fixture.root / (version + '.zip')
-        with zipfile.ZipFile(path, 'x', compression=zipfile.ZIP_DEFLATED) as archive:
-            for name, raw in members.items():
-                archive.writestr(name, raw)
-        saved = save_archive(path, fixture.resources)
-        return {ref.component_id: ref for ref in saved.component_refs}
+        # This suite exercises incompatible-base choices. A version-only
+        # revision is now compatible and must not produce these dialog rows.
+        return save_s1_base_revision(fixture.source.output, fixture.root/(version+'.zip'),
+            fixture.resources, version, snapshot='fixture-base-s1-incompatible')
 
     def other_context_display(self):
         """Save a metadata-only, dependency-free author for the inactive context."""

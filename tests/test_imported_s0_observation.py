@@ -305,7 +305,7 @@ class OriginalS0ControlsLifecycleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'original-controls-floor-context-mismatch'):
                 observe_s0_map(s0_bright('nightmare'), 'nightmare', season='s1', controls=controls)
             controls.fixed_search_region = (.1, .1, .2, .2)
-            with self.assertRaisesRegex(ValueError, 'original-controls-parameters-not-source-equivalent'):
+        with self.assertRaisesRegex(ValueError, 'original-controls-fixed-region-mismatch'):
                 observe_s0_map(s0_bright('nightmare'), 'nightmare', controls=controls)
 
 

@@ -641,7 +641,11 @@ def main():
         parser.error("--offline-resource-root requires --self-check")
     if args.self_check:
         from client_engine import EngineAdapter
+        from s0_floor_templates import _bank
+        floor_vectors, floor_labels = _bank()
         result = dict(ready=True, frozen=FROZEN, resourceRoot=str(RESOURCE_ROOT),
+                      floorTemplateResource=dict(shape=list(floor_vectors.shape),
+                          dtype=str(floor_vectors.dtype), labels=len(floor_labels)),
                       qml=all((HERE / name).is_file() for name in (
                           "Client.qml", "ClientControls.qml", "ClientReference.qml", "ClientAligned.qml",
                           "ClientMapPicker.qml")),
@@ -670,7 +674,12 @@ def main():
                 for season in SEASONS:
                     for mode in modes_for_season(season):
                         registry.prepare_context(mode, season=season)
-                        result['resourceContexts'][context_key(mode, season)] = registry.capabilities(season)[mode]
+                        row = dict(registry.capabilities(season)[mode])
+                        if row.get('available'):
+                            engine = registry.get_engine(mode, season=season)
+                            controls = getattr(engine, 'qt_controls_profile', None)
+                            row['controlsValidation'] = getattr(controls, 'source_qualification', None)
+                        result['resourceContexts'][context_key(mode, season)] = row
                 result['providers'] = registry.capabilities()
             result["tkLoaded"] = "tkinter" in sys.modules
             result['resourcesReady'] = all(row.get('available') for row in result['resourceContexts'].values())

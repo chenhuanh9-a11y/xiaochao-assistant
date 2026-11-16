@@ -18,29 +18,71 @@ import uuid
 import xml.etree.ElementTree as ET
 
 from resource_transaction import _safe, _assert_resource_transactions_ready, resource_write_lock, rename_no_replace
+from resource_locations import installed_resource_root
 
 PENDING = "work/pending-installer-upgrade.json"
 PACKAGE = "org.xingtu.qtifw.realtrial"
 DATA_PACKAGE = "org.xingtu.qtifw.trialdata"
-PREVIOUS_VERSIONS = frozenset({"1.1.2", "1.1.3", "1.1.4", "1.1.5", "1.1.6", "1.1.7"})
+PREVIOUS_VERSIONS = frozenset({"1.1.2", "1.1.3", "1.1.4", "1.1.5", "1.1.6", "1.1.7", "1.1.8"})
 BRAND_MIGRATIONS = frozenset({"_internal/assets/brand/xingtu.ico", "_internal/assets/brand/xingtu-round.png"})
+SAME_VERSION_REPAIR_VERSION = "1.1.8"
+SAME_VERSION_REPAIR_SOURCE = "d8f195861f950ac809c3f4465493f3f42da671b1"
+SAME_VERSION_REPAIR_SOURCES = frozenset({SAME_VERSION_REPAIR_SOURCE,
+    "1925b5cb7b874c04f35f310ad51c99a51d5c56bd",
+    "c16d45f46ea22c26f3b2ca942fb19a5a5fbdeec2",
+    "fb27ee468a58e25018f42f8250fc182a4a1a0811"})
 
 
-def _external_resource_root():
-    """Match the production client's per-user independent resource location."""
-    value = os.environ.get("LOCALAPPDATA")
-    if not value or not Path(value).is_absolute():
-        raise ValueError("upgrade-local-app-data-unavailable")
-    local = _safe(Path(value))
-    if not local.is_dir():
-        raise ValueError("upgrade-local-app-data-unavailable")
-    root = _safe(local / "Xingtu/resources")
+def _windows_io_path(path):
+    """Add the Windows extended prefix when ordinary Win32 paths are near MAX_PATH.
+
+    Keep lexical paths unchanged for normal operations. Long backup paths use
+    ``\\\\?\\`` so their file I/O does not depend on LongPathsEnabled or the
+    executable manifest. UNC paths use the corresponding extended UNC form.
+    """
+    path = Path(path)
+    if os.name != "nt":
+        return path
+    value = os.fspath(path)
+    if value.startswith("\\\\?\\"):
+        return path
+    absolute = os.path.abspath(value)
+    # Leave enough headroom for callers that create a child under this path.
+    if len(absolute) < 248:
+        return path
+    if absolute.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + absolute[2:])
+    return Path("\\\\?\\" + absolute)
+
+
+def _safe_io_path(path):
+    """Reparse-check a path, using an extended spelling for long Windows I/O."""
+    path = Path(path)
+    # Do not let abspath normalization erase a lexical traversal before the
+    # established reparse checks inspect it. Callers may still use _safe's
+    # original short-path behavior for such inputs.
+    if os.name == "nt" and ".." in path.parts:
+        _safe(path)
+        return path
+    result = _windows_io_path(path)
+    _safe(result)
+    return result
+
+
+def _component_version(policy):
+    """QtIFW package version, separate from the public product version."""
+    return policy.get("packageVersion", policy["targetVersion"]["version"])
+
+
+def _installed_resource_root(target):
+    """Use this installation's user-owned resources beside its executable."""
+    root = _safe(installed_resource_root(Path(target) / "program"))
     if root.exists() and not root.is_dir():
-        raise ValueError("upgrade-external-resource-root-invalid")
+        raise ValueError("upgrade-installed-resource-root-invalid")
     return root
 
 
-def _external_catalog_ready(root):
+def _installed_catalog_ready(root):
     # These are the independent catalog's own transaction markers. An admitted
     # native program marker never authorizes ignoring either resource writer.
     for name, code in (("pending-catalog.json", "resource-catalog-recovery-required"),
@@ -50,12 +92,12 @@ def _external_catalog_ready(root):
 
 
 @contextmanager
-def _external_resource_lease():
+def _installed_resource_lease(target):
     from resource_transaction import resource_read_lock
-    root = _external_resource_root()
+    root = _installed_resource_root(target)
     if root.exists():
         with resource_read_lock(root):
-            _external_catalog_ready(root)
+            _installed_catalog_ready(root)
             yield
     else:
         # Program-only Setup does not create, seed, own or delete this plane.
@@ -97,16 +139,16 @@ def _native_start(command, **kwargs):
 
 
 def _read(path):
-    path = _safe(Path(path))
+    path = _safe_io_path(Path(path))
     if not path.is_file() or path.stat().st_size > 16 * 1024 * 1024:
         raise ValueError("upgrade-record-unavailable:" + path.name)
     return json.loads(path.read_bytes())
 
 
 def _write(path, data):
-    path = _safe(Path(path))
+    path = _safe_io_path(Path(path))
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = _safe(path.with_name(path.name + "." + uuid.uuid4().hex + ".new"))
+    temporary = _safe_io_path(path.with_name(path.name + "." + uuid.uuid4().hex + ".new"))
     with temporary.open("x", encoding="utf-8") as stream:
         json.dump(data, stream, ensure_ascii=False)
         stream.flush()
@@ -154,7 +196,7 @@ def accepts_previous_owner(policy, target, owner):
 
 
 def _versions(target):
-    path = _safe(target / "components.xml")
+    path = _safe_io_path(target / "components.xml")
     if not path.is_file() or path.stat().st_size > 4 * 1024 * 1024:
         raise ValueError("qtifw-component-record-unavailable")
     tree = ET.parse(path)
@@ -162,7 +204,7 @@ def _versions(target):
 
 
 def _matches(path, row):
-    path = _safe(path)
+    path = _safe_io_path(path)
     if not path.exists():
         return False
     info = path.stat()
@@ -234,7 +276,12 @@ def _old_install(policy, target, *, verify_files=True):
         raise ValueError("unsupported-upgrade-source")
     if report["displayVersion"] == policy["targetVersion"]["displayVersion"] and (old["payloadSource"] != policy["payloadSource"]
             or old["instance"] != policy["instance"]):
-        raise ValueError("different-same-version-installation")
+        # Admit only the recorded delivered 1.1.8 builds, after the same original
+        # owner/profile/report/file checks as an ordinary native upgrade.
+        if ((policy["targetVersion"]["version"], policy["targetVersion"]["displayVersion"])
+                != (SAME_VERSION_REPAIR_VERSION, SAME_VERSION_REPAIR_VERSION)
+                or old["payloadSource"] not in SAME_VERSION_REPAIR_SOURCES):
+            raise ValueError("different-same-version-installation")
     maintenance = _safe(target / "trial-maintenance.exe")
     if not maintenance.is_file() or maintenance.stat().st_nlink != 1:
         raise ValueError("qtifw-maintenance-unavailable")
@@ -253,8 +300,8 @@ def check(policy, target):
     from qtifw_trial_helper import OWNER, check_target, scoped
     if not policy.get("upgradeCapable"):
         raise ValueError("upgrade-not-included")
-    _external_catalog_ready(_external_resource_root())
     target = scoped(policy, target)
+    _installed_catalog_ready(_installed_resource_root(target))
     if not _safe(target / OWNER).exists():
         check_target(policy, target)
         return dict(mode="fresh", target=str(target))
@@ -281,9 +328,12 @@ def check(policy, target):
 
 
 def _copy_checked(source, destination, expected=None):
-    source, destination = _safe(source), _safe(destination)
-    if source.stat().st_nlink != 1 or not stat.S_ISREG(source.stat().st_mode):
+    source, destination = _safe_io_path(source), _safe_io_path(destination)
+    source_info = source.stat()
+    if source_info.st_nlink != 1 or not stat.S_ISREG(source_info.st_mode):
         raise ValueError("upgrade-source-not-exclusive-file")
+    if expected and source_info.st_size != expected["bytes"]:
+        raise ValueError("upgrade-backup-source-changed")
     data = source.read_bytes()
     if expected and (len(data) != expected["bytes"] or hashlib.sha256(data).hexdigest() != expected["sha256"]):
         raise ValueError("upgrade-backup-source-changed")
@@ -292,7 +342,10 @@ def _copy_checked(source, destination, expected=None):
         if destination.read_bytes() != data:
             raise ValueError("upgrade-backup-conflict")
     else:
-        temporary = _safe(destination.with_name(destination.name + "." + uuid.uuid4().hex + ".new"))
+        # A temporary based on destination.name can exceed MAX_PATH even when
+        # the final backup path fits. Keep it short and in the same directory
+        # so the existing exclusive-create/no-replace publication stays atomic.
+        temporary = _safe_io_path(destination.with_name(".qtifw-" + uuid.uuid4().hex + ".new"))
         with temporary.open("xb") as stream:
             stream.write(data)
             stream.flush()
@@ -335,7 +388,7 @@ def _prepare(policy, target):
 def _native_complete(policy, target, *, maintenance_check=False):
     from qtifw_trial_helper import verify_program
     verify_program(policy, target)
-    wanted = policy["targetVersion"]["version"]
+    wanted = _component_version(policy)
     versions = _versions(target)
     if any(versions.get(name) != wanted for name in (PACKAGE, DATA_PACKAGE)):
         raise ValueError("qtifw-update-component-version-incomplete")
@@ -425,7 +478,16 @@ def materialize_repository(support, setup):
 
 
 def run(policy, target, support=None, *, setup_source=None, interactive=False):
-    with _external_resource_lease():
+    from qtifw_trial_helper import scoped
+    target = scoped(policy, target)
+    # Read-only discovery preserves fresh Setup's original admission path.
+    # Update admission is repeated under both leases in _run below.
+    if check(policy, target)["mode"] == "fresh":
+        raise ValueError("native-fresh-setup-required")
+    # Discover the optional resource root only after the program lease. This
+    # prevents an absent -> created root from being skipped between leases,
+    # and shares the program -> resources order with runtime and uninstall.
+    with resource_write_lock(target / "program"), _installed_resource_lease(target):
         if setup_source is not None:
             if check(policy, target)["mode"] != "update":
                 raise ValueError("native-fresh-setup-required")
@@ -434,6 +496,7 @@ def run(policy, target, support=None, *, setup_source=None, interactive=False):
 
 
 def _run(policy, target, support=None, *, interactive=False):
+    """Run native work under the caller's program and installed-resource leases."""
     from qtifw_trial_helper import receipt, scoped
     plan = check(policy, target)
     target = scoped(policy, target)
@@ -453,49 +516,47 @@ def _run(policy, target, support=None, *, interactive=False):
         # must never recurse into a second installer or replace its database.
         raise ValueError("native-fresh-setup-required")
     program = target / "program"
-    with resource_write_lock(program):
-        check(policy, target)
-        # The adapter has already validated its own physical-root/source-bound
-        # native marker. It never bypasses another resource transaction.
-        _assert_resource_transactions_ready(program)
-        record = _prepare(policy, target)
-        if record["stage"] in {"native-in-progress", "native-complete"}:
-            try:
-                _native_complete(policy, target)
-            except (ValueError, OSError):
-                pass
-            else:
-                return _finish(policy, target, record)
-        session = target / record["backup"] / ("native-" + uuid.uuid4().hex)
-        session.mkdir()
-        base = session / "installerbase.exe"
-        replacement = session / "update.rcc"
-        shutil.copy2(boot / "installerbase.exe", base)
-        shutil.copy2(boot / "update.rcc", replacement)
-        env["XINGTU_QTIFW_UPGRADE_SUPPORT"] = str(support)
-        env["XINGTU_QTIFW_UPGRADE_BASE"] = str(base)
-        env["XINGTU_QTIFW_UPGRADE_RCC"] = str(replacement)
-        receipt(policy, target, "select-data", dict(success=True, choice="keep", operation="none"))
-        versions = _versions(target)
-        command = ["update", PACKAGE, DATA_PACKAGE] if {PACKAGE, DATA_PACKAGE} <= versions.keys() else ["install", PACKAGE]
-        previous_stage = record["stage"]
-        record["stage"] = "native-in-progress"
-        _write(program / PENDING, record)
-        with (session / "native-update.log").open("xb") as log:
-            try:
-                mode = ["--start-updater"] if interactive else [*automatic, *command]
-                process = _native_start([str(target / "trial-maintenance.exe"), "--script",
-                    str(boot / "upgrade-controller.js"), "--set-temp-repository", (boot / "repository").as_uri(),
-                    "--cache-path", str(session / "cache"),
-                    *mode], env=env, stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
-            except OSError as error:
-                # CreateProcess did not start: retain pre-native collision
-                # checks on the next attempt rather than claiming native work.
-                record["stage"] = previous_stage
-                _write(program / PENDING, record)
-                raise ValueError("native-update-failed:launch:" + str(error)) from error
-            with process:
-                code = process.wait()
-        if code != 0:
-            raise ValueError("native-update-failed:" + str(code))
-        return _finish(policy, target, record)
+    # The adapter has already validated its own physical-root/source-bound
+    # native marker. It never bypasses another resource transaction.
+    _assert_resource_transactions_ready(program)
+    record = _prepare(policy, target)
+    if record["stage"] in {"native-in-progress", "native-complete"}:
+        try:
+            _native_complete(policy, target)
+        except (ValueError, OSError):
+            pass
+        else:
+            return _finish(policy, target, record)
+    session = target / record["backup"] / ("native-" + uuid.uuid4().hex)
+    session.mkdir()
+    base = session / "installerbase.exe"
+    replacement = session / "update.rcc"
+    shutil.copy2(boot / "installerbase.exe", base)
+    shutil.copy2(boot / "update.rcc", replacement)
+    env["XINGTU_QTIFW_UPGRADE_SUPPORT"] = str(support)
+    env["XINGTU_QTIFW_UPGRADE_BASE"] = str(base)
+    env["XINGTU_QTIFW_UPGRADE_RCC"] = str(replacement)
+    receipt(policy, target, "select-data", dict(success=True, choice="keep", operation="none"))
+    versions = _versions(target)
+    command = ["update", PACKAGE, DATA_PACKAGE] if {PACKAGE, DATA_PACKAGE} <= versions.keys() else ["install", PACKAGE]
+    previous_stage = record["stage"]
+    record["stage"] = "native-in-progress"
+    _write(program / PENDING, record)
+    with (session / "native-update.log").open("xb") as log:
+        try:
+            mode = ["--start-updater"] if interactive else [*automatic, *command]
+            process = _native_start([str(target / "trial-maintenance.exe"), "--script",
+                str(boot / "upgrade-controller.js"), "--set-temp-repository", (boot / "repository").as_uri(),
+                "--cache-path", str(session / "cache"),
+                *mode], env=env, stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
+        except OSError as error:
+            # CreateProcess did not start: retain pre-native collision
+            # checks on the next attempt rather than claiming native work.
+            record["stage"] = previous_stage
+            _write(program / PENDING, record)
+            raise ValueError("native-update-failed:launch:" + str(error)) from error
+        with process:
+            code = process.wait()
+    if code != 0:
+        raise ValueError("native-update-failed:" + str(code))
+    return _finish(policy, target, record)

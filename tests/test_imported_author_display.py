@@ -17,7 +17,7 @@ from imported_resource_archive import save_archive
 from imported_resource_packages import PackageView
 import star_map_import as files
 import test_export_s1_native_base_package as base_fixture
-from original_qt_resource_fixtures import OriginalS1SourceFixture
+from original_qt_resource_fixtures import OriginalS0DifficultSourceFixture, OriginalS1SourceFixture
 import test_export_s0_difficult_native_base_package as difficult_fixture
 
 
@@ -199,7 +199,7 @@ class ImportedAuthorDisplayTests(_AuthorDisplayFixture):
     def test_actual_legacy_reference_stays_a_role_gap_without_native_layout_or_display_binding(self):
         from imported_controls_profile import S0ControlsProfile
         from imported_difficult_native_context import ImportedDifficultNativeContext
-        source = difficult_fixture.S0DifficultSourceFixture(self.root/'legacy-source')
+        source = OriginalS0DifficultSourceFixture(self.root/'legacy-source')
         source.export()
         saved = save_archive(source.output, self.resources)
         refs = {ref.component_id:ref for ref in saved.component_refs}

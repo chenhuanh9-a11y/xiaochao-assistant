@@ -125,7 +125,7 @@ def _catalog_proposal(snapshot, ref, cancelled):
     def matches(candidate):
         return candidate is not None and (candidate.package_id, candidate.resource_version) == target
 
-    dependencies = {}
+    dependencies, display_contexts = {}, {}
 
     def check():
         files._check_cancelled(cancelled)
@@ -145,14 +145,21 @@ def _catalog_proposal(snapshot, ref, cancelled):
             if len(dependencies) >= files.MAX_FILES:
                 _reject('dependency-limit')
             view = PackageView(root, candidate, assert_current=check)
-            dependencies[candidate] = tuple(view.dependencies.values())
+            from imported_author_dependencies import selected_display_base
+            display_base = selected_display_base(view, snapshot.contexts)
+            if view.component['type'] == 'display':
+                display_contexts[candidate] = {row['season']+':'+row['mode']
+                                               for row in view.component['contexts']}
+            dependencies[candidate] = ((display_base,) if display_base is not None
+                                       else tuple(view.dependencies.values()))
         return any(depends(item, visiting) for item in dependencies[candidate])
 
     affected = [key for key, row in snapshot.contexts.items()
                 if any(depends(candidate) for candidate in row.values() if candidate is not None)]
+    affected_contexts = set(affected)
     removed = []
     for candidate in snapshot.displays:
-        if depends(candidate):
+        if depends(candidate) or display_contexts.get(candidate, set()) & affected_contexts:
             removed.append(candidate)
     contexts = {key: {role: None if candidate is None else _wire(candidate)
                       for role, candidate in row.items()}
