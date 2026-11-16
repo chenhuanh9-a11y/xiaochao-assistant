@@ -151,9 +151,13 @@ QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
 2. `navigationVersion` 仅支持整数 `1`，布尔值、浮点数、字符串、null 和其他版本均拒绝。`navigationSignature` 必须属于该模板的当前或明确登记的兼容签名，不能跨模板借用，也不凭 cell 看似合法而接受未知签名。
 3. 对实际会转换的点所引用的每层，核对登记的 `width/height/step/cols/rows` 与本地实际采用的模板尺寸及 2px 公式；缺层或尺寸不符时跳过整张地图，避免只保留半张坐标错误的路线。显示图大小与模板不同时，校验模板。
 4. 兼容旧签名的网格与当前相同，可以沿用原 cell 换算。安卓 `migration.json` 还包含旧 room ID 到新目标的迁移，原生迁移同时需要当前道路吸附、丢点检查及重规划。本次不复制安卓道路/房间数据，不在 PC 实现该迁移；仍按旧 cell 落到 PC 道路上，不承诺和安卓迁移后的目标、连线完全相同。签名同步时校对迁移表的签名集合，并核对固定旧目录的底图身份和网格尺寸。
-5. 历史包**缺少键** `navigationSignature` 或 `navigationVersion` 时，暂按已登记模板的历史 2px 网格和缺省版本 1 谨慎导入，仍要求本地模板尺寸一致及 cell 不越界，计 `legacyNavigationMaps` 并提示“旧路线缺少导航版本字段，已按历史网格校验导入”。显式空签名、null 或不支持的版本不走此兼容路径。缺字段无法证明来源网格身份；同尺寸但原点/底图不同的历史包仍存在不可辨识风险，不能把这个回退用于新生产格式。
+5. **缺少 `navigationSignature` 键时跳过整张地图**，与显式空、null、非法或未知签名一样计入版本不符，不计 `legacyNavigationMaps`。模板尺寸和 cell 范围不能证明网格原点或底图身份。仅缺 `navigationVersion`、但签名属于该模板当前或已登记兼容签名时，仍允许缺省版本 1；尺寸和格子范围继续校验，成功导入的非空路线计 `legacyNavigationMaps` 并提示缺少导航版本字段。
 
-未知签名、不支持版本、未登记网格或网格不匹配均跳过整图，提示：**“这张路线的底图版本与 PC 不匹配，请更新 PC 版/资源包”**。部分成功时在下载完成消息中列出版本不符图数；全部失败时明确报此原因，不调用图库写入，也不覆盖已下载图库。旧的取消、资源代际校验、UI 线程收取和单写者保存链路保持。
+缺失或未知签名、不支持版本、未登记网格或网格不匹配均跳过整图，提示：**“这张路线的底图版本与 PC 不匹配，请更新 PC 版/资源包”**。部分成功时在下载完成消息中列出版本不符图数；全部失败时明确报此原因，不调用图库写入，也不覆盖已下载图库。旧的取消、资源代际校验、UI 线程收取和单写者保存链路保持。
+
+拒绝缺签名包的依据：只读核查安卓提交 `44dff8a3113523258bd6c7a5f78afca53a8f9472`，`mobile/app/src/main/java/com/xingchen/identityvmapassistant/NightmareRoutePlan.kt:89–94` 的 `normalize()` 要求签名匹配 `^[a-f0-9]{64}$`，并在第 158 行始终写回；`GalleryPackageStore.kt:2049` 保存先调用 `validate()`，投稿从 `CommunityBridge.kt:429` 进入 `exportCommunityPackageToCache()`，经 `routeDataManifest()` → `retainedDocuments()` → `validate()` → `normalize()`，不能产出缺签名方案。管理端 `mobile/account-admin-app/src/main/java/com/xingchen/xingtuadmin/AdminGalleryArchive.kt:140` 也要求 `shaPattern.matches(route.getString("navigationSignature"))`。
+
+同一安卓提交的服务端 `account-sync-server/app/map_galleries.py` 中，`_assert_package_shape()` 仅校验场景、数量、大小与 schema；`complete_map_gallery_upload()` 调用 `object_storage.verify_uploaded_object()` 核验字节数、SHA256、ETag，下载入口 `download_map_gallery_package()` 对已上架包签发下载授权，均未解析或强制校验包内 `navigationSignature`（`account-sync-server/app` 中也未找到该字段）。因此不能据服务端成功上传/下载推定签名存在；网上若有手改或异常缺签名包，PC 现在会整图跳过，避免同尺寸但原点不同的路线落错位置，这是预期的更安全行为。这里只核查源码，未确认线上部署版本或实际包存量。
 
 `convert_manifest` 的报告保留原字段并增加以下字段；`convert_plan` 仍返回 `(points, dropped)`，直接调用同样先校验导航身份：
 
@@ -165,7 +169,7 @@ QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
 | `versionMismatchMaps` | 因导航身份/网格校验失败而整图跳过的条目数；其点不混入 `droppedPoints` |
 | `versionMismatches` | `{templateId, reason}` 列表；原因是 `unsupportedNavigationVersion`、`unknownNavigationSignature`、`unknownTemplateGrid`、`gridMismatch`，直接转换还可报 `templateBindingMismatch` |
 | `outOfRangePoints` | 已处理点中 `cell < 0` 或 `cell >= cols*rows` 的数量，是 `droppedPoints` 的子集；非整数属于其他无效点 |
-| `legacyNavigationMaps` | 成功产出非空路线、缺少一个或两个导航字段并采用历史假设的地图条目数 |
+| `legacyNavigationMaps` | 成功产出非空路线、签名已登记但仅缺 `navigationVersion` 并采用缺省版本 1 的地图条目数；缺签名不进入此项 |
 
 ### 同步签名清单
 
@@ -194,6 +198,22 @@ PYTHONDONTWRITEBYTECODE=1 /tmp/xiaochao-qt-venv/bin/python tools/maps/sync_route
 线程和弹窗生命周期参考 Qt 官方 [QThreadPool](https://doc.qt.io/qtforpython-6/PySide6/QtCore/QThreadPool.html)、[Thread Signals 示例](https://doc.qt.io/qtforpython-6.10/examples/example_widgets_thread_signals.html)、[Popup.closePolicy](https://doc.qt.io/qt-6/qml-qtquick-controls-popup.html#closePolicy-prop)；采用项目既有 queued signal、阶段取消和关闭排空方式，无新依赖或流程工具。
 
 ## 验证范围
+
+### 缺签名拒绝补测（2026-11-16）
+
+在合并 `origin/main` 的 `083b1ac` 后，使用 Linux / Python 3.13.5 / PySide6 6.11.1 执行：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=app:tests:tools:tools/maps:experiments/qt_quick \
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
+/tmp/xiaochao-qt-venv/bin/python -m unittest -q \
+  test_route_plaza_navigation test_route_plaza_redirect test_account_concurrency \
+  test_client_route_plaza.NavigationDownloadTests
+```
+
+**57 项全部通过**，无跳过。覆盖缺签名或两个字段均缺时整图拒绝、不计 legacy、直接转换入口也无法绕过校验、部分导入的版本不符提示，以及全拒绝时保留既有图库字节；当前/兼容签名和仅缺版本号的有效签名仍可导入。输入来自合成坐标、合成 ZIP 和内存 transport，Qt 使用离屏事件与真实图库保存链路；不代表本机 HTTP、真实安卓/生产路线、Windows GUI 或游戏验收。
+
+本次未在沙箱内执行依赖本地 socket 的 `test_route_plaza`、`test_client_route_plaza` 其余类、`test_client_account_lifecycle`、`test_route_submission`、`test_client_route_submission`，留待监督者在沙箱外按完整相关模块命令重跑。下节为此前提交的历史验证记录，不能替代本次合并后的完整 HTTP 回归。
 
 ### 导航版本校验补测（2026-11-14）
 

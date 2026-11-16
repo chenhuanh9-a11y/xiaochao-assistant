@@ -192,13 +192,12 @@ def _check_navigation(library, map_id, plan):
     metadata = NAVIGATION_TEMPLATES.get(template)
     if metadata is None:
         raise NavigationMismatch("unknownTemplateGrid")
-    if "navigationSignature" in plan:
-        signature = plan["navigationSignature"]
-        if (not isinstance(signature, str) or signature not in
-                (metadata["navigationSignature"], *metadata["compatibleNavigationSignatures"])):
-            raise NavigationMismatch("unknownNavigationSignature")
-    # Historical documents without either identity field retain the registered
-    # 2px-grid assumption, but must still match the local template and cell range.
+    signature = plan.get("navigationSignature")
+    if (not isinstance(signature, str) or signature not in
+            (metadata["navigationSignature"], *metadata["compatibleNavigationSignatures"])):
+        raise NavigationMismatch("unknownNavigationSignature")
+    # Dimensions alone cannot prove a grid's origin. Require a registered
+    # signature even when a historical document omits navigationVersion.
     raw_points = plan.get("points") if isinstance(plan.get("points"), list) else []
     floors = {FLOORS.get(str(p.get("floor"))) for p in raw_points[:MAX_POINTS] if isinstance(p, dict)} - {None}
     for floor in floors:
@@ -212,7 +211,7 @@ def _check_navigation(library, map_id, plan):
                 raise NavigationMismatch("gridMismatch")
         except KeyError:
             raise NavigationMismatch("gridMismatch") from None
-    return "navigationSignature" not in plan or "navigationVersion" not in plan
+    return "navigationVersion" not in plan
 
 
 def cell_to_image(cell: int, width: int, height: int) -> tuple[float, float]:

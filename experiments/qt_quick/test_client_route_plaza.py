@@ -665,19 +665,41 @@ class NavigationDownloadTests(unittest.TestCase):
                      ("2", "via", 30., 30., "#FFD54F", True)])
                 self.assertNotIn(route_plaza.NAVIGATION_UPDATE_MESSAGE, self.service.snapshot["message"])
 
-    def test_missing_navigation_fields_import_with_visible_historical_assumption(self):
+    def test_missing_navigation_version_imports_only_with_registered_signature(self):
         import io
         import zipfile
         with zipfile.ZipFile(io.BytesIO(self.server.archive)) as bundle:
             maps = json.loads(bundle.read("map-gallery.json"))["maps"]
         del maps[0]["routePlan"]["navigationVersion"]
-        del maps[0]["routePlan"]["navigationSignature"]
         self.server.archive, self.server.manifest_bytes = package_bytes(maps=maps)
         self.load()
         gallery = self.download()
         self.assertEqual(len(self.galleries.display_snapshot(gallery["id"], "m")["points"]), 3)
         self.assertIn("1 张旧路线缺少导航版本字段", self.service.snapshot["message"])
         self.assertNotIn(route_plaza.NAVIGATION_UPDATE_MESSAGE, self.service.snapshot["message"])
+
+    def test_missing_signature_skips_map_and_keeps_saved_gallery(self):
+        import io
+        import zipfile
+        with zipfile.ZipFile(io.BytesIO(self.server.archive)) as bundle:
+            maps = json.loads(bundle.read("map-gallery.json"))["maps"]
+        self.load()
+        gallery = self.download()
+        saved = self.galleries.path.read_bytes()
+        for removed in (("navigationSignature",), ("navigationSignature", "navigationVersion")):
+            with self.subTest(removed=removed):
+                plan = dict(maps[0]["routePlan"])
+                for key in removed:
+                    del plan[key]
+                self.server.archive, self.server.manifest_bytes = package_bytes(maps=[dict(routePlan=plan)])
+                self.service.downloadRoute("ver-2")
+                until(lambda: not self.service.snapshot["busy"] and not self.galleries.busy)
+                self.assertTrue(self.service.snapshot["error"])
+                self.assertIn(route_plaza.NAVIGATION_UPDATE_MESSAGE, self.service.snapshot["message"])
+                self.assertNotIn("已按历史网格校验导入", self.service.snapshot["message"])
+                self.assertEqual(self.galleries.path.read_bytes(), saved)
+                self.assertEqual(len(self.galleries.display_snapshot(gallery["id"], "m")["points"]), 3)
+        self.assertEqual(set(self.threads), {threading.get_ident()})
 
     def test_partial_download_distinguishes_version_missing_and_out_of_range(self):
         import io
@@ -687,11 +709,14 @@ class NavigationDownloadTests(unittest.TestCase):
         for fields in (dict(navigationSignature="f" * 64), dict(navigationVersion=2)):
             plan = dict(maps[0]["routePlan"], **fields)
             maps.append(dict(routePlan=plan))
+        unsigned = dict(maps[0]["routePlan"])
+        del unsigned["navigationSignature"]
+        maps.append(dict(routePlan=unsigned))
         self.server.archive, self.server.manifest_bytes = package_bytes(maps=maps)
         self.load()
         gallery = self.download()
         message = self.service.snapshot["message"]
-        self.assertIn("2 张图底图版本不符", message)
+        self.assertIn("3 张图底图版本不符", message)
         self.assertIn("1 张图本软件没有", message)
         self.assertIn("1 个点超出网格范围", message)
         self.assertIn(route_plaza.NAVIGATION_UPDATE_MESSAGE, message)

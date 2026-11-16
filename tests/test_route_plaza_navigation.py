@@ -61,6 +61,8 @@ class RouteNavigationTests(unittest.TestCase):
         self.assertEqual(report["versionMismatches"], [dict(templateId=plan["templateId"], reason=reason)])
         self.assertEqual(report["missingMaps"], 0)
         self.assertEqual(report["droppedPoints"], 0)
+        self.assertEqual(report["outOfRangePoints"], 0)
+        self.assertEqual(report["legacyNavigationMaps"], 0)
         self.assertEqual(library.picks, [])
 
     def test_every_registered_current_and_compatible_signature_preserves_formula(self):
@@ -100,12 +102,23 @@ class RouteNavigationTests(unittest.TestCase):
                 plan["navigationVersion"] = version
                 self.assert_mismatch(SyntheticLibrary(), plan, "unsupportedNavigationVersion")
 
-    def test_missing_fields_use_registered_historical_grid_and_report_assumption(self):
-        for removed in (("navigationSignature",), ("navigationVersion",), ("navigationSignature", "navigationVersion")):
+    def test_missing_signature_rejects_whole_map_even_with_matching_grid(self):
+        for removed in (("navigationSignature",), ("navigationSignature", "navigationVersion")):
             with self.subTest(removed=removed):
-                plan = plan_for()
+                plan = plan_for(points=[dict(floor="1", cell=0), dict(floor="2", cell=1)])
                 for key in removed:
                     del plan[key]
+                self.assert_mismatch(SyntheticLibrary(), plan, "unknownNavigationSignature")
+                with self.assertRaises(route_plaza.NavigationMismatch) as error:
+                    route_plaza.convert_plan(SyntheticLibrary(), "map", plan)
+                self.assertEqual(error.exception.reason, "unknownNavigationSignature")
+
+    def test_missing_version_requires_registered_signature_and_reports_default(self):
+        metadata = TEMPLATES["nightmare-layout-01"]
+        for signature in (metadata["navigationSignature"], *metadata["compatibleNavigationSignatures"]):
+            with self.subTest(signature=signature):
+                plan = plan_for(navigationSignature=signature)
+                del plan["navigationVersion"]
                 maps, report = route_plaza.convert_manifest(SyntheticLibrary(), manifest_for(plan))
                 self.assertEqual((maps["map"]["points"][0]["x"], maps["map"]["points"][0]["y"]), (6., 8.))
                 self.assertEqual((report["maps"], report["legacyNavigationMaps"], report["versionMismatchMaps"]), (1, 1, 0))
@@ -116,12 +129,12 @@ class RouteNavigationTests(unittest.TestCase):
         plan["navigationSignature"] = "f" * 64
         self.assert_mismatch(SyntheticLibrary(), plan, "unknownNavigationSignature")
 
-    def test_template_size_mismatch_rejects_whole_map_even_without_signature(self):
+    def test_template_size_mismatch_rejects_signed_map_even_without_version(self):
         for legacy in (False, True):
             with self.subTest(legacy=legacy):
                 plan = plan_for(points=[dict(floor="1", cell=0), dict(floor="2", cell=0)])
                 if legacy:
-                    del plan["navigationSignature"]
+                    del plan["navigationVersion"]
                 library = SyntheticLibrary()
                 width, height = library.assets["2"].template_size
                 library.assets["2"].template_size = (width + 1, height)
