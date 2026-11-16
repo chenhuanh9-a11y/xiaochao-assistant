@@ -8,6 +8,14 @@
 
 软件统一交付Setup安装包，不再生成ZIP免安装软件包；地图导入ZIP仍保留。依赖文件原始磁盘节约与实际Setup节约分列，未构建安装器时包体收益标待测。旧交付物和用户安装目录不删除或改写。
 
+## 未使用的 Qt 样式、插件和翻译
+
+主程序 QML 使用 `QtQuick.Controls.Basic`、Dialogs、Layouts。文件对话框里的 `import QtQuick.Controls` 在 Windows 上会去选 FluentWinUI3，因此启动入口在创建任何 QML 引擎之前把 `QT_QUICK_CONTROLS_STYLE` 固定为 `Basic`。冻结后的 `_internal` 再删掉其他样式目录和只被它们引用的绑定、非 `zh_CN` 的 Qt 翻译、调试用 qmltooling、SQL 驱动、Direct2D/离屏平台插件，以及 TIFF/PDF 等未使用图像插件。PNG/JPEG/WebP/GIF/ICO、`qwindows.dll`、Schannel、`Qt.labs.folderlistmodel`、Qt Network（单实例管道）和探测用的 QtTest 保留。
+
+`Qt6Core.dll` 链接系统 `icuuc.dll`，不引用 `icudtl.dat`。只有 Windows ICU 符号核对通过后才删掉随包的 ICU 数据和 ICU DLL。OpenCV 的 Haar 级联 XML 若被收进 `cv2/data` 也会删掉；PyInstaller 6.22 没有对应数据 hook，当前冻结预计本来就没有这些 XML。
+
+这条修剪只作用于主程序 `_internal`。导入/恢复 helper 的独立运行目录、C# grid、品牌图标和地图资源清单不在此列，安装、升级和卸载仍按原库存路径工作。
+
 ## 轻量默认资源配置
 
 `tools/package_profiles.py`记录`structure-editor-light`的资源清单规则：输入路径相对`_internal`，排除滋酥居、展十和可选作者图片目录，保留catalog、配准元数据、纯结构、相似组及132份预制。正式收集器在复制授权资源前调用`partition_resources(inventory)`，保持各行bytes/SHA不变，不扫描本机寻找地图。编辑器图库在EXE旁`assets/custom-maps`，helper及其独立运行库也由单独的锁定输入原样收集。

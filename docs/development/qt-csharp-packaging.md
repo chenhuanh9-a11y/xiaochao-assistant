@@ -1,6 +1,6 @@
 # Qt / C# 程序打包与覆盖更新
 
-正式程序保持 `production` 身份与原 Qt 启动入口。C# grid 由同一源码 checkout 使用 .NET SDK `10.0.403` 离线发布为 `win-x64` 自包含组件，位于 `program/_internal/csharp-grid/StarMap.Grid.exe`。Python 模块由 PyInstaller 收集，数值服务不依赖用户另装 .NET。构建记录、release report、程序库存包含组件来源、运行库资产及 .NET 许可文件。
+正式程序保持 `production` 身份与原 Qt 启动入口。C# grid 由同一源码 checkout 使用 .NET SDK `10.0.403` 离线发布为 `win-x64` 自包含组件，位于 `program/_internal/csharp-grid/StarMap.Grid.exe`。Python 模块由 PyInstaller 收集，数值服务不依赖用户另装 .NET。构建记录、release report、程序库存包含组件来源、运行库资产及 .NET 许可文件。主程序另按 [可选编解码排除](../runtime-codec-exclusions.md) 去掉未使用的 Qt 样式、插件和非简体中文翻译；地图与品牌资源的分离不变。不裁剪 grid：它用反射反序列化 JSON，未在 Windows 上验证裁剪结果。
 
 程序 Setup 沿用当前仅程序策略：`PROGRAM_UI_RESOURCES`、帮助资源与运行时属于程序；`managedBaseManifest/managedBaseBundleId/managedBaseManifestSha256` 为 `null`，资源动作是 `preserve`。独立基础包、作者路线、catalog、原始导入包和用户设置不进入程序替换清单；已退役的 QtIFW 内置地图参数与 `install-maps` helper 入口保持禁用。
 
