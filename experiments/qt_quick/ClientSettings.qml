@@ -479,7 +479,9 @@ Item {
                 }
                 CheckBox {
                     objectName: "setting_manualMapLock"
-                    visible: !root.automaticMapSelection
+                    // S0 automatic recognition supports manual confirmation; S1 does not.
+                    // automaticMapSelection above means S1, not the chosen S0 mode.
+                    visible: root.draftSeason === "s0"
                     enabled: visible && !settingsService.busy && root.preferences.mapSelectionMode !== "manual"
                     text: "手动锁图（保留自动候选）"
                     checked: root.preferences.manualMapLock === true
