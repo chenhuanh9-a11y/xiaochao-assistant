@@ -535,6 +535,12 @@ Window {
                 Accessible.name: "选择识别候选地图"
                 onActivated: function(index) { panel.chooseCandidate(index, model[index]) }
             }
+            Label {
+                visible: panel.snapshot.manualMapLockEnabled === true && panel.snapshot.identityLocked !== true
+                text: "手动锁图：选中候选后确认，路线才会显示。"
+                color: "#536783"; font.family: "Microsoft YaHei UI"; font.pixelSize: 12
+                Layout.fillWidth: true; wrapMode: Text.WordWrap
+            }
             ControlButton { visible: !panel.compactAutomatic || panel.recoveryExpanded; text: "上一候选"; enabled: panel.available("previous_candidate"); Layout.fillWidth: true; onClicked: session.dispatch("previous_candidate") }
             KeyHint { text: !panel.compactAutomatic || panel.recoveryExpanded ? panel.shortcut("candidate-prev") : "" }
             ControlButton { visible: !panel.compactAutomatic || panel.recoveryExpanded; text: "下一候选"; enabled: panel.available("next_candidate"); Layout.fillWidth: true; onClicked: session.dispatch("next_candidate") }

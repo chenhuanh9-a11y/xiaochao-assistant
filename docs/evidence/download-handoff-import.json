@@ -1,0 +1,146 @@
+{
+  "baseline": {
+    "variant": "baseline",
+    "createdAtUtc": "2026-11-16T02:38:43.083557+00:00",
+    "commit": "083b1ac60d41cf70667df6b43c633f875cf056dd",
+    "moduleBound": true,
+    "endpoint": "importVerifiedArchive invocation to terminal importCompleted plus idle/final inventory",
+    "downloadExcluded": true,
+    "samples": [
+      {
+        "kind": "base",
+        "totalMs": 17008.0304,
+        "accepted": true,
+        "idle": true,
+        "inventoryLoaded": true,
+        "activationPlanOpen": false,
+        "stages": [
+          {
+            "stage": "save",
+            "atMs": 0.9103
+          },
+          {
+            "stage": "plan",
+            "atMs": 6657.6533
+          },
+          {
+            "stage": "activate",
+            "atMs": 6741.9393
+          },
+          {
+            "stage": "",
+            "atMs": 17005.9476
+          }
+        ],
+        "errors": [],
+        "completions": [
+          [
+            "基础资源已启用",
+            "S0 噩梦基础结构与楼层控件已启用。"
+          ]
+        ]
+      },
+      {
+        "kind": "route",
+        "totalMs": 16027.3764,
+        "accepted": true,
+        "idle": true,
+        "inventoryLoaded": true,
+        "activationPlanOpen": false,
+        "stages": [
+          {
+            "stage": "save",
+            "atMs": 0.1353
+          },
+          {
+            "stage": "activate",
+            "atMs": 3446.3331
+          },
+          {
+            "stage": "",
+            "atMs": 16024.7059
+          }
+        ],
+        "errors": [],
+        "completions": [
+          [
+            "作者路线已启用",
+            "S0 噩梦作者显示组件已启用。 配准由作者提供，尚未复核。"
+          ]
+        ]
+      }
+    ]
+  },
+  "candidate": {
+    "variant": "candidate",
+    "createdAtUtc": "2026-11-16T02:39:55.992610+00:00",
+    "commit": "2398b2d5773dcb7a8d9be52c1faaf10cb6c781fb",
+    "moduleBound": true,
+    "endpoint": "importVerifiedArchive invocation to terminal importCompleted plus idle/final inventory",
+    "downloadExcluded": true,
+    "samples": [
+      {
+        "kind": "base",
+        "totalMs": 17028.3639,
+        "accepted": true,
+        "idle": true,
+        "inventoryLoaded": true,
+        "activationPlanOpen": false,
+        "stages": [
+          {
+            "stage": "save",
+            "atMs": 0.152
+          },
+          {
+            "stage": "plan",
+            "atMs": 6591.4818
+          },
+          {
+            "stage": "activate",
+            "atMs": 6667.0068
+          },
+          {
+            "stage": "",
+            "atMs": 17026.1156
+          }
+        ],
+        "errors": [],
+        "completions": [
+          [
+            "基础资源已启用",
+            "S0 噩梦基础结构与楼层控件已启用。"
+          ]
+        ]
+      },
+      {
+        "kind": "route",
+        "totalMs": 16004.7243,
+        "accepted": true,
+        "idle": true,
+        "inventoryLoaded": true,
+        "activationPlanOpen": false,
+        "stages": [
+          {
+            "stage": "save",
+            "atMs": 0.1103
+          },
+          {
+            "stage": "activate",
+            "atMs": 3490.9644
+          },
+          {
+            "stage": "",
+            "atMs": 16002.5104
+          }
+        ],
+        "errors": [],
+        "completions": [
+          [
+            "作者路线已启用",
+            "S0 噩梦作者显示组件已启用。 配准由作者提供，尚未复核。"
+          ]
+        ]
+      }
+    ]
+  }
+}

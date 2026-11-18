@@ -1,0 +1,145 @@
+{
+  "sourceCommit": "367fea63c8435999f4edb93e9da3fc90496c4226",
+  "sourceCleanAtBuild": true,
+  "buildCompleted": true,
+  "environmentPins": {
+    "numpy": {
+      "expected": "2.2.6",
+      "actual": "2.2.6"
+    },
+    "opencv-python-headless": {
+      "expected": "4.12.0.88",
+      "actual": "4.12.0.88"
+    },
+    "Pillow": {
+      "expected": "12.3.0",
+      "actual": "12.3.0"
+    },
+    "PyInstaller": {
+      "expected": "6.22.2",
+      "actual": "6.22.2"
+    },
+    "pyinstaller-hooks-contrib": {
+      "expected": "2026.7",
+      "actual": "2026.7"
+    },
+    "PySide6-Essentials": {
+      "expected": "6.11.1",
+      "actual": "6.11.1"
+    },
+    "shiboken6": {
+      "expected": "6.11.1",
+      "actual": "6.11.1"
+    },
+    "psutil": {
+      "expected": "7.2.2",
+      "actual": "7.2.2"
+    },
+    "pefile": {
+      "expected": "2024.8.26",
+      "actual": "2024.8.26"
+    }
+  },
+  "gridSdk": {
+    "executable": "E:\\codex project\\2026-11-09\\full-csharp-validation\\dotnet-sdk-10.0.403\\dotnet.exe",
+    "version": "10.0.403"
+  },
+  "frozenClosure": {
+    "administratorManifests": 1,
+    "qmlModules": [
+      "QtQml",
+      "QtQuick",
+      "QtQuick/Controls",
+      "QtQuick/Controls/Basic",
+      "QtQuick/Dialogs",
+      "QtQuick/Dialogs/quickimpl",
+      "QtQuick/Layouts"
+    ],
+    "csharpGrid": {
+      "directory": "_internal/csharp-grid",
+      "executable": "StarMap.Grid.exe",
+      "runtimeIdentifier": "win-x64",
+      "selfContained": true,
+      "runtimeVersion": "10.0.14"
+    },
+    "resourceFiles": 5,
+    "clientQmlFiles": 37,
+    "tkRuntimeAbsent": true
+  },
+  "resourceMode": "program UI only; no bundled map or author package",
+  "inputInventorySha256": "fd1999e28860de541b6867a85497d442bc347c28df374dd6b29c3a685e5e4aa0",
+  "compiledModulesMatchSource": {
+    "imported_resource_archive": "bea15b74675183aa330511891f7d24abb09c7fe4ba56213fdcfef3f12f5c8be7",
+    "imported_resource_packages": "0dfe050bd84c278ee4576a2f0509517cb276c6f1cefbd67c6fe6e557ddebeef5",
+    "imported_resource_inventory": "d323903b5bd8812a08afd193c98fa5110248f1dfdca5b56666df23176b211257",
+    "imported_resource_reader": "e54cf7be79e61c5650c05ff0949c39b913a2c9d1d234c0f5edd7d871c3cbf696",
+    "star_map_download": "78a8ae2adfb36b24ff44a4af405dff505bab0381973e3da83590a6a8d13c174b",
+    "client_imported_resources": "d9fb5a9e3b409f2cc885442f0c45ca5cd14f458ff05c8dc9e3135496cc0dc52d",
+    "client_imported_providers": "05a1482237d7925425636a6056e5cb415c27256d864c9cdf710ea5356654fba7",
+    "client": "4a90740aaf24de9e2673cbd5385994331abb373ae0fd055f47352cba46529237",
+    "client_paths": "505ea60a6f327975aaacce9057174125028cced5e14e5f0cc86d96d5c77630ce",
+    "client_live_runtime": "e992342a70863e545b467f7a02cd83418b74df759c6163937c9f2efde1c313e7"
+  },
+  "quietSelfChecks": {
+    "initial": {
+      "exitCode": 0,
+      "ready": true,
+      "resourcesReady": null
+    },
+    "resources": {
+      "exitCode": 0,
+      "ready": true,
+      "resourcesReady": true
+    }
+  },
+  "setupContainer": {
+    "status": "passed",
+    "filesVerified": 3030,
+    "nativeSetupReadback": true,
+    "allExtractedProgramBytesMatchStage": true,
+    "sourceCommit": "367fea63c8435999f4edb93e9da3fc90496c4226",
+    "bytes": 216578476,
+    "sha256": "97815af2d17c6efd3b5028d36a03a15e664ac0686aae96f6d0f032ee9f4b29d4",
+    "sameMachineScopeVerified": true,
+    "portable": false,
+    "setupExecuted": false,
+    "installationPerformed": false,
+    "gameStarted": false
+  },
+  "suites": [
+    {
+      "name": "resource-download-removal",
+      "run": 227,
+      "passed": 213,
+      "skipped": 14,
+      "seconds": 277.724
+    },
+    {
+      "name": "season-upgrade-removal",
+      "run": 63,
+      "passed": 62,
+      "skipped": 1,
+      "seconds": 141.565
+    },
+    {
+      "name": "original-csharp",
+      "run": 55,
+      "initialPassed": 54,
+      "initialEnvironmentErrors": 1,
+      "initialSeconds": 89.968,
+      "unchangedFailedTestRecheckPassed": true,
+      "recheckSeconds": 10.833,
+      "reason": "Inherited Git config value missing after test environment restoration; fixed only process environment, no test/source/expected result edits"
+    }
+  ],
+  "remote": {
+    "sourceCommit": "367fea63c8435999f4edb93e9da3fc90496c4226",
+    "successful": 26,
+    "failed": 0,
+    "pending": 0,
+    "originalPRChecksNotRewritten": true
+  },
+  "installationPerformed": false,
+  "gameTested": false,
+  "userAccepted": false
+}

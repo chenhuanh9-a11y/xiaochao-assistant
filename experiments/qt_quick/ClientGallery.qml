@@ -204,7 +204,7 @@ Item {
                                         text: !page.supportsPackageImport ? galleryContextSelector.seasonLabel(backend.season) + " 暂不支持作者图包导入"
                                             : backend.busy && backend.profiles.length === 0 ? "正在读取地图资源…"
                                             : page.packageActions && page.packageActions.recoveryPending ? "请先在图库管理中完成上次操作"
-                                            : "点击选择星图资源包"
+                                            : "点一下，选择本机上的资源包"
                                         color: "#526785"; font.pixelSize: 11; wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter
                                     }
                                 }

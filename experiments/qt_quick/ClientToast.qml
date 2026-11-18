@@ -88,7 +88,11 @@ Window {
     TextMetrics { id: messageMetrics; text: toast.notificationMessage; font.family: "Microsoft YaHei UI"; font.pixelSize: 13 }
 
     Rectangle {
-        anchors.fill: parent; radius: 8; color: "#ffffff"; border.color: "#d6e0ef"; clip: true
+        anchors.fill: parent; radius: 12; color: "#ffffff"; border.color: "#d6e0ef"; clip: true
+        Rectangle {
+            objectName: "toastStatusAccent"
+            width: 4; height: parent.height; color: toast.statusColor
+        }
         Rectangle {
             id: statusIcon
             objectName: "toastStatusIcon"

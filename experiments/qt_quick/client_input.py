@@ -126,6 +126,7 @@ class NativeShortcutBackend(QObject):
         # the values are the only keys routed to the picker.
         self._picker_keys = {}
         self._picker_down = None
+        self._picker_events_after = 0.0
         if source is not None:
             source.eventReceived.connect(self._key_event, Qt.QueuedConnection)
             source.started.connect(self._hook_started, Qt.QueuedConnection)
@@ -416,6 +417,8 @@ class NativeShortcutBackend(QObject):
         # assistant is foreground; other apps and modifier chords keep their keys.
         picker_keys = self._picker_keys
         picker_vks = frozenset(picker_keys.values())
+        if down and vk in picker_vks and created < self._picker_events_after:
+            return  # A queued press predating this picker cannot act on it.
         picker_name = (next((name for name, key in picker_keys.items() if key == vk), None)
                        if down else None)
         if picker_name is not None and (not (game or assistant)
@@ -446,9 +449,9 @@ class NativeShortcutBackend(QObject):
                     allowed = (allowed and press[0] == foreground
                         and (action in MANAGEMENT_ACTIONS or not self._game_events_after
                              or press[1] >= self._game_events_after))
-                # The open picker owns bare F1-F4/PgUp/PgDn/Backspace; configurable
+                # The open picker owns bare F1-F4/PgUp/PgDn/Backspace/Escape; configurable
                 # actions on those primaries must not also fire.
-                if (picker_name is not None and action != "escape"
+                if (picker_name is not None
                         and not chord.modifiers and chord.vk in picker_vks):
                     allowed=False
                 if allowed:self._dispatch_action(action, event)
@@ -485,6 +488,7 @@ class NativeShortcutBackend(QObject):
         mapping = {name: PICKER_KEY_VKS[name] for name in names}
         if mapping != self._picker_keys:
             self._picker_keys = mapping
+            self._picker_events_after = time.monotonic()
             self._picker_down = None  # A key already held at open is not fresh.
             self.changed.emit()
 
@@ -516,9 +520,14 @@ class NativeShortcutBackend(QObject):
                     # First sample after opening only establishes held state.
                     self._picker_down = {name: bool(read(vk) & 0x8000)
                                          for name, vk in picker_keys.items()}
+                    if (game_focus or assistant_focus) and not any(
+                            read(key) & 0x8000 for key in PICKER_MODIFIER_VKS):
+                        # Opening while held must not leak an edge to a binding.
+                        picker_consumed.update(vk for vk in picker_keys.values()
+                                               if read(vk) & 0x8001)
                 else:
                     picker_owner = bool(game_focus or assistant_focus) and not any(
-                        read(key) & 0x8000 for key in PICKER_MODIFIER_VKS)
+                        read(key) & 0x8001 for key in PICKER_MODIFIER_VKS)
                     for name, vk in picker_keys.items():
                         state = read(vk)
                         down = bool(state & 0x8000)
@@ -546,9 +555,8 @@ class NativeShortcutBackend(QObject):
                     allowed = False  # Application-local shortcut owns this edge.
                 if action not in MANAGEMENT_ACTIONS and game_rearm:
                     allowed = False  # Held keys cannot fire on game focus return.
-                # The open picker owns bare F1-F4/PgUp/PgDn/Backspace. Escape
-                # keeps its separate fixed map-close edge, as in the Tk client.
-                if (action != "escape" and not chord.modifiers
+                # Consumed picker edges stay exclusive even after synchronous close.
+                if (not chord.modifiers
                         and chord.vk in picker_consumed):
                     allowed = False
                 if (allowed and not suppress and edge

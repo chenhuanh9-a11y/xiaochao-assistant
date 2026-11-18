@@ -213,7 +213,7 @@ Item {
             Label {
                 anchors.centerIn: parent; width: Math.min(parent.width, 440); horizontalAlignment: Text.AlignHCenter
                 visible: packages.count === 0
-                text: panel.operationPending ? "正在核对本地资源…" : panel.recoveryPending ? "请先处理上次未完成的操作。" : "暂无图包，请下载或导入。"
+                text: panel.operationPending ? "正在核对本地资源…" : panel.recoveryPending ? "请先处理上次没做完的操作。" : "还没有图包。可以下载，或从本机导入一个压缩包。"
                 wrapMode: Text.Wrap; color: "#526785"; font.pixelSize: 13
             }
         }
@@ -255,7 +255,7 @@ Item {
         contentItem: ColumnLayout {
             Label {
                 Layout.fillWidth: true; wrapMode: Text.Wrap
-                text: "历史列表只核对来源记录；点击回退后会核对完整图片和当前底模。回退只切换作者显示，不回退程序或识别底模。"
+                text: "列表里只显示来源记录。点回退后，会先核对完整图片和当前底图，再切换作者显示。程序和识别用的底图不会被回退。"
             }
             ListView {
                 id: historyList

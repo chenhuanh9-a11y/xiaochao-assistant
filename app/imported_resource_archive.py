@@ -102,7 +102,7 @@ def _same_archive(path: Path, handle, initial_stamp) -> None:
 
 
 @contextmanager
-def _open_archive(zip_path, expected_sha256=None):
+def _open_archive(zip_path, expected_sha256=None, *, verify_final_digest=False):
     """Hash and read one open regular file, then detect replacement or writes."""
     path = Path(os.path.abspath(zip_path))
     files._no_links(path)
@@ -146,6 +146,16 @@ def _open_archive(zip_path, expected_sha256=None):
         except (zipfile.BadZipFile, EOFError) as error:
             raise files.ImportRejected('resource-archive-invalid-zip') from error
         _same_archive(path, handle, stamp)
+        if verify_final_digest:
+            # Windows permits restoring FileBasicInfo after an in-place write.
+            # Matching timestamps/identity alone cannot prove the ZIP still
+            # matches the digest bound to the selected/downloaded archive.
+            handle.seek(0)
+            if hashlib.file_digest(handle, 'sha256').hexdigest() != digest:
+                if expected_sha256 is not None:
+                    raise files.ImportRejected('selected-archive-changed')
+                _reject('changed')
+            _same_archive(path, handle, stamp)
 
 
 def _parse_manifest(raw):
@@ -643,16 +653,20 @@ def _remove_owned_stage(stage: Path, root: Path, ownership) -> bool:
 
 
 def save_archive(zip_path, resource_root, *, expected_archive_sha256=None, cancelled=None,
-                 validate_components=None) -> ArchiveSummary:
+                 validate_components=None, expected_package_id=None,
+                 expected_archive_bytes=None) -> ArchiveSummary:
     """Validate, stage and atomically save one complete immutable version."""
     _check_cancelled(cancelled)
     try:
         with ExitStack() as lifetime:
             source = lifetime.enter_context(ExitStack())
             archive, archive_sha256 = source.enter_context(
-                _open_archive(zip_path, expected_archive_sha256))
+                _open_archive(zip_path, expected_archive_sha256, verify_final_digest=True))
             parsed = _archive_inventory(archive, cancelled)
             archive_bytes = archive.fp.seek(0, os.SEEK_END)
+            if ((expected_package_id is not None and parsed[1]['packageId'] != expected_package_id)
+                    or (expected_archive_bytes is not None and archive_bytes != expected_archive_bytes)):
+                raise files.ImportRejected('resource-download-binding-invalid')
             root = _ensure_resource_root(Path(resource_root))
             lifetime.enter_context(resource_transaction.resource_write_lock(
                 root, wait=True, cancelled=lambda: cancelled is not None and cancelled()))
@@ -675,30 +689,23 @@ def save_archive(zip_path, resource_root, *, expected_archive_sha256=None, cance
                 _directory_sync(stage.parent)
                 ownership = _new_stage_ownership(stage)
                 _extract_archive(archive, stage, parsed, cancelled, ownership)
+                # Extraction/ownership proves writes, not the public reader's
+                # complete on-disk inventory contract. Admission callbacks may
+                # inspect only headers or active dependencies (or be absent).
+                # Validate before handing any staged views to those consumers.
                 _validate_staged(stage, parsed[3])
                 if validate_components is not None:
                     validate_components(tuple(packages.PackageView(stage, ref) for ref in parsed[3]))
                 _check_cancelled(cancelled)
-                # Keep the original descriptor through extraction. Closing its
-                # context checks the source stamp/path before any publication,
-                # while the ResourceRoot write lock is still held.
-                source.close()
-
                 # A same-version retry still validates every ZIP payload and the
                 # complete existing tree before it is reported as already saved.
                 if target.exists() or target.is_symlink():
+                    source.close()
                     if _existing_version(root, parsed) is None:
                         _reject('version-conflict')
                     _check_cancelled(cancelled)
                     return _summary(parsed, archive_sha256, 'already-saved', archive_bytes)
 
-                # The original open handle was checked against its starting
-                # identity and digest. Recheck the selected path immediately
-                # before publication so an intervening replacement is refused.
-                with _open_archive(zip_path, expected_archive_sha256) as (_check_archive, check_sha):
-                    if check_sha != archive_sha256:
-                        _reject('changed')
-                    _check_cancelled(cancelled)
                 candidate_relative = f'packages/{package_id}/{version}'
                 candidate = stage / candidate_relative
                 candidate_identity = ownership['directories'].get(candidate_relative)
@@ -712,6 +719,10 @@ def save_archive(zip_path, resource_root, *, expected_archive_sha256=None, cance
                         _reject('stage-candidate-changed')
                     _check_cancelled(cancelled)
 
+                # Keep the original descriptor until publication preflight.
+                # Its exit rehashes the same handle and checks the selected
+                # pathname before publication; no second ZIP parse is needed.
+                source.close()
                 try:
                     resource_transaction.rename_owned_directory_no_replace(
                         candidate, target, list(candidate_identity), before_move=before_move)

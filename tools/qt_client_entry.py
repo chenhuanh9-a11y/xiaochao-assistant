@@ -8,11 +8,13 @@ if not getattr(sys, "frozen", False):
     _root = Path(__file__).resolve().parents[1]
     sys.path[:0] = [str(_root / "app"), str(_root / "experiments/qt_quick")]
 
+from qt_quick_style import pin_quick_controls_style
 from qt_startup_diagnostics import report_startup_failure
 from qt_startup_splash import show_startup_splash, close_startup_splash, set_startup_stage
 
 
 def run():
+    pin_quick_controls_style()
     stage = "validate-profile"
     try:
         show_startup_splash(sys.argv[1:])

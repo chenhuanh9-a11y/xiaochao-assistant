@@ -313,6 +313,9 @@ class SettingsTests(unittest.TestCase):
     def test_map_selection_mode_defaults_validates_and_preserves_unknown(self):
         service = self.service()
         self.assertEqual(service.values["mapSelectionMode"], "auto")
+        self.assertFalse(service.values["manualMapLock"])
+        self.assertTrue(service.setValue("manualMapLock", True))
+        self.assertFalse(service.setValue("manualMapLock", "yes"))
         self.assertTrue(service.setValue("mapSelectionMode", "manual"))
         self.assertFalse(service.setValue("mapSelectionMode", "Manual"))
         service.save()
