@@ -196,7 +196,7 @@ def _observe_s0_map_geometry(frame, mode, read, observation):
                 mapUiGeometry=geometry)
 
 
-def observe_s0_map(frame, mode, *, settings=None, season="s0"):
+def _observe_s0_map_original(frame, mode, *, settings=None, season="s0"):
     """Compose same-frame signed controls, canvas proof and calibrated geometry."""
     from floor_control_region import apply_floor_region, locate_vertical_floor_controls
     from map_interface_observation import detect_map_interface
@@ -216,3 +216,12 @@ def observe_s0_map(frame, mode, *, settings=None, season="s0"):
     read = bind_control_geometry(read, mode, frame.shape[1::-1], map_open=opened)
     return dict(observation, mapOpen=opened, floor=contract.floor_id_for(read.get("selectedFloor")),
                 layoutFamily="s0-vertical", controlAxis="vertical"), read
+
+
+def observe_s0_map(frame, mode, *, settings=None, season="s0", controls=None):
+    from imported_original_controls import require_original_controls
+    require_original_controls(controls, season=season, mode=mode)
+    result = _observe_s0_map_original(frame, mode, settings=settings, season=season)
+    if controls is not None:
+        controls.assert_current()
+    return result

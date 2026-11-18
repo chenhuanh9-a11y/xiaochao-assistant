@@ -151,7 +151,7 @@ ApplicationWindow {
                 objectName: "lazyGalleryPage"; selected: root.page === "gallery"
                 sourceComponent: Component { ClientGallery { packageActions: resourcePage } }
             }
-            ClientResources {
+            ClientImportedResources {
                 id: resourcePage
                 active: root.page === "resources" && !clientCoordinator.closing
                 refreshAllowed: !session.busy && !session.snapshot.resourceLocked
@@ -194,29 +194,6 @@ ApplicationWindow {
                 }
             }
             AppButton { objectName: "cancelClose"; Layout.fillWidth: true; text: "取消"; onClicked: closeChoice.close() }
-        }
-    }
-    Dialog {
-        id: importSuccess
-        objectName: "resourceImportSuccessDialog"
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        width: Math.min(440, root.width - 48)
-        modal: true; focus: true
-        title: "图包安装完成"
-        onClosed: resourceService.acknowledgeImportCompletion()
-        property string resultText: ""
-        contentItem: Label { text: importSuccess.resultText; wrapMode: Text.Wrap; color: "#354963"; padding: 12 }
-        footer: DialogButtonBox {
-            AppButton { text: "知道了"; primary: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
-            onAccepted: importSuccess.accept()
-        }
-    }
-    Connections {
-        target: resourceService
-        function onImportCompleted(packageName, result) {
-            importSuccess.resultText = packageName + "\n\n" + result
-            importSuccess.open()
         }
     }
     Popup {

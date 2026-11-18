@@ -13,6 +13,7 @@ from PIL import Image
 
 from client_engine import EngineAdapter
 from alignment_core_v2 import AlignmentCandidate, RoundPose
+from entry_work_fixture import FixtureEntryWork
 
 
 class EngineAdapterTests(unittest.TestCase):
@@ -59,14 +60,13 @@ class EngineAdapterTests(unittest.TestCase):
         engine = MapIdentityEngine.__new__(MapIdentityEngine)
         engine.pack = SimpleNamespace(mode=mode, maps=[SimpleNamespace(id="fixture-map", name="Fixture")])
         engine.identity_floors = ("1", "2", "B1")
-        engine.entry_identity = SimpleNamespace(rank=lambda *args, **kw:
-            ([], dict(complete=True, reason="no-fixture-observation", elapsedMs=0)))
+        engine.entry_identity = SimpleNamespace(prepare_rank=lambda frame, *args, **kw:
+            FixtureEntryWork(frame, lambda: ([], dict(complete=True, reason="no-fixture-observation", elapsedMs=0))))
         engine.entry_shared_reference_provider = None
         engine.entry_advisory = None
         engine.side_entry_identity = None
         engine.side_entry_error = "fixture-no-side-resources"
         engine.native_similarity_index = None
-        engine._rank_source_structure_candidates = lambda *args, **kw: dict(candidateCount=0)
         return engine
 
     def test_genuine_shared_rank_for_both_modes_is_diagnostic_only(self):

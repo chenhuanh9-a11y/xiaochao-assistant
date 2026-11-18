@@ -163,11 +163,14 @@ class S1AuthorSettingsChainTests(unittest.TestCase):
         self.app.processEvents()
 
     def synthetic_display_layer(self, engine, map_id, floor, profile, **kwargs):
+        from shared_structure_display import structure_display_identity
         author = profile == "s1-jiaye-handnotes"
+        identity = ("synthetic-display:" + profile if author else
+                    structure_display_identity(engine.qt_shared_provider("shared-structure", map_id, floor)))
         bridge = np.array([[1., 0., 3. if author else 0.],
                            [0., 1., -2. if author else 0.], [0., 0., 1.]])
         return dict(pixels=np.full((20, 24, 4), 123 if author else 255, np.uint8),
-                    resourceIdentity="synthetic-display:" + profile,
+                    resourceIdentity=identity,
                     displayKind="author" if author else "shared-structure", displayLabel=profile,
                     routeProfileId=profile, effectiveProfileId=profile,
                     authorStatus="bound" if author else "none", matrixDisplayToReference=bridge)
@@ -225,8 +228,10 @@ class S1AuthorSettingsChainTests(unittest.TestCase):
                 self.assertEqual(current["mapId"], "a")
                 for field in ("canonicalMatrix", "frameId", "cycleId", "roundId", "generation"):
                     self.assertEqual(current[field], initial[field], field)
-                np.testing.assert_allclose(current["matrix"], np.asarray(initial["canonicalMatrix"]) @
-                    self.synthetic_display_layer(None, "a", "-3", profile)["matrixDisplayToReference"])
+                expected_bridge = (np.array([[1., 0., 3.], [0., 1., -2.], [0., 0., 1.]])
+                    if profile == "s1-jiaye-handnotes" else np.eye(3))
+                np.testing.assert_allclose(current["matrix"],
+                    np.asarray(initial["canonicalMatrix"]) @ expected_bridge)
                 self.assertTrue(np.all(current["pixels"] == (123 if profile == "s1-jiaye-handnotes" else 255)))
                 self.assertNotEqual(current["token"], previous["token"])
                 self.assertIsNone(self.runtime.render_payload(previous["token"]))
@@ -280,7 +285,9 @@ class S1AuthorSettingsChainTests(unittest.TestCase):
     def test_static_reference_revocation_reaches_view_without_session_completion(self):
         self.session.refreshRuntime()
         self.assertTrue(self.coordinator.referenceData["s1CandidateReference"])
-        self.assertIn("暂用", self.coordinator.referenceData["title"])
+        self.assertNotIn("暂用", self.coordinator.referenceData["title"])
+        self.assertNotIn("已锁定", self.coordinator.referenceData["title"])
+        self.assertTrue(self.coordinator.referenceData["provisional"])
         self.runtime.dispatch("close_map")
         self.app.processEvents()
         self.assertTrue(self.coordinator.referenceData)
@@ -343,6 +350,40 @@ class S1AuthorSettingsChainTests(unittest.TestCase):
         self.session.refreshRuntime()
         self.assertTrue(self.coordinator.referenceData)
         self.assertFalse(any(call.args == ("reference",) for call in self.windows.hide.call_args_list))
+
+    def test_session_recapture_keeps_runtime_authorized_material_until_replacement(self):
+        old = self.fx.current_payload()
+        self.assertTrue(old["liveAuthorization"])
+        self.assertEqual(self.coordinator.alignedData["token"], old["token"])
+        uploads = self.images.publish.call_count
+        self.windows.hide.reset_mock()
+        entered, release = threading.Event(), threading.Event()
+        original = self.fx.capture.capture
+
+        def capture(*args, **kwargs):
+            entered.set()
+            if not release.wait(4):
+                raise AssertionError("recapture fixture not released")
+            return original(*args, **kwargs)
+
+        with patch.object(self.fx.capture, "capture", side_effect=capture):
+            try:
+                self.session.dispatch("capture_now")
+                self.until(entered.is_set)
+                self.assertTrue(self.session.busy)
+                self.assertIsNotNone(self.runtime.render_payload(old["token"]))
+                self.assertEqual(self.coordinator.alignedData.get("token"), old["token"])
+                self.assertEqual(self.images.publish.call_count, uploads)
+                self.assertFalse(any(call.args == ("aligned",)
+                    for call in self.windows.hide.call_args_list))
+            finally:
+                release.set()
+            self.until(lambda: not self.session.busy and not self.session._jobs)
+        self.fx.idle()
+        self.session.refreshRuntime()
+        self.assertTrue(self.coordinator.alignedData)
+        self.assertFalse(any(call.args == ("aligned",)
+            for call in self.windows.hide.call_args_list))
 
     def test_queued_saved_author_cannot_revive_display_or_private_lock_after_end_round(self):
         entered, release = threading.Event(), threading.Event()

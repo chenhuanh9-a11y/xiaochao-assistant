@@ -53,18 +53,28 @@ def render(mask, *, scale=1., variant='clean', radius=0, extent=None):
     return frame, truth
 
 
-def run_fit(frame, source, *, indexed=False, cached=False, mode='difficult', primary=False, known=False, unknown=None):
+def run_fit(frame, source, *, indexed=False, cached=False, mode='difficult', primary=False, known=False, unknown=None, entry_candidate=None):
     boundary = cv2.morphologyEx(source, cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8)) if known else None
-    reference = SharedStructureReference(source, source.copy(), {}, Path('synthetic-primary/reference.npz'),
+    metadata = (dict(binding=dict(profile='shared-structure', mapId='synthetic', floor='-3'))
+                if entry_candidate is not None else {})
+    reference = SharedStructureReference(source, source.copy(), metadata, Path('synthetic-primary/reference.npz'),
         known_boundary=boundary, unknown_mask=unknown)
     host = _AlignmentHost(SimpleNamespace(pack=SimpleNamespace(mode=mode),
-        qt_adapters=SimpleNamespace(canonical_pack_id='synthetic-primary'),
+        qt_adapters=SimpleNamespace(canonical_pack_id='synthetic-primary',
+            matrix_profile_to_canonical=lambda *args: np.eye(3)),
         qt_shared_provider=lambda *args: reference), collect_fit_diagnostics=True)
     bounds = (0, 0, frame.shape[1], frame.shape[0])
     with patch('fast_structure_alignment.load_prepared', return_value=prepare(source) if indexed else None):
         fit = (host._fit_observation if primary else
                host.prepare_structure_scan(frame, bounds) if cached else host.fit)
-        return fit(frame, 'synthetic', '-3', lambda: False, observation_bounds=bounds)
+        return fit(frame, 'synthetic', '-3', lambda: False, observation_bounds=bounds,
+            **(dict(entry_candidate=entry_candidate) if entry_candidate is not None else {}))
+
+
+def entry_proposal(matrix):
+    return dict(mapId='synthetic', floor='-3', profileId='shared-structure',
+        entryKind='main', proposalOnly=True, authorizesPose=False, authorizesIdentity=False,
+        verification=dict(success=True, matrixSourceToClient=matrix))
 
 
 class MarkerOccludedStructureTests(unittest.TestCase):
@@ -74,6 +84,75 @@ class MarkerOccludedStructureTests(unittest.TestCase):
         extent = np.array([[0,0,1], [w,0,1], [0,h,1], [w,h,1]])
         error = np.linalg.norm((extent@(result['matrixSourceToClient']-truth).T)[:, :2], axis=1).max()
         self.assertLess(error, limit)
+
+    def test_entry_proposal_keeps_measured_and_marker_searches(self):
+        source = asymmetric_structure()
+        for variant in ('clean', 'corner-marker'):
+            with self.subTest(variant=variant):
+                frame, truth = render(source, variant=variant)
+                baseline = run_fit(frame, source, cached=True)
+                proposal = entry_proposal(truth + np.array([[0, 0, 1.5], [0, 0, -1.5], [0, 0, 0]]))
+                result = run_fit(frame, source, cached=True, entry_candidate=proposal)
+                self.assert_pose(result, truth, source.shape, limit=1)
+                for field in ('queryChains', 'markerOccludedProposalChains', 'seedCount', 'measuredSeedCount'):
+                    self.assertEqual(result['diagnostics'][field], baseline['diagnostics'][field], field)
+                self.assertEqual(result['diagnostics']['entryPoseProposals']['count'], 1)
+                self.assertTrue(result['diagnostics']['entryPoseProposals']['validated'])
+                self.assertEqual(result['diagnostics']['poseIndexCandidates']['count'], 0)
+                self.assertIs(proposal['authorizesPose'], False)
+
+    def test_entry_proposal_cannot_remove_another_valid_pose(self):
+        source = asymmetric_structure()
+        reference = np.concatenate((source, source), axis=1)
+        for variant in ('clean', 'corner-marker'):
+            with self.subTest(variant=variant):
+                frame, truth = render(source, variant=variant)
+                result = run_fit(frame, reference, cached=True, entry_candidate=entry_proposal(truth))
+                self.assertFalse(result['success'], result['reason'])
+                self.assertIn('ambiguous', result['reason'])
+                self.assertGreaterEqual(sum(c['accepted'] for c in result['diagnostics']['candidates']), 2)
+
+    def test_bad_anchored_entry_proposal_falls_back_to_the_full_initial_search(self):
+        source = asymmetric_structure()
+        frame, truth = render(source)
+        wrong = truth.copy()
+        wrong[:2, 2] += [4000, 3000]
+        proposal = dict(entry_proposal(wrong), locatorKind='side', entryKind='side-entry-passport',
+            entryPoseCandidates=[dict(mapId='synthetic', floor='-3')])
+        result = run_fit(frame, source, cached=True, entry_candidate=proposal)
+        self.assert_pose(result, truth, source.shape, limit=1)
+        self.assertEqual(result['diagnostics']['entryPoseProposals']['count'], 1)
+
+    def test_entry_proposal_cannot_hide_a_contradictory_marker_peer(self):
+        source = asymmetric_structure()
+        wrong = source.copy()
+        wrong[228:339, 276:327] = 1
+        wrong[248:359, 302:353] = 0
+        wrong[390:445, 190:279] = 1
+        wrong[375:430, 170:259] = 0
+        first, _ = render(wrong, variant='corner-marker')
+        second, truth = render(source, variant='corner-marker', scale=.75)
+        frame = np.zeros((1000, 2000, 3), np.uint8)
+        frame[:, :1200] = first
+        frame[:, 800:] = np.maximum(frame[:, 800:], second)
+        truth[0, 2] += 800
+        result = run_fit(frame, source, cached=True, entry_candidate=entry_proposal(truth))
+        self.assertFalse(result['success'])
+        self.assertEqual(result['reason'], 'manual-components-inconsistent')
+
+    def test_entry_proposal_cannot_supply_an_unobservable_initial_scale(self):
+        source = np.zeros((650, 650), np.uint8)
+        for i in range(8):
+            x = 100 + 8*(i % 2)
+            source[50+i*50:101+i*50, x:x+14] = 1
+        frame, truth = render(source)
+        self.assertFalse(run_fit(frame, source, cached=True)['success'])
+        for scale in (.99, 1., 1.01):
+            with self.subTest(scale=scale):
+                proposed = truth.copy()
+                proposed[0, 0] = proposed[1, 1] = scale
+                result = run_fit(frame, source, cached=True, entry_candidate=entry_proposal(proposed))
+                self.assertFalse(result['success'], (result['reason'], result.get('currentFrameScaleObservation')))
 
     def test_single_pixel_marker_exclusions_only_propose_walls(self):
         source = asymmetric_structure()

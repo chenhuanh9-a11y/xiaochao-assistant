@@ -7,6 +7,7 @@ authority. Only the runtime's snapshot is presented as engine state.
 from __future__ import annotations
 
 from copy import deepcopy
+from contextlib import nullcontext
 import sys
 import threading
 import time
@@ -57,12 +58,23 @@ class _RuntimeWork(QRunnable):
             self.diagnostics.record("worker-start", jobId=id(self), action=self.action,
                 cancelled=self.cancelled.is_set(), frameId=self.context.get("frameId"))
         operation = "runtime-dispatch"
+        grid = None
         try:
-            receipt = self.runtime.dispatch(self.action, self.payload, self.cancelled)
-            operation = "runtime-snapshot"
-            state = self.runtime.snapshot()
+            grid = getattr(self.runtime, "grid_runtime", None)
+            scope = grid.request_scope(self.cancelled.is_set) if grid is not None else nullcontext(self.cancelled)
+            with scope as cancelled:
+                receipt = self.runtime.dispatch(self.action, self.payload, cancelled)
+                operation = "runtime-snapshot"
+                state = self.runtime.snapshot()
             self.signals.done.emit(id(self), self.context, (receipt, state), None)
         except Exception as error:
+            if grid is not None and grid.request_failed:
+                # A failed native search cannot leave a pose from an incomplete
+                # candidate pool authorized after this worker reports failure.
+                try:
+                    self.runtime.invalidate("grid-computation-failed")
+                except Exception as invalidation_error:
+                    error.add_note("Runtime invalidation failed: " + type(invalidation_error).__name__)
             # Preserve main's original error signal/string before optional evidence.
             message = f"{type(error).__name__}: {error}"
             self.failure_diagnostics = dict(exceptionType=type(error).__name__,
@@ -84,6 +96,7 @@ class SessionService(QObject):
     changed = Signal()
     actionRequested = Signal(str, dict)
     contextFinished = Signal(object)
+    siblingRegistryValidated = Signal(str, dict)
 
     def __init__(self, runtime=None, parent=None):
         super().__init__(parent)
@@ -398,17 +411,19 @@ class SessionService(QObject):
         self.changed.emit()
 
     def dispatchMaintenance(self, action, payload):
-        """Bounded serial cache work, independent of the visible command receipt.
+        """Bounded serial material work, independent of the visible command receipt.
 
         The runtime seals/validates its material token. This lane never replaces
-        a foreground command, publishes its snapshot, or grants a display pose.
+        a foreground command or grants a display pose. Registry validation
+        reports back for the UI owner's existing final material ACK.
         """
         if (self._closed or self._runtime is None or self._leases
-                or action != "remember_render_material"
+                or action not in {'remember_render_material', 'validate_sibling_registry'}
                 or len(self._maintenance) >= 2):
             return False
         token = payload.get("renderToken")
-        if not token or any(job.payload.get("renderToken") == token for job in self._maintenance.values()):
+        if not token or any(job.action == action and job.payload.get("renderToken") == token
+                            for job in self._maintenance.values()):
             return False
         work = _RuntimeWork(self._runtime, action, {"renderToken": token},
                             self._context(), threading.Event())
@@ -419,7 +434,15 @@ class SessionService(QObject):
 
     @Slot(object, object, object, object)
     def _complete_maintenance(self, key, context, value, error):
-        self._maintenance.pop(key, None)
+        work = self._maintenance.pop(key, None)
+        if work is None or self._closed:
+            return
+        if work.action == 'validate_sibling_registry':
+            current = (work.runtime is self._runtime and not work.cancelled.is_set()
+                       and context == self._context())
+            receipt = value[0] if current and not error and value is not None else dict(
+                success=False, reason='sibling-context-expired' if not current else 'registered-group-resource-unavailable')
+            self.siblingRegistryValidated.emit(str(work.payload['renderToken']), dict(receipt))
         # A failed/stale cache warmup cannot replace an actual recognition
         # receipt or its error. The runtime retains its bounded diagnostics.
 

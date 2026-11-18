@@ -68,7 +68,9 @@ class RecaptureFocusTests(unittest.TestCase):
         self.coordinator._bound = '42'
         self.coordinator._native_windows = self.native
         self.coordinator._game_focus._native = self.native
-        self.coordinator._applied_context = ('nightmare', 'shared-structure')
+        # Production presentation compares the complete (mode, profile, season)
+        # context; omitting season silently drops every real runtime event.
+        self.coordinator._applied_context = ('nightmare', 'shared-structure', 's0')
         self.fixture.settings.values['routeProfileId'] = 'shared-structure'
         self.fixture.settings.persistedValues['routeProfileId'] = 'shared-structure'
         self.session.actionRequested.connect(self.coordinator._action_requested)
@@ -229,7 +231,7 @@ class RecaptureFocusTests(unittest.TestCase):
         self.live.dispatch('start_round')
         self.assertTrue(self.live.dispatch('capture_now')['success'])
         self.session.refreshRuntime()
-        self.coordinator._applied_context = ('difficult', 'shared-structure')
+        self.coordinator._applied_context = ('difficult', 'shared-structure', 's0')
         self.fixture.settings.values['mode'] = 'difficult'
         self.native.foreground = 77
         before = len(self.backend.captures)
@@ -352,7 +354,7 @@ class RecaptureFocusTests(unittest.TestCase):
         self.assert_guard_revokes()
         self.assertEqual(len(self.backend.captures), 2)
 
-    def test_queued_ready_during_blocked_capture_cannot_republish_or_show_old_token(self):
+    def test_queued_ready_during_blocked_capture_retains_current_completed_token(self):
         entered, release = threading.Event(), threading.Event()
         self.addCleanup(release.set)
         self.runtime._evidence_kind = 'live-client-capture'
@@ -372,9 +374,9 @@ class RecaptureFocusTests(unittest.TestCase):
                 APP.processEvents()  # Deliver the real queued ready callback.
                 self.assertTrue(self.session.busy)
                 self.assertTrue(self.runtime.snapshot()['captureInProgress'])
-                self.assertIsNone(self.runtime.render_payload(old))
-                self.assertNotEqual(self.coordinator._last_render_token, old)
-                self.assertFalse(any(call.args == ('aligned',)
+                self.assertIsNotNone(self.runtime.render_payload(old))
+                self.assertEqual(self.coordinator._last_render_token, old)
+                self.assertTrue(any(call.args == ('aligned',)
                     for call in self.coordinator.windows.show.call_args_list))
             finally:
                 release.set()

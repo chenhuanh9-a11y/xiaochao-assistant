@@ -159,7 +159,7 @@ class TemplateRecall(unittest.TestCase):
         gray=np.full((1000,1000),33,np.uint8)
         def evaluate(scores, wrong=False):
             matches=[dict(label=floor if not(wrong and floor==1)else 2,
-                          scores={floor:score},digitAspect=.2)
+                          scores={floor:score},digitAspect=.2,digitCenterY=30.)
                      for floor,score in zip(order,scores)]
             with patch('s0_floor_templates.classify_label',side_effect=matches):
                 return detector._vertical_label_evidence(gray,points,[.46,.5,.08,.10],

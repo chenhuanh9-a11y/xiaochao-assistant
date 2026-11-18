@@ -340,7 +340,9 @@ class MapPackageDownloadService:
                 item = dict(self._packages[package_id])
             _no_links(self.download_root)
             self.download_root.mkdir(parents=True, exist_ok=True)
-            final = self.download_root / f"{package_id}-{item['sha256']}.zip"
+            from resource_package_types import preferred_download_suffix
+            suffix = preferred_download_suffix(item['url'])
+            final = self.download_root / f"{package_id}-{item['sha256']}{suffix}"
             _no_links(final)
             if final.exists():
                 # Valid cache reuse only needs read access. If invalid, reopen

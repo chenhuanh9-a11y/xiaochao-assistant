@@ -58,6 +58,25 @@ class DownloadCacheRecovery(unittest.TestCase):
             self.assertEqual(self.service.download_package('nightmare-suju'), self.cached)
         self.assertEqual(self.backups(), [])
 
+    def test_native_package_download_preserves_role_suffix_and_reuses_verified_cache(self):
+        # Only response bytes are synthetic. Publication, SHA/size checks and
+        # the second request's real cache lookup use the production service.
+        self.cached.write_bytes(self.good)
+        for suffix in ('.xingtu-base', '.xingtu-route'):
+            with self.subTest(suffix=suffix):
+                item = self.service._packages['nightmare-suju']
+                item['url'] = 'https://example.invalid/package' + suffix.upper() + '?download=1'
+                expected = self.root / f"nightmare-suju-{item['sha256']}{suffix}"
+                with patch.object(self.service, '_open', return_value=Response(self.good)) as request:
+                    result = self.service.download_package('nightmare-suju')
+                self.assertEqual(result, expected)
+                self.assertEqual(result.read_bytes(), self.good)
+                request.assert_called_once()
+                with patch.object(self.service, '_open', side_effect=AssertionError('cache opened network')):
+                    self.assertEqual(self.service.download_package('nightmare-suju'), expected)
+                self.assertEqual(self.cached.read_bytes(), self.good)
+        self.assertEqual(list(self.root.glob('*.part')), [])
+
     def test_network_failure_then_manual_retry_does_not_reuse_poisoned_cache(self):
         self.cached.write_bytes(b'broken')
         with patch.object(self.service, '_open', side_effect=TimeoutError('controlled-timeout')):

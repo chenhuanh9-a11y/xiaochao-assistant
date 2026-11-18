@@ -5,6 +5,7 @@ point distance fields only reject impossible four-turn seeds. Every surviving
 seed uses the original full reference and final competition is still complete.
 """
 import json
+from io import BytesIO
 import time
 import zlib
 from zipfile import BadZipFile
@@ -57,14 +58,15 @@ def write_index(path, entries, doors):
         np.savez_compressed(target, **arrays)
 
 
-def load_index(root, entries, doors):
+def load_index(root, entries, doors, *, read_resource=None):
     if not doors:
         return {}, 'side-door-source-unavailable'
     try:
         targets = {(item['mapId'], str(item['floor'])): (item, points, rays, pairs)
                    for item, points, rays, pairs in entries if str(item['floor']) == '2'}
         result = {}
-        with np.load(Path(root)/'side-entry-search.npz', allow_pickle=False) as archive:
+        path = Path(root)/'side-entry-search.npz'
+        with np.load(path if read_resource is None else BytesIO(read_resource(path)), allow_pickle=False) as archive:
             metadata = json.loads(str(archive['metadata'].item()))
             if metadata['schemaVersion'] != 1:
                 raise ValueError('side local index version mismatch')

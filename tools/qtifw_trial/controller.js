@@ -1,4 +1,12 @@
 // The baked policy admits fresh targets and binds all later writes to ownership.
+var nativeUpgradeFiles = __UPGRADE_FILES__;
+
+function nativeHelperResult(result) {
+    if (result.length !== 2) throw new Error("无法启动安装支持工具。");
+    try { return JSON.parse(result[0]); }
+    catch (error) { throw new Error("安装支持工具未返回完整结果，请保留现场。" + result[0]); }
+}
+
 function trialRun(action, choice, operation) {
     var args = [action, installer.value("TargetDir")];
     if (choice) args.push(choice);
@@ -12,20 +20,29 @@ function trialRun(action, choice, operation) {
 function Controller() {
     console.log("TRIAL_UI_LANGUAGE: " + installer.value("UILanguage"));
     var scope = __SCOPE__;
+    installer.setValue("TrialNativeUpgradeFiles", JSON.stringify(nativeUpgradeFiles));
+    installer.setValue("TrialInstallerInstance", __INSTANCE__);
     var portable = scope === "";
     installer.setValue("TrialPortable", portable ? "true" : "false");
     if (!portable && (!installer.fileExists(scope + "/.qtifw-trial-scope") ||
         installer.readFile(scope + "/.qtifw-trial-scope", "UTF-8").trim() !== __INSTANCE__))
         throw new Error("本地测试范围不匹配，未接管安装目录。");
+    var upgradeSupport = installer.environmentVariable("XINGTU_QTIFW_UPGRADE_SUPPORT");
+    var upgradeInvocation = !!upgradeSupport;
+    // The data component owns the installed support tree. Maintenance must
+    // read that current tree, not an old installer's additional QRC archive.
+    var installedSupport = portable && !installer.isInstaller() && !upgradeInvocation;
+    installer.setValue("TrialUpgradeActive", upgradeInvocation ? "true" : "false");
     var temporary = installer.environmentVariable("TEMP") || installer.environmentVariable("TMP");
     if (portable && !temporary) throw new Error("无法获取系统临时目录。");
-    var support = portable ? temporary +
+    var support = upgradeInvocation ? upgradeSupport : installedSupport ?
+        installer.value("TargetDir") + "/_installer-support" : portable ? temporary +
         "/xingtu-setup-" + __INSTANCE__ + "-" + String(Date.now()) + "-" + String(Math.random()).substring(2) :
         scope + "/session-tools/" + String(Date.now());
-    if (!installer.performOperation("Mkdir", [support])) throw new Error("无法准备测试工具目录");
+    if (!installedSupport && !installer.performOperation("Mkdir", [support])) throw new Error("无法准备测试工具目录");
     var helper = support + "/qtifw-trial-helper.exe";
     var supportFiles = __SUPPORT_FILES__;
-    for (var i = 0; i < supportFiles.length; ++i) {
+    for (var i = 0; !upgradeInvocation && !installedSupport && i < supportFiles.length; ++i) {
         var relative = supportFiles[i];
         var slash = relative.lastIndexOf("/");
         if (slash >= 0 && !installer.performOperation("Mkdir", [support + "/" + relative.substring(0, slash)]))
@@ -36,7 +53,7 @@ function Controller() {
     // QRC copies inherit read-only permissions on Windows. Normalize this
     // private staging tree before native Copy records permanent support files;
     // otherwise Copy UNDO cannot delete them during a failed installation.
-    if (portable) {
+    if (portable && !upgradeInvocation && !installedSupport) {
         var attrib = installer.environmentVariable("SystemRoot") + "/System32/attrib.exe";
         var writable = installer.execute(attrib, ["-R", installer.toNativeSeparators(support + "/*"), "/S"]);
         if (writable.length !== 2 || writable[1] !== 0)
@@ -44,8 +61,53 @@ function Controller() {
     }
     installer.setValue("TrialSupport", support);
     installer.setValue("TrialHelper", helper);
-    // The maintenance executable is an uninstaller, not a package manager UI.
-    if (!installer.isInstaller() && !installer.isCommandLineInstance()) installer.setUninstaller();
+    if (portable && !upgradeInvocation && !installer.isCommandLineInstance() &&
+            installer.environmentVariable("XINGTU_QTIFW_VERIFY_MAINTENANCE") !== "1") {
+        var guarded = installer.execute(helper, ["hold-setup-instance", installer.value("InstallerFilePath")]);
+        var ownership = nativeHelperResult(guarded);
+        if (guarded[1] !== 0 || typeof ownership.primary !== "boolean")
+            throw new Error("无法确认安装器实例状态，请保留具体错误：" + (ownership.reason || guarded[0]));
+        if (!ownership.primary) {
+            installer.setValue("TrialDuplicateSetup", "true");
+            installer.setCanceled();
+            // QtIFW shows Introduction after the constructor. Defer its
+            // cancellation until the event loop, before metadata fetching.
+            gui.clickButton(buttons.CancelButton, 0);
+            return;
+        }
+    }
+    if (installedSupport && !installer.fileExists(helper))
+        throw new Error("安装维护文件不完整，请使用完整 Setup 修复。");
+    if (installer.environmentVariable("XINGTU_QTIFW_VERIFY_MAINTENANCE") === "1") {
+        // Read the persisted controller/helper while the Setup helper still owns
+        // the runtime lease. A stale maintenance controller cannot pass this.
+        trialRun("verify-program");
+        var maintenancePolicy = JSON.parse(installer.readFile(support + "/_internal/qtifw-trial-policy.json", "UTF-8"));
+        if (maintenancePolicy.upgradeCapable) {
+            var hive = installer.value("AllUsers", "false") === "true" ? "HKEY_LOCAL_MACHINE" : "HKEY_CURRENT_USER";
+            var registration = hive + "\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" + installer.value("ProductUUID");
+            if (installer.value(registration + "\\DisplayVersion", "", QSettings.NativeFormat) !== maintenancePolicy.targetVersion.version)
+                throw new Error("Windows 安装版本登记尚未完成，请重新运行同一个 Setup。");
+        }
+        console.log("XINGTU_MAINTENANCE_SOURCE_VERIFIED: " + __INSTANCE__);
+        return;
+    }
+    if (upgradeInvocation) {
+        var base = installer.environmentVariable("XINGTU_QTIFW_UPGRADE_BASE");
+        var replacement = installer.environmentVariable("XINGTU_QTIFW_UPGRADE_RCC");
+        if (!portable || !base || !replacement || !installer.fileExists(helper) ||
+                !installer.fileExists(base) || !installer.fileExists(replacement))
+            throw new Error("更新支持文件不完整，请重新运行完整 Setup。");
+        // CLI update mode is selected after construction. Do not use
+        // isUpdater() here. QtIFW consumes this disposable base on success.
+        installer.setInstallerBaseBinary(base);
+        installer.setValue("DefaultResourceReplacement", replacement);
+        var upgradePolicy = JSON.parse(installer.readFile(support + "/_internal/qtifw-trial-policy.json", "UTF-8"));
+        installer.setValue("ProductVersion", upgradePolicy.targetVersion.version);
+    }
+    // The normal maintenance executable is an uninstaller. The complete Setup
+    // supplies an explicit updater controller for native component updates.
+    if (!installer.isInstaller() && !installer.isCommandLineInstance() && !upgradeInvocation) installer.setUninstaller();
     // The introduction owns QtIFW's metadata fetch. Keep its lifecycle, then
     // advance automatically; hiding it bypasses component/UI loading.
     installer.setDefaultPageVisible(QInstaller.Introduction, true);
@@ -62,6 +124,29 @@ function Controller() {
         if (requested !== "") installer.setValue("TargetDir", requested);
         else if (!installer.isCommandLineInstance()) installer.setValue("TargetDir", recommended);
     }
+    if (portable && installer.isInstaller() && nativeUpgradeFiles.length > 0) {
+        var discovery;
+        if (requested !== "") {
+            var explicitCheck = installer.execute(helper, ["bootstrap-check", installer.value("TargetDir")]);
+            discovery = nativeHelperResult(explicitCheck);
+            if (explicitCheck[1] !== 0 && explicitCheck[1] !== 10)
+                throw new Error("指定安装位置不可用：" + (discovery.reason || "未知原因"));
+        } else {
+            var found = installer.execute(helper, ["discover-installation"]);
+            discovery = nativeHelperResult(found);
+            if (found[1] !== 0) throw new Error("无法检查已有安装：" + (discovery.reason || "未知原因"));
+        }
+        installer.setValue("TrialInstallDiscovery", JSON.stringify(discovery));
+        if (discovery.mode === "update") {
+            installer.setValue("TargetDir", discovery.target);
+            installer.setValue("TrialNativeHandoff", "true");
+            installer.setValue("TrialHandoffTarget", discovery.target);
+            // Keep the native route alive until metadata has loaded and the
+            // component inserts ExistingUpdate. That page then hides the
+            // native transaction pages. Hiding every terminal page here makes
+            // Introduction final before component.loaded can create the page.
+        }
+    }
     if (installer.value("DataChoice", "") === "") installer.setValue("DataChoice", "clear");
     if (installer.isUninstaller() && installer.value("DataChoice") !== "clear")
         throw new Error("此版本执行彻底卸载，不支持保留安装目录。请先备份需要保留的资料。");
@@ -70,14 +155,14 @@ function Controller() {
     if (installer.isInstaller()) {
         // GUI selection is read-only until the real component's pre-extract
         // admission. Keep early admission for the existing CLI/root contract.
-        if (installer.isCommandLineInstance()) {
+        if (installer.isCommandLineInstance() && installer.value("TrialNativeHandoff") !== "true") {
             trialRun("prepare");
             installer.setValue("TrialPreparedTarget", installer.value("TargetDir"));
             installer.setMessageBoxAutomaticAnswer("OverwriteTargetDirectory", QMessageBox.Yes);
         }
         installer.setDefaultPageVisible(QInstaller.TargetDirectory, false);
         installer.setDefaultPageVisible(QInstaller.StartMenuSelection, false);
-    } else {
+    } else if (!upgradeInvocation) {
         // A signal callback exception does not stop QtIFW. Constructor failure
         // happens before native operations, including for command-line purge.
         trialRun(installer.isUninstaller() ? "hold-uninstall" : "inspect-data");
@@ -88,13 +173,15 @@ function Controller() {
     var admittedTarget = installer.value("TargetDir");
     function normal(path) { return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase(); }
     installer.valueChanged.connect(function(key, value) {
-        var bound = installer.isInstaller() ? installer.value("TrialPreparedTarget", "") : admittedTarget;
+        var bound = installer.isInstaller() ? installer.value("TrialHandoffTarget", "") ||
+            installer.value("TrialPreparedTarget", "") : admittedTarget;
         if (key === "TargetDir" && bound !== "" && normal(value) !== normal(bound)) {
             installer.setValue("TrialRootRejected", "true");
             installer.setValue("TargetDir", bound);
         }
     });
     installer.installationFinished.connect(function() {
+        if (upgradeInvocation) return; // Setup helper verifies metadata before adopting the new owner.
         try { trialRun("verify"); }
         catch (error) {
             installer.setValue("TrialVerificationFailed", "true");
@@ -107,6 +194,7 @@ function Controller() {
 }
 
 Controller.prototype.IntroductionPageCallback = function() {
+    if (installer.value("TrialDuplicateSetup", "false") === "true") return;
     var page = gui.currentPageWidget();
     if (page && page.MessageLabel)
         page.MessageLabel.text = installer.isInstaller() ?
@@ -120,8 +208,22 @@ Controller.prototype.DynamicInstallLocationCallback = function() {
     if (back) back.visible = false;
 };
 
+Controller.prototype.DynamicExistingUpdateCallback = function() {
+    // This handoff page owns its update/retry/close actions. The standalone
+    // wizard's Next/Finish/Cancel must not start a fresh transaction or show
+    // an installation-cancel prompt after a successfully completed update.
+    for (var n = 0; n <= 4; ++n) {
+        var nativeButton = gui.findChild(gui, "__qt__passive_wizardbutton" + n);
+        if (nativeButton) nativeButton.visible = false;
+    }
+};
+
 Controller.prototype.ReadyForInstallationPageCallback = function() {
     if (installer.isCommandLineInstance()) return;
+    if (installer.value("TrialUpgradeActive", "false") === "true") {
+        gui.clickButton(buttons.CommitButton);
+        return;
+    }
     var page = gui.currentPageWidget();
     if (installer.isInstaller()) {
         var back = gui.findChild(gui, "__qt__passive_wizardbutton0");
@@ -144,6 +246,10 @@ Controller.prototype.ReadyForInstallationPageCallback = function() {
 };
 
 Controller.prototype.FinishedPageCallback = function() {
+    if (installer.value("TrialUpgradeActive", "false") === "true") {
+        gui.clickButton(buttons.FinishButton);
+        return;
+    }
     if (installer.isInstaller()) {
         var installed = false;
         try {

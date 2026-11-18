@@ -10,9 +10,10 @@ import cv2
 import numpy as np
 
 class CommonCoordinateFilter:
-    def __init__(self, provider, index, *, mode, resource_key):
+    def __init__(self, provider, index, *, mode, resource_key, read_resource=None):
         self.provider = provider  # provider(map_id, floor) -> typed reference
-        self.index = json.loads(Path(index).read_text('utf-8')) if isinstance(index,(str,Path)) else index
+        self.index = (json.loads(Path(index).read_text('utf-8') if read_resource is None else read_resource(Path(index)))
+                      if isinstance(index,(str,Path)) else index)
         if self.index.get('schema')!='s1-common-entrance-coordinate-index-v1':raise ValueError('coordinate-index-schema')
         self.mode,self.resource_key=mode,resource_key
         self.entries=self.index['maps'][mode]

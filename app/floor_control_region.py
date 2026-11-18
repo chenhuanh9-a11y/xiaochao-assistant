@@ -170,7 +170,7 @@ def _read_axis(gray: np.ndarray, floors, tiles, origin, size, reason: str) -> di
 
 
 def _vertical_label_evidence(gray, points, bounds, order, selected, origin, size):
-    """Score the whole signed column with stored synthetic glyph exemplars.
+    """Score the whole signed column and measure its actual numeral centers.
 
     A weak glyph can be supported by the other rows and the measured highlight;
     an alternative digit or missing minus cannot be relabelled by the mode.
@@ -179,7 +179,7 @@ def _vertical_label_evidence(gray, points, bounds, order, selected, origin, size
     fw, fh = size
     ox, oy = origin
     tw, th = bounds[2] * fw, bounds[3] * fh
-    evidence = []
+    evidence, measured_points = [], []
     for floor, (cx, cy) in zip(order, points):
         x, y = cx * fw - ox, cy * fh - oy
         x0, x1 = int(x - tw * .35), int(x + tw * .35)
@@ -192,11 +192,15 @@ def _vertical_label_evidence(gray, points, bounds, order, selected, origin, size
         score = match["scores"][floor]
         evidence.append(dict(floor=floor, negative=floor<0,
             digitAspect=match["digitAspect"], score=score))
+        # Fill edges change with exposure; the recognized numeral does not.
+        # Pitch from the fill only proposes the crop. Keep the actual glyph's
+        # center for comparing columns and binding current click geometry.
+        measured_points.append([cx, (oy+y0+match["digitCenterY"])/fh])
     scores = [row["score"] for row in evidence]
     if (min(scores) < .45 or sum(score >= .70 for score in scores) < len(scores)-1
             or float(np.mean(scores)) < .70):
         return None
-    return evidence
+    return evidence, measured_points
 
 
 def _read_vertical(gray, floors, origin, size, reason):
@@ -220,12 +224,14 @@ def _read_vertical(gray, floors, origin, size, reason):
         centers = read.pop("centers")
         before, after = read.pop("left"), read.pop("right")
         points = [[x + w / 2, cy] for cy in centers]
-        evidence = _vertical_label_evidence(gray, points, [x,y,w,h], order,
-                                            read["selectedFloor"], origin, size)
-        if evidence is None:
+        labels = _vertical_label_evidence(gray, points, [x,y,w,h], order,
+                                          read["selectedFloor"], origin, size)
+        if labels is None:
             first_failure = first_failure or _unread("vertical-labels-unverified")
             continue
-        pitch = read.pop("pitch")
+        evidence, points = labels
+        read.pop("pitch")
+        pitch = float(np.mean(np.diff([point[1] for point in points])))
         result = dict(read, controlAxis="vertical", observedOrder=list(order),
                       tileBounds=[x,y,w,h], centerPoints=points, axisPitch=pitch,
                       before=before, after=after, labelEvidence=evidence,
@@ -334,6 +340,25 @@ def locate_vertical_floor_controls(frame: np.ndarray, mode: str, *, season="s0",
     result = (_read_vertical_contrast(column, contract.observed_values, origin, frame.shape[1::-1], "auto-located")
               if column is not None else _unread("region-too-small"))
     if not expanded:
+        if column is not None and result.get('reason') != 'columns-ambiguous':
+            # A complete client can place the top highlight across the search
+            # boundary. Recover its missing pixels before the same signed
+            # column/geometry checks; a cropped tile is not click geometry.
+            exposure = result.get('controlExposure', 1.)
+            probe = column if exposure == 1. else cv2.convertScaleAbs(column, alpha=exposure)
+            width, height = frame.shape[1], frame.shape[0]
+            tiles = _candidate_tiles(np.ascontiguousarray(probe.T), round(width * .0036),
+                                     width * .010, width * .06)
+            top = [tile for tile in tiles if tile[0] <= 1]
+            bottom = [tile for tile in tiles if tile[0] + tile[2] >= column.shape[0] - 1]
+            if top or bottom:
+                padding = max(max(tile[2:4]) for tile in (*top, *bottom))
+                y0 = max(0, origin[1] - padding) if top else origin[1]
+                y1 = min(height, origin[1] + column.shape[0] + padding) if bottom else origin[1] + column.shape[0]
+                area = (area[0], y0 / height, area[2], (y1 - y0) / height)
+                column, origin = _crop(frame, area)
+                result = _read_vertical_contrast(column, contract.observed_values, origin,
+                                                 frame.shape[1::-1], "auto-located")
         return dict(result, controlSearchRegion=list(area))
     # The broad search domain is metadata, never an automatic screenshot ROI.
     # Once verified, retain only the measured column for failure diagnostics.

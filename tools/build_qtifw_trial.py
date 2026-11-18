@@ -15,7 +15,6 @@ import subprocess
 import sys
 import uuid
 import xml.etree.ElementTree as ET
-import zipfile
 
 import build_qt_client as build
 from rebuild_qt_installer import validate_managed_runtime_reuse
@@ -24,6 +23,18 @@ from probe_qtifw_lifecycle import write_xml
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "org.xingtu.qtifw.realtrial"
 DATA_PACKAGE = "org.xingtu.qtifw.trialdata"
+
+
+def qtifw_component_version(product_version, *, release):
+    """Keep QtIFW's package revision independent from the public product version."""
+    if not release:
+        return "1.0.0"
+    # The emergency 1.1.8 repair keeps the shipped product and executable
+    # versions unchanged. QtIFW needs a higher package version to extract it
+    # over an already installed 1.1.8 package.
+    if product_version == "1.1.8":
+        return "1.1.8.4"
+    return product_version
 
 
 def check_archive_inventory(prior_policy_path, compiled, inventory, program_copies=()):
@@ -67,28 +78,65 @@ def deduplicate_payload(output, inventory, support_root):
                         originalProgramFiles=len(inventory["files"]))
 
 
-def map_inputs(root, report_path):
-    """Use the accepted delivery's existing byte inventory, without repacking it."""
-    report = json.loads(Path(report_path).read_bytes())
-    packages, sources, seen = [], [], set()
-    for row in report["packages"]:
-        relative = Path(row["path"].replace("\\", "/"))
-        archive = build._local_file(root, relative.as_posix())
-        if archive.stat().st_size != row["outputBytes"] or build.sha256(archive) != row["sha256"]:
-            raise ValueError("Accepted map archive changed: " + str(relative))
-        with zipfile.ZipFile(archive) as zipped:
-            manifest = json.loads(zipped.read("map-package.json"))
-        package_id, season = manifest["packageId"], manifest.get("season", "s0")
-        if package_id in seen or season not in {"s0", "s1"}:
-            raise ValueError("Duplicate map identity or invalid season")
-        seen.add(package_id)
-        destination = "_installer-support/maps/" + relative.as_posix()
-        packages.append(dict(path=destination, bytes=row["outputBytes"], sha256=row["sha256"],
-                             packageId=package_id, season=season, versionedAuthor=True))
-        sources.append((archive, destination))
-    if not packages:
-        raise ValueError("Accepted map delivery is empty")
-    return packages, sources
+def build_upgrade_support(output, packages, config, ifw_bin, *, compression=9):
+    """Use one identical program archive for native fresh and local update.
+
+    Only repository metadata/tools enter the additional QRC. At update time
+    QtIFW's own devtool reads the program archive out of the running Setup;
+    native QtIFW verifies it against the repository metadata before extraction.
+    """
+    output, packages, config = map(Path, (output, packages, config))
+    ifw_bin = Path(ifw_bin)
+    boot = output / "upgrade-support/boot"
+    boot.mkdir(parents=True)
+    shutil.copy2(ifw_bin / "installerbase.exe", boot / "installerbase.exe")
+    shutil.copy2(ifw_bin / "devtool.exe", boot / "devtool.exe")
+    shutil.copy2(config / "controller.js", boot / "upgrade-controller.js")
+    repository = boot / "repository"
+    subprocess.run([str(ifw_bin / "repogen.exe"), "--compression", str(compression), "-p", str(packages), str(repository)],
+        check=True)
+    layout = []
+    updates = ET.parse(repository / "Updates.xml").getroot()
+    for package in updates.findall("PackageUpdate"):
+        name, version = package.findtext("Name"), package.findtext("Version")
+        for archive in filter(None, (package.findtext("DownloadableArchives") or "").split(",")):
+            archive = archive.strip()
+            if name not in {PACKAGE, DATA_PACKAGE} or archive != "program.7z" or not version:
+                raise ValueError("Unexpected native repository program archive")
+            compiled = build._local_file(repository, name + "/" + version + archive)
+            data = packages / name / "data"
+            # These are this invocation's new staged inputs. Frozen sources
+            # can be hard-linked: remove only the staged directory entries.
+            program = data / "program"
+            if program.exists():
+                if program.resolve() != (output / "packages" / name / "data/program").resolve():
+                    raise ValueError("Staged program directory escaped this build")
+                shutil.rmtree(program)
+            shutil.copy2(compiled, data / archive)
+            layout.append(dict(package=name, archive=version + archive,
+                               repository=name + "/" + version + archive))
+            compiled.unlink()  # Program bytes live once, in the native archive segment.
+    (boot / "archive-layout.json").write_text(json.dumps(layout), encoding="utf-8")
+    # QtIFW's -rcc replaces its default resource segment; it does not merge
+    # extra --resources QRC entries. The persistent controller is updated via
+    # the native component package and resolves helper support from its owner.
+    subprocess.run([str(ifw_bin / "binarycreator.exe"), "-c", str(config / "config.xml"),
+        "-p", str(packages), "-rcc"], cwd=boot, check=True)
+    if not (boot / "update.rcc").is_file():
+        raise ValueError("QtIFW binarycreator completed without update.rcc")
+    return dict(repository="boot/repository", archiveSource="native-setup-component-archives",
+        updateResource="boot/update.rcc", controller="boot/upgrade-controller.js",
+        installerBase="boot/installerbase.exe", archiveLayout=layout)
+
+
+def administrator_installer_base(ifw_bin, output):
+    """Keep the official QtIFW engine and the release's existing Setup UAC level."""
+    from PyInstaller.utils.win32.winmanifest import write_manifest_to_executable
+    target = Path(output) / "installerbase-admin.exe"
+    shutil.copy2(Path(ifw_bin) / "installerbase.exe", target)
+    write_manifest_to_executable(str(target), build.qt_manifest("星图安装"))
+    build.verify_administrator_manifest(target)
+    return target
 
 
 def stage_payload(stage, record, output, *, payload_stage=None, archive_from=None, ifw_bin=None):
@@ -143,15 +191,16 @@ def main():
     parser.add_argument("--ifw-bin", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--release", action="store_true", help="Portable distribution; no build-machine scope dependency")
-    parser.add_argument("--map-pack-root", type=Path)
-    parser.add_argument("--map-pack-report", type=Path, help="Accepted batch-report.json; verify ZIPs without modifying them")
     parser.add_argument("--payload-stage", type=Path, help="Reuse verified read-only staged build inputs on the same volume")
     parser.add_argument("--reuse-archive-from", type=Path, help="Reuse program archive from a hash-verified prior trial Setup; rebuild scripts/helper")
+    parser.add_argument("--upgrade-capable", action="store_true",
+        help="Compatibility flag: releases always contain native offline maintenance upgrade support")
     args = parser.parse_args()
+    if args.upgrade_capable and not args.release:
+        parser.error("--upgrade-capable requires --release")
+    args.upgrade_capable = args.release
     if args.release and args.reuse_archive_from:
         parser.error("Release payload deduplication requires the original freeze or --payload-stage; compressed archive reuse is trial-only")
-    if bool(args.map_pack_root) != bool(args.map_pack_report) or (args.map_pack_root and not args.release):
-        parser.error("Map root and delivery report must be supplied together with --release")
     if build._git("status", "--porcelain").strip():
         raise ValueError("Build from a clean committed checkout")
     installer_source = build.source_identity(build._git("rev-parse", "HEAD"))
@@ -161,7 +210,7 @@ def main():
     from resource_transaction import _safe
     _safe(output)
     record = json.loads(args.build_record.read_bytes())
-    packages, map_sources = map_inputs(args.map_pack_root, args.map_pack_report) if args.map_pack_root else ([], [])
+    packages = []
     output.mkdir(parents=True)
     compiled, inventory = stage_payload(args.stage, record, output, payload_stage=args.payload_stage,
         archive_from=args.reuse_archive_from, ifw_bin=args.ifw_bin)
@@ -172,13 +221,17 @@ def main():
     (output / ".qtifw-trial-scope").write_text(instance + "\n", encoding="ascii")
     policy = dict(scope=str(output), instance=instance, payloadSource=compiled, allowNewTargets=True, fullUninstall=True,
                   files=inventory["files"], faultsAllowed=not args.release, portable=args.release, mapPackages=packages)
+    policy["localCacheDir"] = "xingtu-setup" if args.release else "xingtu-trial-" + instance
     if args.release:
         policy.pop("scope")
     policy_path = output / "qtifw-trial-policy.json"
+    component_version = qtifw_component_version(record["version"]["version"], release=args.upgrade_capable)
+    if args.upgrade_capable:
+        policy.update(upgradeCapable=True, targetVersion=record["version"], packageVersion=component_version)
     policy_path.write_text(json.dumps(policy, ensure_ascii=False), encoding="utf-8")
     # Small asInvoker helper, independent of the application's administrator EXE.
-    exclusions = [] if packages else ["--exclude-module", "numpy", "--exclude-module", "cv2"]
-    if args.release and not packages:
+    exclusions = ["--exclude-module", "numpy", "--exclude-module", "cv2"]
+    if args.release:
         exclusions += ["--exclude-module", "PIL"]
     subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir", "--console",
         "--name", "qtifw-trial-helper", "--paths", str(ROOT / "app"),
@@ -192,17 +245,8 @@ def main():
     program_copies, deduplication = [], None
     if args.release:
         program_copies, deduplication = deduplicate_payload(output, inventory, helper_root)
-        for archive, destination in map_sources:
-            copied = output / "packages" / DATA_PACKAGE / "data" / destination
-            copied.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(archive, copied)
     qrc = output / "trial.qrc"
     support_files = sorted(path.relative_to(helper_root).as_posix() for path in helper_root.rglob("*") if path.is_file())
-    resource = ET.Element("RCC")
-    entries = ET.SubElement(resource, "qresource", prefix="/qtifw-trial")
-    for name in support_files:
-        ET.SubElement(entries, "file", alias=name).text = (helper_root / name).relative_to(output).as_posix()
-    ET.ElementTree(resource).write(qrc, encoding="utf-8", xml_declaration=True)
     config = output / "config"
     meta = output / "packages" / PACKAGE / "meta"
     meta.mkdir()
@@ -213,12 +257,16 @@ def main():
     controller = (scripts / "controller.js").read_text(encoding="utf-8")
     controller = controller.replace("__SCOPE__", json.dumps("" if args.release else output.as_posix())).replace("__INSTANCE__", json.dumps(instance))
     controller = controller.replace("__SUPPORT_FILES__", json.dumps(support_files))
+    # The persistent maintenance controller never needs the temporary archive
+    # tools. The standalone Setup gets its list after repository generation.
+    controller = controller.replace("__UPGRADE_FILES__", "[]")
     (config / "controller.js").write_text(controller, encoding="utf-8")
     shutil.copy2(scripts / "trial.qss", config / "trial.qss")
     shutil.copy2(scripts / "component.js", meta / "component.js")
     component_script = (meta / "component.js").read_text(encoding="utf-8")
     (meta / "component.js").write_text(component_script.replace("__PROGRAM_COPIES__", json.dumps(program_copies)), encoding="utf-8")
     shutil.copy2(scripts / "install-location.ui", meta / "install-location.ui")
+    shutil.copy2(scripts / "existing-update.ui", meta / "existing-update.ui")
     if args.release:
         for path in (config / "controller.js", meta / "component.js", meta / "install-location.ui"):
             text = path.read_text(encoding="utf-8").replace("星图试用版", "星图").replace("星图（试用版）", "星图")
@@ -227,11 +275,12 @@ def main():
             text = text.replace("本试用版", "星图")
             path.write_text(text, encoding="utf-8")
     write_xml(meta / "package.xml", "Package", dict(DisplayName="星图",
-        Description="星图桌面程序。", Version="1.0.0", ReleaseDate="2026-11-08",
+        Description="星图桌面程序。", Version=component_version, ReleaseDate="2026-11-08",
         Default="true", Script="component.js", Dependencies=DATA_PACKAGE))
     package_tree = ET.parse(meta / "package.xml")
     interfaces = ET.SubElement(package_tree.getroot(), "UserInterfaces")
     ET.SubElement(interfaces, "UserInterface").text = "install-location.ui"
+    ET.SubElement(interfaces, "UserInterface").text = "existing-update.ui"
     ET.indent(package_tree)
     package_tree.write(meta / "package.xml", encoding="utf-8", xml_declaration=True)
     data_meta = output / "packages" / DATA_PACKAGE / "meta"
@@ -239,13 +288,14 @@ def main():
     data_script = (scripts / "data-component.js").read_text(encoding="utf-8")
     (data_meta / "data-component.js").write_text(data_script.replace("__SUPPORT_FILES__", json.dumps(support_files)), encoding="utf-8")
     write_xml(data_meta / "package.xml", "Package", dict(DisplayName="卸载清理",
-        Description="彻底卸载时清理安装目录。", Version="1.0.0", Virtual="true",
+        Description="彻底卸载时清理安装目录。", Version=component_version, Virtual="true",
         ReleaseDate="2026-11-08", Script="data-component.js"))
     write_xml(config / "config.xml", "Installer", dict(Name="星图安装器隔离试用 " + instance,
         Version="1.0.0", Title="星图（试用版）", Publisher="星图开发试用",
         TargetDir=str(output / "targets/trial"), MaintenanceToolName="trial-maintenance",
         RemoveTargetDir="true", AllowNonAsciiCharacters="true", AllowSpaceInPath="true",
         AllowRepositoriesForOfflineInstaller="false", SaveDefaultRepositories="false", PersistentLocalCache="false",
+        LocalCacheDir=policy["localCacheDir"],
         ControlScript="controller.js", StyleSheet="trial.qss", WizardStyle="Modern",
         InstallerApplicationIcon="xingtu", InstallerWindowIcon="xingtu-window.png",
         WizardShowPageList="false", WizardDefaultWidth="680", WizardDefaultHeight="440"))
@@ -262,20 +312,47 @@ def main():
     ET.indent(tree)
     tree.write(config / "config.xml", encoding="utf-8", xml_declaration=True)
     setup = output / ("星图-" + record["version"]["version"] + "-Setup.exe" if args.release else "Xingtu-QtIFW-Local-Trial-Setup.exe")
+    native_setup_record = None
+    upgrade_files = []
+    if args.upgrade_capable:
+        native_setup_record = build_upgrade_support(output, output / "packages", config, args.ifw_bin)
+        upgrade_root = output / "upgrade-support"
+        upgrade_files = sorted(path.relative_to(upgrade_root).as_posix()
+                               for path in upgrade_root.rglob("*") if path.is_file())
+        standalone = (config / "controller.js").read_text(encoding="utf-8")
+        standalone = standalone.replace("var nativeUpgradeFiles = [];",
+                                        "var nativeUpgradeFiles = " + json.dumps(upgrade_files) + ";")
+        (config / "controller.js").write_text(standalone, encoding="utf-8")
+    resource = ET.Element("RCC")
+    entries = ET.SubElement(resource, "qresource", prefix="/qtifw-trial")
+    for name in support_files:
+        ET.SubElement(entries, "file", alias=name).text = (helper_root / name).relative_to(output).as_posix()
+    if upgrade_files:
+        entries = ET.SubElement(resource, "qresource", prefix="/qtifw-upgrade")
+        for name in upgrade_files:
+            ET.SubElement(entries, "file", alias=name).text = (output / "upgrade-support" / name).relative_to(output).as_posix()
+    ET.ElementTree(resource).write(qrc, encoding="utf-8", xml_declaration=True)
+    base = administrator_installer_base(args.ifw_bin, output) if args.release else args.ifw_bin / "installerbase.exe"
     with (output / "binarycreator.log").open("wb") as log:
         subprocess.run([str(args.ifw_bin / "binarycreator.exe"), "--offline-only", "--compression", "9" if args.release else "3",
-            "--resources", str(qrc), "-t", str(args.ifw_bin / "installerbase.exe"),
+            "--resources", str(qrc), "-t", str(base),
             "-c", str(config / "config.xml"), "-p", str(output / "packages"), str(setup)],
             stdout=log, stderr=subprocess.STDOUT, check=True)
+    if args.release:
+        build.verify_administrator_manifest(setup)
     if build.source_identity(installer_source["commit"]) != installer_source:
         raise ValueError("Source changed during QtIFW build; preserve the candidate for inspection")
     result = dict(installerSource=installer_source["commit"], payloadSource=compiled,
         programFiles=len(inventory["files"]), instance=instance, root=str(output), setup=str(setup),
         bytes=setup.stat().st_size, sha256=build.sha256(setup), installed=False, published=False,
-        portable=args.release,
+        portable=args.release, qtifwPackageVersion=component_version,
         compression=9 if args.release else 3, deduplication=deduplication, programCopies=program_copies,
         mapPackages=packages,
         runtimeEntry="Use --self-check or isolated --probe-output only; production IPC identity is unchanged")
+    if args.upgrade_capable:
+        result.update(nativeSetup=native_setup_record,
+            bridgeMode="native-qtifw-offline-maintenance-handoff",
+            setupType="QtIFW native offline Setup; no Inno wrapper or nested Setup")
     (output / "qtifw-build-record.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(json.dumps(result, indent=2))
 

@@ -385,16 +385,44 @@ class PrivatePackagingTests(unittest.TestCase):
                     seed_sandbox.seed(source, target)
             self.assertFalse(target.exists())
 
-    def test_frozen_self_check_requires_all_s1_packs_for_each_private_channel(self):
+    def test_frozen_private_identity_does_not_replace_imported_resource_requirements(self):
         import client
-        registry = Mock()
-        registry.capabilities.return_value = {mode: dict(available=True) for mode in ('nightmare', 'difficult')}
         for instance in identity.PRIVATE_S1_INSTANCES:
             (self.root / 'installation-profile.json').write_text(json.dumps(dict(installerInstance=dict(id=instance))))
-            with self.subTest(instance=instance), patch.object(sys, 'argv', ['client', '--self-check', '--verify-resources']), patch.object(client, 'FROZEN', True), patch.object(client, 'PRODUCTION', False), patch.object(client, 'RESOURCE_ROOT', self.root), patch.object(client, 'WORK_ROOT', self.root / 'work'), patch.object(client, 'QGuiApplication', side_effect=AssertionError('GUI')), patch('client_providers.build_engine_factories', return_value=registry), patch.object(native, 'validated_s1_resources', side_effect=ValueError('required packs rejected')) as verify:
-                with self.assertRaisesRegex(ValueError, 'required packs rejected'):
-                    client.main()
-                verify.assert_called_once_with(self.root, required=True, modes=native.S1_MODES)
+            before = (self.root / 'installation-profile.json').read_bytes()
+            with self.subTest(instance=instance):
+                result = self.empty_store_self_check(frozen=True)
+                self.assertEqual((self.root / 'installation-profile.json').read_bytes(), before)
+                self.assertEqual(json.loads((self.root / 'work/client-self-check.json').read_text(encoding='utf-8')), result)
+
+    def empty_store_self_check(self, *, frozen=False):
+        import client
+        output = io.StringIO()
+        with patch.object(sys, 'argv', ['client', '--sandbox', str(self.root), '--self-check', '--verify-resources']), \
+             patch.object(client, 'FROZEN', frozen), patch.object(client, 'PRODUCTION', False), \
+             patch.object(client, 'RESOURCE_ROOT', self.root), patch.object(client, 'WORK_ROOT', self.root / 'work'), \
+             patch.object(client, 'QGuiApplication', side_effect=AssertionError('GUI')), \
+             patch('client_providers.build_engine_factories', side_effect=AssertionError('legacy factory')) as legacy, \
+             patch.object(native, 'validated_s1_resources', side_effect=AssertionError('legacy bundled resources')) as verify, \
+             redirect_stdout(output):
+            status = client.main()
+        legacy.assert_not_called()
+        verify.assert_not_called()
+        result = json.loads(output.getvalue())
+        self.assertEqual(status, 1)
+        self.assertTrue(result['ready'])
+        self.assertTrue(result['qml'])
+        self.assertFalse(result['resourcesReady'])
+        self.assertEqual(set(result['resourceContexts']), {'s0:nightmare', 's0:difficult', 's1:nightmare', 's1:difficult'})
+        for report in result['resourceContexts'].values():
+            self.assertFalse(report['available'])
+            self.assertTrue(report['prepared'])
+            self.assertEqual(report['resourceGaps'], ['recognition-base-missing', 'controls-profile-missing'])
+        for field in ('nativeInputStarted', 'captureStarted', 'listenersStarted', 'windowsCreated'):
+            self.assertFalse(result[field])
+        self.assertEqual(Path(result['resourceRoot']), self.root / 'work/imported-resources')
+        self.assertFalse((self.root / 'work/imported-resources').exists())
+        return result
 
     @staticmethod
     def selected_guard(source, symbols):
@@ -440,19 +468,9 @@ class PrivatePackagingTests(unittest.TestCase):
             self.assertIn('(Entries > 0) and not RegisteredPrivateDirectory(Target)', variant)
 
     def test_self_check_reports_all_contexts_without_constructing_gui(self):
-        import client
-        registry = Mock()
-        registry.capabilities.return_value = {mode: dict(available=True, liveReady=True) for mode in ('nightmare', 'difficult')}
-        s1 = {mode: dict(available=True, liveReady=False, liveAuthorization=False) for mode in native.S1_MODES}
-        output = io.StringIO()
-        with patch.object(sys, 'argv', ['client', '--self-check', '--verify-resources']), patch.object(client, 'FROZEN', False), patch.object(client, 'PRODUCTION', False), patch.object(client, 'QGuiApplication', side_effect=AssertionError('GUI')), patch('client_providers.build_engine_factories', return_value=registry), patch.object(native, 'validated_s1_resources', return_value=dict(included=True, providers=s1)), redirect_stdout(output):
-            status = client.main()
-        result = json.loads(output.getvalue())
-        self.assertEqual(status, 0)
-        self.assertEqual(set(result['resourceContexts']), {'s0:nightmare', 's0:difficult', 's1:nightmare', 's1:difficult', 's1:difficulty2'})
-        self.assertFalse(result['nativeInputStarted'])
-        self.assertTrue(result['ready'])
-        self.assertFalse(result['resourceContexts']['s1:difficulty2']['liveReady'])
+        before = set(self.root.iterdir())
+        self.empty_store_self_check()
+        self.assertEqual(set(self.root.iterdir()), before)
 
 
 class PrivatePackagingPathTests(unittest.TestCase):

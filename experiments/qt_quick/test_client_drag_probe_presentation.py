@@ -138,7 +138,7 @@ class DragProbePresentationContracts(unittest.TestCase):
         self.assertFalse(any(call.args == ("aligned",)
             for call in self.ui.windows.hide.call_args_list))
 
-    def test_two_negative_post_drag_observations_still_revoke_display(self):
+    def test_first_negative_keeps_complete_material_until_second_confirms_close(self):
         token = self.runtime.snapshot()["render"]["token"]
         work = self.queued_probe_after_gesture()
         # Independent current-map evidence is negative in both modes;
@@ -147,9 +147,13 @@ class DragProbePresentationContracts(unittest.TestCase):
             self.finish_worker(work)
             self.assertEqual(self.session.snapshot["lastReceipt"]["reason"], "map-not-observed")
             self.assertTrue(self.runtime.snapshot()["mapOpen"])
-            # Missing current map evidence withdraws pixels immediately; only
-            # the second passive miss confirms a physical close.
-            self.assert_withdrawn(token)
+            # One miss cannot withdraw a completed current material. The
+            # second passive miss still confirms close and revokes it below.
+            self.assertIsNotNone(self.runtime.render_payload(token))
+            self.assertTrue(self.runtime.snapshot()['core']['displayAuthorized'])
+            self.assertEqual(self.coordinator.alignedData.get('token'), token)
+            self.assertFalse(any(call.args == ('aligned',)
+                for call in self.ui.windows.hide.call_args_list))
             pending = []
             with patch.object(self.session._pool, "start", side_effect=pending.append):
                 self.session.dispatch("refresh_map")

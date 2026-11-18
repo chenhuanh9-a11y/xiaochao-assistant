@@ -54,7 +54,8 @@ def receipt(state, resource=None):
     result = dict(status='committed' if finalized else status, installerStatus=status,
                   installerFinalized=finalized, resourceCommitted=False)
     for source, dest in [('sessionId', 'sessionId'), ('planSha256', 'planSha256'),
-                         ('resourceTransactionId', 'transactionId'), ('restoreWatcher', 'restoreWatcher')]:
+                         ('resourceTransactionId', 'transactionId'), ('restoreWatcher', 'restoreWatcher'),
+                         ('resourceAction', 'resourceAction')]:
         if state.get(source) is not None:
             result[dest] = state[source]
     if resource:
@@ -76,11 +77,23 @@ class Coordinator:
         if state is None:
             state = dict(sessionId=a.session_id, targetIdentity=self.target,
                          reportSha256=a.target_report_sha256, planSha256=a.plan_sha256,
-                         restoreWatcher=a.restore_watcher)
+                         restoreWatcher=a.restore_watcher, resourceAction=getattr(a, 'resource_action', 'reset'))
         return InstallerUpgradeJournal(self.root, owner_sid=self.owner,
             session_id=state['sessionId'], target_identity=state['targetIdentity'],
             report_sha256=state['reportSha256'], plan_sha256=state['planSha256'],
-            restore_watcher=state['restoreWatcher'])
+            restore_watcher=state['restoreWatcher'], resource_action=state.get('resourceAction', 'reset'))
+
+    def _native_context(self):
+        context = native_context(self.args, self.target)
+        if (self.journal.resource_action == 'preserve'
+                and self.journal.bindings['planSha256'] != self.args.program_inventory_sha256):
+            raise ValueError('installer-program-plan-mismatch')
+        return context
+
+    def _preserved(self, state):
+        with self._scope() if state.get('pending') else nullcontext():
+            self.api.assert_resource_upgrade_ready(self.root)
+        return True
 
     def _scope(self):
         return self.scope(self.root, self.lease, self.journal.bindings['sessionId'], validate=self.journal.status)
@@ -97,6 +110,8 @@ class Coordinator:
                 and result.get('targetIdentity') == state['targetIdentity'] and result['status'] in allowed)
 
     def _prepared(self, state):
+        if self.journal.resource_action == 'preserve':
+            return self._preserved(state)
         pending = self.api.resource_upgrade_status(self.root)
         return (pending.get('transactionId') == state['resourceTransactionId']
                 and self._resource(state, {'prepared-resources'}))
@@ -109,6 +124,8 @@ class Coordinator:
         return True
 
     def _restored(self, state):
+        if self.journal.resource_action == 'preserve':
+            return self._preserved(state)
         if state['resourceTransactionId'] and not self._resource(state, {'rolled-back'}):
             return False
         if self.api.resource_upgrade_status(self.root)['status'] != 'not-needed':
@@ -119,6 +136,8 @@ class Coordinator:
         return plan['planSha256'] == state['planSha256']
 
     def _committed(self, state):
+        if self.journal.resource_action == 'preserve':
+            return self._preserved(state) if state['pending'] else True
         # The last pre-finalization callback needs a fresh bound permit and a
         # full resource witness, including resume after a lost commit receipt.
         # Historical completed sessions must not freeze later legitimate imports.
@@ -128,11 +147,12 @@ class Coordinator:
 
     def _finish(self):
         state = self.journal.assert_can_forward(verify_native=self._native)
-        if state['pending']:
+        if state['pending'] and self.journal.resource_action != 'preserve':
             with self._scope():
                 self.api.finish_resource_upgrade(self.root, state['resourceTransactionId'], setup_succeeded=True)
         state = self.journal.finish_complete(verify_native=self._native, verify_resource=self._committed)
-        return receipt(state, self.api.resource_upgrade_status(self.root, state['resourceTransactionId']))
+        return receipt(state, None if self.journal.resource_action == 'preserve' else
+                       self.api.resource_upgrade_status(self.root, state['resourceTransactionId']))
 
     def execute(self):
         a = self.args
@@ -156,8 +176,16 @@ class Coordinator:
         if a.action == 'prepare':
             if not a.confirmed:
                 raise ValueError('installer-reviewed-confirmation-required')
-            self.context = native_context(a, self.target)
+            self.context = self._native_context()
             self.observer.preflight_native_evidence(self.root, **self.context)
+            if self.journal.resource_action == 'preserve':
+                if pending['status'] == 'not-needed':
+                    self.api.assert_resource_upgrade_ready(self.root)
+                else:
+                    self._preserved(self.journal.status())
+                state = self.journal.begin()
+                self._preserved(state)
+                return receipt(state)
             self.journal.begin()
             with self._scope():
                 result = self.api.prepare_resource_upgrade(self.root, expected_plan_sha256=a.plan_sha256,
@@ -183,16 +211,18 @@ class Coordinator:
             resource = self.api.resource_upgrade_status(self.root, state['resourceTransactionId']) if state['resourceTransactionId'] else None
             return receipt(state, resource)
         if a.action == 'start-native':
-            self.context = native_context(a, self.target)
+            self.context = self._native_context()
             self.observer.preflight_native_evidence(self.root, **self.context)
             return receipt(self.journal.start_native(verify_resource=self._prepared))
         if a.action in {'native-complete', 'commit'}:
-            self.context = native_context(a, self.target)
+            self.context = self._native_context()
             if a.action == 'native-complete':
                 evidence = self.observer.capture_native_completion(self.root, **self.context)
                 return receipt(self.journal.record_native_complete(evidence, verify_native=self._native))
             return self._finish()
         if a.action == 'rollback':
+            if self.journal.resource_action == 'preserve':
+                return receipt(self.journal.abort_pre_native(verify_resource=self._restored))
             if state['status'] == 'aborted':
                 return receipt(self.journal.abort_pre_native(verify_resource=self._restored))
             if state['status'] != 'prepared':

@@ -7,8 +7,10 @@
 #ifndef ResetTargetReportSHA256
   #error ResetTargetReportSHA256 is required
 #endif
-#ifndef ResetCandidateSHA256
-  #error ResetCandidateSHA256 is required
+#ifndef ProgramOnlyInstaller
+  #ifndef ResetCandidateSHA256
+    #error ResetCandidateSHA256 is required
+  #endif
 #endif
 #ifndef ResetProgramInventorySha256
   #error ResetProgramInventorySha256 is required
@@ -90,9 +92,12 @@ begin
     if not ResetSafePath(Path) or (GetSHA256OfFile(Path) <> Copy(Lines[I], 1, 64)) then
       RaiseException('升级 helper 文件已变化，未执行。');
   end;
-  if (GetSHA256OfFile(ResourceResetExtractRoot + '\release-report.json') <> '{#ResetTargetReportSHA256}') or
-    (GetSHA256OfFile(ResourceResetExtractRoot + '\_internal\managed-base-resources\manifest.json') <> '{#ResetCandidateSHA256}') then
-    RaiseException('当前安装包的程序或资源身份无法验证。');
+  if GetSHA256OfFile(ResourceResetExtractRoot + '\release-report.json') <> '{#ResetTargetReportSHA256}' then
+    RaiseException('当前安装包的程序身份无法验证。');
+#ifndef ProgramOnlyInstaller
+  if GetSHA256OfFile(ResourceResetExtractRoot + '\_internal\managed-base-resources\manifest.json') <> '{#ResetCandidateSHA256}' then
+    RaiseException('当前安装包的资源身份无法验证。');
+#endif
 end;
 
 function CallResourceReset(const Action: String; Confirmed: Boolean; var Reason, ResultDir: String): Boolean;
@@ -122,8 +127,13 @@ begin
       ' --display-version {#DisplayVersion} --numeric-version {#NumericVersion}' +
       ' --parent-pid ' + IntToStr(ResetGetCurrentProcessId) + ' --parent-created ' + IntToStr(Created) +
       ' --parent-executable ' + AddQuotes(ParentImage) + ' --parent-sha256 ' + GetSHA256OfFile(ParentImage) +
-      ' --lock-handle ' + IntToStr(ResourceLock) + ' --candidate-directory ' +
+      ' --lock-handle ' + IntToStr(ResourceLock) +
+#ifdef ProgramOnlyInstaller
+      ' --resource-action preserve' +
+#else
+      ' --candidate-directory ' +
       AddQuotes(ResourceResetExtractRoot + '\_internal\managed-base-resources') +
+#endif
       ' --program-inventory ' + AddQuotes(ExpandConstant('{tmp}\reset-program-inventory.json')) +
       ' --program-inventory-sha256 {#ResetProgramInventorySha256}' +
       ' --group-shortcut ' + AddQuotes(ExpandConstant('{group}\星图.lnk')) +
@@ -191,13 +201,16 @@ begin
   end;
   HasPending := FileExists(ExpandConstant('{app}\work\map-packages\pending-resource-reset.json'));
   HasInstallerPending := FileExists(ExpandConstant('{app}\work\pending-installer-upgrade.json'));
-  { Fresh installs do not reset retained user data merely because a work folder exists. }
+#ifndef ProgramOnlyInstaller
+  { Fresh legacy installs do not reset retained user data merely because a work folder exists. }
   if not HasPending and not HasInstallerPending and not FileExists(ExpandConstant('{app}\') + OwnershipName) and
     not FileExists(ExpandConstant('{app}\星图.exe')) and
     not FileExists(ExpandConstant('{app}\第五人格小抄助手.exe')) then begin Result := True; Exit; end;
   if WizardSilent then begin
     Reason := '覆盖升级需要先核对资源清理清单，请使用交互安装。静默安装不会自动同意清理。'; Exit;
   end;
+#endif
+  { Program-only installs always inspect pending resource and installer state. }
   ResourceResetRoot := ExpandConstant('{app}');
   ResourceResetPlanHash := '';
   ResourceResetTransaction := '';
@@ -212,7 +225,9 @@ begin
     ExtractTemporaryFiles('{app}\star-map-reset-helper.exe');
     ExtractTemporaryFiles('{app}\_star_map_reset_runtime\*');
     ExtractTemporaryFiles('{app}\release-report.json');
+#ifndef ProgramOnlyInstaller
     ExtractTemporaryFiles('{app}\_internal\managed-base-resources\*');
+#endif
     if HasInstallerPending then begin
       if not CallResourceReset('installer-pending', False, Reason, ResultDir) then Exit;
       ResourceResetSessionId := GetIniString('result', 'sessionId', '', ResultDir + '\result.ini');
@@ -275,11 +290,13 @@ begin
     if ResourceResetLastStatus <> 'inspected' then RaiseException('资源盘点结果无效。');
     Id := GetIniString('result', 'planSha256', '', ResultDir + '\result.ini');
     if not ResetHex(Id, 64) then RaiseException('资源盘点摘要无效。');
+#ifndef ProgramOnlyInstaller
     Summary := ResetReadText(ResultDir + '\summary.txt');
     if Summary = '' then RaiseException('无法读取资源盘点，请停止安装。');
     if MsgBox(Summary, mbConfirmation, MB_YESNO or MB_DEFBUTTON2) <> IDYES then begin
       Reason := '未确认资源清理，本次覆盖升级已停止；原资源未改动。'; Exit;
     end;
+#endif
     ResourceResetPlanHash := Id;
     ResourceResetSessionId := GetIniString('result', 'sessionId', '', ResultDir + '\result.ini');
     if Length(ResourceResetSessionId) <> 36 then RaiseException('升级会话身份无效。');
@@ -300,10 +317,14 @@ begin
   if not Result then Exit;
   Id := GetIniString('result', 'transactionId', '', ResultDir + '\result.ini');
   Result := (ResourceResetLastStatus = 'prepared') and
+#ifdef ProgramOnlyInstaller
+    (GetIniString('result', 'resourceAction', '', ResultDir + '\result.ini') = 'preserve') and (Id = '');
+#else
     (GetIniString('result', 'resourceStatus', '', ResultDir + '\result.ini') = 'prepared-resources') and (Length(Id) = 36);
+#endif
   if Result then for I := 1 to Length(Id) do
     if Pos(Id[I], '0123456789abcdef-') = 0 then Result := False;
-  if not Result then begin Reason := '资源准备回执无法核实，必须恢复后重试。'; Exit; end;
+  if not Result then begin Reason := '安装准备回执无法核实，必须恢复后重试。'; Exit; end;
   ResourceResetTransaction := Id;
 end;
 
@@ -350,7 +371,8 @@ begin
     Result := CallResourceReset('commit', False, Reason, ResultDir) and
       (GetIniString('result', 'installerFinalized', 'False', ResultDir + '\result.ini') = 'True');
     ResourceResetFinalized := Result;
-    if Result then ResourceResetCommitted := True;
+    if Result then ResourceResetCommitted :=
+      GetIniString('result', 'resourceCommitted', 'False', ResultDir + '\result.ini') = 'True';
   end else if ResourceResetNativeStarted or ResourceResetNativeCompleted then begin
     Reason := '原生安装已开始，但没有可验证的完整完成凭据。不能安全回退或启用；保留全部恢复证据。';
     Result := False;
@@ -370,7 +392,8 @@ begin
   Result := CallResourceReset('commit', False, Reason, ResultDir) and
     (GetIniString('result', 'installerFinalized', 'False', ResultDir + '\result.ini') = 'True');
   ResourceResetFinalized := Result;
-  ResourceResetCommitted := Result;
+  ResourceResetCommitted := Result and
+    (GetIniString('result', 'resourceCommitted', 'False', ResultDir + '\result.ini') = 'True');
   if not Result then begin
     ResolveResourceResetCommit(Reason);
     Result := ResourceResetFinalized;

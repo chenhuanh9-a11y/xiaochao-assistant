@@ -325,8 +325,9 @@ def _publish(directory, name, value, *, publication='hardlink-v1'):
 
 
 def _check_anchor(root, directory, anchor):
-    if (type(anchor) is not dict or set(anchor) not in (_ANCHOR, _ANCHOR | {'publication'})
+    if (type(anchor) is not dict or set(anchor) - {'publication', 'resourceAction'} != _ANCHOR
             or anchor['schema'] != SCHEMA
+            or anchor.get('resourceAction', 'reset') not in ('reset', 'preserve')
             or 'publication' in anchor and anchor['publication'] != 'move-v1'):
         _fail('invalid-anchor')
     if _uuid(anchor['upgradeId']) != _uuid(anchor['sessionId']):
@@ -350,7 +351,7 @@ def _check_anchor(root, directory, anchor):
             _fail('cross-volume-history')
 
 
-def _check_record(record, index, previous, anchor_sha):
+def _check_record(record, index, previous, anchor_sha, resource_action='reset'):
     if (type(record) is not dict or set(record) != _RECORD or record['schema'] != SCHEMA
             or type(record['generation']) is not int or record['generation'] != index
             or type(record['status']) is not str or record['status'] not in _STATES
@@ -358,6 +359,8 @@ def _check_record(record, index, previous, anchor_sha):
         _fail('invalid-generation')
     _uuid(record['upgradeId']); _uuid(record['pinId'])
     tx = record['resourceTransactionId']
+    if resource_action == 'preserve' and tx is not None:
+        _fail('resource-binding-forbidden')
     if tx is not None:
         _uuid(tx)
     evidence, digest = record['nativeEvidence'], record['nativeEvidenceSha256']
@@ -379,7 +382,8 @@ def _check_record(record, index, previous, anchor_sha):
     allowed = (before == 'prepared' and (
         after == 'aborted' and tx == prior['resourceTransactionId']
         or after == 'prepared' and prior['resourceTransactionId'] is None and tx is not None
-        or after == 'native-in-progress' and tx is not None and tx == prior['resourceTransactionId'])
+        or after == 'native-in-progress' and (tx is not None or resource_action == 'preserve')
+        and tx == prior['resourceTransactionId'])
         or before == 'native-in-progress' and after == 'native-complete' and tx == prior['resourceTransactionId']
         or before == 'native-complete' and after == 'completed' and tx == prior['resourceTransactionId']
         and evidence == prior['nativeEvidence'] and digest == prior['nativeEvidenceSha256'])
@@ -468,7 +472,7 @@ def _load(root, *, owner_sid, session_id=None):
             _fail('generation-identity-changed')
         if index == 0 and stamp != pointer['firstGeneration']:
             _fail('first-generation-changed')
-        _check_record(record, index, previous, anchor_stamp['sha256'])
+        _check_record(record, index, previous, anchor_stamp['sha256'], anchor.get('resourceAction', 'reset'))
         if record['upgradeId'] != upgrade_id:
             _fail('session-mismatch')
         previous = record, stamp
@@ -549,18 +553,24 @@ def _remove_owned_marker(path, expected):
 
 class InstallerUpgradeJournal:
     def __init__(self, root, *, owner_sid, session_id, target_identity,
-                 report_sha256, plan_sha256, restore_watcher=False):
+                 report_sha256, plan_sha256, restore_watcher=False, resource_action='reset'):
+        if resource_action not in ('reset', 'preserve'):
+            _fail('invalid-resource-action')
+        self.resource_action = resource_action
         self.root = _root(root)
         self.bindings = dict(ownerSid=_sid(owner_sid), sessionId=_uuid(session_id),
                              targetIdentity=_target(target_identity), reportSha256=_sha(report_sha256),
                              planSha256=_sha(plan_sha256), restoreWatcher=_watcher_intent(restore_watcher))
+        if resource_action == 'preserve':
+            self.bindings['resourceAction'] = resource_action
         self.root_identity = _directory_identity(self.root)
 
     def _load(self):
         if _directory_identity(self.root) != self.root_identity:
             _fail('root-identity-changed')
         result = _load(self.root, owner_sid=self.bindings['ownerSid'], session_id=self.bindings['sessionId'])
-        if any(result[0][key] != value for key, value in self.bindings.items()):
+        if (result[0].get('resourceAction', 'reset') != self.resource_action
+                or any(result[0].get(key) != value for key, value in self.bindings.items())):
             _fail('binding-mismatch')
         return result
 
@@ -631,7 +641,7 @@ class InstallerUpgradeJournal:
             _fail('generation-changed')
         record = dict(current[1], generation=current[1]['generation'] + 1,
                       previous=current[2], **changes)
-        _check_record(record, record['generation'], (current[1], current[2]), record['anchorSha256'])
+        _check_record(record, record['generation'], (current[1], current[2]), record['anchorSha256'], self.resource_action)
         _publish(current[3], f"{record['generation']:06d}.json", record,
                  publication=current[0].get('publication', 'hardlink-v1'))
         return self.status()
@@ -639,6 +649,8 @@ class InstallerUpgradeJournal:
     def bind_resource(self, transaction_id, *, verify_resource):
         transaction_id = _uuid(transaction_id)
         current = self._load()
+        if self.resource_action == 'preserve':
+            _fail('resource-binding-forbidden')
         if current[0]['status'] != 'prepared':
             _fail('not-pre-native')
         bound = current[0]['resourceTransactionId']
@@ -657,7 +669,8 @@ class InstallerUpgradeJournal:
         current = self._load()
         # NOT retryable in native-in-progress: an uncertain start is blocked,
         # never authorization to run native mutation for a second time.
-        if current[0]['status'] != 'prepared' or current[0]['resourceTransactionId'] is None:
+        if (current[0]['status'] != 'prepared'
+                or current[0]['resourceTransactionId'] is None and self.resource_action != 'preserve'):
             _fail('native-start-not-allowed')
         self._verify(current, verify_resource)
         return self._append(current, status='native-in-progress')

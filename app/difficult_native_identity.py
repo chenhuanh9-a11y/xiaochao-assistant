@@ -9,17 +9,73 @@ from map_identity_engine import MapIdentityEngine
 from nightmare_candidate import NightmareMap, NightmarePack
 
 
+def _validate_imported_identity_ids(raw):
+    """Reject path-like IDs before an imported pack reaches personal storage.
+
+    This checks the DTO's IDs, inventory size and canonical local paths. The
+    base decoder must still validate declared files and typed layer semantics.
+    Trusted legacy callers retain their original parsing below.
+    """
+    from star_map_import import _relative
+
+    def segment(value):
+        try:
+            relative = _relative(value)
+        except (TypeError, ValueError) as error:
+            raise ValueError('native identity ID is not a safe path segment') from error
+        if relative != value or '/' in value:
+            raise ValueError('native identity ID is not a safe path segment')
+        return value
+
+    def unique(values):
+        checked = [segment(value) for value in values]
+        if len({value.casefold() for value in checked}) != len(checked):
+            raise ValueError('native identity IDs collide on Windows')
+        return checked
+
+    if not isinstance(raw, dict):
+        raise ValueError('native identity manifest must be an object')
+    segment(raw.get('packId'))
+    floors, rows = raw.get('floors'), raw.get('maps')
+    if (not isinstance(floors, list) or not 1 <= len(floors) <= 16
+            or not isinstance(rows, list) or not 1 <= len(rows) <= 256):
+        raise ValueError('native identity inventory exceeds decoder limits')
+    floor_ids = set(unique(floors))
+    map_ids = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError('native identity map must be an object')
+        map_ids.append(segment(row.get('id')))
+        segment(row.get('routeProfileId'))
+        layers = row.get('layers')
+        if not isinstance(layers, dict) or not layers or not set(layers) <= floor_ids:
+            raise ValueError('native identity layers must use declared floor IDs')
+        for path in [row.get('oneFlow'), *layers.values()]:
+            if path is not None:
+                try:
+                    if _relative(path) != path:
+                        raise ValueError('noncanonical resource path')
+                except (TypeError, ValueError) as error:
+                    raise ValueError('native identity resource path is invalid') from error
+    unique(map_ids)
+
+
 class NativeDifficultPack:
     mode = 'difficult'
     filter = NightmarePack.filter
     layer_role = 'structure-reference'
 
-    def __init__(self, root, manifest_relative, *, display_context=None, expected_mode=None, expected_season=None):
+    def __init__(self, root, manifest_relative, *, display_context=None, expected_mode=None,
+                 expected_season=None, read_resource=None):
         self.mode = expected_mode or type(self).mode
         self.resource_root = self.source_root = Path(root).resolve()
         self.display_context = display_context
         self.manifest_path = self.local(manifest_relative)
-        self.raw = json.loads(self.manifest_path.read_text(encoding='utf-8'))
+        manifest_text = (self.manifest_path.read_text(encoding='utf-8') if read_resource is None
+                         else read_resource(self.manifest_path).decode('utf-8'))
+        self.raw = json.loads(manifest_text)
+        if read_resource is not None:
+            _validate_imported_identity_ids(self.raw)
         if self.raw.get('schemaVersion') != 1 or self.raw.get('mode') != self.mode:
             raise ValueError('native difficult identity pack is incompatible')
         if expected_season is not None and self.raw.get('season') != expected_season:
@@ -64,6 +120,9 @@ class NativeDifficultPack:
 class NativeDifficultCandidateEngine(MapIdentityEngine):
     """Original ranking/validators, with the complete declared competitor scope."""
     def rank(self, frame, floor='1', limit=30, *, budget_seconds=None, _established_members=None):
+        if not getattr(self, 'qt_rank_ready', True):
+            raise ValueError(';'.join(getattr(self, 'qt_rank_gaps', ()))
+                             or 'recognition-rank-unavailable')
         structure_rank = getattr(self, 'qt_s1_structure_rank', None)
         if getattr(self, 'qt_season', None) == 's1' and callable(structure_rank):
             # Caller supplies the floor. No icon/entrance or season inference.

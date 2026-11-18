@@ -71,7 +71,7 @@ class RunningRefreshDragContracts(unittest.TestCase):
         elif boundary == "capture-return":
             original = self.runtime._capture_frame
             barrier = patch.object(self.runtime, "_capture_frame",
-                side_effect=lambda cancelled: pause(original(cancelled)))
+                side_effect=lambda cancelled, **kwargs: pause(original(cancelled, **kwargs)))
         else:
             original = _AlignmentHost._canonical_geometry_current_frame_residual
             def measured(host, *args, **kwargs):

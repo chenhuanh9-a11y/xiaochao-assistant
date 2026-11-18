@@ -29,7 +29,8 @@ class Map29BaselineTests(unittest.TestCase):
             native.validate_identity_pack(pack)
             self.assertEqual(len(pack.maps), 30)
             self.assertEqual(set(pack.by_id['difficult-map-29'].layers), {'1', '2'})
-            provider = SharedReferenceProvider(root, native.resources, {}, native=native)
+            provider = SharedReferenceProvider(root, native.resources, {},
+                legacy_reference_loader=native.legacy_reference)
             for floor in ('1', '2'):
                 with self.subTest(root=root.name, floor=floor):
                     qt = provider('shared-structure', 'difficult-map-29', floor)

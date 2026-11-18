@@ -124,6 +124,35 @@ class SessionTests(unittest.TestCase):
         self.runtime.release.set()
         until(lambda: not self.session._maintenance)
 
+    def test_registry_material_validation_uses_worker_without_replacing_command_receipt(self):
+        self.session.refreshRuntime()
+        completed = []
+        self.session.siblingRegistryValidated.connect(lambda token, receipt: completed.append((token, receipt)))
+        generation, receipt = self.session._generation, self.session.snapshot['lastReceipt']
+        self.assertTrue(self.session.dispatchMaintenance('validate_sibling_registry', {'renderToken':'target'}))
+        self.assertFalse(self.session.dispatchMaintenance('validate_sibling_registry', {'renderToken':'target'}))
+        until(lambda: len(completed) == 1)
+        self.assertEqual(completed[0][0], 'target')
+        self.assertTrue(completed[0][1]['success'])
+        self.assertEqual(self.runtime.calls[-1][0], 'validate_sibling_registry')
+        self.assertNotEqual(self.runtime.calls[-1][3], APP.thread())
+        self.assertEqual(self.session._generation, generation)
+        self.assertEqual(self.session.snapshot['lastReceipt'], receipt)
+
+    def test_cancelled_registry_validation_cannot_return_a_successful_ack(self):
+        self.session.refreshRuntime()
+        completed = []
+        self.session.siblingRegistryValidated.connect(lambda token, receipt: completed.append((token, receipt)))
+        self.runtime.release.clear()
+        self.assertTrue(self.session.dispatchMaintenance('validate_sibling_registry', {'renderToken':'old-target'}))
+        until(self.runtime.started.is_set)
+        self.session.cancelPending('context-changed')
+        self.runtime.release.set()
+        until(lambda: len(completed) == 1)
+        self.assertEqual(completed[0][0], 'old-target')
+        self.assertFalse(completed[0][1]['success'])
+        self.assertEqual(completed[0][1]['reason'], 'sibling-context-expired')
+
     def test_pending_author_context_keeps_actual_round_lock(self):
         self.runtime.state["roundActive"] = True
         self.session.refreshRuntime()

@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 
 
-def load_side_doors(root, entries, mode, profile):
+def load_side_doors(root, entries, mode, profile, *, read_resource=None, typed_index_path=None):
     """Enable only a complete, version-matched F2 source inventory.
 
     The geometric boundary is deliberately separate from icon-centred legacy
@@ -15,8 +15,10 @@ def load_side_doors(root, entries, mode, profile):
         return {}, 'not-nightmare'
     try:
         root = Path(root)
-        data = json.loads((root / 'side-door-anchors.json').read_text('utf8'))
-        index = json.loads((root.parent / 'nightmare-shared-structure-index.json').read_text('utf8'))
+        data_path = root / 'side-door-anchors.json'
+        index_path = Path(typed_index_path) if typed_index_path is not None else root.parent / 'nightmare-shared-structure-index.json'
+        data = json.loads(data_path.read_text('utf8') if read_resource is None else read_resource(data_path))
+        index = json.loads(index_path.read_text('utf8') if read_resource is None else read_resource(index_path))
         if (data['schemaVersion'], data['mode'], data['profileId']) != (1, mode, profile):
             raise ValueError('side-door mode/profile mismatch')
         targets = {item['mapId']: item for item, *_ in entries if str(item['floor']) == '2'}

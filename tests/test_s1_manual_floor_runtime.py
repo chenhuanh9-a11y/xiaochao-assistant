@@ -121,7 +121,7 @@ class ManualS1FloorRuntime(unittest.TestCase):
         self.assertEqual(state["floorSource"], "automatic-current-frame")
         self.assertEqual(self.capture.count, 1)
         self.pixel.assert_called_once()
-        self.assertEqual(self.pixel.call_args.kwargs, dict(season="s1", mode="nightmare"))
+        self.assertEqual(self.pixel.call_args.kwargs, dict(season="s1", mode="nightmare", controls=None))
         self.assert_no_live_or_rank()
 
     def test_stubpixel_b2_change_retires_group_and_core_before_new_fit(self):

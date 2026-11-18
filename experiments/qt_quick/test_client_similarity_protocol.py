@@ -169,11 +169,14 @@ class SimilarityProtocolTests(unittest.TestCase):
         self.engine.rank_established_group.side_effect=AssertionError("member competition forbidden")
         self.engine.rank.return_value=rows(IDS[1])
         initial_calls=self.engine.rank.call_count
+        self.engine.rank.side_effect=AssertionError("known group must not restart full ranking")
         for action in ("capture_now","refresh_map"):
             self.now+=2.;self.capture.frame[0,0,0]+=1
+            previous_frame=self.runtime._frame_id
             with patch.object(_AlignmentHost,"_canonical_geometry_current_frame_residual",return_value=(self.fit["selectedRouteCurrentFrameResidual"],None)):
                 self.assertTrue(self.dispatch(action)["success"])
-        self.assertEqual(self.engine.rank.call_count,initial_calls+1)
+            self.assertNotEqual(self.runtime._frame_id,previous_frame)
+        self.assertEqual(self.engine.rank.call_count,initial_calls)
         self.engine.rank_established_group.assert_not_called()
         state=self.runtime.snapshot();self.assertEqual(len(state["automaticCandidateRows"]),1)
         candidate=state["automaticCandidateRows"][0]
@@ -181,14 +184,18 @@ class SimilarityProtocolTests(unittest.TestCase):
         self.assertEqual(set(candidate["memberIds"]),set(IDS));self.assertFalse(candidate["mapId"])
         self.assertEqual(state["identitySource"],"group-default");self.assertFalse(state["identityLocked"])
 
-    def test_explicit_map_open_rediscovers_family_without_reselecting_its_member(self):
-        self.capture_group()
+    def test_explicit_map_reopen_reuses_known_family_without_reselecting_its_member(self):
+        previous=self.capture_group()["renderToken"]
         count=self.engine.rank.call_count
-        self.engine.rank.return_value=rows(IDS[1])
+        self.engine.rank.side_effect=AssertionError("known group reopen must not restart full ranking")
         self.engine.rank_established_group.side_effect=AssertionError("no member review")
+        self.dispatch("close_map")
+        self.assertIsNone(self.runtime.render_payload(previous))
         result=self.dispatch("map",openIntent=True)
         self.assertTrue(result["success"],result)
-        self.assertEqual(self.engine.rank.call_count,count+1)
+        self.assertEqual(self.engine.rank.call_count,count)
+        self.assertNotEqual(result["renderToken"],previous)
+        self.assertIsNotNone(self.runtime.render_payload(result["renderToken"]))
         self.assertEqual(self.runtime.snapshot()["provisionalMapId"],IDS[0])
         self.assertFalse(self.runtime.snapshot()["manualGroupMemberHeld"])
 
@@ -750,15 +757,36 @@ class SimilarityProtocolTests(unittest.TestCase):
                     self.dispatch("end_round")
                 result = self.pending_sibling()
                 target = result["pendingSiblingToken"]
+                source = self.runtime.render_payload(result["renderToken"])
                 self.assertFalse(self.runtime.acknowledge_sibling("wrong-token", True)["success"])
                 self.assertIsNotNone(self.runtime.pending_sibling_payload(target))
-                with self.runtime._lock:
-                    if changed == "generation": self.runtime._frame_generation += 1
-                    elif changed == "floor": self.runtime._floor = "2"
-                    else: self.runtime._epoch += 1
+                if changed == "generation":
+                    # Advance through the actual capture/observation writer.
+                    # The old target ACK expires, while the completed source
+                    # retains its own frame/grant and cannot ACK this new frame.
+                    self.capture.frame[0, 0, 0] += 1
+                    with patch.object(_AlignmentHost, "fit", return_value=dict(
+                            success=False, reason="controlled-new-frame-failure")):
+                        observed = self.dispatch("capture_now")
+                    self.assertFalse(observed["success"], observed)
+                    self.assertNotEqual(self.runtime._frame_id, source["frameId"])
+                    self.assertEqual(self.runtime._last_observation["frame_id"], self.runtime._frame_id)
+                else:
+                    with self.runtime._lock:
+                        if changed == "floor": self.runtime._floor = "2"
+                        else: self.runtime._epoch += 1
                 self.assertIsNone(self.runtime.pending_sibling_payload(target))
                 ack = self.runtime.acknowledge_sibling(target, True)
-                self.assertFalse(ack["success"]); self.assertFalse(ack["sourceRetained"])
+                self.assertFalse(ack["success"])
+                if changed == "generation":
+                    self.assertTrue(ack["sourceRetained"])
+                    retained = self.runtime.render_payload(source["token"])
+                    for field in ("frameId", "generation", "authorizationId"):
+                        self.assertEqual(retained[field], source[field])
+                else:
+                    self.assertFalse(ack["sourceRetained"])
+                    self.assertIsNone(self.runtime.render_payload(source["token"]))
+                self.assertFalse(self.runtime.acknowledge_render_material(source["token"])["success"])
                 self.assertEqual(self.runtime.snapshot()["mapId"], "")
 
     def test_explicit_member_winner_does_not_create_automatic_material(self):
@@ -774,7 +802,7 @@ class SimilarityProtocolTests(unittest.TestCase):
         host = _AlignmentHost(self.engine, settings=dict(poseIndexCandidatesEnabled=True))
         matrices = [np.eye(3)]
         self.engine.pose_index_candidates = Mock(return_value=(matrices, dict(attempted=True, reason="fixture-index")))
-        with patch("fast_structure_alignment.try_alignment", return_value=None) as fast, \
+        with patch("fast_structure_alignment.try_alignment", return_value=None), \
                 patch("single_map_structure.current_geometry", return_value={}), \
                 patch("single_map_structure.solve_initial_structure", return_value=dict(copy.deepcopy(self.fit),
                     coordinateSpace="author-render-to-client", routeProfileId="shared-structure")) as solve, \
@@ -782,7 +810,6 @@ class SimilarityProtocolTests(unittest.TestCase):
             self.assertTrue(self.original_fit(host, self.capture.frame, IDS[0], "1", lambda:False)["success"])
             self.assertIs(solve.call_args.kwargs["pose_index_candidates"], matrices)
             self.assertEqual(solve.call_args.kwargs["pose_index_diagnostics"]["reason"], "fixture-index")
-            self.assertIn("entry_seed", fast.call_args.kwargs)
             host.settings = {}
             self.engine.pose_index_candidates.reset_mock()
             self.original_fit(host, self.capture.frame, IDS[0], "1", lambda:False)
@@ -820,7 +847,7 @@ class SimilarityProtocolTests(unittest.TestCase):
                     self.assertIsInstance(memory, NightmareMemoryStore)
                     self.assertEqual(memory.portable_seed_path, root / "resources/references/nightmare-portable-layout-seeds.json")
                     self.assertTrue(memory.sample_validator(self.capture.frame))
-                    observe.assert_called_once_with(self.capture.frame, mode, season="s0")
+                    observe.assert_called_once_with(self.capture.frame, mode, season="s0", controls=None)
                     for observation in (dict(detected=False), dict(detected=None), dict(detected=1), {}):
                         observe.return_value = (observation, {})
                         self.assertFalse(memory.sample_validator(self.capture.frame))

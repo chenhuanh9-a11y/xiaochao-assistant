@@ -28,6 +28,21 @@ class Service(QObject):
 
 
 class CoordinatorTests(unittest.TestCase):
+    def test_original_success_signal_waits_for_a_verified_member_and_deduplicates_round(self):
+        notices = []
+        self.coordinator.notificationRequested.connect(lambda *args:notices.append(args))
+        public = dict(roundId=1,mapId='map-a',floor='-3',identityPhase='UNLOCKED')
+        for changes in ({}, {'identityPhase':'GROUP_LOCKED'},
+                        {'identityPhase':'MEMBER_VERIFIED','provisional':True}):
+            self.coordinator._notify_first_valid_output(dict(public,**changes))
+        self.assertEqual(notices, [])
+        verified = dict(public,identityPhase='MEMBER_VERIFIED')
+        self.coordinator._notify_first_valid_output(verified)
+        self.coordinator._notify_first_valid_output(dict(verified,floor='-4'))
+        self.assertEqual(notices, [('地图已识别','map-a · -3层','success')])
+        self.coordinator._notify_first_valid_output(dict(verified,roundId=2))
+        self.assertEqual(len(notices),2)
+
     @classmethod
     def setUpClass(cls):
         cls.app = QCoreApplication.instance() or QCoreApplication([])
@@ -87,6 +102,20 @@ class CoordinatorTests(unittest.TestCase):
             timer.stop()
         self.app.processEvents()
 
+    def test_missing_imported_base_blocks_direct_context_request_before_preferences_or_render(self):
+        self.resources.contextAvailable = lambda season, mode: False
+        self.session.snapshot = dict(roundActive=False, resourceLocked=False)
+        before = deepcopy(self.settings.persistedValues)
+        self.settings.setValue = Mock()
+        self.settings.saveFields = Mock()
+        self.runtime.invalidate.reset_mock()
+        self.coordinator.requestGameContext('s1', 'difficult')
+        self.assertEqual(self.settings.persistedValues, before)
+        self.settings.setValue.assert_not_called()
+        self.settings.saveFields.assert_not_called()
+        self.runtime.invalidate.assert_not_called()
+        self.assertIn('基础结构包', self.coordinator.message)
+
     def test_gallery_author_persists_only_matching_context_and_runtime_alias(self):
         self.backend.busy = False
         self.backend.season = self.session.currentSeason = "s1"
@@ -134,6 +163,43 @@ class CoordinatorTests(unittest.TestCase):
         self.runtime.reference_payload.assert_called_once_with()
         sync.assert_called_once_with(None)
         self.runtime.render_payload.assert_called_once_with("current")
+
+    def test_s1_reference_status_updates_without_reupload_or_inventing_lock(self):
+        self.images.publish = Mock(return_value="image://live/s1-reference")
+        payload = dict(token="sheet", referenceAuthorized=True, pixels=object(),
+            season="s1", mode="nightmare", roundId=1, mapId="map-a", floor="-2",
+            profileId="profile-one", displayGeneration=1, resourceIdentity="fixture",
+            s1CandidateReference=True, identityLocked=False, provisional=True,
+            identityPhase="CANDIDATE_DISPLAY", durableMapId="", referenceFloorCurrent=False)
+        self.coordinator._sync_reference_payload(payload)
+        shown = self.coordinator.referenceData
+        self.assertIn("定点地图", shown["title"])
+        self.assertNotIn("暂用", shown["title"])
+        self.assertNotIn("已锁定", shown["title"])
+        self.assertIn("当前楼层待核对", shown["title"])
+        self.assertTrue(shown["provisional"])
+        self.assertFalse(shown["identityLocked"])
+        self.assertEqual(shown["durableMapId"], "")
+        self.coordinator._sync_reference_payload(dict(payload, identityLocked=True,
+            provisional=False, identityPhase="MEMBER_VERIFIED", durableMapId="map-a"))
+        locked = self.coordinator.referenceData
+        self.assertIn("已锁定", locked["title"])
+        self.assertEqual(locked["imageUrl"], shown["imageUrl"])
+        self.assertEqual(locked["context"], shown["context"])
+        self.assertFalse(locked["provisional"])
+        self.images.publish.assert_called_once()
+
+    def test_recapture_request_withdraws_material_without_current_runtime_grant(self):
+        self.coordinator._aligned = dict(token="expired")
+        self.coordinator._last_render_token = "expired"
+        self.runtime.reference_payload = Mock(return_value=None)
+        self.session.busy = True
+        self.session.snapshot["pendingAction"] = "capture_now"
+        self.session.changed.emit()
+        self.assertFalse(self.coordinator.alignedData)
+        self.assertIsNone(self.coordinator._last_render_token)
+        self.windows.hide.assert_any_call("aligned")
+        self.runtime.render_payload.assert_called_with("expired")
 
     def test_foreground_diagnostics_identify_owned_role_without_activation(self):
         self.windows._windows["toast"] = SimpleNamespace(isVisible=lambda: True, winId=lambda: 77)
@@ -777,6 +843,8 @@ class CoordinatorTests(unittest.TestCase):
         self.assertIsNone(self.coordinator._last_render_token)
         self.windows.hide.assert_called_once_with("aligned")
 
+
+
     def test_material_ack_is_exact_and_never_changes_session_transaction(self):
         """A queued Image callback cannot acknowledge a later target or job."""
         self.session.busy = True
@@ -796,6 +864,8 @@ class CoordinatorTests(unittest.TestCase):
         self.session.refreshRuntime.assert_not_called()
         self.coordinator.acceptSiblingMaterial("target", True)
         self.assertEqual(self.runtime.acknowledge_sibling.call_count, 1)
+
+
 
     def test_material_failure_and_timeout_keep_valid_source_surface(self):
         self.coordinator._aligned = dict(token="source", routeUrl="image://live/source")

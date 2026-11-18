@@ -82,7 +82,7 @@ def build(name,broken=False,copy_fault=False):
     dm=case/'packages'/DATA/'meta';dm.mkdir(parents=True)
     (dm/'data-component.js').write_bytes(source('tools/qtifw_trial/data-component.js').replace(b'__SUPPORT_FILES__',json.dumps(files).encode('utf-8')))
     write_xml(dm/'package.xml','Package',dict(DisplayName='Synthetic cleanup',Version='1.0.0',ReleaseDate='2026-11-08',Virtual='true',Script='data-component.js'))
-    text=source('tools/qtifw_trial/controller.js').decode('utf-8').replace('__SCOPE__',json.dumps('' if args.portable else runroot.as_posix())).replace('__INSTANCE__',json.dumps(instance)).replace('__SUPPORT_FILES__',json.dumps(files))
+    text=source('tools/qtifw_trial/controller.js').decode('utf-8').replace('__SCOPE__',json.dumps('' if args.portable else runroot.as_posix())).replace('__INSTANCE__',json.dumps(instance)).replace('__SUPPORT_FILES__',json.dumps(files)).replace('__UPGRADE_FILES__','[]')
     # Only OS shortcut locations are redirected. Core helper and native
     # operations are the actual PR scripts, with no simulated algorithms.
     text=text.replace('function Controller() {','function Controller() {\ninstaller.setValue("DesktopDir",'+json.dumps(str(case/'desktop'))+');\ninstaller.setValue("UserStartMenuProgramsPath",'+json.dumps(str(case/'programs'))+');',1)

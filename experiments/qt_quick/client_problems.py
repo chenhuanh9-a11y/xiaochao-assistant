@@ -118,7 +118,7 @@ def _details(row):
             f"阶段：{row['phaseLabel']}\n操作：{row['action'] or '未提供'}\n"
             f"地图 / 楼层：{row['mapId'] or '未识别'} / {row['floor'] or '未识别'}\n"
             f"模式：{row['mode'] or '未提供'}\n\n原始原因：\n{row['raw'] or '未提供'}\n"
-            + (f"\n资源错误代码：{row['errorCode']}\n资源依赖核对：\n"
+            + (f"\n资源错误代码：{row['errorCode']}\n资源校验详情：\n"
                + json.dumps(row['errorDetails'], ensure_ascii=False, indent=2)
                if row.get('errorCode') else "")
             + f"\n原始阶段：{row['phase']}\n采集诊断：\n"

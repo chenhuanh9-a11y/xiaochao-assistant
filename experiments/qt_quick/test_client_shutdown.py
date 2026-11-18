@@ -58,12 +58,12 @@ def scenario(mode, destination):
     coordinator.quitRequested.connect(app.quit)
     qml = Path(__file__).with_name("Client.qml").read_text(encoding="utf-8")
     closing = "onClosing:" + qml.split("onClosing:", 1)[1].split("    RowLayout", 1)[0]
-    # Extract the actual close-choice component, not an unrelated replay
-    # picker that may be retired. Do not import the resource-success dialog's
-    # service bindings into this worker-draining fixture.
+    # The actual close choice ends at the following closing-progress popup.
+    # Keep both components connected to the real coordinator in this fixture.
     choice_start = qml.index("    Dialog {\n        id: closeChoice")
-    choice = qml[choice_start:qml.index("    Dialog {\n        id: importSuccess", choice_start)]
-    popup = qml[qml.rfind("    Popup {"):].rsplit("\n}", 1)[0]
+    popup_start = qml.index("    Popup {\n", choice_start)
+    choice = qml[choice_start:popup_start]
+    popup = qml[popup_start:].rsplit("\n}", 1)[0]
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty("clientCoordinator", coordinator)
     engine.loadData(("import QtQuick\nimport QtQuick.Controls.Basic\nimport QtQuick.Layouts\nApplicationWindow { id:root; visible:true; width:600; height:500; " + closing + choice + popup + "\n}").encode(), QUrl.fromLocalFile(str(Path(__file__).with_name("owned-close.qml"))))
@@ -103,11 +103,11 @@ def scenario(mode, destination):
 
 class ShutdownTests(unittest.TestCase):
     def run_case(self, mode):
-        environment = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_QUICK_BACKEND="software")
+        environment = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_QUICK_BACKEND="software", PYTHONUTF8="1")
         with tempfile.TemporaryDirectory() as directory:
             run = subprocess.run([sys.executable, str(Path(__file__).resolve()), mode,
                                   str(Path(directory) / "committed.txt")], env=environment,
-                                 capture_output=True, text=True, timeout=8)
+                                 capture_output=True, text=True, encoding="utf-8", timeout=8)
             self.assertEqual(run.returncode, 0, run.stderr + run.stdout)
             result = json.loads(run.stdout.strip().splitlines()[-1])
         self.assertEqual(result["code"], 0, result)

@@ -66,6 +66,33 @@ class LocalResourcePathTests(unittest.TestCase):
 
 
 class ManagedRuntimeReuseTests(unittest.TestCase):
+    def test_incomplete_program_only_record_requires_full_freeze(self):
+        with tempfile.TemporaryDirectory() as folder:
+            prior = dict(fileProjection=dict(policy=build.RESOURCE_INSTALLATION_POLICY,
+                                             managedBaseManifest=None))
+            with self.assertRaisesRegex(ValueError, 'Program-only freeze receipt incomplete.*full freeze'):
+                rebuild.validate_managed_runtime_reuse(Path(folder), prior, dict(commit='a' * 40))
+
+    def test_complete_program_only_freeze_retains_helper_identity_checks(self):
+        from test_qtifw_trial import program_only_stage
+        with tempfile.TemporaryDirectory() as folder:
+            stage, record, source = program_only_stage(Path(folder))
+            with mock.patch.object(build, '_git', return_value=''):
+                self.assertEqual(rebuild.validate_managed_runtime_reuse(stage, record, source), source['commit'])
+                (stage / '_star_map_import_runtime/python313.dll').write_bytes(b'changed')
+                with self.assertRaisesRegex(ValueError, 'Helper payload missing or changed'):
+                    rebuild.validate_managed_runtime_reuse(stage, record, source)
+
+    def test_program_only_stage_cannot_adopt_leftover_managed_candidate(self):
+        from test_qtifw_trial import program_only_stage
+        with tempfile.TemporaryDirectory() as folder:
+            stage, record, source = program_only_stage(Path(folder))
+            candidate = stage / managed.CANDIDATE / 'manifest.json'
+            candidate.parent.mkdir(parents=True)
+            candidate.write_bytes(b'old candidate retained, not adopted')
+            with self.assertRaisesRegex(ValueError, 'Retired base candidate'):
+                rebuild.validate_managed_runtime_reuse(stage, record, source)
+
     def fixture(self, root):
         compiled = 'a' * 40
         data = b'synthetic compiled bytes, never executed'

@@ -1,6 +1,9 @@
 """Real settings writer with synthetic controls; no native input or capture."""
 import os
 import json
+import gc
+import io
+from contextlib import redirect_stderr
 from pathlib import Path
 import tempfile
 import time
@@ -8,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-from PySide6.QtCore import QObject, Signal, QUrl
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, Signal, QUrl
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 from client_settings import ROOT, SettingsService
@@ -100,22 +103,36 @@ class OnboardingTests(unittest.TestCase):
 
     def test_qml_load_and_small_window_layout(self):
         engine = QQmlApplicationEngine()
+        destroyed = []
+        engine.destroyed.connect(lambda: destroyed.append(True))
         engine.rootContext().setContextProperty("settingsService", self.settings)
         engine.rootContext().setContextProperty("onboardingService", self.service)
         warnings = []
         engine.warnings.connect(lambda rows: warnings.extend(str(row) for row in rows))
         source = b'import QtQuick; import QtQuick.Controls.Basic; ApplicationWindow { width: 650; height: 470; visible: true; ClientOnboarding {} }'
         engine.loadData(source, QUrl.fromLocalFile(str(Path(__file__).parent / "OnboardingFixture.qml")))
-        self.assertTrue(engine.rootObjects(), warnings)
-        self.app.processEvents()
-        window = engine.rootObjects()[0]
-        popup = window.findChild(QObject, "clientOnboarding")
-        self.assertTrue(popup.property("visible"))
-        self.assertLessEqual(popup.property("height"), 438)
+        cleanup_stderr = io.StringIO()
+        try:
+            self.assertTrue(engine.rootObjects(), warnings)
+            self.app.processEvents()
+            window = engine.rootObjects()[0]
+            popup = window.findChild(QObject, "clientOnboarding")
+            self.assertTrue(popup.property("visible"))
+            self.assertLessEqual(popup.property("height"), 438)
+            self.assertEqual(warnings, [])
+        finally:
+            # processEvents alone does not dispatch DeferredDelete. Dispose the
+            # QML bindings while their Python context owners are still alive.
+            with redirect_stderr(cleanup_stderr):
+                for window in engine.rootObjects():
+                    window.close()
+                engine.deleteLater()
+                QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+                self.app.processEvents()
+                gc.collect()
+        self.assertEqual(destroyed, [True])
+        self.assertEqual(cleanup_stderr.getvalue(), "")
         self.assertEqual(warnings, [])
-        window.close()
-        engine.deleteLater()
-        self.app.processEvents()
 
 
 if __name__ == "__main__":
