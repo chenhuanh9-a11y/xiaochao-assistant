@@ -56,10 +56,11 @@ class AccountError(Exception):
 
 
 def api_root() -> str:
-    """Production unless a local test server is set explicitly."""
-    override = os.environ.get("XINGTU_ACCOUNT_API_URL", "").rstrip("/")
-    if not override:
+    """Use production only when no test-server override was supplied."""
+    override = os.environ.get("XINGTU_ACCOUNT_API_URL")
+    if override is None:
         return PRODUCTION_ROOT
+    override = override.rstrip("/")
     try:
         parsed = urlsplit(override)
         _ = parsed.port  # Reject malformed ports as well as malformed hosts.
@@ -68,7 +69,7 @@ def api_root() -> str:
             return override
     except ValueError:
         pass
-    return PRODUCTION_ROOT
+    raise AccountError("账号测试服务地址无效，请修正或移除 XINGTU_ACCOUNT_API_URL")
 
 
 def _error_message(status: int, body: bytes) -> tuple[str, str]:
