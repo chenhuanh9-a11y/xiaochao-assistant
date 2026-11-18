@@ -33,6 +33,70 @@ def press(client, key, modifiers=Qt.NoModifier):
 
 
 class ShellUxTests(unittest.TestCase):
+    def test_saved_user_shortcuts_take_priority_and_navigation_recovers(self):
+        with fixture_client(probe=False) as (client, _calls):
+            dismiss_notice(client)
+            window = client.main
+            settings = client.settings
+            actions = list(settings.values["actionHotkeys"])
+            original = list(actions)
+            actions[0] = "Ctrl+Tab"
+            settings.setValue("actionHotkeys", actions)
+            # A draft has not changed the live shortcut owner.
+            self.assertNotIn("Ctrl+Tab", settings.reservedShellShortcuts)
+            press(client, Qt.Key_Tab, Qt.ControlModifier)
+            self.assertEqual(window.property("page"), "gallery")
+            settings.save()
+            wait(lambda: not settings.busy)
+            self.assertIn("Ctrl+Tab", settings.reservedShellShortcuts)
+            visibility = []
+            client.coordinator.controlVisibilityChanged.connect(
+                lambda visible, source: visibility.append((visible, source)))
+            press(client, Qt.Key_Tab, Qt.ControlModifier)
+            self.assertEqual(window.property("page"), "gallery")
+            self.assertEqual(len(visibility), 1)
+            self.assertEqual(visibility[0][1], "keyboard")
+            wait(lambda: not settings.busy)
+            # The reverse chord remains available, not globally disabled.
+            press(client, Qt.Key_Tab, Qt.ControlModifier | Qt.ShiftModifier)
+            self.assertEqual(window.property("page"), "home")
+
+            # Native-only bindings must also win, without introducing a second
+            # Qt action owner. Actual native delivery is tested separately.
+            actions[0] = "Ctrl+2"
+            actions[1] = "Ctrl+PAGEDOWN"
+            settings.setValue("actionHotkeys", actions)
+            settings.setValue("hotkey", "Alt+LEFT")
+            settings.save()
+            wait(lambda: not settings.busy)
+            self.assertEqual(settings.applicationPanelShortcut, "")
+            self.assertTrue({"Ctrl+2", "Ctrl+PgDown", "Alt+Left"}.issubset(
+                settings.reservedShellShortcuts))
+            press(client, Qt.Key_2, Qt.ControlModifier)
+            press(client, Qt.Key_PageDown, Qt.ControlModifier)
+            self.assertEqual(window.property("page"), "home")
+            client.coordinator.navigate("resources")
+            wait(lambda: window.property("page") == "resources")
+            press(client, Qt.Key_Left, Qt.AltModifier)
+            self.assertEqual(window.property("page"), "resources")
+
+            settings.setValue("actionHotkeys", original)
+            settings.setValue("hotkey", "G")
+            settings.save()
+            wait(lambda: not settings.busy)
+            self.assertEqual(settings.reservedShellShortcuts, [])
+            press(client, Qt.Key_2, Qt.ControlModifier)
+            self.assertEqual(window.property("page"), "gallery")
+            # No page switching while capturing a binding, even without the
+            # capture dialog's overlay/focus being present in this fixture.
+            settings.beginShortcutCapture("hotkey")
+            press(client, Qt.Key_1, Qt.ControlModifier)
+            self.assertEqual(window.property("page"), "gallery")
+            settings.cancelShortcutCapture()
+            press(client, Qt.Key_1, Qt.ControlModifier)
+            self.assertEqual(window.property("page"), "home")
+            self.assertEqual(client.warnings, [])
+
     def test_page_keys_status_and_close_focus(self):
         with fixture_client(probe=False) as (client, _calls):
             dismiss_notice(client)

@@ -237,6 +237,21 @@ class SettingsService(QObject):
 
     applicationPanelShortcut = Property(str, _application_panel_shortcut, notify=changed)
 
+    def _reserved_shell_shortcuts(self):
+        # Saved user bindings own their chord, including native-only actions.
+        # Draft edits must not disable navigation before the binding is live.
+        bindings = [self._baseline["hotkey"], *self._baseline["actionHotkeys"]]
+        identities = {parse_chord(value, _primary_hotkey_to_vk).identity
+                      for value in bindings if value}
+        sequences = {**{f"Ctrl+{i}": f"Ctrl+{i}" for i in range(1, 7)},
+                     "Ctrl+Tab": "Ctrl+TAB", "Ctrl+Shift+Tab": "Ctrl+Shift+TAB",
+                     "Ctrl+PgDown": "Ctrl+PAGEDOWN", "Ctrl+PgUp": "Ctrl+PAGEUP",
+                     "Alt+Left": "Alt+LEFT"}
+        return [sequence for sequence, native in sequences.items()
+                if parse_chord(native, _primary_hotkey_to_vk).identity in identities]
+
+    reservedShellShortcuts = Property("QStringList", _reserved_shell_shortcuts, notify=changed)
+
     def _season_options(self):
         rows = season_options()
         if self._available_contexts is not None:

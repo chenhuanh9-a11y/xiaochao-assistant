@@ -19,12 +19,15 @@ ApplicationWindow {
     readonly property bool reduceMotion: settingsService.values.reduceMotion === true
     onReduceMotionChanged: if (reduceMotion) { pageFadeDone.stop(); pageFade.stop(); clientPages.opacity = 1 }
     readonly property bool shellKeysEnabled: active && !clientCoordinator.textEntryActive
-        && !clientCoordinator.closing && !closeChoice.opened
+        && !clientCoordinator.closing && !settingsService.shortcutRecording && !closeChoice.opened
         && !(Overlay.overlay && Overlay.overlay.visible)
     readonly property var sectionOrder: ["home", "gallery", "custom", "plaza", "settings", "help"]
     readonly property bool shellHeadingVisible: page === "home" || page === "resources" || page === "downloads"
     property string pendingNavFocus: ""
     property bool pageFadeReady: false
+    function shellShortcutEnabled(sequence) {
+        return shellKeysEnabled && settingsService.reservedShellShortcuts.indexOf(sequence) < 0
+    }
     function section(name) { return name === "resources" || name === "downloads" ? "gallery" : name }
     function heading(name) { return ({home:"主页面",gallery:"地图资源",resources:"图包管理",downloads:"在线图包",settings:"设置",help:"帮助与公告",custom:"自定义路线",plaza:"路线广场"})[name] || "星图" }
     function activateSection(name) {
@@ -63,19 +66,19 @@ ApplicationWindow {
         enabled: !clientCoordinator.textEntryActive
         onActivated: clientCoordinator.toggleControlsKeyboard()
     }
-    Shortcut { sequence: "Ctrl+1"; context: Qt.WindowShortcut; autoRepeat: false; enabled: root.shellKeysEnabled; onActivated: root.activateSection("home") }
-    Shortcut { sequence: "Ctrl+2"; context: Qt.WindowShortcut; autoRepeat: false; enabled: root.shellKeysEnabled; onActivated: root.activateSection("gallery") }
-    Shortcut { sequence: "Ctrl+3"; context: Qt.WindowShortcut; autoRepeat: false; enabled: root.shellKeysEnabled; onActivated: root.activateSection("custom") }
-    Shortcut { sequence: "Ctrl+4"; context: Qt.WindowShortcut; autoRepeat: false; enabled: root.shellKeysEnabled; onActivated: root.activateSection("plaza") }
-    Shortcut { sequence: "Ctrl+5"; context: Qt.WindowShortcut; autoRepeat: false; enabled: root.shellKeysEnabled; onActivated: root.activateSection("settings") }
-    Shortcut { sequence: "Ctrl+6"; context: Qt.WindowShortcut; autoRepeat: false; enabled: root.shellKeysEnabled; onActivated: root.activateSection("help") }
-    Shortcut { sequence: "Ctrl+Tab"; context: Qt.WindowShortcut; autoRepeat: false; enabled: root.shellKeysEnabled; onActivated: root.moveSection(1) }
-    Shortcut { sequence: "Ctrl+Shift+Tab"; context: Qt.WindowShortcut; autoRepeat: false; enabled: root.shellKeysEnabled; onActivated: root.moveSection(-1) }
-    Shortcut { sequence: "Ctrl+PgDown"; context: Qt.WindowShortcut; autoRepeat: false; enabled: root.shellKeysEnabled; onActivated: root.moveSection(1) }
-    Shortcut { sequence: "Ctrl+PgUp"; context: Qt.WindowShortcut; autoRepeat: false; enabled: root.shellKeysEnabled; onActivated: root.moveSection(-1) }
+    Shortcut { sequence: "Ctrl+1"; context: Qt.WindowShortcut; autoRepeat: false; enabled: root.shellShortcutEnabled(sequence); onActivated: root.activateSection("home") }
+    Shortcut { sequence: "Ctrl+2"; context: Qt.WindowShortcut; autoRepeat: false; enabled: root.shellShortcutEnabled(sequence); onActivated: root.activateSection("gallery") }
+    Shortcut { sequence: "Ctrl+3"; context: Qt.WindowShortcut; autoRepeat: false; enabled: root.shellShortcutEnabled(sequence); onActivated: root.activateSection("custom") }
+    Shortcut { sequence: "Ctrl+4"; context: Qt.WindowShortcut; autoRepeat: false; enabled: root.shellShortcutEnabled(sequence); onActivated: root.activateSection("plaza") }
+    Shortcut { sequence: "Ctrl+5"; context: Qt.WindowShortcut; autoRepeat: false; enabled: root.shellShortcutEnabled(sequence); onActivated: root.activateSection("settings") }
+    Shortcut { sequence: "Ctrl+6"; context: Qt.WindowShortcut; autoRepeat: false; enabled: root.shellShortcutEnabled(sequence); onActivated: root.activateSection("help") }
+    Shortcut { sequence: "Ctrl+Tab"; context: Qt.WindowShortcut; autoRepeat: false; enabled: root.shellShortcutEnabled(sequence); onActivated: root.moveSection(1) }
+    Shortcut { sequence: "Ctrl+Shift+Tab"; context: Qt.WindowShortcut; autoRepeat: false; enabled: root.shellShortcutEnabled(sequence); onActivated: root.moveSection(-1) }
+    Shortcut { sequence: "Ctrl+PgDown"; context: Qt.WindowShortcut; autoRepeat: false; enabled: root.shellShortcutEnabled(sequence); onActivated: root.moveSection(1) }
+    Shortcut { sequence: "Ctrl+PgUp"; context: Qt.WindowShortcut; autoRepeat: false; enabled: root.shellShortcutEnabled(sequence); onActivated: root.moveSection(-1) }
     Shortcut {
         sequence: "Alt+Left"; context: Qt.WindowShortcut; autoRepeat: false
-        enabled: root.shellKeysEnabled && (root.page === "resources" || root.page === "downloads")
+        enabled: root.shellShortcutEnabled(sequence) && (root.page === "resources" || root.page === "downloads")
         onActivated: root.activateSection("gallery")
     }
     Component.onCompleted: pageFadeReady = true
