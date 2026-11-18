@@ -9,7 +9,6 @@ from __future__ import annotations
 from copy import deepcopy
 from contextvars import ContextVar
 from dataclasses import dataclass
-import hashlib
 import os
 from pathlib import Path
 import re
@@ -130,7 +129,7 @@ class PackageView:
                 reject=lambda reason: _reject('manifest-' + reason))
         except OSError as error:
             raise files.ImportRejected('resource-package-manifest-unavailable') from error
-        digest = hashlib.sha256(raw).hexdigest()
+        digest = stamp['sha256']
         if digest != self.component_ref.manifest_sha256:
             _reject('manifest-changed')
         if self._manifest_identity is None:
@@ -374,13 +373,13 @@ class PackageView:
                         if info.st_size != row['bytes']:
                             _reject('file-size-mismatch')
                         try:
-                            raw, _ = resource_snapshot_io.read_stable_file(
+                            raw, stamp = resource_snapshot_io.read_stable_file(
                                 child, files.MAX_FILE_BYTES, no_links=files._no_links,
                                 reject=lambda reason: _reject('file-' + reason))
                         except OSError as error:
                             raise files.ImportRejected('resource-package-file-unavailable') from error
                         if (len(raw) != row['bytes']
-                                or hashlib.sha256(raw).hexdigest() != row['sha256']):
+                                or stamp['sha256'] != row['sha256']):
                             _reject('file-integrity-mismatch')
                         actual_files.add(key)
                     else:
@@ -556,12 +555,12 @@ class PackageView:
         if not stat.S_ISREG(info.st_mode):
             _reject('non-regular-package-file')
         try:
-            raw, _ = resource_snapshot_io.read_stable_file(
+            raw, stamp = resource_snapshot_io.read_stable_file(
                 target, files.MAX_FILE_BYTES, no_links=files._no_links,
                 reject=lambda reason: _reject('file-' + reason))
         except OSError as error:
             raise files.ImportRejected('resource-package-file-unavailable') from error
-        if len(raw) != row['bytes'] or hashlib.sha256(raw).hexdigest() != row['sha256']:
+        if len(raw) != row['bytes'] or stamp['sha256'] != row['sha256']:
             _reject('file-integrity-mismatch')
         return raw
 

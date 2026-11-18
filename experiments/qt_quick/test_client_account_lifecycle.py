@@ -1,14 +1,21 @@
 """Actual QML dialog lifecycle with gated, synthetic account transport."""
 import json
+from pathlib import Path
+import tempfile
 import threading
 import time
 import unittest
 from unittest.mock import patch
-from PySide6.QtCore import QCoreApplication, QEvent, QPointF, Qt, QUrl
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QPointF, Qt, QUrl, Signal
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtTest import QTest
 import test_client_route_plaza as fixtures
 from test_client_route_plaza import APP, HERE, Router, item, until
+from account_service import AccountService, SessionVault
+from client_paths import WORK_ROOT
+from client_route_plaza import RoutePlazaService
+from client_settings import SettingsService
+from test_account_concurrency import tokens
 
 
 class AccountLifecycleTests(unittest.TestCase):
@@ -175,6 +182,96 @@ ClientAccount {}
         self.service.closeAccount()
         self.service.openAccount()
         self.assertFalse(self.service.snapshot["hasRecoveryCode"])
+
+
+class _EmptyGalleries(QObject):
+    galleriesChanged = Signal()
+
+    def plazaSources(self):
+        return {}
+
+
+class AccountPersistenceUiTests(unittest.TestCase):
+    """Real QML/workers; synthetic transport, cipher and empty galleries. No sockets."""
+
+    harness = AccountLifecycleTests.harness
+
+    def setUp(self):
+        WORK_ROOT.mkdir(exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(prefix='qt-account-save-', dir=WORK_ROOT)
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        (root / '.qt-lab-owner').write_text('qt-quick-isolated-v1')
+        vault = SessionVault(root / 'session', protect=lambda data: data[::-1], unprotect=lambda data: data[::-1])
+        def api(method, path, body=None, **kwargs):
+            if path == '/v1/auth/login':
+                return tokens('initial')
+            if path == '/v1/auth/refresh':
+                return tokens('rotated')
+            if path == '/v1/community/my/map-galleries':
+                self.assertEqual(kwargs['token'], 'rotated')
+                return []
+            if path == '/v1/auth/logout':
+                return None
+            raise AssertionError('unexpected synthetic account request')
+        account = AccountService(root, vault=vault, api=api)
+        self.galleries = _EmptyGalleries()
+        self.service = RoutePlazaService(root, self.galleries, account=account, listing=lambda _query: [])
+        self.addCleanup(self.service.shutdown)
+        self.settings = SettingsService(root)
+        self.addCleanup(self.settings.shutdown)
+
+    def login(self):
+        self.service.openAccount()
+        self.service.submitAccount('alice', '', '', '', 'secret1', '')
+        until(lambda: not self.service.snapshot['busy'])
+
+    def test_failed_refresh_save_is_visible_on_return_and_in_account_dialog(self):
+        window = self.harness()
+        self.login()
+        page = item(window, 'routePlazaPage')
+        page.setProperty('visible', False)
+        self.service.account._session.access_expires = 0
+        with patch('account_service.os.replace', side_effect=OSError('private-path/rotated-refresh/secret1')):
+            self.service.selectTab('mine')
+            until(lambda: not self.service.snapshot['busy'] and self.service.snapshot['mineLoaded'])
+        page.setProperty('visible', True)
+        status = item(window, 'plazaStatus')
+        warning = '这次没写入，重启后可能要重新登录'
+        until(lambda: warning in status.property('text'))
+        self.assertTrue(status.isVisible())
+        self.assertFalse(self.service.snapshot['error'])
+        self.assertIn('已登录：alice', item(window, 'plazaAccountStatus').property('text'))
+        self.service.openAccount()
+        until(lambda: item(window, 'accountDialog').property('opened'))
+        message = item(window, 'accountMessage')
+        self.assertTrue(message.isVisible())
+        self.assertEqual(message.property('text'), warning)
+        self.assertNotIn('rotated-refresh', json.dumps(self.service.snapshot))
+        self.assertNotIn('private-path', json.dumps(self.service.snapshot))
+        self.assertNotIn('secret1', json.dumps(self.service.snapshot))
+        self.service.closeAccount()
+        # Another successful operation must not overwrite an outstanding warning.
+        self.service.loadMine()
+        until(lambda: not self.service.snapshot['busy'])
+        self.assertEqual(status.property('text').count(warning), 1)
+        self.service.account._session.access_expires = 0
+        self.service.loadMine()
+        until(lambda: not self.service.snapshot['busy'])
+        self.assertNotIn(warning, status.property('text'))
+
+    def test_failed_login_save_stays_logged_in_and_logout_clears_visible_warning(self):
+        window = self.harness()
+        with patch('account_service.os.replace', side_effect=OSError('private-path/initial-refresh')):
+            self.login()
+        self.assertEqual(self.service.snapshot['username'], 'alice')
+        self.assertFalse(self.service.snapshot['accountOpen'])
+        status = item(window, 'plazaStatus')
+        self.assertIn('这次没写入，重启后可能要重新登录', status.property('text'))
+        self.service.logout()
+        until(lambda: not self.service.snapshot['busy'])
+        self.assertEqual(self.service.snapshot['username'], '')
+        self.assertNotIn('这次没写入', status.property('text'))
 
 
 if __name__ == "__main__":

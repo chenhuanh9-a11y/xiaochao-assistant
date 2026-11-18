@@ -477,11 +477,24 @@ Item {
                         onClicked: root.saveMapSelectionMode("manual")
                     }
                 }
+                CheckBox {
+                    objectName: "setting_manualMapLock"
+                    // S0 automatic recognition supports manual confirmation; S1 does not.
+                    // automaticMapSelection above means S1, not the chosen S0 mode.
+                    visible: root.draftSeason === "s0"
+                    enabled: visible && !settingsService.busy && root.preferences.mapSelectionMode !== "manual"
+                    text: "手动锁图（保留自动候选）"
+                    checked: root.preferences.manualMapLock === true
+                    onToggled: settingsService.setValue("manualMapLock", checked)
+                }
                 Note {
                     objectName: "settingsMapSelectionExplanation"
-                    visible: !root.automaticMapSelection && root.preferences.mapSelectionMode === "manual"
-                    text: root.automaticMapSelection
-                        ? "" : "手动选图：用快捷键或游戏控件选择地图。"
+                    visible: !root.automaticMapSelection
+                    text: root.preferences.mapSelectionMode === "manual"
+                        ? "手动选图：用快捷键或游戏控件选择地图。"
+                        : root.preferences.manualMapLock === true && root.preferences.mapSelectionMode !== "manual"
+                            ? "手动锁图：照常收集候选，选择并确认后才锁定本局地图。"
+                            : "自动识别会按原流程确认地图。"
                 }
                 GridLayout {
                     columns: root.width < 560 ? 1 : 2

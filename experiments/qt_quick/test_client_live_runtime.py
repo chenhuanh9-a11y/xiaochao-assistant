@@ -97,6 +97,36 @@ class LiveRuntimeContracts(unittest.TestCase):
         self.assertTrue(result["success"], result)
         return result
 
+    def test_manual_map_lock_keeps_ranked_candidate_unlocked_until_confirm(self):
+        self.runtime.configure_settings({"manualMapLock": True})
+        second = SimpleNamespace(id="fixture-map-2", name="Fixture Map Two")
+        self.engine.pack.maps.append(second)
+        self.engine.pack.by_id[second.id] = second
+        locked = self.begin_and_capture()
+        self.assertTrue(locked["success"])
+        state = self.runtime.snapshot()
+        self.assertEqual(self.engine.rank_count, 1)
+        self.assertEqual(state["mapId"], "")
+        self.assertFalse(state["identityLocked"])
+        self.assertTrue(state["manualMapLockEnabled"])
+        self.assertEqual([row["mapId"] for row in state["candidateRows"]], ["fixture-map", "fixture-map-2"])
+        self.assertIn("select_candidate", state["availableCommands"])
+        selected = self.dispatch("select_candidate", index=0)
+        self.assertTrue(selected["success"], selected)
+        confirmed = self.dispatch("confirm_route")
+        self.assertTrue(confirmed["success"], confirmed)
+        self.assertEqual(self.runtime.snapshot()["mapId"], "fixture-map")
+        self.assertIn("next_candidate", self.runtime.snapshot()["availableCommands"])
+        old_render_token = self.runtime.snapshot()["render"].get("token")
+        self.assertTrue(old_render_token)
+        switched = self.dispatch("next_candidate")
+        self.assertTrue(switched["success"], switched)
+        state = self.runtime.snapshot()
+        self.assertEqual(state["mapId"], "fixture-map")
+        self.assertEqual(state["selectedCandidate"]["mapId"], "fixture-map-2")
+        self.assertIsNone(self.runtime.render_payload(old_render_token))
+        self.assertIn("confirm_route", state["availableCommands"])
+
     def test_identity_rank_cannot_overwrite_new_group_intent_on_same_frame(self):
         self.assertTrue(self.dispatch('start_round')['success'])
         rank = self.engine.rank

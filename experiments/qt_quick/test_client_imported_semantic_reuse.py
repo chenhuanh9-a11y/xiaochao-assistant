@@ -191,6 +191,27 @@ class ImportedSemanticReuseTests(unittest.TestCase):
             self.assertEqual(manifest_path.read_bytes(), damaged_manifest)
             self.assertEqual(decode.call_count, 1)
 
+    def test_final_input_proof_rejects_payload_changed_during_author_identity_check(self):
+        self.activate()
+        catalog_before = (self.root / 'catalog.json').read_bytes()
+        document = json.loads(catalog_before)
+        inspected = imported_activation.selection.inspect_selection(
+            self.root, document, supported_capabilities=SUPPORTED_CAPABILITIES)
+        base = inspected.views[self.refs['base']]
+        target = base.path(base.component['entrypoint'])
+        original = target.read_bytes()
+
+        def author_identity_check():
+            # A concurrent write during the identity phase must be covered by
+            # the actual final byte proof, even with a cached semantic result.
+            target.write_bytes(b'X' * len(original))
+
+        validator = imported_activation._SelectionValidator(
+            self.root, self.paths, self.resolver, check_updates=author_identity_check)
+        with self.assertRaisesRegex(ValueError, 'resource-package-file-integrity-mismatch'):
+            validator._prove_inputs(inspected)
+        self.assertEqual((self.root / 'catalog.json').read_bytes(), catalog_before)
+
     def test_same_base_with_new_author_decodes_the_new_pixels(self):
         first_author = self.author_component(
             'first', profile_id='author-first-profile', bgra=(21, 34, 55, 255))
@@ -214,6 +235,43 @@ class ImportedSemanticReuseTests(unittest.TestCase):
         actual_pixels = cv2.imdecode(np.frombuffer(decoded_next[0], dtype=np.uint8), cv2.IMREAD_UNCHANGED)
         np.testing.assert_array_equal(actual_pixels, self.author_pixels[next_author])
         self.assertEqual(self.resolver.snapshot().displays, (first_author, next_author))
+
+    def test_final_input_proof_rejects_earlier_author_changed_while_later_package_is_checked(self):
+        first = self.author_component('proof-first', profile_id='author-proof-first', bgra=(11, 22, 33, 255))
+        later = self.author_component('proof-later', profile_id='author-proof-later', bgra=(44, 55, 66, 255))
+        self.activate(display_refs=(first, later))
+        before = (self.root / 'catalog.json').read_bytes()
+        image = PackageView(self.root, first).path('route.png')
+        damaged = b'changed while the later package is checked'
+        state = dict(proving=False, first_checked=False, damaged=False)
+        prove = imported_activation._SelectionValidator._prove_inputs
+        inventory = PackageView.validate_inventory
+
+        def actual_final_proof(validator, inspected):
+            state['proving'] = True
+            try:
+                return prove(validator, inspected)
+            finally:
+                state['proving'] = False
+
+        def inventory_then_damage(view):
+            result = inventory(view)
+            if state['proving']:
+                if view.component_ref == first:
+                    state['first_checked'] = True
+                elif view.component_ref == later and state['first_checked']:
+                    image.write_bytes(damaged)
+                    state['damaged'] = True
+            return result
+
+        with patch.object(imported_activation._SelectionValidator, '_prove_inputs', actual_final_proof), \
+                patch.object(PackageView, 'validate_inventory', inventory_then_damage):
+            with self.assertRaisesRegex(ValueError, 'file-integrity-mismatch'):
+                self.activate()
+        self.assertTrue(state['damaged'], 'the real later-package inventory did not inject the write')
+        self.assertEqual(image.read_bytes(), damaged)
+        self.assertEqual((self.root / 'catalog.json').read_bytes(), before)
+        self.assertFalse((self.root / 'transactions/pending-catalog.json').exists())
 
     def test_separately_valid_authors_cannot_be_spliced_into_profile_conflict(self):
         first_author = self.author_component(

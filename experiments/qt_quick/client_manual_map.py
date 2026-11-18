@@ -24,8 +24,8 @@ MANUAL_PICKER_ACTION = "manual-map-picker"
 # Fresh installs start unbound: Alt+1 would conflict with a standalone ALT
 # map/action key. Stored ten-slot bindings are preserved by SettingsService.
 MANUAL_MAP_PICKER_DEFAULT_HOTKEY = ""
-# Only routed while the picker is visible; Escape keeps its existing map-close
-# edge as well, matching the Tk picker.
+# Only routed while the picker is visible; bare Escape closes only the picker
+# inside this app. The native hook still passes every key through to the game.
 PICKER_KEY_VKS = {"F1": 0x70, "F2": 0x71, "F3": 0x72, "F4": 0x73,
                   "PageUp": 0x21, "PageDown": 0x22, "Backspace": 0x08,
                   "Escape": 0x1B}

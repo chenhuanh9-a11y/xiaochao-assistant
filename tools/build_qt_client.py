@@ -82,18 +82,13 @@ GRID_PROJECT = "hybrid/StarMap.Grid/StarMap.Grid.csproj"
 GRID_DIRECTORY = "_internal/csharp-grid"
 GRID_RUNTIME_PACK = "Microsoft.NETCore.App.Runtime.win-x64"
 GRID_SDK = "10.0.403"
-# Runtime libraries from LGPL-capable QtBase/QtDeclarative/QtSvg. Unexpected
-# modules stop the build for review rather than inheriting the app's license.
-QT_LGPL_MODULES = set("""Concurrent Core DBus Gui Network OpenGL OpenGLWidgets PrintSupport
-Qml QmlCore QmlLocalStorage QmlMeta QmlModels QmlNetwork QmlWorkerScript QmlXmlListModel
+# Runtime libraries from LGPL-capable QtBase/QtDeclarative used by Basic QML.
+# Unexpected modules stop the build for review rather than inheriting the app's license.
+QT_LGPL_MODULES = set("""Concurrent Core Gui Network OpenGL
+Qml QmlCore QmlMeta QmlModels QmlWorkerScript
 Quick QuickControls2 QuickControls2Basic QuickControls2BasicStyleImpl QuickControls2Impl
-QuickControls2FluentWinUI3StyleImpl QuickControls2Fusion QuickControls2FusionStyleImpl
-QuickControls2Imagine QuickControls2ImagineStyleImpl QuickControls2Material QuickControls2MaterialStyleImpl
-QuickControls2Universal QuickControls2UniversalStyleImpl QuickControls2WindowsStyleImpl
-QuickDialogs2 QuickDialogs2QuickImpl QuickDialogs2Utils QuickEffects QuickLayouts QuickParticles
-QuickShapes QuickTemplates2 QuickTest QuickVectorImage QuickVectorImageGenerator QuickVectorImageHelpers
-QuickWidgets Sql Svg SvgWidgets Test Widgets Xml LabsAnimation LabsFolderListModel LabsPlatform
-LabsQmlModels LabsSettings LabsSharedImage LabsStyleKit LabsStyleKitImpl LabsSynchronizer LabsWavefrontMesh""".split())
+QuickDialogs2 QuickDialogs2QuickImpl QuickDialogs2Utils QuickLayouts QuickShapes QuickTemplates2
+QuickTest Test Widgets LabsFolderListModel""".split())
 
 
 def sha256(path):
@@ -415,29 +410,39 @@ def source_support_assets(resources):
 
 
 def prune_unneeded_qt(stage):
-    """Remove unused GPL-only families and optional, unreviewed software GL.
+    """Remove unused Qt styles, plugins, translations and unreferenced bindings.
 
-    Main QML uses Quick/Basic/Dialogs/Layouts, not these optional imports. No
-    installed library is changed: only this build's uninstalled staging files.
+    Main QML imports Quick/Basic/Dialogs/Layouts, and file dialogs import
+    Qt.labs.folderlistmodel. No installed library is changed: only this build's
+    uninstalled staging files. Helper runtimes live outside ``_internal``.
     """
+    from runtime_exclusions import unreferenced_qt_binaries, unused_staged_relative
     internal = stage / "_internal"
-    qml_prefixes = ("pyside6/qml/qtquick/timeline/", "pyside6/qml/qtquick/virtualkeyboard/",
-                    "pyside6/qml/qtquick/pdf/", "pyside6/qml/qtquick3d/", "pyside6/qml/qtquick3dphysics/",
-                    "pyside6/qml/qtcharts/", "pyside6/qml/qtgraphs/", "pyside6/qml/qtdatavisualization/",
-                    "pyside6/qml/qt/labs/lottieqt/")
-    binary = re.compile(r"qt6(?:Lottie|QuickTimeline|VirtualKeyboard|QmlCompiler|Charts|Graphs|DataVisualization|"
-                        r"CanvasPainter|HttpServer|Mqtt|Coap|Grpc|Quick3D|Pdf|WebEngine).*\.dll", re.I)
     removed = []
+
+    def take(path, reason):
+        relative = path.relative_to(internal).as_posix()
+        removed.append(dict(path=relative, sha256=sha256(path), bytes=path.stat().st_size, reason=reason))
+        path.unlink()
+
     for path in internal.rglob("*"):
         if not path.is_file():
             continue
-        relative = path.relative_to(internal).as_posix()
-        name = path.name.lower()
-        if (relative.lower().startswith(qml_prefixes) or binary.fullmatch(path.name)
-                or any(family in name for family in ("lottie", "virtualkeyboard", "quick3d", "quicktimeline", "qmlcompiler"))
-                or name in {"qpdf.dll", "opengl32sw.dll"}):
-            removed.append(dict(path=relative, sha256=sha256(path), bytes=path.stat().st_size))
-            path.unlink()
+        reason = unused_staged_relative(path.relative_to(internal).as_posix())
+        if reason:
+            take(path, reason)
+    present = [path.relative_to(internal).as_posix() for path in internal.rglob("*") if path.is_file()]
+
+    def imports_of(relative):
+        import pefile
+        with pefile.PE(str(internal / relative), fast_load=True) as pe:
+            pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"],
+                                                   pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT"]])
+            entries = [*getattr(pe, "DIRECTORY_ENTRY_IMPORT", []), *getattr(pe, "DIRECTORY_ENTRY_DELAY_IMPORT", [])]
+            return [entry.dll.decode("ascii") for entry in entries]
+
+    for relative in unreferenced_qt_binaries(present, imports_of):
+        take(internal / relative, "unreferenced-qt-binding")
     windows_icu = use_windows_icu(internal)
     removed.extend(windows_icu["removed"])
     # Check both normal and delay imports without loading any binary. This
@@ -493,6 +498,13 @@ def use_windows_icu(internal):
         removed.append(dict(path=path.relative_to(internal).as_posix(), bytes=path.stat().st_size,
                             sha256=sha256(path), reason="Qt uses Windows native unversioned ICU ABI"))
         path.unlink()
+    # Qt6Core links icuuc.dll and does not reference this bundled data file.
+    # System ICU supplies the data after the symbol check above.
+    data = internal / "PySide6/resources/icudtl.dat"
+    if data.is_file():
+        removed.append(dict(path=data.relative_to(internal).as_posix(), bytes=data.stat().st_size,
+                            sha256=sha256(data), reason="Windows ICU carries its own data"))
+        data.unlink()
     return dict(provider="Windows System32/icuuc.dll", requiredSymbols=sorted(name.decode("ascii") for name in required),
                 systemLibraryBundled=False, removed=removed)
 

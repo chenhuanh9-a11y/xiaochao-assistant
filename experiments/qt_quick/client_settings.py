@@ -36,7 +36,8 @@ FRESH_ACTIONS = ["F9", "F6", "F7", "F8", "", "", "F11", "", "F10",
                  MANUAL_MAP_PICKER_DEFAULT_HOTKEY]
 BOOL_DEFAULTS = {"automaticFailureEvidence": True, "referenceSheetVisible": True, "sheetVisibilityEnabled": True,
                  "orbVisible": True, "qtControlsVisible": True, "reduceMotion": False, "uiSoundEnabled": False,
-                 "difficultGridEnabled": False, "onboardingCompleted": False, "routePointNumbers": False}
+                 "difficultGridEnabled": False, "onboardingCompleted": False, "routePointNumbers": False,
+                 "manualMapLock": False}
 RANGES = {"sheetOpacity": (0., 1.), "referenceOpacity": (0., 1.),
           "interfaceOpacity": (.65, .95), "sheetScale": (.5, 1.5)}
 DEFAULTS = {**BOOL_DEFAULTS, "sheetOpacity": .55, "referenceOpacity": .55,
@@ -236,6 +237,21 @@ class SettingsService(QObject):
             return ""
 
     applicationPanelShortcut = Property(str, _application_panel_shortcut, notify=changed)
+
+    def _reserved_shell_shortcuts(self):
+        # Saved user bindings own their chord, including native-only actions.
+        # Draft edits must not disable navigation before the binding is live.
+        bindings = [self._baseline["hotkey"], *self._baseline["actionHotkeys"]]
+        identities = {parse_chord(value, _primary_hotkey_to_vk).identity
+                      for value in bindings if value}
+        sequences = {**{f"Ctrl+{i}": f"Ctrl+{i}" for i in range(1, 7)},
+                     "Ctrl+Tab": "Ctrl+TAB", "Ctrl+Shift+Tab": "Ctrl+Shift+TAB",
+                     "Ctrl+PgDown": "Ctrl+PAGEDOWN", "Ctrl+PgUp": "Ctrl+PAGEUP",
+                     "Alt+Left": "Alt+LEFT"}
+        return [sequence for sequence, native in sequences.items()
+                if parse_chord(native, _primary_hotkey_to_vk).identity in identities]
+
+    reservedShellShortcuts = Property("QStringList", _reserved_shell_shortcuts, notify=changed)
 
     def _season_options(self):
         rows = season_options()

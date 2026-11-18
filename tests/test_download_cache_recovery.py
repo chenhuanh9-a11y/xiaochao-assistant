@@ -1,6 +1,8 @@
 """Production cache locking/publication, controlled response bytes; no network."""
 import hashlib
 import io
+import os
+from contextlib import contextmanager
 from pathlib import Path
 import sys
 import tempfile
@@ -111,6 +113,73 @@ class DownloadCacheRecovery(unittest.TestCase):
         self.assertFalse(self.cached.exists())
         self.assertEqual([p.read_bytes() for p in self.backups()], [b'old-broken'])
         self.assertEqual(list(self.root.glob('*.part')), [])
+
+    def test_truncated_response_without_length_is_rejected_and_cleaned(self):
+        response = Response(self.good[:-1])
+        response.headers = {}
+        with patch.object(self.service, '_open', return_value=response):
+            with self.assertRaisesRegex(download.DownloadError, 'package-size-or-sha-mismatch'):
+                self.service.download_package('nightmare-suju')
+        self.assertFalse(self.cached.exists())
+        self.assertEqual(list(self.root.glob('*.part')), [])
+
+    def test_actual_disk_bytes_are_verified_even_when_received_stream_is_good(self):
+        sync = download.os.fsync
+        def corrupt_after_flush(fd):
+            sync(fd)
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.write(fd, b'x')  # Same size, same locked object, wrong disk bytes.
+        with patch.object(self.service, '_open', return_value=Response(self.good)), \
+                patch.object(download.os, 'fsync', side_effect=corrupt_after_flush):
+            with self.assertRaisesRegex(download.DownloadError, 'package-size-or-sha-mismatch'):
+                self.service.download_package('nightmare-suju')
+        self.assertFalse(self.cached.exists())
+        self.assertEqual(list(self.root.glob('*.part')), [])
+
+    def test_cancel_after_receiving_bytes_cleans_only_the_partial_download(self):
+        cancelled = threading.Event()
+        unrelated = self.root / 'user-selected.zip'
+        unrelated.write_bytes(b'user-content')
+        with patch.object(self.service, '_open', return_value=Response(self.good)):
+            with self.assertRaises(download.DownloadCancelled):
+                self.service.download_package('nightmare-suju', cancel_event=cancelled,
+                    progress=lambda *_: cancelled.set())
+        self.assertFalse(self.cached.exists())
+        self.assertEqual(list(self.root.glob('*.part')), [])
+        self.assertEqual(unrelated.read_bytes(), b'user-content')
+
+    def test_read_error_after_partial_write_cleans_known_contents(self):
+        class Interrupted(Response):
+            def read1(self, size):
+                if self.tell():
+                    raise OSError('controlled connection loss')
+                return super().read1(4)
+        with patch.object(self.service, '_open', return_value=Interrupted(self.good)):
+            with self.assertRaisesRegex(download.DownloadError, 'controlled connection loss'):
+                self.service.download_package('nightmare-suju')
+        self.assertFalse(self.cached.exists())
+        self.assertEqual(list(self.root.glob('*.part')), [])
+
+    def test_partial_file_changed_after_lock_release_is_preserved(self):
+        locked = download._locked_file
+        cancelled = threading.Event()
+        foreign = []
+        @contextmanager
+        def replace_after_unlock(path, **kwargs):
+            try:
+                with locked(path, **kwargs) as stream:
+                    yield stream
+            finally:
+                if kwargs.get('writable'):
+                    path.write_bytes(b'foreign after unlock')
+                    foreign.append(path)
+        with patch.object(download, '_locked_file', side_effect=replace_after_unlock), \
+                patch.object(self.service, '_open', return_value=Response(self.good)):
+            with self.assertRaises(download.DownloadCancelled):
+                self.service.download_package('nightmare-suju', cancel_event=cancelled,
+                    progress=lambda *_: cancelled.set())
+        self.assertFalse(self.cached.exists())
+        self.assertEqual([p.read_bytes() for p in foreign], [b'foreign after unlock'])
 
     def test_cache_cannot_be_changed_or_replaced_between_validation_and_handle_rename(self):
         self.cached.write_bytes(b'broken')

@@ -12,6 +12,7 @@ from PySide6.QtGui import QFont, QGuiApplication, QIcon, QWindow
 from PySide6.QtQml import QQmlApplicationEngine
 from client_paths import APP_ROOT, DEFAULT_SANDBOX, FROZEN, PRODUCTION, RESOURCE_ROOT, WORK_ROOT, RuntimePaths, owned_sandbox, runtime_paths
 from client_manual_map_service import ManualMapPickerService
+from qt_quick_style import pin_quick_controls_style
 from qt_startup_splash import set_startup_stage
 
 if str(APP_ROOT) not in sys.path:
@@ -74,6 +75,7 @@ def prepare_first_run(sandbox):
 class QtClient:
     def __init__(self, app, sandbox, *, probe_output=None, info_fetch=None, on_created=None,
                  g_cycle_evidence=False, g_cycle_full_input=False, grid_backend="python"):
+        pin_quick_controls_style()
         if g_cycle_full_input and not g_cycle_evidence:
             raise ValueError("full solver evidence requires explicit test evidence")
         set_startup_stage("create-services")
@@ -616,6 +618,7 @@ class QtClient:
 
 
 def main():
+    pin_quick_controls_style()
     from qt_startup_splash import close_startup_splash
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sandbox", type=Path, default=DEFAULT_SANDBOX)

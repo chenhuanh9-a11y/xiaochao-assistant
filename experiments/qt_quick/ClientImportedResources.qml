@@ -58,16 +58,16 @@ Item {
     }
     function statusText(row) {
         if (row.status === "selected") return "已选用 · " + row.selectedContexts.join("、")
-        if (row.status === "saved") return "文件已校验 · 尚未启用"
-        if (row.status === "damaged") return "文件或版本记录异常，请重新获取资源包"
-        return "已保存 · 内容待校验，尚未启用"
+        if (row.status === "saved") return "文件已核对，还没启用"
+        if (row.status === "damaged") return "文件或版本记录有问题，请重新获取这个资源包"
+        return "已保存，内容还没核对，也还没启用"
     }
     ColumnLayout {
         anchors.fill: parent; spacing: 12
         Label { text: "本地资源"; color: "#142b4b"; font.pixelSize: 18; font.bold: true }
         Label {
             Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#354f75"; font.pixelSize: 14
-            text: "结构包（.xingtu-base）包含楼层控件，导入后自动启用对应模式。请先导入结构包，再导入作者路线包（.xingtu-route）；路线导入后会自动加入地图资源，可直接预览和选择作者。"
+            text: "先导入结构包（.xingtu-base），楼层控件会一起启用。再导入作者路线包（.xingtu-route），路线会出现在地图资源里，可以直接预览和选用。"
         }
         Label {
             objectName: "resourceDirectoryLabel"
@@ -181,7 +181,7 @@ Item {
                 Label {
                     anchors.centerIn: parent; width: Math.min(parent.width, 440)
                     visible: packages.count === 0; horizontalAlignment: Text.AlignHCenter
-                    text: resourceService.busy ? "正在读取本地资源…" : "尚未导入资源。请先导入所需模式的基础结构包；楼层控件已随包提供。"
+                    text: resourceService.busy ? "正在读取本地资源…" : "还没有资源包。先导入当前模式的结构包，楼层控件会一起带上。"
                     color: "#526785"; wrapMode: Text.Wrap; font.pixelSize: 14
                 }
             }

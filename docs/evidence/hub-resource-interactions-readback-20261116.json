@@ -1,0 +1,10 @@
+{
+  "status": "passed",
+  "sourceProcesses": 6,
+  "rawCopyEquality": true,
+  "operationGroups": 13,
+  "recomputedSamples": 78,
+  "medianMethod": "sorted three values, take middle",
+  "maximumMethod": "sorted three values, take last",
+  "sameDeletionPackageIdentities": true
+}

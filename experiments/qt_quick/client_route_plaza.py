@@ -87,11 +87,14 @@ class RoutePlazaService(QObject):
         galleries.galleriesChanged.connect(self._refresh_rows)
 
     def _snapshot(self):
-        return dict(busy=self._busy, operation=self._operation, message=self._message, error=self._error,
+        warning = self.account.persistence_warning
+        return dict(busy=self._busy, operation=self._operation,
+                    message="\n".join(filter(None, (self._message, warning))), error=self._error,
                     username=self.account.username or "", persistent=self.account.persistent,
                     loaded=self._loaded, count=len(self._routes), downloading=self._download,
                     query=self._query, accountOpen=self._account_open, accountMode=self._account_mode,
-                    accountMessage=self._account_message, recoveryPending=bool(self.account.pending_recovery_code),
+                    accountMessage="\n".join(filter(None, (self._account_message, warning))),
+                    recoveryPending=bool(self.account.pending_recovery_code),
                     hasRecoveryCode=bool(self._visible_recovery_code()), tab=self._tab,
                     mineLoaded=self._mine_loaded, editorOpen=self._editor_open,
                     editorGeneration=self._editor_generation, editorVersion=self._editor_version,

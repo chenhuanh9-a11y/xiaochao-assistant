@@ -635,7 +635,7 @@ class NavigationDownloadTests(unittest.TestCase):
         transport = patch.object(route_plaza, "fetch_archive", side_effect=fetch)
         transport.start()
         self.addCleanup(transport.stop)
-        account = SimpleNamespace(username="synthetic", persistent=False, pending_recovery_code="", identity_context="fixture",
+        account = SimpleNamespace(username="synthetic", persistent=False, pending_recovery_code="", identity_context="fixture", persistence_warning="",
                                   authorized=authorized, shutdown=lambda: None)
         self.service = RoutePlazaService(self.root, self.galleries, account=account, listing=lambda _: [route])
         self.addCleanup(self.service.shutdown)
