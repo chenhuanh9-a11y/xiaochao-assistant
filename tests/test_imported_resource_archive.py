@@ -38,6 +38,20 @@ def after_extraction(callback):
         yield
 
 
+@contextmanager
+def after_staged_validation(callback):
+    """Inject races after pre-admission validation, not before the restored gate."""
+    validate = archives._validate_staged
+
+    def validated(root, refs):
+        result = validate(root, refs)
+        callback(root, refs)
+        return result
+
+    with patch.object(archives, '_validate_staged', side_effect=validated):
+        yield
+
+
 class ImportedResourceArchiveTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -134,6 +148,46 @@ class ImportedResourceArchiveTests(unittest.TestCase):
                     archives.save_archive(self.archive_path, self.resource_root, **expected)
                 self.assertFalse(self.resource_root.exists())
                 self.assertEqual(self.archive_path.read_bytes(), self.source_bytes)
+
+    def test_save_without_admission_retains_full_inventory_validation(self):
+        validate = packages.PackageView.validate_inventory
+        validated = []
+
+        def record(view):
+            validated.append(view.component_ref)
+            return validate(view)
+
+        with patch.object(packages.PackageView, 'validate_inventory', record):
+            result = archives.save_archive(self.archive_path, self.resource_root)
+        self.assertEqual(result.status, 'saved')
+        self.assertIn(result.component_refs[0], validated)
+
+    def test_damaged_staged_tree_is_rejected_before_partial_admission(self):
+        # Admission is not a full-tree proof and must never receive a damaged
+        # tree merely because extraction previously verified the ZIP bytes.
+        for fault in ('payload', 'directory', 'manifest'):
+            with self.subTest(fault=fault):
+                seen = []
+
+                def damage(root, refs):
+                    package = root / 'packages' / 'demo' / 'v1'
+                    if fault == 'payload':
+                        path = package / 'data' / 'controls' / 'profile.json'
+                        path.write_bytes(b'X' * path.stat().st_size)
+                    elif fault == 'directory':
+                        (package / 'data' / 'base' / 'undeclared').mkdir()
+                    else:
+                        (package / 'manifest.json').write_bytes(b'{}')
+
+                def partial_admission(views):
+                    seen.append(True)  # A valid callback need not read all views.
+
+                with after_extraction(damage):
+                    with self.assertRaises(ValueError):
+                        archives.save_archive(self.archive_path, self.resource_root,
+                                              validate_components=partial_admission)
+                self.assertEqual(seen, [])
+                self.assertFalse(self.package_path().exists())
 
     def test_staged_payload_changed_by_admission_is_not_published(self):
         def corrupt(views):
@@ -606,7 +660,7 @@ class ImportedResourceArchiveTests(unittest.TestCase):
                 state['foreign'].write_bytes(b'foreign-owned')
                 state['cancelled'] = True
 
-        with after_extraction(replace_after_validation):
+        with after_staged_validation(replace_after_validation):
             with self.assertRaisesRegex(ValueError, 'cancelled'):
                 archives.save_archive(self.archive_path, self.resource_root,
                                       cancelled=lambda: state['cancelled'])
@@ -626,7 +680,7 @@ class ImportedResourceArchiveTests(unittest.TestCase):
                 state['foreign'] = candidate / 'foreign-user-data.txt'
                 state['foreign'].write_bytes(b'foreign-owned')
 
-        with after_extraction(replace_after_validation):
+        with after_staged_validation(replace_after_validation):
             with self.assertRaisesRegex(ValueError, 'resource-directory-source-changed'):
                 archives.save_archive(self.archive_path, self.resource_root)
         self.assertEqual(state['foreign'].read_bytes(), b'foreign-owned')
@@ -641,7 +695,7 @@ class ImportedResourceArchiveTests(unittest.TestCase):
                 state['foreign'] = root / 'packages' / 'demo' / 'v1' / 'foreign-user-data.txt'
                 state['foreign'].write_bytes(b'foreign-owned')
 
-        with after_extraction(add_after_validation):
+        with after_staged_validation(add_after_validation):
             with self.assertRaisesRegex(ValueError, 'object-changed'):
                 archives.save_archive(self.archive_path, self.resource_root)
         self.assertEqual(state['foreign'].read_bytes(), b'foreign-owned')
@@ -673,7 +727,7 @@ class ImportedResourceArchiveTests(unittest.TestCase):
                 state['foreign'].write_bytes(b'new unowned object')
                 state['cancelled'] = True
 
-        with after_extraction(add_after_validation):
+        with after_staged_validation(add_after_validation):
             with self.assertRaisesRegex(ValueError, 'cancelled'):
                 archives.save_archive(self.archive_path, self.resource_root,
                                       cancelled=lambda: state['cancelled'])

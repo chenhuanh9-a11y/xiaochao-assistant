@@ -689,6 +689,11 @@ def save_archive(zip_path, resource_root, *, expected_archive_sha256=None, cance
                 _directory_sync(stage.parent)
                 ownership = _new_stage_ownership(stage)
                 _extract_archive(archive, stage, parsed, cancelled, ownership)
+                # Extraction/ownership proves writes, not the public reader's
+                # complete on-disk inventory contract. Admission callbacks may
+                # inspect only headers or active dependencies (or be absent).
+                # Validate before handing any staged views to those consumers.
+                _validate_staged(stage, parsed[3])
                 if validate_components is not None:
                     validate_components(tuple(packages.PackageView(stage, ref) for ref in parsed[3]))
                 _check_cancelled(cancelled)
