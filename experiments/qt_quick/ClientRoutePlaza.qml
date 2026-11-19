@@ -8,11 +8,36 @@ Item {
     objectName: "routePlazaPage"
     property var state: ({busy:false, username:"", operation:"", message:"", error:false, loaded:false, downloading:""})
     function sync() { if (visible) state = routePlazaService.snapshot }
-    Connections { target: routePlazaService; function onChanged() { root.sync() } }
-    onVisibleChanged: { sync(); routePlazaService.setActive(visible) }
+    Connections {
+        target: routePlazaService
+        function onChanged() { root.sync() }
+        function onDownloadBlocked(message) {
+            if (!root.visible) return
+            resourceRequired.message = message
+            resourceRequired.open()
+        }
+        function onOpenCustomRequested() { if (root.visible) clientCoordinator.navigate("custom") }
+    }
+    onVisibleChanged: {
+        if (!visible) resourceRequired.close()
+        sync(); routePlazaService.setActive(visible)
+    }
     Component.onCompleted: { sync(); routePlazaService.setActive(visible) }
     ClientRouteSubmission {}
     ClientRouteDiscussion {}
+    Dialog {
+        id: resourceRequired
+        objectName: "plazaStructureRequired"
+        property string message: ""
+        parent: Overlay.overlay; anchors.centerIn: parent
+        width: Math.min(460, parent.width - 32)
+        title: "无法下载路线"
+        modal: true; standardButtons: Dialog.Ok
+        contentItem: Label {
+            text: resourceRequired.message; textFormat: Text.PlainText
+            wrapMode: Text.Wrap; color: "#354f75"
+        }
+    }
     ColumnLayout {
         anchors.fill: parent; spacing: 12
         Label { text: "路线广场"; color: "#142b4b"; font.pixelSize: 24; font.bold: true }
@@ -24,6 +49,7 @@ Item {
         }
         RowLayout {
             Layout.fillWidth: true
+            Label { text: "投稿范围"; color: "#526785" }
             ComboBox {
                 objectName: "plazaRouteScope"
                 Layout.fillWidth: true
@@ -90,6 +116,7 @@ Item {
                     required property string title
                     required property string description
                     required property string author
+                    required property string scopeLabel
                     required property int mapCount
                     required property int downloadCount
                     required property string updatedDate
@@ -106,10 +133,10 @@ Item {
                                 objectName: "plazaDownload_" + card.key
                                 text: root.state.downloading === card.key ? "下载中…" : card.installed ? "去使用 ›" : card.updateAvailable ? "更新路线" : "下载路线"
                                 primary: !card.installed; enabled: !root.state.busy
-                                onClicked: card.installed ? clientCoordinator.navigate("custom") : routePlazaService.downloadRoute(card.key)
+                                onClicked: card.installed ? routePlazaService.openInstalledRoute(card.key) : routePlazaService.downloadRoute(card.key)
                             }
                         }
-                        Label { text: "作者 " + card.author + " · " + card.mapCount + " 张图 · 下载 " + card.downloadCount + " 次" + (card.updatedDate ? " · 更新于 " + card.updatedDate : "") + (card.installed ? " · 已下载" : ""); color: "#526785"; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                        Label { text: card.scopeLabel + " · 作者 " + card.author + " · " + card.mapCount + " 张图 · 下载 " + card.downloadCount + " 次" + (card.updatedDate ? " · 更新于 " + card.updatedDate : "") + (card.installed ? " · 已下载" : ""); textFormat: Text.PlainText; color: "#526785"; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap }
                         Label { visible: !!card.description; text: card.description; textFormat: Text.PlainText; color: "#354f75"; Layout.fillWidth: true; wrapMode: Text.Wrap }
                     }
                 }

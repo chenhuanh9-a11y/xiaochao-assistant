@@ -133,7 +133,6 @@ class QtClient:
             production=bool(self.paths.production and not probe_output))
         self.settings = SettingsService(self.sandbox)
         self.custom_galleries = CustomGalleryService(self.sandbox)
-        self.route_plaza = RoutePlazaService(self.sandbox, self.custom_galleries)
         self.custom_display = CustomGalleryDisplay(self.custom_galleries)
         self.custom_display.set_point_numbers(self.settings.persistedValues.get("routePointNumbers", False))
         self.settings.saved.connect(lambda: self.custom_display.set_point_numbers(
@@ -171,6 +170,8 @@ class QtClient:
         self.session = SessionService(self.runtime)
         self.resources = ImportedResourceService(self.resource_resolver, paths=self.paths,
                                                 engine_factories=self.providers)
+        self.route_plaza = RoutePlazaService(self.sandbox, self.custom_galleries,
+                                            structure_available=self.resources.contextAvailable)
         self.resources.setLeaseProvider(self.session)
         self.settings.setAvailableContexts(self.resources.availableContexts)
         self.resources.availabilityChanged.connect(lambda:

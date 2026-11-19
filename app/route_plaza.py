@@ -67,6 +67,15 @@ class PlazaRoute:
     def updated_date(self) -> str:
         return self.updated_at[:10]
 
+    @property
+    def scope(self):
+        return scope_for(self.scenario, self.mode)
+
+    @property
+    def key(self) -> str:
+        scope = self.scope
+        return self.version_id if scope.id == "legacy-nightmare" else f"{self.version_id}:{scope.id}"
+
 
 def _text(value, limit) -> str:
     return str(value).strip()[:limit] if isinstance(value, (str, int, float)) and not isinstance(value, bool) else ""
@@ -93,16 +102,20 @@ def parse_summary(row, *, scope_id="legacy-nightmare") -> PlazaRoute | None:
 
 
 def list_routes(query: str = "", *, api=call, scope_id="legacy-nightmare", sort="latest") -> list[PlazaRoute]:
-    scope = SCOPES[scope_id]
     if sort not in ("latest", "likes", "comments"):
         raise AccountError("路线排序无效")
-    params = dict(mode=scope.mode, scenario=scope.scenario, content_kind=CONTENT_KIND, limit=50, sort=sort)
+    scopes = SCOPES.values() if scope_id is None else (SCOPES[scope_id],)
+    params = dict(content_kind=CONTENT_KIND, limit=100 if scope_id is None else 50, sort=sort)
+    if scope_id is not None:
+        scope = SCOPES[scope_id]
+        params.update(mode=scope.mode, scenario=scope.scenario)
     if str(query or "").strip():
         params["query"] = str(query).strip()[:80]
     rows = api("GET", "/v1/community/map-galleries?" + urlencode(params))
     if not isinstance(rows, list):
         raise AccountError("路线广场返回的内容无法识别")
-    return [route for row in rows if (route := parse_summary(row, scope_id=scope_id)) is not None]
+    return [route for row in rows for scope in scopes
+            if (route := parse_summary(row, scope_id=scope.id)) is not None]
 
 
 # Download -------------------------------------------------------------------
@@ -332,7 +345,7 @@ def prepare_install(account: AccountService, library: CustomMapLibrary, route: P
     maps, report = convert_manifest(library, manifest)
     check_cancelled()
     if not maps:
-        if report["versionMismatchMaps"]:
+        if report.get("versionMismatchMaps"):
             raise AccountError(NAVIGATION_UPDATE_MESSAGE + "；没有可导入的地图")
         raise AccountError("这套路线里没有本软件能显示的地图")
     source = dict(workId=route.work_id, versionId=route.version_id, revision=_count(manifest.get("revision")),

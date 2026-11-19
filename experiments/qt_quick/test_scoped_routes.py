@@ -225,6 +225,26 @@ class ScopedRoutesTests(unittest.TestCase):
         self.assertIn("sort=likes", calls[0])
         self.assertEqual(route_plaza.list_routes(api=api, scope_id="classic-hard"), [])
 
+    def test_unfiltered_feed_keeps_approved_modes_and_legacy_rows(self):
+        common = dict(content_kind="nightmare-routes", status="approved")
+
+        def api(method, path):
+            self.assertEqual(method, "GET")
+            self.assertNotIn("mode=", path)
+            self.assertNotIn("scenario=", path)
+            self.assertIn("limit=100", path)
+            return [dict(common, id="multi", work_id="work", modes=["hard", "nightmare"],
+                         hard_map_count=29, nightmare_map_count=26),
+                    dict(common, id="legacy", work_id="old", nightmare_map_count=1),
+                    dict(common, id="draft", work_id="rejected", status="draft"),
+                    dict(common, id="s1", work_id="season", scenario="phosphorescence", modes=["hard"],
+                         hard_map_count=14)]
+
+        routes = route_plaza.list_routes(api=api, scope_id=None)
+        self.assertEqual([(r.key, r.scope.id, r.map_count) for r in routes],
+                         [("multi", "legacy-nightmare", 26), ("multi:classic-hard", "classic-hard", 29),
+                          ("legacy", "legacy-nightmare", 1), ("s1:season-s1-hard", "season-s1-hard", 14)])
+
     def test_display_requires_exact_declared_structure(self):
         lib = self.library("classic-hard")
         with self.assertRaisesRegex(RouteError, "显示绑定"):

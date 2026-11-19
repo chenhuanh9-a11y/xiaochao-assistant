@@ -169,7 +169,7 @@ class CustomGalleryService(QObject):
                 store = GalleryStore(path, path.parent / "no-bundled-default.json", scope=scope)
                 if store.load_error:
                     continue
-                rows = {gid: store.export(gid) for gid, _name, _ro in store.galleries()}
+                rows = {gid: store.export(gid, include_source=True) for gid, _name, _ro in store.galleries()}
                 with self._committed_lock:
                     self._scope_snapshots[scope.id] = dict(library=library, galleries=rows,
                         digest=_file_digest(path), path=path, revision=store.revision, error="")
@@ -195,7 +195,7 @@ class CustomGalleryService(QObject):
         self._map_metadata = rows
 
     def _publish_committed(self):
-        galleries = {gid: self._store.export(gid) for gid, _name, _ro in self._store.galleries()}
+        galleries = {gid: self._store.export(gid, include_source=True) for gid, _name, _ro in self._store.galleries()}
         with self._committed_lock:
             self._committed = galleries
             self._committed_library = self.library
@@ -243,9 +243,9 @@ class CustomGalleryService(QObject):
     scopeId = Property(str, lambda s: s._scope_id, notify=scopeChanged)
 
     @Slot(str)
-    def selectScope(self, scope_id):
+    def selectScope(self, scope_id, *, on_done=None):
         if scope_id not in SCOPES or scope_id == self._scope_id or self._busy or self._pending:
-            return
+            return False
         def select():
             self._scope_id = scope_id
             self._resource_generation += 1
@@ -260,7 +260,12 @@ class CustomGalleryService(QObject):
             self._editing = False
             self._past, self._future = [], []
             self._load()
-        self._run(select, on_done=lambda error: self.scopeChanged.emit() if not error else None)
+        def finished(error):
+            if not error:
+                self.scopeChanged.emit()
+            if on_done is not None:
+                on_done(error)
+        return self._run(select, on_done=finished)
 
     def _write(self, operation):
         if self._data_error:
@@ -738,9 +743,11 @@ class CustomGalleryService(QObject):
         self.changed.emit()
 
     def plazaSources(self):
-        """Read only the last UI snapshot; the store belongs to its single worker."""
-        return {row["source"]["workId"]: dict(row["source"])
-                for row in self._state["galleries"] if row.get("source")}
+        """Read only the committed snapshots; each store belongs to its worker."""
+        with self._committed_lock:
+            return {(scope_id, row["source"]["workId"]): dict(row["source"])
+                    for scope_id, saved in self._scope_snapshots.items() if not saved["error"]
+                    for row in saved["galleries"].values() if row.get("source")}
 
     def submissionChoices(self):
         """UI snapshot only; never read the writer's mutable GalleryStore."""

@@ -1,10 +1,10 @@
 # 路线广场与账号
 
-「路线广场」按灾厄之女／磷光症、困难／噩梦展示路线，支持搜索和按最新、点赞、评论排序。下载后作为只读图库出现在相同范围的「自定义图库」里；可以在游戏中使用，或复制后个人编辑。账号和广场都用安卓端的同一套服务（`https://api.xingchenmap.cn`），安卓端的账号可以直接登录。
+「路线广场」在同一个列表展示灾厄之女／磷光症、困难／噩梦的已上架路线，支持搜索和按最新、点赞、评论排序。下载后作为只读图库出现在相同范围的「自定义图库」里；可以在游戏中使用，或复制后个人编辑。账号和广场都用安卓端的同一套服务（`https://api.xingchenmap.cn`），安卓端的账号可以直接登录。
 
 业务来源是尚未合并的 [PR #23](https://github.com/chenhuanh9-a11y/xiaochao-assistant/pull/23)（分支快照 `0d3c394`）：复用 `account_service.py`、`route_plaza.py` 和既有本机 HTTP 测试，将图库来源元数据适配到当前 `main` 的保存/恢复保护。没有合并整条旧分支，也没有将 Tk 页面装进 Qt 进程。
 
-Qt 入口：侧栏「路线广场」→选择场景与难度。下载、投稿和互动需要账号登录；公开浏览与讨论读取不需要登录。页面沿用 `AppButton`、`ClientPalette`、惰性页面、导航器和文本输入快捷键保护。
+从 Qt 侧栏进入「路线广场」即可浏览。「投稿范围」用于选择个人图库和投稿列表的场景与难度。下载、投稿和互动需要账号登录；公开浏览与讨论读取不需要登录。页面沿用 `AppButton`、`ClientPalette`、惰性页面、导航器和文本输入快捷键保护。
 
 ## 账号
 
@@ -25,8 +25,8 @@ Qt 入口：侧栏「路线广场」→选择场景与难度。下载、投稿�
 
 ## 广场
 
-- 列表：`GET /v1/community/map-galleries`，发送 `scenario`、`mode`、`content_kind=nightmare-routes`、`sort=latest|likes|comments`、`limit=50` 及可选搜索词，只显示已审核路线。
-- 下载：`POST /v1/community/map-galleries/{版本ID}/packages/{hard|nightmare}/download`，要登录。签名对象链接不带账号令牌，沿用现有 OSS 主机、逐跳跳转检查、大小和 SHA-256 校验。
+- 列表：`GET /v1/community/map-galleries`，Qt 发送 `content_kind=nightmare-routes`、`sort=latest|likes|comments`、`limit=100` 及可选搜索词，展示服务端返回的已上架路线及其场景与难度。
+- 下载：点击后先核对当前安装中是否有该赛季和模式的可用结构包。缺少时弹窗提示，导入匹配结构包后可重试。下载仍需对应的路线编辑资源和登录，随后调用 `POST /v1/community/map-galleries/{版本ID}/packages/{hard|nightmare}/download`。签名对象链接不带账号令牌，沿用现有 OSS 主机、逐跳跳转检查、大小和 SHA-256 校验。
 - 校验：ZIP 里只能有 `map-gallery.json`；旧噩梦使用 schema 3，其他范围使用 schema 4，并核对 `routeCatalogId`、`scenario`、`mode`、work/package/revision、导航与跨层签名。新范围的下载连线会在相同安卓导航上重新规划。
 - 同一作品的新版本替换旧的那份图库（ID 不变，游戏内的选择不受影响）。图库可以删除，不能改名或编辑；复制、导出得到的是自己的普通图库。
 
