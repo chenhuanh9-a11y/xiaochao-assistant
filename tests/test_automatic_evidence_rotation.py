@@ -166,20 +166,20 @@ class PureRotationDecisions(unittest.TestCase):
         self.assertEqual(retire.call_args.args[2], inventory['imageRows'][:1])
 
     def test_byte_capacity_selects_enough_oldest_rows(self):
-        inventory = self.inventory([3 * 1024 * 1024] * 4)
+        inventory = self.inventory([16 * 1024 * 1024] * 4)
         with patch.object(sampling, '_require_transaction'), \
                 patch.object(sampling, 'automatic_storage_inventory', return_value=inventory), \
                 patch.object(sampling, '_retire_rows') as retire:
-            result = sampling.ensure_automatic_capacity('/fixture', 7 * 1024 * 1024)
+            result = sampling.ensure_automatic_capacity('/fixture', 32 * 1024 * 1024)
         self.assertEqual(result['status'], 'ready')
-        self.assertEqual(retire.call_args.args[2], inventory['imageRows'][:3])
+        self.assertEqual(retire.call_args.args[2], inventory['imageRows'][:2])
 
     def test_exact_capacity_needs_no_retirement(self):
-        inventory = self.inventory([6 * 1024 * 1024])
+        inventory = self.inventory([32 * 1024 * 1024])
         with patch.object(sampling, '_require_transaction'), \
                 patch.object(sampling, 'automatic_storage_inventory', return_value=inventory), \
                 patch.object(sampling, '_retire_rows') as retire:
-            result = sampling.ensure_automatic_capacity('/fixture', 6 * 1024 * 1024)
+            result = sampling.ensure_automatic_capacity('/fixture', 32 * 1024 * 1024)
         self.assertEqual(result['status'], 'ready')
         self.assertEqual(retire.call_args.args[2], [])
 

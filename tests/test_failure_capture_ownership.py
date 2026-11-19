@@ -153,23 +153,23 @@ class FailureCaptureOwnershipTests(unittest.TestCase):
         self.assertEqual(self.runtime._notify.call_args.kwargs['failureSample']['missingReason'],
             'legal-captured-frame-unavailable')
 
-    def test_new_failure_families_do_not_collect_unrelated_regions(self):
+    def test_failure_families_record_one_full_frame_without_roi_fallback(self):
         captured = self.capture()
         self.runtime._failure_control_observation = (captured, (2,2,4,4))
         self.sample(captured)
-        self.assertEqual(len(self.calls), 1)  # identity: map only, no controls
+        self.assertEqual(len(self.calls), 1)
+        self.assertIs(self.calls[0]['frame'], captured.frame_bgr)
+        self.assertEqual(self.calls[0]['diagnostic']['sampleRole'], 'full-client-frame')
         self.calls.clear()
         self.runtime._record_automatic_failure_sample('current-floor-unavailable',
             captured=captured, attempt_id='a'*32)
         self.assertEqual(len(self.calls), 1)
-        self.assertEqual(self.calls[0]['crop_provenance'], 'detector-control-band')
-        self.assertEqual(self.calls[0]['crop_bounds'], (2,2,4,4))
+        self.assertIs(self.calls[0]['frame'], captured.frame_bgr)
+        self.assertEqual(self.calls[0]['diagnostic']['sampleRole'], 'full-client-frame')
         self.calls.clear()
         self.runtime._failure_control_observation = None
         self.runtime._record_automatic_failure_sample('current-floor-unavailable',
             captured=captured, attempt_id='a'*32)
-        self.assertIsNone(self.calls[0]['frame'])
-        self.assertEqual(self.calls[0]['diagnostic']['frameUnavailableReason'],
-            'detector-control-band-unavailable')
+        self.assertIs(self.calls[0]['frame'], captured.frame_bgr)
 
 if __name__ == '__main__': unittest.main()

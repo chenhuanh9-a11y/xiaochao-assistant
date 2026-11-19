@@ -1847,3 +1847,7 @@ s0-controls-bank-identity-v1 s0-hershey-static-v1
 _require_s0_source_equivalent _require_s1_source_equivalent
 '''.split())
 EXCEPTIONS = EXCEPTIONS | frozenset({'OriginalControlsError'})
+
+# Full-client diagnostic evidence: bounded image sizes and explicit omissions.
+FIELDS = FIELDS | frozenset({'singleImageBytes'})
+CODES = CODES | frozenset({'full-client-capture', 'frame-byte-limit'})

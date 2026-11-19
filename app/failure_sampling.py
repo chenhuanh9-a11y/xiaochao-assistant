@@ -18,7 +18,9 @@ _transaction_guard = threading.Lock()
 _transaction_locks = weakref.WeakValueDictionary()
 _lock_name = '.automatic-sampling.lock'
 _automatic_state = threading.local()
-_IMAGE_BYTES = 12 * 1024 * 1024
+_IMAGE_BYTES = 32 * 1024 * 1024  # One lossless full-client PNG, including 4K BGRA.
+_CONTEXT_IMAGE_BYTES = 64 * 1024 * 1024
+_LEGACY_IMAGE_BYTES = 12 * 1024 * 1024
 _IMAGE_COUNT = 6
 _JOURNAL_BYTES = 256 * 1024
 
@@ -118,7 +120,7 @@ def _image_info(fd):
 
 
 def _read_image_fd(fd, limit=_IMAGE_BYTES):
-    """A PNG has a separate 12 MiB bound, not the log reader's 1 MiB."""
+    """A PNG has its own bound, separate from bounded text journals."""
     if type(limit) is not int or not 0 < limit <= _IMAGE_BYTES:
         raise OSError('automatic-image-byte-limit')
     os.lseek(fd, 0, os.SEEK_SET)
@@ -241,13 +243,13 @@ def automatic_storage_inventory(root, *, namespace='automatic'):
                     payload = _verified_image_fd(fd, row)
                 else:
                     _image_info(fd)
-                    payload = _read_image_fd(fd)
+                    payload = _read_image_fd(fd, _LEGACY_IMAGE_BYTES)
                     if hashlib.sha256(payload).hexdigest() != row.get('sampleSha256'):
                         return dict(result, status='ownership-changed')
             finally:
                 os.close(fd)
             result['imageBytes'] += len(payload)
-            if result['imageBytes'] > _IMAGE_BYTES:
+            if result['imageBytes'] > (_CONTEXT_IMAGE_BYTES if namespace == 'automatic-v2' else _LEGACY_IMAGE_BYTES):
                 return dict(result, status='automatic-image-byte-limit')
             result['images'].append(path)
             result['imageRows'].append(row)
@@ -535,7 +537,7 @@ def ensure_automatic_capacity(root, incoming_bytes, *, namespace='automatic-v2')
                 raise OSError(inventory['status'])
         ordered = sorted(inventory['imageRows'], key=_row_time)
         count, size, retire = len(ordered), inventory['imageBytes'], []
-        while count + 1 > _IMAGE_COUNT or size + incoming_bytes > _IMAGE_BYTES:
+        while count + 1 > _IMAGE_COUNT or size + incoming_bytes > _CONTEXT_IMAGE_BYTES:
             row = ordered.pop(0)
             retire.append(row)
             count -= 1

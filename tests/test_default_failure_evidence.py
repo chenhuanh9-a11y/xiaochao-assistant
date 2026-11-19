@@ -48,7 +48,7 @@ class DefaultFailureEvidenceContracts(unittest.TestCase):
                 journal.write_bytes(data)
             def create_image(base, relative, pixels, *, namespace='automatic-v2'):
                 self.assertEqual(namespace, 'automatic-v2')
-                calls.append(relative)
+                calls.append((relative, pixels))
                 return dict(sampleIdentity=[1,len(calls)], sampleBytes=len(pixels), sampleSha256=hashlib.sha256(pixels).hexdigest())
             with patch.object(failure_sampling, 'automatic_storage_transaction', transaction), \
                  patch.object(failure_sampling, '_cleanup_automatic_failure_samples_locked', return_value=dict(complete=True,status='ready')), \
@@ -66,6 +66,11 @@ class DefaultFailureEvidenceContracts(unittest.TestCase):
             self.assertEqual(len(calls), 8)
             self.assertTrue(all(row.get('sampleIdentity') for row in rows))
             self.assertTrue(all('/automatic-v2/' in row['samplePath'] for row in rows))
+            for _, payload in calls:
+                decoded = cv2.imdecode(np.frombuffer(payload, np.uint8), cv2.IMREAD_COLOR)
+                self.assertEqual(decoded.shape, (20, 20, 3))
+            self.assertTrue(all(row['cropBounds'] == [0, 0, 20, 20] for row in rows))
+            self.assertTrue(all(row['cropProvenance'] == 'full-client-capture' for row in rows))
 
     def test_export_reads_v2_only_under_matching_session_and_supports_text_only(self):
         now = datetime.now(timezone.utc).isoformat()
@@ -97,27 +102,28 @@ class DefaultFailureEvidenceContracts(unittest.TestCase):
         self.assertIn('automatic-v2',seen)
 
 
-    def test_partial_crop_success_is_reported_as_saved_without_hiding_missing_reason(self):
+    def test_runtime_records_one_complete_frame_without_crop_fallback(self):
         from client_live_runtime import LiveRuntime
-        captured = SimpleNamespace(context=object(), frame_bgr=np.zeros((10, 10, 3), np.uint8))
+        captured = SimpleNamespace(context=SimpleNamespace(full_client_size=(10, 10),
+            client_screen_bounds=(0, 0, 10, 10), dpi=96), roi_client_bounds=(0, 0, 10, 10),
+            frame_bgr=np.zeros((10, 10, 3), np.uint8))
         runtime = LiveRuntime(engine_factories={})
         runtime._active = True
         runtime._capture_is_current = lambda *args: True
         runtime._full_frame = lambda frame: captured.frame_bgr
         runtime._failure_samples.automatic_enabled = True
-        runtime._failure_samples.record_automatic = Mock(side_effect=[
-            dict(saved=False, missingReason='map-crop-unproven'),
-            dict(saved=True, missingReason='')])
+        runtime._failure_samples.record_automatic = Mock(return_value=dict(saved=True, missingReason=''))
         runtime._engine = SimpleNamespace(memory_store=SimpleNamespace(root=Path('/fixture')))
         runtime._failure_capture_stamp = (captured, '2026-11-03T00:00:00+00:00', 1., 2,
             'a'*32, runtime._failure_capture_scope())
-        runtime._failure_control_observation = (captured, (0, 0, 5, 5))
         runtime._notify = Mock()
         result = runtime._record_automatic_failure_sample('map-open-preparation-deadline',
             captured=captured, attempt_id='a'*32)
-        self.assertFalse(result['saved'])
-        self.assertTrue(result['controlBand']['saved'])
-        self.assertEqual(result['missingReason'], 'map-crop-unproven')
+        self.assertTrue(result['saved'])
+        self.assertEqual(runtime._failure_samples.record_automatic.call_count, 1)
+        call = runtime._failure_samples.record_automatic.call_args.kwargs
+        self.assertIs(call['frame'], captured.frame_bgr)
+        self.assertEqual(call['diagnostic']['sampleRole'], 'full-client-frame')
         self.assertEqual(runtime._notify.call_args.kwargs['reason'], 'saved')
 
     def test_retired_reason_survives_privacy_schema_and_export_metadata(self):
