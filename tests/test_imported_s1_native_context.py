@@ -18,6 +18,50 @@ from test_export_s1_native_base_package import S1NativeBaseSourceFixture
 from test_imported_s1_controls_profile import ProfilePackage, document
 
 
+class OriginalControlsGateTests(unittest.TestCase):
+    """Capability gate without the private S1 coordinate export."""
+
+    def native(self, value=None):
+        temporary = tempfile.TemporaryDirectory(prefix='s1-controls-gate-')
+        self.addCleanup(temporary.cleanup)
+        controls = S1ControlsProfile(ProfilePackage(temporary.name,
+            document() if value is None else value).view)
+        native = ImportedS1NativeContext.__new__(ImportedS1NativeContext)
+        native._controls = controls
+        native._bundle = SimpleNamespace(mode='nightmare')
+        native.assert_current = lambda: None
+        native._floor_ids = ('-1', '-2', '-3', '-4')
+        native._observed_values = (-1, -2, -3, -4)
+        return native
+
+    def test_equivalent_controls_publish_source_replay_without_live_authority(self):
+        native = self.native()
+        floor = native.floor_observation_capability
+        candidate = native.structure_candidate_capability
+        self.assertEqual(floor['validationScope'], 'source-image-replay')
+        self.assertEqual(floor['sourceReplayFloors'], [-1, -2, -3, -4])
+        self.assertEqual(floor['automaticFloors'], [-1, -2, -3, -4])
+        self.assertFalse(floor['liveValidated'])
+        self.assertEqual(candidate['validationScope'], 'source-image-replay')
+        self.assertTrue(candidate['operatorDeclaredScanReady'])
+        self.assertEqual(candidate['operatorDeclaredFloors'], [-1, -2, -3, -4])
+        self.assertFalse(candidate['liveValidated'])
+        self.assertEqual(native.live_gaps, ('s1-floor-control-detector-unvalidated',))
+
+    def test_changed_controls_fail_closed_before_capability_publication(self):
+        from imported_original_controls import OriginalControlsError
+        value = document()
+        value['mapUi']['minimumCorrelation']['close'] = .63
+        native = self.native(value)
+        for access in (lambda: native.floor_observation_capability,
+                       lambda: native.structure_candidate_capability,
+                       lambda: native.live_gaps):
+            with self.subTest(access=access):
+                with self.assertRaises(OriginalControlsError) as rejected:
+                    access()
+                self.assertEqual(rejected.exception.code, 'original-controls-map-ui-correlation-mismatch')
+
+
 class ImportedS1NativeContextTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -145,32 +189,20 @@ class ImportedS1NativeContextTests(unittest.TestCase):
         self.assertTrue(native.structure_candidate_capability['candidateReady'])
         self.assertEqual(native.floor_observation_capability['automaticFloors'], [-1, -2, -3, -4])
 
-    def test_changed_controls_keep_operator_declared_scope_and_specific_gap(self):
-        from client_live_runtime import LiveRuntime
+    def test_changed_controls_fail_closed_before_capability_publication(self):
+        from imported_original_controls import OriginalControlsError
         value = document(('difficult',))
         value['mapUi']['minimumCorrelation']['close'] = .63
         package = ProfilePackage(self.root / 'changed-controls', value)
         controls = S1ControlsProfile(package.view)
         native = ImportedS1NativeContext(self.base, self.bundle, controls)
-        engine = self.engine()
-        engine.qt_native_context = native
-        floor, candidate = native.floor_observation_capability, native.structure_candidate_capability
-        self.assertTrue(candidate['operatorDeclaredScanReady'])
-        self.assertFalse(candidate['candidateReady'])
-        self.assertEqual(candidate['observedFloors'], [])
-        self.assertEqual(floor['sourceReplayFloors'], [])
-        self.assertEqual(floor['automaticFloors'], [])
-        for capability in (floor, candidate):
-            self.assertFalse(capability['observedFloorValidated'])
-            self.assertFalse(capability['automaticFloorEligible'])
-            self.assertFalse(capability['liveValidated'])
-            self.assertEqual(capability['qualificationGaps'],
-                ['s1-controls-map-ui-correlation-not-source-replay-equivalent'])
-        self.assertIn('s1-controls-map-ui-correlation-not-source-replay-equivalent', native.live_gaps)
-        consumer = SimpleNamespace(_season='s1', _mode='difficult', _engine=engine,
-            _evidence_kind='recorded', _native_s1_candidate_preview=False)
-        self.assertFalse(LiveRuntime._s1_candidate_available(consumer, engine=engine))
-        self.assertFalse(LiveRuntime._s1_floor_observer_available(consumer, engine=engine))
+        for access in (lambda: native.floor_observation_capability,
+                       lambda: native.structure_candidate_capability,
+                       lambda: native.live_gaps):
+            with self.subTest(access=access):
+                with self.assertRaises(OriginalControlsError) as rejected:
+                    access()
+                self.assertEqual(rejected.exception.code, 'original-controls-map-ui-correlation-mismatch')
 
     def test_constructor_rejects_other_installation_and_incompatible_controls(self):
         other_root = self.root / 'other-installation'

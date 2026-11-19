@@ -11,6 +11,7 @@ import traceback
 
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, Qt, QUrl, Signal, Slot
 from backend import ResourceRows
+from client_problem_messages import original_controls_message
 
 
 _ACTIVATION_CONTEXTS = {
@@ -884,10 +885,8 @@ class ImportedResourceService(QObject):
                          '资源删除尚未完成，请先处理未完成的操作。' if code == 'resource-removal-recovery-required' else
                          '操作已取消；若版本已经保存，可在列表中重新核对。' if code.endswith('-cancelled') else
                          '资源操作未完成，请检查资源包或重新核对本地版本。')
-        if code in {'original-controls-bank-version-mismatch', 'original-controls-generator-version-mismatch'}:
-            self._message = '楼层控件包与当前客户端版本不兼容，请使用配套版本的工具出包。'
-        elif code.startswith('original-controls-'):
-            self._message = '楼层控件校验未通过，请在帮助页查看具体错误码和资源校验详情。'
+        if code.startswith('original-controls-'):
+            self._message = original_controls_message(code)
         self.errorReported.emit(dict(title='资源操作未完成', summary=self._message,
                                      raw=code, errorCode=code, action='resource:' + (operation or self._kind),
                                      errorDetails=(failure or {}).get('errorDetails', {}),

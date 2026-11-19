@@ -71,6 +71,48 @@ class ResourceFeedbackTests(unittest.TestCase):
     def resource_notices(self, notices):
         return [n for n in notices if n[0] == "地图资源未就绪"]
 
+    def test_original_controls_factory_failure_reaches_resource_toast_and_status(self):
+        from imported_original_controls import OriginalControlsError
+        for mode in ('nightmare', 'difficult'):
+            for code in ('original-controls-bank-version-mismatch', 'original-controls-map-ui-search-mismatch'):
+                with self.subTest(mode=mode, code=code), self.chain(mode) as (o,c,s,r,f,k,n,a,root):
+                    # The error is injected at build; factory wrapping, cached
+                    # readiness, Session scheduling and UI feedback are real.
+                    def build(current_mode, *, season='s0'):
+                        raise OriginalControlsError(code)
+                    f._build = build
+                    s.dispatch('inspect_engine_resources'); self.drain(o,s)
+                    self.assertEqual(s.snapshot['liveUnavailableReason'], mode + ':OriginalControlsError:' + code)
+                    c.startRound(); c.startRound()
+                    expected = code + '：这个地图包和当前客户端不匹配，请重新导入当前版本工具打的配套包，改分辨率、DPI、缩放没有用'
+                    self.assertEqual(self.resource_notices(n), [('地图资源未就绪', expected, 'warning')])
+                    self.assertEqual(c.runtimeStatus, expected)
+                    self.assertNotIn('start_round', [action for action, _ in a])
+                    self.assertEqual(r._capture.enable_count, 0)
+
+    def test_original_controls_worker_failure_reaches_problem_toast_and_status(self):
+        from imported_original_controls import OriginalControlsError
+        for mode in ('nightmare', 'difficult'):
+            with self.subTest(mode=mode), self.chain(mode) as (o,c,s,r,f,k,n,a,root):
+                f._build = lambda mode, *, season='s0': runtime_fixture.fixture_engine(mode)
+                f.prepare_context(mode)
+                r.dispatch('start_round', {}); s.refreshRuntime()
+                errors = []
+                c.errorReported.connect(errors.append)
+                code = 'original-controls-map-ui-correlation-mismatch'
+                # Only the failure source is replaced. Real worker serialization
+                # and current-result admission deliver it to the coordinator.
+                with patch.object(r, 'dispatch', side_effect=OriginalControlsError(code)):
+                    s.dispatch('map'); self.drain(o,s)
+                receipt = s.snapshot['lastReceipt']
+                self.assertEqual(receipt['reason'], 'OriginalControlsError: ' + code)
+                self.assertEqual(receipt['exceptionType'], 'OriginalControlsError')
+                self.assertEqual(len(errors), 1)
+                expected = code + '：这个地图包和当前客户端不匹配，请重新导入当前版本工具打的配套包，改分辨率、DPI、缩放没有用'
+                self.assertEqual(errors[0]['summary'], expected)
+                self.assertIn(('地图包与当前客户端不匹配', expected, 'error'), n)
+                self.assertEqual(c.runtimeStatus, expected)
+
     def test_explicit_s0_live_false_rejects_start_before_input_and_controls(self):
         for mode in ('nightmare', 'difficult'):
             with self.subTest(mode=mode), self.chain(mode) as (o,c,s,r,f,k,n,a,root):

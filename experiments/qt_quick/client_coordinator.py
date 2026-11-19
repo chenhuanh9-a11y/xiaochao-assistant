@@ -17,7 +17,7 @@ import sys
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from reference_position_editor import ReferencePositionEdit
-from client_problem_messages import operation_problem
+from client_problem_messages import operation_problem, original_controls_message
 from client_fit_reporting import RETRY_REASONS, reportable_opening_reason
 from client_input_diagnostics import InputDiagnostics, map_attempt
 from client_manual_map import MANUAL_PICKER_ACTION, normalize_selection_mode
@@ -588,6 +588,10 @@ class ClientCoordinator(QObject):
         if reason == "resource-validation-pending" or state.get("pendingAction") == "inspect_engine_resources":
             return ((mode, "resource-validation-pending"), "正在校验地图识别资源，请稍后再打开地图")
         if report.get("available") is False and not candidate_ready:
+            controls_message = original_controls_message(report.get('errorCode'), reason,
+                report.get('exceptionType'))
+            if controls_message:
+                return ((mode, reason), controls_message)
             if report.get('dataReady') is True and report.get('rankReady') is False:
                 return ((season, mode, 'recognition-data-only'),
                     f"{season_label(season)} 地图数据已就绪，识别功能尚未开放，暂不能开始识别")
@@ -636,6 +640,10 @@ class ClientCoordinator(QObject):
         receipt = state.get("lastReceipt", {})
         if receipt.get("success") is False and not receipt.get("fitReportingDeferred"):
             reason = str(receipt.get("reason", ""))
+            controls_message = original_controls_message(receipt.get('errorCode'), reason,
+                receipt.get('message'), receipt.get('exceptionType'))
+            if controls_message:
+                return controls_message
             if "capture" in reason:
                 return "截图暂不可用，请检查游戏前台与窗口尺寸后重新连接"
             if "map" in reason:

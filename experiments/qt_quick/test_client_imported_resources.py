@@ -153,7 +153,31 @@ class ImportedResourceServiceTests(unittest.TestCase):
         self.assert_import_failure_diagnostics('original-controls-bank-version-mismatch',
             'imported_original_controls.py', '_require_s0_source_equivalent',
             operation='activate', exception_type='OriginalControlsError')
-        self.assertIn('版本不兼容', self.errors[-1]['summary'])
+        self.assertEqual(self.errors[-1]['summary'],
+            'original-controls-bank-version-mismatch：这个地图包和当前客户端不匹配，请重新导入当前版本工具打的配套包，改分辨率、DPI、缩放没有用')
+
+    def test_generator_mismatch_reports_code_and_matching_package_advice(self):
+        self.rewrite_archive(lambda manifest, _: manifest.update(generatorVersion='incompatible'))
+        self.assert_import_failure_diagnostics('original-controls-generator-version-mismatch',
+            'imported_original_controls.py', '_require_s0_source_equivalent',
+            operation='activate', exception_type='OriginalControlsError')
+        self.assertEqual(self.errors[-1]['summary'],
+            'original-controls-generator-version-mismatch：这个地图包和当前客户端不匹配，请重新导入当前版本工具打的配套包，改分辨率、DPI、缩放没有用')
+
+    def test_all_original_controls_codes_show_code_and_matching_package_advice(self):
+        for suffix in ('floor-context-mismatch', 'bank-version-mismatch', 'generator-version-mismatch',
+                'fixed-region-mismatch', 'expanded-region-mismatch', 'template-family-mismatch',
+                'template-labels-mismatch', 'template-vector-shape-mismatch', 'template-vector-degenerate',
+                'template-vector-mismatch', 'visual-order-mismatch', 'map-ui-sizes-mismatch',
+                'map-ui-correlation-mismatch', 'map-ui-search-mismatch'):
+            code = 'original-controls-' + suffix
+            with self.subTest(code=code):
+                self.service._problem(code, operation='activate')
+                expected = code + '：这个地图包和当前客户端不匹配，请重新导入当前版本工具打的配套包，改分辨率、DPI、缩放没有用'
+                self.assertEqual(self.service.message, expected)
+                self.assertEqual(self.errors[-1]['summary'], expected)
+                self.assertEqual(self.errors[-1]['errorCode'], code)
+                self.assertNotIn('帮助页', self.errors[-1]['summary'])
 
     def test_changed_glyph_records_numeric_proof_through_actual_export(self):
         from io import BytesIO
@@ -173,6 +197,8 @@ class ImportedResourceServiceTests(unittest.TestCase):
         row = self.assert_import_failure_diagnostics('original-controls-template-vector-mismatch',
             'imported_original_controls.py', '_require_s0_source_equivalent',
             operation='activate', exception_type='OriginalControlsError')
+        self.assertEqual(self.errors[-1]['summary'],
+            'original-controls-template-vector-mismatch：这个地图包和当前客户端不匹配，请重新导入当前版本工具打的配套包，改分辨率、DPI、缩放没有用')
         self.assertEqual(row['errorDetails']['shape'], [720, 6144])
         self.assertEqual(row['errorDetails']['bankId'], BANK_ID)
         self.assertEqual(row['errorDetails']['worstRowIndex'], 42)

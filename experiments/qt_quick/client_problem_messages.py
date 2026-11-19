@@ -44,6 +44,26 @@ def _reason_code(raw):
     return match.group(1) if match else ""
 
 
+def original_controls_message(*values):
+    """Explain controls failures, including factory/Session exception wrappers."""
+    advice = '这个地图包和当前客户端不匹配，请重新导入当前版本工具打的配套包，改分辨率、DPI、缩放没有用'
+    exception_only = False
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        # Factories prepend the mode and exception type; Session can add an
+        # outer ProviderUnavailable. Do not match codes embedded in paths/prose.
+        match = re.match(
+            r'^(?:(?:[A-Za-z_]\w*(?:Error|Exception)|ProviderUnavailable|nightmare|difficult|difficulty2):\s*)*'
+            r'(original-controls-[a-z0-9-]+)(?=$|[:;\s])', value[:8192])
+        if match:
+            return f'{match.group(1)}：{advice}'
+        exception_only |= value == 'OriginalControlsError'
+    if exception_only:
+        return f'OriginalControlsError：{advice}'
+    return None
+
+
 def input_message(status, raw, *, management=False, game=False):
     if status == "ready":
         return ("快捷键监听已开启；游戏操作需在已连接游戏的前台使用。" if game else
@@ -99,7 +119,11 @@ def operation_problem(receipt, state):
     code = _reason_code(raw)
     preparation_observation = receipt.get('preparationObservation') or {}
     width, height = preparation_observation.get('frameWidth'), preparation_observation.get('frameHeight')
-    if (raw in {'map-open-preparation-deadline', 'current-floor-unavailable'}
+    controls_message = original_controls_message(receipt.get('errorCode'), raw,
+        receipt.get('message'), receipt.get('exceptionType'))
+    if controls_message:
+        title, summary, phase = '地图包与当前客户端不匹配', controls_message, 'resource'
+    elif (raw in {'map-open-preparation-deadline', 'current-floor-unavailable'}
             and isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0):
         size = f'当前游戏客户区为 {width} × {height} 像素。'
         shape = preparation_observation.get('shapeReason')
