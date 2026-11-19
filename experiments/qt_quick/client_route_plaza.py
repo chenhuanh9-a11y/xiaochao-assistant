@@ -17,7 +17,7 @@ from route_scopes import SCOPES
 
 class PlazaRows(ResourceRows):
     fields = ("key", "title", "description", "author", "scopeLabel", "mapCount", "downloadCount", "updatedDate",
-              "installed", "updateAvailable", "thumbnailUrl")
+              "installed", "updateAvailable", "thumbnailUrl", "coverUrl")
 
 
 class SubmissionRows(ResourceRows):
@@ -411,9 +411,12 @@ class RoutePlazaService(QObject):
         self._sync_mine_rows()
         installed = self.galleries.plazaSources()
         self._thumbnail_generation = context = self._thumb_context()
-        requests = {route.key: (route.scope.id, route.work_id, route.version_id, context)
+        requests = {(route.key, "local"): (route.scope.id, route.work_id, route.version_id, context, "")
                     for route in self._routes.values() if context is not None
                     and installed.get((route.scope.id, route.work_id), {}).get("versionId") == route.version_id}
+        if self._tab == "square":
+            requests.update({(route.key, "cover"): (route.scope.id, route.work_id, route.version_id, None, route.cover_url)
+                             for route in self._routes.values() if route.cover_url})
         thumbnails = self.thumbnails.publish(requests)
         rows = []
         for route in self._public_routes():
@@ -422,7 +425,7 @@ class RoutePlazaService(QObject):
                 scopeLabel=route.scope.label, mapCount=route.map_count, downloadCount=route.download_count,
                 updatedDate=route.updated_date, installed=local.get("versionId") == route.version_id,
                 updateAvailable=bool(local) and route.revision > local.get("revision", 0),
-                thumbnailUrl=thumbnails.get(route.key, "")))
+                thumbnailUrl=thumbnails.get((route.key, "local"), ""), coverUrl=thumbnails.get((route.key, "cover"), "")))
         self.model.reconcile(rows)
 
     def _run(self, operation, function):

@@ -159,6 +159,8 @@ Item {
                     required property bool installed
                     required property bool updateAvailable
                     required property string thumbnailUrl
+                    required property string coverUrl
+                    readonly property bool hasPreview: publicCover.visible || thumbnail.visible
                     readonly property bool inViewport: root.visible && routes.visible
                         && y < routes.contentY + routes.height && y + height > routes.contentY
                     width: routes.cellWidth; height: routes.cellHeight
@@ -186,16 +188,25 @@ Item {
                                 }
                                 contentItem: Item {
                                     Image {
+                                        id: publicCover
+                                        objectName: "plazaPublicCover_" + card.key
+                                        anchors.fill: parent
+                                        source: card.inViewport ? card.coverUrl : ""
+                                        asynchronous: true; cache: false; fillMode: Image.PreserveAspectFit
+                                        visible: card.inViewport && status === Image.Ready && sourceSize.width > 1 && sourceSize.height > 1
+                                    }
+                                    Image {
                                         id: thumbnail
                                         objectName: "plazaInlinePreview_" + card.key
                                         anchors.fill: parent
-                                        source: card.inViewport ? card.thumbnailUrl : ""
+                                        source: card.inViewport && (!card.coverUrl || publicCover.status === Image.Error
+                                            || (publicCover.status === Image.Ready && !publicCover.visible)) ? card.thumbnailUrl : ""
                                         asynchronous: true; cache: false; fillMode: Image.PreserveAspectFit
                                         visible: card.inViewport && status === Image.Ready && sourceSize.width > 1 && sourceSize.height > 1
                                     }
                                     ColumnLayout {
                                         anchors.centerIn: parent; width: parent.width - 8; spacing: 0
-                                        visible: !thumbnail.visible
+                                        visible: !card.hasPreview
                                         Label {
                                             Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter
                                             text: card.mapCount + " 张地图"; color: "#526785"; font.pixelSize: 13
@@ -211,7 +222,7 @@ Item {
                             }
                             Label { text: card.title; textFormat: Text.PlainText; font.bold: true; font.pixelSize: 16; color: "#183a73"; Layout.fillWidth: true; elide: Text.ElideRight }
                             Label {
-                                text: card.scopeLabel + (thumbnail.visible ? " · " + card.mapCount + " 张图" : "") + " · 下载 " + card.downloadCount + " 次"
+                                text: card.scopeLabel + (card.hasPreview ? " · " + card.mapCount + " 张图" : "") + " · 下载 " + card.downloadCount + " 次"
                                 color: "#526785"; font.pixelSize: 12; Layout.fillWidth: true; elide: Text.ElideRight
                             }
                             Label {

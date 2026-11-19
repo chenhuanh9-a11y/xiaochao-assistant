@@ -23,12 +23,12 @@ import json
 import math
 import re
 from urllib import error, request
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlencode, urljoin, urlsplit
 import zipfile
 
 import numpy as np
 
-from account_service import AccountError, AccountService, USER_AGENT, api_root, call, quoted
+from account_service import AccountError, AccountService, USER_AGENT, _OPENER, api_root, call, quoted
 from custom_maps import DEFAULT_COLOR, MAX_POINTS, CustomMapLibrary, RouteError
 from route_plaza_navigation import NAVIGATION_VERSION, TEMPLATES as NAVIGATION_TEMPLATES
 
@@ -46,6 +46,8 @@ MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
 MAX_MANIFEST_BYTES = 6 * 1024 * 1024
 DOWNLOAD_HOST_SUFFIX = ".aliyuncs.com"
 TIMEOUT_SECONDS = 30
+PUBLIC_COVER_PREFIX = "/v1/community/map-gallery-covers/"
+MAX_COVER_BYTES = 256 * 1024
 
 
 @dataclass(frozen=True)
@@ -63,6 +65,7 @@ class PlazaRoute:
     mode: str = "nightmare"
     like_count: int = 0
     comment_count: int = 0
+    cover_url: str = ""
 
     @property
     def updated_date(self) -> str:
@@ -86,20 +89,55 @@ def _count(value) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
+def cover_path(version_id, mode):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", version_id) or mode not in ("hard", "nightmare"):
+        return ""
+    return f"{PUBLIC_COVER_PREFIX}{version_id}/{mode}.webp"
+
+
+def _cover_url(value, path):
+    if not path or not isinstance(value, str) or not value or len(value) > 2048:
+        return ""
+    expected = urljoin(api_root(), path)
+    return expected if value in (path, expected) else ""
+
+
+def fetch_public_cover(url):
+    """Read one immutable public image without using the account or download API."""
+    path = urlsplit(url).path
+    if not path.startswith(PUBLIC_COVER_PREFIX) or _cover_url(url, path) != url:
+        return None
+    req = request.Request(url, headers={"Accept": "image/webp", "User-Agent": USER_AGENT})
+    try:
+        with _OPENER.open(req, timeout=4) as response:
+            if response.headers.get_content_type() != "image/webp":
+                return None
+            data = response.read(MAX_COVER_BYTES + 1)
+    except (error.URLError, OSError):
+        return None
+    return data if 0 < len(data) <= MAX_COVER_BYTES else None
+
+
 def parse_summary(row, *, scope_id="legacy-nightmare") -> PlazaRoute | None:
     scope = SCOPES[scope_id]
     if not isinstance(row, dict) or row.get("content_kind") != CONTENT_KIND or row.get("status") != "approved":
         return None
     version_id, work_id = _text(row.get("id"), 64), _text(row.get("work_id"), 64)
-    if (not version_id or not work_id or scope.mode not in (row.get("modes") or ["nightmare"])
+    modes = row.get("modes") or ["nightmare"]
+    if (not version_id or not work_id or not isinstance(modes, list) or scope.mode not in modes
             or row.get("scenario", "lady-of-misfortune") != scope.scenario):
         return None
+    covers = row.get("cover_urls")
+    cover = row.get("cover_url") if len(modes) == 1 else None
+    if isinstance(covers, dict):
+        cover = covers.get(scope.mode)
     return PlazaRoute(version_id=version_id, work_id=work_id, revision=_count(row.get("revision")),
                       title=_text(row.get("title"), 80) or "未命名路线", description=_text(row.get("description"), 500),
                       author=_text(row.get("owner_username"), 40) or "匿名",
                       map_count=_count(row.get(scope.mode + "_map_count")), download_count=_count(row.get("download_count")),
                       updated_at=_text(row.get("updated_at"), 40), scenario=scope.scenario, mode=scope.mode,
-                      like_count=_count(row.get("like_count")), comment_count=_count(row.get("comment_count")))
+                      like_count=_count(row.get("like_count")), comment_count=_count(row.get("comment_count")),
+                      cover_url=_cover_url(cover, cover_path(version_id, scope.mode)))
 
 
 def list_routes(query: str = "", *, api=call, scope_id="legacy-nightmare", sort="latest") -> list[PlazaRoute]:

@@ -627,6 +627,62 @@ ClientAccount {}
             QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
             APP.processEvents()
 
+    def test_guest_card_loads_batch_rendered_cover_without_route_download(self):
+        import hashlib
+        from PIL import Image
+        from render_plaza_covers import build_covers
+
+        work = dict(id="ver-2", work_id="work-1", status="approved", content_kind="nightmare-routes",
+                    modes=["nightmare"])
+        snapshot = dict(works=[work, dict(work, id="missing", work_id="work-missing")], packages=[dict(
+            version_id="ver-2", work_id="work-1", content_kind="nightmare-routes", archive="route.zip",
+            package=dict(mode="nightmare", package_id="pkg-1", revision=2,
+                         object_bytes=len(self.server.archive), manifest_bytes=self.server.manifest_bytes,
+                         sha256=hashlib.sha256(self.server.archive).hexdigest()))])
+        (self.root / "route.zip").write_bytes(self.server.archive)
+        folder = self.root / "covers"
+        result = build_covers(snapshot, self.root, folder, self.root / "maps", None)
+        self.assertEqual([(row["version_id"], row["floor"]) for row in result["rendered"]], [("ver-2", "1")])
+        self.assertEqual([row["version_id"] for row in result["missing"]], ["missing"])
+        self.server.cover_urls = result["cover_urls"]["ver-2"]
+        path = self.server.cover_urls["nightmare"]
+        self.server.cover_objects[path] = (folder / path.lstrip("/")).read_bytes()
+        with Image.open(folder / path.lstrip("/")) as cover:
+            self.assertTrue(any(r > 205 and g < 155 and 80 < b < 165 for r, g, b in cover.convert("RGB").getdata()))
+
+        engine = QQmlApplicationEngine()
+        engine.addImageProvider("plazaroute", self.service.thumbnails)
+        router = Router()
+        for key, value in (("routePlazaService", self.service), ("settingsService", self.settings),
+                           ("clientCoordinator", router)):
+            engine.rootContext().setContextProperty(key, value)
+        engine.loadData(b'''import QtQuick
+import QtQuick.Controls.Basic
+ApplicationWindow { visible: true; width: 1000; height: 720
+ClientRoutePlaza { anchors.fill: parent; anchors.margins: 24 }
+}''', QUrl.fromLocalFile(str(HERE / "plaza-cover-harness.qml")))
+        self.assertTrue(engine.rootObjects())
+        window = engine.rootObjects()[0]
+        try:
+            def public_cover_visible():
+                cover = item(window, "plazaPublicCover_ver-2")
+                return cover is not None and cover.property("visible")
+            until(public_cover_visible)
+            self.assertEqual(self.service.snapshot["username"], "")
+            self.assertFalse(self.galleries.path.exists())
+            self.assertIn(("GET", path, None), self.server.calls)
+            self.assertTrue(all(method == "GET" and auth is None and "/download" not in url
+                                for method, url, auth in self.server.calls), self.server.calls)
+            self.server.cover_urls = {"nightmare": "https://other.invalid" + path}
+            self.service.search("")
+            until(lambda: not self.service.snapshot["busy"] and not public_cover_visible())
+            self.assertEqual(self.service.model.rows[0]["coverUrl"], "")
+        finally:
+            window.close()
+            engine.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+            APP.processEvents()
+
     def test_public_filters_preserve_scope_and_use_loaded_rows(self):
         from dataclasses import replace
 

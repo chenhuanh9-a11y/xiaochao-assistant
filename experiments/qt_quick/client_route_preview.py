@@ -6,13 +6,13 @@ import json
 import threading
 from collections import OrderedDict
 
-from PIL import ImageDraw
+from PIL import Image, ImageDraw
 from PySide6.QtGui import QImage
 from PySide6.QtQuick import QQuickImageProvider
 
 from account_service import AccountError
 from custom_maps import CustomMapLibrary, FLOOR_LABELS, FLOORS, RouteError, draw_route, marker_groups
-from route_plaza import prepare_install
+from route_plaza import fetch_public_cover, prepare_install
 from scoped_route_library import ScopedRouteLibrary
 
 
@@ -71,19 +71,35 @@ def _render_frame(document, map_id, floor, point_numbers, max_edge):
     frame = dict(maps=maps, map=map_id, floors=[dict(id=f, name=labels[f]) for f in floors], floor=floor,
                  numbers=point_numbers,
                  notice=error or ("此楼层没有路线。" if not lines and not markers else notice))
-    return image, frame
+    return image, frame, bool(lines)
 
 
 def preview_frame(document, map_id, floor, point_numbers):
-    image, frame = _render_frame(document, map_id, floor, point_numbers, 1050)
+    image, frame, _has_lines = _render_frame(document, map_id, floor, point_numbers, 1050)
     buffer = io.BytesIO()
     image.save(buffer, format="PNG", compress_level=1)
     frame["image"] = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
     return frame
 
 
+def render_public_cover(library, saved_maps, report):
+    document = _preview_document(library, saved_maps, report)
+    for entry in document[2]:
+        map_id = entry["id"]
+        graph = library.graph(map_id)
+        for floor in getattr(library, "floor_ids", FLOORS):
+            if floor not in graph.floors:
+                continue
+            image, _frame, has_lines = _render_frame(document, map_id, floor, False, 320)
+            if has_lines:
+                buffer = io.BytesIO()
+                image.save(buffer, format="WEBP", quality=85, method=6)
+                return buffer.getvalue(), map_id, floor
+    raise AccountError("没有可作为封面的有效路线线段")
+
+
 class PlazaThumbnailImages(QQuickImageProvider):
-    """On-demand thumbnails for exact local editions, resolved on Qt's image worker."""
+    """Read public covers and exact local previews on Qt's image worker."""
 
     def __init__(self, galleries):
         super().__init__(QQuickImageProvider.Image, QQuickImageProvider.ForceAsynchronousImageLoading)
@@ -103,7 +119,7 @@ class PlazaThumbnailImages(QQuickImageProvider):
         return urls
 
     def requestImage(self, identifier, size, requestedSize):
-        image = self._local_image(identifier)
+        image = self._image(identifier)
         if image.isNull():
             image = QImage(1, 1, QImage.Format_RGBA8888)
             image.fill(0)
@@ -112,7 +128,7 @@ class PlazaThumbnailImages(QQuickImageProvider):
             size.setHeight(image.height())
         return image
 
-    def _local_image(self, identifier):
+    def _image(self, identifier):
         with self._lock:
             identity = self._published.get(identifier)
             cached = self._cache.get(identifier)
@@ -120,21 +136,30 @@ class PlazaThumbnailImages(QQuickImageProvider):
                 self._cache.move_to_end(identifier)
         if identity is None:
             return QImage()
-        scope_id, work_id, version_id, generation = identity
-        if not self._galleries.plazaPreviewCurrent(generation):
+        scope_id, work_id, version_id, generation, cover_url = identity
+        if not cover_url and not self._galleries.plazaPreviewCurrent(generation):
             return QImage()
         if cached is not None:
             return cached
         try:
-            root, context, saved = self._galleries.plazaPreviewInput(scope_id, work_id, version_id)
-            if saved is None or generation != context:
-                return QImage()
-            document = _preview_document(_preview_library(scope_id, root), saved, {})
-            pixels, _frame = _render_frame(document, "", "", False, 240)
+            if cover_url:
+                data = fetch_public_cover(cover_url)
+                if data is None:
+                    return QImage()
+                with Image.open(io.BytesIO(data), formats=["WEBP"]) as cover:
+                    if not all(1 < side <= 320 for side in cover.size) or cover.is_animated:
+                        return QImage()
+                    pixels = cover.convert("RGBA")
+            else:
+                root, context, saved = self._galleries.plazaPreviewInput(scope_id, work_id, version_id)
+                if saved is None or generation != context:
+                    return QImage()
+                document = _preview_document(_preview_library(scope_id, root), saved, {})
+                pixels, _frame, _has_lines = _render_frame(document, "", "", False, 240)
             image = QImage(pixels.tobytes(), pixels.width, pixels.height, pixels.width * 4, QImage.Format_RGBA8888).copy()
-        except (AccountError, OSError, ValueError, KeyError, IndexError, RuntimeError, TypeError):
+        except (AccountError, Image.DecompressionBombError, OSError, ValueError, KeyError, IndexError, RuntimeError, TypeError):
             return QImage()
-        if not self._galleries.plazaPreviewCurrent(generation):
+        if not cover_url and not self._galleries.plazaPreviewCurrent(generation):
             return QImage()
         with self._lock:
             if self._published.get(identifier) != identity:

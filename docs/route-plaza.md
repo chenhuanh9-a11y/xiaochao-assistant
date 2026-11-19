@@ -30,7 +30,17 @@
 - 校验：ZIP 里只能有 `map-gallery.json`；旧噩梦使用 schema 3，其他范围使用 schema 4，并核对 `routeCatalogId`、`scenario`、`mode`、work/package/revision、导航与跨层签名。新范围的下载连线会在相同安卓导航上重新规划。
 - 同一作品的新版本替换旧的那份图库（ID 不变，游戏内的选择不受影响）。图库可以删除，不能改名或编辑；复制、导出得到的是自己的普通图库。
 - 广场可独立按赛季和难度筛选，和「我的投稿」中的投稿范围互不联动。「预览」先显示公开信息。加载地图时，已保存的同版本路线使用本机数据，其他路线经登录后按现有下载协议读取，因此可能计入下载次数。预览从对应路线编辑资源读取底图和道路，只渲染当前地图及楼层，没有导入图库或切换游戏模式。
-- 广场沿用自定义路线页的地图卡片布局，卡片上方显示预览，下方保留作品摘要、讨论和下载。点预览区域可看大图。同版本路线已保存在本机时，可见卡片按需绘制路线缩略图，资源变化会撤销旧图。缩略图读取本机图库及编辑资源，滚动广场不会产生路线下载请求。
+- 广场沿用自定义路线页的地图卡片布局。卡片优先展示该作品版本和难度的公开封面。缺封面或读图失败时，可利用同版本的本机图库和编辑资源绘制缩略图，否则显示地图数和作品摘要。点预览区域可看大图。浏览卡片只发公开图片 GET，无需登录，也不产生路线下载请求。
+
+### 测试环境补封面
+
+`tools/maps/render_plaza_covers.py` 从离线快照生成 WebP，并用现有路线包身份、摘要、导航签名和绘制逻辑，选取有实际路线线段的地图和楼层。快照 JSON 的 `works` 使用公开列表原记录，`packages` 每项包含 `version_id`、`work_id`、`content_kind`、`scenario`、现有 `package` 元数据和相对于快照的 `archive` 文件路径。`package` 沿用 `package_id`、`revision`、`mode`、`object_bytes`、`manifest_bytes`、`sha256`。输入仅使用有权限的离线导出。
+
+```sh
+python tools/maps/render_plaza_covers.py --snapshot <snapshot.json> --legacy-editor <custom-maps> --scoped-editor <android-route-editor> --output <new-test-directory>
+```
+
+测试 API 按 `cover-report.json` 的 `cover_urls` 字段为公开记录附加 `{难度: 路径}`。同源静态目录提供各版本及难度的 `/v1/community/map-gallery-covers/<version_id>/<mode>.webp`。单模式记录也可使用 `cover_url`。封面路径在该作品版本内保持不变，读取不转发账号信息，也不跟随重定向。批处理会列出缺少路线包、底图或可画线段的版本，存在缺口时退出码为 1。
 
 Qt 提供「投稿」和「我的投稿」，支持选择当前范围的个人图库、说明、上传进度、停止/重试、修订、提交已有包审核和撤回。下载作品及其副本保留来源，仅供个人使用，不能重新投稿。服务端没有图库 DELETE 接口，因此没有删除投稿按钮。
 

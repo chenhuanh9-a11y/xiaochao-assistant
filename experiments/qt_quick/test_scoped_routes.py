@@ -113,6 +113,8 @@ class ScopedRoutesTests(unittest.TestCase):
         return graph, [graph.pick(floor, 5, 5), graph.pick(floor, 11, 11)]
 
     def test_all_scopes_pick_plan_and_package_roundtrip(self):
+        from client_route_preview import render_public_cover
+
         for sid in ("classic-hard", "season-s1-hard", "season-s1-nightmare"):
             with self.subTest(scope=sid):
                 lib = self.library(sid)
@@ -139,6 +141,10 @@ class ScopedRoutesTests(unittest.TestCase):
                 self.assertEqual(report["droppedPoints"], 0)
                 self.assertEqual(graph.document(imported[mid]["points"]), doc)
                 self.assertEqual(package.payload["scenario"], lib.scope.scenario)
+                encoded, cover_map, cover_floor = render_public_cover(lib, imported, report)
+                self.assertEqual((cover_map, cover_floor), (mid, lib.floor_ids[0]))
+                with Image.open(io.BytesIO(encoded), formats=["WEBP"]) as cover:
+                    self.assertTrue(any(r > 140 and g < 110 and b < 110 for r, g, b in cover.convert("RGB").getdata()))
 
     def test_cross_floor_uses_declared_associations_and_new_start(self):
         lib = self.library("season-s1-hard")

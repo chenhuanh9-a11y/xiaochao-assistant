@@ -57,6 +57,22 @@ def package_bytes(**overrides):
     return buffer.getvalue(), len(raw)
 
 
+class PublicCoverMetadataTests(unittest.TestCase):
+    def test_dual_mode_covers_match_approved_version_and_mode(self):
+        row = dict(id="v2", work_id="work", status="approved", content_kind="nightmare-routes",
+                   scenario="phosphorescence", modes=["hard", "nightmare"],
+                   cover_url=route_plaza.cover_path("v2", "hard"))
+        hard = "season-s1-hard"
+        nightmare = "season-s1-nightmare"
+        self.assertEqual(route_plaza.parse_summary(row, scope_id=hard).cover_url, "")
+        row["cover_urls"] = {mode: route_plaza.cover_path("v2", mode) for mode in row["modes"]}
+        for scope_id, mode in ((hard, "hard"), (nightmare, "nightmare")):
+            self.assertEqual(route_plaza.parse_summary(row, scope_id=scope_id).cover_url,
+                             account_service.api_root() + row["cover_urls"][mode])
+        row["cover_urls"]["hard"] = route_plaza.cover_path("v1", "hard")
+        self.assertEqual(route_plaza.parse_summary(row, scope_id=hard).cover_url, "")
+
+
 class FakeServer:
     """The subset of api.xingchenmap.cn the PC client calls."""
 
@@ -64,6 +80,8 @@ class FakeServer:
         self.archive, self.manifest_bytes = package_bytes()
         self.served = None  # Bytes the object store returns instead of the recorded package.
         self.calls = []
+        self.cover_urls = {}
+        self.cover_objects = {}
         self.access = {"a1"}
         self.refresh = {"r1"}
         self.access_ttl = 900
@@ -94,10 +112,13 @@ class FakeServer:
 
             def do_GET(self):
                 server.calls.append(("GET", self.path, self.headers.get("Authorization")))
-                if self.path.startswith("/v1/community/map-galleries?"):
+                if self.path in server.cover_objects:
+                    self._reply(200, raw=server.cover_objects[self.path], content="image/webp")
+                elif self.path.startswith("/v1/community/map-galleries?"):
                     self._reply(200, [dict(id="ver-2", work_id="work-1", revision=2, title="噩梦速通", description="五张图",
                                            owner_username="alice", content_kind="nightmare-routes", status="approved",
                                            modes=["nightmare"], nightmare_map_count=2, download_count=7,
+                                           cover_urls=server.cover_urls,
                                            updated_at="2026-10-28T08:00:00+00:00"),
                                       dict(id="img", work_id="w", content_kind="images", status="approved")])
                 elif self.path == "/objects/pkg-1.zip":
