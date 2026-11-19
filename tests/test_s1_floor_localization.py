@@ -120,12 +120,17 @@ class S1JointFloorLocalization(unittest.TestCase):
         frame = centered_hud((2560, 1080))
         raw = self.raw(frame)
         observation = detector.detect_map_interface(frame, floor_read={})
-        original = detector.observe_s1_map_ui_geometry
+        import independent_map_ui as shared_ui
+        original = shared_ui.observe_s1_map_ui_geometry
         def external(image, **kw):
             x0, y0, x1, y1 = raw["controlBounds"]
-            self.assertEqual(int(image[y0:y1, x0:x1].max()), 0)
-            return original(image, **kw)
-        with patch.object(detector, "observe_s1_map_ui_geometry", side_effect=external):
+            self.assertIn((x0, y0, x1, y1), kw['excluded_bounds'])
+            result = original(image, **kw)
+            changed = image.copy()
+            changed[y0:y1, x0:x1] = 255
+            self.assertEqual(original(changed, **kw), result)
+            return result
+        with patch.object(shared_ui, "observe_s1_map_ui_geometry", side_effect=external):
             self.assertIsNotNone(detector._s1_independent_map_evidence(frame, observation,
                                 floor_bounds=raw["controlBounds"]))
 

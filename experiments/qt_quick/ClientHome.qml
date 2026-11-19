@@ -17,6 +17,7 @@ Item {
         && (session.snapshot.provisionalMapId || session.snapshot.mapId || "") === privateLockedMap
     readonly property string privateStatus: "实验锁定（未正式校准） · " + (privatePoseCurrent ? "当前画面已贴合" : "位置待核对")
     readonly property bool wide: width >= 720
+    readonly property bool shortPage: height < 540
     function floorLabel(floor, label) {
         if (label) return label
         if (session.appliedSeason === "s1" && /^-[1-4]$/.test(String(floor)))
@@ -78,7 +79,7 @@ Item {
                 Rectangle {
                     id: hero
                     objectName: "homeHero"
-                    Layout.fillWidth: true; implicitHeight: Math.max(279, heroContents.implicitHeight + 48)
+                    Layout.fillWidth: true; implicitHeight: Math.max(page.shortPage ? 0 : 279, heroContents.implicitHeight + (page.shortPage ? 28 : 48))
                     radius: 16
                     // Brand hero: deep-to-bright blue, white type, a star chart on the right.
                     gradient: Gradient {
@@ -122,9 +123,9 @@ Item {
                     ColumnLayout {
                         id: heroContents
                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                        anchors.leftMargin: 28; anchors.rightMargin: 28; anchors.topMargin: 24; spacing: 10
-                        Label { text: "✦  YOUR ROUTE, YOUR WAY"; color: "#cddbff"; font.pixelSize: 11; font.bold: true; font.letterSpacing: 1 }
-                        Label { objectName: "homeHeroTitle"; text: "地图与路线，\n随手查看。"; color: "white"; font.pixelSize: page.width >= 1200 ? 34 : hero.width >= 560 ? 30 : 26; font.bold: true; lineHeight: 1.15 }
+                        anchors.leftMargin: page.shortPage ? 18 : 28; anchors.rightMargin: page.shortPage ? 18 : 28; anchors.topMargin: page.shortPage ? 14 : 24; spacing: page.shortPage ? 6 : 10
+                        Label { text: "按你的路线来"; color: "#cddbff"; font.pixelSize: 12; font.bold: true }
+                        Label { objectName: "homeHeroTitle"; text: "地图与路线，\n随手查看。"; color: "white"; font.pixelSize: page.shortPage ? 24 : page.width >= 1200 ? 34 : hero.width >= 560 ? 30 : 26; font.bold: true; lineHeight: 1.15 }
                         Label { text: "先打开游戏控件，再回到游戏按地图键查看小抄。"; color: "#e3ebff"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                         RowLayout {
                             Layout.topMargin: 10; spacing: 10
@@ -162,9 +163,11 @@ Item {
                                          || settingsService.persistedValues.gameMode !== session.appliedMode)
                             text: "默认赛季和难度已保存，本局仍显示已应用的环境。可重新选择默认项重试。"
                         }
-                        RowLayout {
+                        GridLayout {
                             objectName: "homeRoundStats"
-                            Layout.fillWidth: true; spacing: 10
+                            Layout.fillWidth: true
+                            columns: width < 420 ? 1 : 3
+                            columnSpacing: 10; rowSpacing: 10
                             Repeater {
                                 model: [{label: "状态", value: session.snapshot.s1FormalRoundLock === true && session.snapshot.identityLocked === true
                                             ? "地图已锁定 · " + (session.snapshot.displayAuthorized ? "当前画面已贴合" : "位置待核对")
@@ -218,18 +221,35 @@ Item {
                             Repeater {
                                 model: infoService.homePreviews
                                 delegate: Item {
+                                    id: previewCard
                                     required property var modelData
+                                    function openPreview() {
+                                        if (modelData.key) infoService.openHomePreview(modelData.key)
+                                        else clientCoordinator.navigate("gallery")
+                                    }
                                     Layout.fillWidth: true; Layout.preferredWidth: 100; implicitHeight: 146
                                     Rectangle {
                                         anchors.left: parent.left; anchors.right: parent.right; height: 116; radius: 9; color: "#f0f5fc"
+                                        border.width: previewOpen.activeFocus ? 2 : 0; border.color: "#2f66eb"
                                         Image { anchors.fill: parent; anchors.margins: 9; objectName: "homeMapPreview"; source: modelData.imageUrl; asynchronous: true; fillMode: Image.PreserveAspectFit; sourceSize.width: 320; sourceSize.height: 220 }
                                     }
                                     Label { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; text: modelData.title + " · " + page.floorLabel(modelData.floor, modelData.floorLabel || "") + (modelData.displayKind ? " · " + modelData.displayKind : modelData.structure ? " · 结构图" : ""); color: "#567096"; font.pixelSize: 11; elide: Text.ElideRight }
-                                    MouseArea { objectName: "homePreviewOpen"; anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { if (parent.modelData.key) infoService.openHomePreview(parent.modelData.key); else clientCoordinator.navigate("gallery") } }
+                                    MouseArea {
+                                        id: previewOpen
+                                        objectName: "homePreviewOpen"; anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        activeFocusOnTab: true
+                                        Accessible.role: Accessible.Button
+                                        Accessible.name: "查看" + (previewCard.modelData.title || "地图预览")
+                                        onClicked: previewCard.openPreview()
+                                        Keys.onReturnPressed: previewCard.openPreview()
+                                        Keys.onEnterPressed: previewCard.openPreview()
+                                        Keys.onSpacePressed: function(event) { previewCard.openPreview(); event.accepted = true }
+                                    }
                                 }
                             }
                         }
-                        Label { visible: infoService.homePreviews.length === 0; text: !homeContextSelector.registeredContext(session.appliedSeason, session.appliedMode) ? homeContextSelector.seasonLabel(session.appliedSeason) + " 资源待补齐" : "导入本地图包后，可在这里快速查看已安装地图。"; color: "#567096"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                        Label { visible: infoService.homePreviews.length === 0; text: !homeContextSelector.registeredContext(session.appliedSeason, session.appliedMode) ? homeContextSelector.seasonLabel(session.appliedSeason) + " 的地图还没备齐。" : "还没有可预览的地图。导入图包后，会显示在这里。"; color: "#567096"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                     }
                 }
             }

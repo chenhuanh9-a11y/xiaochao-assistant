@@ -298,6 +298,10 @@ class ResourceResetPackagingTests(unittest.TestCase):
             lines = (output / 'reset-helper-inventory.txt').read_text('utf-8-sig').splitlines()
             self.assertEqual(len(lines), 3)
             self.assertFalse(record['resourceResetInstaller']['nativeTested'])
+            self.assertEqual(record['resourceResetInstaller']['resourceAction'], 'preserve')
+            self.assertIsNone(record['resourceResetInstaller']['targetManifestSha256'])
+            self.assertIn('/DProgramOnlyInstaller', definitions)
+            self.assertFalse(any(value.startswith('/DResetCandidateSHA256=') for value in definitions))
             capacity = record['resourceResetInstaller']['capacityPreflight']
             self.assertFalse(capacity['nativeIOPerformed'])
             self.assertEqual(len(capacity['examples']), 2)
@@ -312,7 +316,7 @@ class ResourceResetPackagingTests(unittest.TestCase):
                     build.resource_reset_installer_defines(stage, record, output, dict(commit='a' * 40))
 
     def test_old_missing_changed_or_extra_helper_cannot_be_wrapped(self):
-        for kind in ('missing', 'changed', 'extra', 'target', 'program', 'payload', 'projection'):
+        for kind in ('missing', 'changed', 'extra', 'target', 'program', 'policy', 'projection'):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as folder:
                 stage, output, record = self.fixture(Path(folder))
                 if kind == 'missing': record.pop('resetHelper')
@@ -320,7 +324,7 @@ class ResourceResetPackagingTests(unittest.TestCase):
                 if kind == 'extra': (stage / '_star_map_reset_runtime/unknown.dll').write_bytes(b'unknown')
                 if kind == 'target': (stage / 'release-report.json').write_bytes(b'changed')
                 if kind == 'program': (stage / '星图.exe').write_bytes(b'changed')
-                if kind == 'payload': (stage / '_internal/references/base.json').write_bytes(b'evil')
+                if kind == 'policy': record['fileProjection']['policy'] = dict(existingBasePlane='legacy-managed')
                 if kind == 'projection': record['fileProjection']['installedFiles'].remove('星图.exe')
                 with self.assertRaises(ValueError):
                     build.resource_reset_installer_defines(stage, record, output, dict(commit='a' * 40))

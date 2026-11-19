@@ -10,7 +10,10 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from runtime_exclusions import PYTHON_MODULE_EXCLUSIONS, filter_binaries
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
+from qt_quick_style import pin_quick_controls_style
+from runtime_exclusions import (
+    PYTHON_MODULE_EXCLUSIONS, filter_binaries, unreferenced_qt_binaries, unused_staged_relative)
 
 
 class RuntimeExclusionTests(unittest.TestCase):
@@ -139,6 +142,99 @@ class RuntimeExclusionTests(unittest.TestCase):
             # available. This exclusion is not a blanket Python-file trim.
             for name in ("client_info.py", "client_live_runtime.py", "probe_client.py"):
                 self.assertIn(qt_root / name, collected)
+
+
+class PayloadPruneTests(unittest.TestCase):
+    def test_unused_payload_keeps_basic_chinese_and_image_decoders(self):
+        kept = [
+            "PySide6/plugins/platforms/qwindows.dll",
+            "PySide6/plugins/imageformats/qjpeg.dll",
+            "PySide6/plugins/imageformats/qwebp.dll",
+            "PySide6/plugins/imageformats/qgif.dll",
+            "PySide6/plugins/imageformats/qico.dll",
+            "PySide6/plugins/tls/qschannelbackend.dll",
+            "PySide6/plugins/tls/qcertonlybackend.dll",
+            "PySide6/qml/QtQuick/Controls/qmldir",
+            "PySide6/qml/QtQuick/Controls/Basic/Button.qml",
+            "PySide6/qml/QtQuick/Controls/impl/qmldir",
+            "PySide6/qml/QtQuick/Dialogs/quickimpl/qml/FileDialog.qml",
+            "PySide6/qml/Qt/labs/folderlistmodel/qmldir",
+            "PySide6/qml/QtQml/Models/qmldir",
+            "PySide6/qml/QtQml/WorkerScript/qmldir",
+            "PySide6/qml/QtTest/qmldir",
+            "PySide6/translations/qtbase_zh_CN.qm",
+            "PySide6/translations/qtdeclarative_zh_CN.qm",
+            "PySide6/Qt6Core.dll",
+            "PySide6/Qt6Quick.dll",
+            "PySide6/QtNetwork.pyd",
+            "PySide6/QtTest.pyd",
+            "cv2/cv2.pyd",
+            "cv2/data/__init__.py",
+            "PIL/_webp.cp313-win_amd64.pyd",
+            "_internal-not-really/csharp-grid/coreclr.dll",
+        ]
+        dropped = [
+            "PySide6/qml/QtQuick/Controls/FluentWinUI3/Button.qml",
+            "PySide6/qml/QtQuick/Controls/Material/Button.qml",
+            "PySide6/qml/QtQuick/Controls/Fusion/Button.qml",
+            "PySide6/qml/QtQuick/Controls/Imagine/Button.qml",
+            "PySide6/qml/QtQuick/Controls/Universal/Button.qml",
+            "PySide6/qml/QtQuick/Controls/Windows/Button.qml",
+            "PySide6/qml/QtQuick/NativeStyle/qmldir",
+            "PySide6/qml/Qt/labs/platform/qmldir",
+            "PySide6/qml/QtQuick/VirtualKeyboard/qmldir",
+            "PySide6/plugins/platforms/qdirect2d.dll",
+            "PySide6/plugins/platforms/qoffscreen.dll",
+            "PySide6/plugins/imageformats/qtiff.dll",
+            "PySide6/plugins/imageformats/qpdf.dll",
+            "PySide6/plugins/tls/qopensslbackend.dll",
+            "PySide6/plugins/sqldrivers/qsqlite.dll",
+            "PySide6/plugins/qmltooling/qmldbg_debugger.dll",
+            "PySide6/translations/qtbase_de.qm",
+            "PySide6/translations/qtbase_zh_TW.qm",
+            r"PySide6\translations\qt_fr.qm",
+            "PySide6/opengl32sw.dll",
+            "cv2/data/haarcascade_frontalface_default.xml",
+            "PySide6/QtCore.pyi",
+            "somewhere/debug.pdb",
+        ]
+        self.assertTrue(all(unused_staged_relative(path) is None for path in kept), kept)
+        self.assertTrue(all(unused_staged_relative(path) for path in dropped), dropped)
+
+    def test_unreferenced_bindings_drop_opengl_pyd_but_keep_linked_dll_and_widgets(self):
+        files = [
+            "PySide6/QtQuick.pyd",
+            "PySide6/Qt6Quick.dll",
+            "PySide6/Qt6Core.dll",
+            "PySide6/QtOpenGL.pyd",
+            "PySide6/Qt6OpenGL.dll",
+            "PySide6/QtTest.pyd",
+            "PySide6/Qt6Widgets.dll",
+            "PySide6/QtWidgets.pyd",
+            "PySide6/plugins/platforms/qwindows.dll",
+            "numpy.libs/libopenblas.dll",
+            "csharp-grid/coreclr.dll",
+        ]
+        imports = {
+            "PySide6/QtQuick.pyd": ["Qt6Quick.dll"],
+            "PySide6/Qt6Quick.dll": ["Qt6Core.dll", "Qt6OpenGL.dll"],
+            "PySide6/Qt6Core.dll": ["icuuc.dll"],
+            "PySide6/QtOpenGL.pyd": ["Qt6OpenGL.dll"],
+            "PySide6/Qt6OpenGL.dll": ["Qt6Core.dll"],
+            "PySide6/QtTest.pyd": ["Qt6Widgets.dll", "Qt6Core.dll"],
+            "PySide6/Qt6Widgets.dll": ["Qt6Core.dll"],
+            "PySide6/QtWidgets.pyd": ["Qt6Widgets.dll"],
+            "PySide6/plugins/platforms/qwindows.dll": ["Qt6Core.dll"],
+            "numpy.libs/libopenblas.dll": [],
+            "csharp-grid/coreclr.dll": [],
+        }
+        removed = set(unreferenced_qt_binaries(files, lambda rel: imports[rel]))
+        self.assertEqual(removed, {"PySide6/QtOpenGL.pyd", "PySide6/QtWidgets.pyd"})
+
+    def test_quick_controls_style_is_basic_before_qml(self):
+        os.environ.pop("QT_QUICK_CONTROLS_STYLE", None)
+        pin_quick_controls_style()
+        self.assertEqual(os.environ["QT_QUICK_CONTROLS_STYLE"], "Basic")
 
 
 if __name__ == "__main__":

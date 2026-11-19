@@ -56,6 +56,21 @@ Item {
         return false
     }
 
+    function contextAvailable(identity, difficulty) {
+        for (var i = 0; i < seasons.length; i++) {
+            if (seasons[i].id === identity) {
+                var capability = (seasons[i].capabilities || {})[difficulty]
+                // Standalone legacy selectors have no imported-store owner.
+                return !capability || capability.available === undefined || capability.available === true
+            }
+        }
+        return false
+    }
+
+    function hasAvailableMode(identity) {
+        return contextAvailable(identity, "nightmare") || contextAvailable(identity, "difficult")
+    }
+
     function requestContext(nextSeason, nextMode) {
         for (var target = 0; target < seasons.length; target++) {
             if (seasons[target].id === nextSeason) {
@@ -66,6 +81,11 @@ Item {
             }
         }
         if (!enabled || (nextSeason === season && nextMode === mode && !allowCurrentContextRequest)) return
+        if (nextSeason !== season && !contextAvailable(nextSeason, nextMode)) {
+            if (contextAvailable(nextSeason, "nightmare")) nextMode = "nightmare"
+            else if (contextAvailable(nextSeason, "difficult")) nextMode = "difficult"
+        }
+        if (!contextAvailable(nextSeason, nextMode)) return
         if (nextMode !== "nightmare" && nextMode !== "difficult"
                 && !(browseDifficulty2 && nextSeason === "s1" && nextMode === "difficulty2")) return
         for (var i = 0; i < seasons.length; i++) {
@@ -101,6 +121,7 @@ Item {
                 width: seasonPicker.width
                 text: modelData.label
                 highlighted: seasonPicker.highlightedIndex === index
+                enabled: root.hasAvailableMode(modelData.id)
             }
             onActivated: function(index) {
                 if (index >= 0 && index < root.seasons.length)
@@ -113,6 +134,7 @@ Item {
         AppButton {
             objectName: root.nightmareObjectName
             text: "噩梦"; implicitWidth: 64; implicitHeight: 34
+            enabled: root.contextAvailable(root.season, "nightmare")
             selected: root.mode === "nightmare"
             Accessible.name: text + (selected ? " · 已选" : "")
             onClicked: root.requestContext(root.season, "nightmare")
@@ -120,6 +142,7 @@ Item {
         AppButton {
             objectName: root.difficultObjectName
             text: "困难"; implicitWidth: 64; implicitHeight: 34
+            enabled: root.contextAvailable(root.season, "difficult")
             selected: root.mode === "difficult"
             Accessible.name: text + (selected ? " · 已选" : "")
             onClicked: root.requestContext(root.season, "difficult")

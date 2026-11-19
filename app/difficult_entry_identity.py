@@ -51,7 +51,8 @@ def entry_corners(frame,context):
 
 
 class MapEntryGeometryIdentity:
-    def __init__(self,root,*,structure_store=None,route_loader=None,shared_reference_provider=None,profile_id='zhan10-speed',profile_for_map=None):
+    def __init__(self,root,*,structure_store=None,route_loader=None,shared_reference_provider=None,profile_id='zhan10-speed',profile_for_map=None,read_resource=None):
+        self.read_resource = read_resource
         self.profile_id=profile_id
         self.profile_for_map=profile_for_map or (lambda map_id: self.profile_id)
         self.root=Path(root);self.entries=[];self.error=None
@@ -63,7 +64,8 @@ class MapEntryGeometryIdentity:
         self.structures=(structure_store if structure_store is not None else
             AuthorStructureResourceStore(self.root/'index.json',self.root))
         try:
-            payload=json.loads((self.root/'entries.json').read_text(encoding='utf8'))
+            path = self.root/'entries.json'
+            payload=json.loads(path.read_text(encoding='utf8') if read_resource is None else read_resource(path))
             if payload['schemaVersion']!=1:raise ValueError('unsupported entry index')
             for item in payload['entries']:
                 points=np.array([c['points'] for c in item['chains']],float)

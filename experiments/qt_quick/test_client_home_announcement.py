@@ -1,7 +1,8 @@
-"""Actual Client.qml/home mouse + keyboard flows with offline/native fixtures.
+"""Actual Client.qml/home mouse + keyboard flows with a real imported provider.
 
-These are source/offscreen composition checks, not a Windows package or game
-acceptance test. Production/private identities use the same startup call.
+The owned imported-resource root is empty; input and capture are isolated, and
+network access is blocked. These are source/offscreen composition checks, not a
+Windows package or game acceptance test.
 """
 from contextlib import contextmanager
 import json
@@ -21,10 +22,9 @@ from PySide6.QtTest import QTest
 
 from client import QtClient
 from client_paths import WORK_ROOT
-from client_providers import EngineFactories
 from client_route_plaza import RoutePlazaService
 from test_client_input import Native
-from test_client_live_runtime import FixtureCapture, fixture_engine
+from test_client_live_runtime import FixtureCapture
 from test_client_announcement import notice
 from update_service import HISTORY_URL
 
@@ -34,7 +34,8 @@ APP = QGuiApplication.instance() or QGuiApplication([])
 def wait(predicate):
     deadline = time.monotonic() + 5
     while not predicate() and time.monotonic() < deadline:
-        QTest.qWait(5)
+        APP.processEvents()
+        time.sleep(.002)
     assert predicate(), 'Full client announcement did not settle'
 
 
@@ -58,8 +59,7 @@ def fixture_client(*, probe):
              patch('client_input.NativeWindowAPI', return_value=Native()), \
              patch('client_capture.ClientCaptureProvider', return_value=capture), \
              patch('client_coordinator.another_assistant_running', return_value=False), \
-             patch('client_route_plaza.RoutePlazaService', side_effect=offline_plaza), \
-             patch.object(EngineFactories, '_build', lambda self, mode, **kw: fixture_engine(mode)):
+             patch('client_route_plaza.RoutePlazaService', side_effect=offline_plaza):
             try:
                 client = QtClient(APP, root, probe_output=root / 'unused.json' if probe else None,
                                   info_fetch=fetch)

@@ -340,7 +340,9 @@ class MapPackageDownloadService:
                 item = dict(self._packages[package_id])
             _no_links(self.download_root)
             self.download_root.mkdir(parents=True, exist_ok=True)
-            final = self.download_root / f"{package_id}-{item['sha256']}.zip"
+            from resource_package_types import preferred_download_suffix
+            suffix = preferred_download_suffix(item['url'])
+            final = self.download_root / f"{package_id}-{item['sha256']}{suffix}"
             _no_links(final)
             if final.exists():
                 # Valid cache reuse only needs read access. If invalid, reopen
@@ -368,67 +370,78 @@ class MapPackageDownloadService:
             info = os.fstat(fd)
             identity = (info.st_dev, info.st_ino)
             os.close(fd)
-            digest, received = hashlib.sha256(), 0
+            digest, received = hashlib.sha256().hexdigest(), 0
+            hashed = False
             published = False
             try:
                 with _locked_file(temporary, writable=True, movable=True, expected_identity=identity) as sink:
-                    with self._open(item["url"], operation, deadline) as response:
-                        self._length(response, item["bytes"], exact=item["bytes"])
-                        while True:
-                            self._check(operation, deadline)
-                            block = response.read1(min(CHUNK_BYTES, item["bytes"] + 1 - received))
-                            self._check(operation, deadline)
-                            if not block:
-                                break
-                            received += len(block)
-                            if received > item["bytes"]:
-                                raise DownloadError("package-size-limit")
-                            sink.write(block)
-                            digest.update(block)
-                            if progress is not None:
-                                self._check(operation, deadline)
-                                progress(received, item["bytes"])
-                    sink.flush()
-                    os.fsync(sink.fileno())
-                    sink.seek(0)
-                    self._check(operation, deadline)
-                    if (received != item["bytes"] or os.fstat(sink.fileno()).st_size != item["bytes"]
-                            or digest.hexdigest() != item["sha256"]
-                            or hashlib.file_digest(sink, "sha256").hexdigest() != item["sha256"]):
-                        raise DownloadError("package-size-or-sha-mismatch")
-                    self._check(operation, deadline)
-                    # Publish the verified object through its still-open DELETE
-                    # handle. FileRenameInfo never replaces an existing name and
-                    # works on volumes without hardlinks; bytes/identity stay on
-                    # this object, rather than a copied file or a reopened path.
-                    _rename_locked_file(sink, final)
-                    published = True
                     try:
+                        with self._open(item["url"], operation, deadline) as response:
+                            self._length(response, item["bytes"], exact=item["bytes"])
+                            while True:
+                                self._check(operation, deadline)
+                                block = response.read1(min(CHUNK_BYTES, item["bytes"] + 1 - received))
+                                self._check(operation, deadline)
+                                if not block:
+                                    break
+                                received += len(block)
+                                if received > item["bytes"]:
+                                    raise DownloadError("package-size-limit")
+                                sink.write(block)
+                                if progress is not None:
+                                    self._check(operation, deadline)
+                                    progress(received, item["bytes"])
+                        sink.flush()
+                        os.fsync(sink.fileno())
+                        sink.seek(0)
                         self._check(operation, deadline)
-                    except Exception:
-                        # Cancellation after publication restores the private
-                        # name while the SAME locked handle still prevents a swap.
-                        # If a foreign name blocks rollback, retain both objects.
+                        digest = hashlib.file_digest(sink, "sha256").hexdigest()
+                        hashed = True
+                        if (received != item["bytes"] or os.fstat(sink.fileno()).st_size != item["bytes"]
+                                or digest != item["sha256"]):
+                            raise DownloadError("package-size-or-sha-mismatch")
+                        self._check(operation, deadline)
+                        # The disk digest covers both transfer and writes. The
+                        # same handle denies external writes/replacement until
+                        # publication; hashing the received blocks adds no proof.
+                        _rename_locked_file(sink, final)
+                        published = True
                         try:
-                            _rename_locked_file(sink, temporary)
-                        except Exception as recovery_error:
+                            self._check(operation, deadline)
+                        except Exception:
+                            # Restore the SAME locked object; never replace a
+                            # foreign name that appeared during cancellation.
+                            try:
+                                _rename_locked_file(sink, temporary)
+                            except Exception as recovery_error:
+                                published = False
+                                raise DownloadError('cache-publication-rollback-required') from recovery_error
                             published = False
-                            raise DownloadError('cache-publication-rollback-required') from recovery_error
-                        published = False
-                        raise
-                    with self._state:
-                        self._attempts[package_id] = 0
-                    return final
+                            raise
+                        with self._state:
+                            self._attempts[package_id] = 0
+                        return final
+                    finally:
+                        if not hashed:
+                            # Failure/cancel before the final hash still needs a
+                            # known digest for identity-bound cleanup. Capture
+                            # partial bytes BEFORE releasing the write lock.
+                            try:
+                                sink.flush()
+                                sink.seek(0)
+                                digest = hashlib.file_digest(sink, "sha256").hexdigest()
+                            except OSError:
+                                digest = None  # Unknown contents are preserved.
             except Exception:
                 # After an exceptional outcome, remove only this request's
                 # verified identity. Unknown replacements are preserved.
                 if published:
-                    _rollback_published(final, identity, digest.hexdigest())
+                    _rollback_published(final, identity, digest)
                 raise
             finally:
                 # Only the file object created by this request is eligible. No
                 # directory sweeps or cleanup of other requests' finished ZIPs.
-                _rollback_published(temporary, identity, digest.hexdigest())
+                _rollback_published(temporary, identity, digest)
 
 
 def prune_installed_downloads(download_root: Path, install_root: Path) -> list[str]:

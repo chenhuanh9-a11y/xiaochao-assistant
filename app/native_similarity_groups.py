@@ -1,6 +1,7 @@
 """Native-footprint group proposals; original identity/pose validators keep authority."""
 from dataclasses import dataclass, field
 import gzip
+from io import BytesIO
 import hashlib
 import itertools
 import json
@@ -14,7 +15,8 @@ import numpy as np
 
 
 class NativeSimilarityGroups:
-    def __init__(self, root, pack, *, binding_provider=None):
+    def __init__(self, root, pack, *, binding_provider=None, read_resource=None):
+        self.read_resource = read_resource
         self.root = Path(root).resolve()
         self.mode = pack.mode
         self.map_ids = frozenset(pack.by_id)
@@ -29,8 +31,10 @@ class NativeSimilarityGroups:
             self.index_path=(compressed if compressed.exists() else
                 self.local('references/native-similarity-groups.json'))
             if self.index_path==compressed:
-                with gzip.open(self.index_path,'rt',encoding='utf8') as stream:payload=json.load(stream)
-            else:payload=json.loads(self.index_path.read_text('utf8'))
+                if read_resource is None:
+                    with gzip.open(self.index_path,'rt',encoding='utf8') as stream:payload=json.load(stream)
+                else:payload=json.loads(gzip.decompress(read_resource(self.index_path)))
+            else:payload=json.loads(self.index_path.read_text('utf8') if read_resource is None else read_resource(self.index_path))
             self.index_digest = self._sha(self.index_path)
             if (payload.get('schemaVersion'),payload.get('resourceKind')) == (2,'native-similarity-conditions'):
                 self.condition_index = NativeConditionIndex(self,payload)
@@ -69,7 +73,7 @@ class NativeSimilarityGroups:
         stat = path.stat(); key = (path, stat.st_size, stat.st_mtime_ns, stat.st_ino)
         value = self._digests.get(key)
         if value is None:
-            value = hashlib.sha256(path.read_bytes()).hexdigest()
+            value = hashlib.sha256(path.read_bytes() if self.read_resource is None else self.read_resource(path)).hexdigest()
             updated = {k:v for k,v in self._digests.items() if k[0] != path}
             updated[key] = value
             self._digests = updated
@@ -111,7 +115,7 @@ class NativeSimilarityGroups:
             raise ValueError('similarity-differences-changed')
         key = (path, digest)
         if key not in self._arrays:
-            with np.load(path, allow_pickle=False) as archive:
+            with np.load(path if self.read_resource is None else BytesIO(self.read_resource(path)), allow_pickle=False) as archive:
                 names = [r['array'] for r in floor['members']] + [floor['unionArray'], floor['commonArray']]
                 names += [p[k] for p in floor['pairs'] for k in ('aOnlyArray','bOnlyArray')]
                 arrays = {name:archive[name] for name in names}
@@ -297,7 +301,7 @@ class NativeConditionIndex:
         file_key=(path,digest)
         payload=self._feature_files.get(file_key)
         if payload is None:
-            payload=json.loads(path.read_text('utf8'))
+            payload=json.loads(path.read_text('utf8') if self.owner.read_resource is None else self.owner.read_resource(path))
             self._feature_files[file_key]=payload
         if not 0<=declaration['rowIndex']<len(payload['entries']):raise ValueError('similarity-feature-row-index')
         row=payload['entries'][declaration['rowIndex']]
@@ -338,7 +342,7 @@ class NativeConditionIndex:
         if digest!=spec['sha256']:raise ValueError('similarity-samples-changed')
         bundle=self.sample_bundle
         if bundle is None or bundle[0]!=digest:
-            with np.load(path,allow_pickle=False) as archive:
+            with np.load(path if self.owner.read_resource is None else BytesIO(self.owner.read_resource(path)),allow_pickle=False) as archive:
                 points=archive[spec['pointsArray']];offsets=archive[spec['offsetsArray']]
             if (points.dtype!=np.int32 or points.ndim!=2 or points.shape[1]!=2
                     or offsets.dtype!=np.int64 or offsets.ndim!=1 or len(offsets)<2

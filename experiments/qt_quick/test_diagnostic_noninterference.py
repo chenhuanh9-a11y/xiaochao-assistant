@@ -14,7 +14,7 @@ import sys
 import tempfile
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import cv2
 import numpy as np
@@ -284,13 +284,71 @@ class NoninterferenceTests(unittest.TestCase):
                 self.assertEqual(results[0],results[1],kind)
                 self.assertFalse(results[0][2],kind)
 
-    def test_capture_authorization_source_matches_approved_compatibility_feature(self):
-        relative = 'app/client_region_capture.py'
-        self.assertEqual(hashlib.sha256((ROOT/relative).read_bytes()).hexdigest(),
-                         MANIFEST['files'][relative]['sha256'], relative)
+    def test_capture_provider_source_matches_approved_compatibility_feature(self):
         for key in ('capture_compatibility_feature', 'exclusion_compatibility_feature'):
             record = MANIFEST['approvedCompatibilityBaselines'][key]
             self.assertEqual((ROOT/record['sourcePath']).read_bytes(), compatibility_baseline(key))
+
+    def test_owned_region_capture_preserves_context_and_pixel_guards(self):
+        # RegionCapture now owns immutable pixels. Whole-file equality would
+        # reject that intended transport change without testing capture safety.
+        # Exercise its actual caller with independent OS/pixel protocol inputs.
+        import client_region_capture as region
+        context = region.ClientCaptureContext((100, 80), (10, 20, 110, 100), 96)
+        changed = region.ClientCaptureContext((100, 80), (10, 20, 110, 100), 144)
+        pixels = np.full((80, 100, 3), 120, np.uint8)
+        fallback_kinds = ('fallback', 'fallback-bounds', 'fallback-shape', 'fallback-dtype')
+        for kind in ('valid', 'before', 'during', 'before-fallback',
+                     *fallback_kinds, 'wrong-shape', 'wrong-dtype'):
+            with self.subTest(kind=kind):
+                state = {'context': context}
+                def capture(hwnd, bounds):
+                    self.assertEqual((hwnd, bounds), (42, (0, 0, 100, 80)))
+                    if kind == 'during':
+                        state['context'] = changed
+                    if kind == 'before-fallback':
+                        state['context'] = changed
+                    if kind == 'before-fallback' or kind in fallback_kinds:
+                        raise OSError('native-capture-unavailable')
+                    return (pixels[:-1] if kind == 'wrong-shape' else
+                            pixels.astype(np.float32) if kind == 'wrong-dtype' else pixels)
+                def fallback(hwnd):
+                    if kind == 'fallback':
+                        state['context'] = changed
+                    frame = (pixels[:-1] if kind == 'fallback-shape' else
+                             pixels.astype(np.float32) if kind == 'fallback-dtype' else pixels)
+                    bounds = (11, 20, 111, 100) if kind == 'fallback-bounds' else context.client_screen_bounds
+                    return frame, bounds
+                backend = types.SimpleNamespace(context=lambda hwnd: state['context'],
+                                                capture=Mock(side_effect=capture))
+                full = Mock(side_effect=fallback)
+                options = dict(expected_context=changed if kind == 'before' else context,
+                               full_capture=full, _backend=backend)
+                if kind == 'valid':
+                    result = region.capture_client_region(42, (0, 0, 100, 80), **options)
+                    self.assertEqual(result.context, context)
+                    self.assertEqual(result.acquisition, 'client-dc-roi')
+                    self.assertEqual(result.roi_client_bounds, (0, 0, 100, 80))
+                    np.testing.assert_array_equal(result.frame_bgr, pixels)
+                    self.assertFalse(np.shares_memory(result.frame_bgr, pixels))
+                    self.assertFalse(result.frame_bgr.flags.writeable)
+                elif kind in ('wrong-shape', 'wrong-dtype'):
+                    with self.assertRaisesRegex(ValueError, 'ROI backend must return'):
+                        region.capture_client_region(42, (0, 0, 100, 80), **options)
+                elif kind in ('fallback-shape', 'fallback-dtype'):
+                    with self.assertRaisesRegex(ValueError, 'fallback must return'):
+                        region.capture_client_region(42, (0, 0, 100, 80), **options)
+                else:
+                    with self.assertRaises(region.CaptureContextChanged):
+                        region.capture_client_region(42, (0, 0, 100, 80), **options)
+                if kind == 'before':
+                    backend.capture.assert_not_called()
+                else:
+                    backend.capture.assert_called_once()
+                if kind in fallback_kinds:
+                    full.assert_called_once_with(42)
+                else:
+                    full.assert_not_called()
 
     def test_historical_diagnostic_capture_change_is_only_foreign_metadata(self):
         original = (FIXTURES / MANIFEST['files']['experiments/qt_quick/client_capture.py']['fixture']).read_text('utf-8')

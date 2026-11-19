@@ -22,6 +22,7 @@ from s1_map_ui_geometry import observe_s1_map_ui_geometry
 CAPABILITY = "s1-floor-only-manual-map-use"
 ORDER = (-1, -2, -3, -4)
 SEARCH_BOUNDS = (.80, .12, .92, .56)
+EXPANDED_SEARCH_BOUNDS = (.55, .04, .985, .93)
 SOURCE_REPLAY_FLOORS = (-1, -2, -3, -4)
 
 
@@ -101,7 +102,7 @@ def _fill(gray, label, width):
     return float((tile > 80).mean()) if tile.size else None
 
 
-def detect_s1_floor(frame, *, season, mode, frame_id=None, expected_frame_id=None,
+def _detect_s1_floor_original(frame, *, season, mode, frame_id=None, expected_frame_id=None,
                     frame_current=True):
     """Return current pixel evidence, failing closed on any incomplete column.
 
@@ -412,3 +413,12 @@ def _joint_signed_column(gray, width, height):
                     if len(accepted) > 1:
                         return dict(reason="s1-floor-column-ambiguous")
     return accepted[0] if accepted else None
+
+
+def detect_s1_floor(frame, *, season, mode, frame_id=None, expected_frame_id=None, frame_current=True, controls=None):
+    from imported_original_controls import require_original_controls
+    require_original_controls(controls, season=season, mode=mode)
+    result = _detect_s1_floor_original(frame, season=season, mode=mode, frame_id=frame_id, expected_frame_id=expected_frame_id, frame_current=frame_current)
+    if controls is not None:
+        controls.assert_current()
+    return result

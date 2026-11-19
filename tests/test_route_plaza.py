@@ -26,6 +26,12 @@ ROOM_CELL = 22 * 60 + 22  # Image (45, 45) -> native (90, 90): room "big" on flo
 VIA_CELL = 7 * 60 + 37    # Image (75, 15) -> native (150, 30): corridor tile on floor 1.
 
 
+def synthetic_navigation_catalog():
+    """Identity fixture for the 120x90 art; never whitelist it in production."""
+    return {"nightmare-layout-01": dict(navigationSignature="0" * 64, compatibleNavigationSignatures=["1" * 64],
+        floors={floor: dict(width=120, height=90, step=2, cols=60, rows=45) for floor in ("1", "2")})}
+
+
 def stamp(seconds):
     return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
 
@@ -144,8 +150,54 @@ class MemoryVault(SessionVault):
         super().__init__(path, protect=lambda data: data[::-1], unprotect=lambda data: data[::-1])
 
 
+class AccountApiRootTests(unittest.TestCase):
+    """URL policy needs no HTTP fixture or local sockets."""
+
+    def test_only_local_test_servers_override_production(self):
+        rejected = ("", " ", "/", "https://evil.example", "http://127.0.0.1:80@evil.com",
+                    "http://localhost:80@evil.com", "http://localhost.evil.com:8080",
+                    "http://127.0.0.1.evil.com", "https://127.0.0.1:8080",
+                    "http://127.0.0.1:8080/#fragment", "http://localhost:8080/#",
+                    "http://user:password@localhost:8080", "http://@localhost:8080",
+                    "http://127.0.0.1:invalid", "http://localhost:65536", "http://[invalid")
+        for override in rejected:
+            with self.subTest(override=override), mock.patch.dict(os.environ, XINGTU_ACCOUNT_API_URL=override):
+                with self.assertRaisesRegex(AccountError, "账号测试服务地址无效"):
+                    account_service.api_root()
+                # Exercise the real JSON transport boundary for both credential paths.
+                # No socket is opened, including toward the production service.
+                with mock.patch.object(account_service._OPENER, "open") as open_request:
+                    for path in ("/v1/auth/login", "/v1/auth/refresh"):
+                        with self.assertRaises(AccountError):
+                            account_service.call("POST", path, {"test": "synthetic"})
+                    open_request.assert_not_called()
+        for override in ("http://127.0.0.1:8080", "http://localhost:8080/", "http://localhost",
+                         "http://127.0.0.1:8080/test?key=value"):
+            with self.subTest(override=override), mock.patch.dict(os.environ, XINGTU_ACCOUNT_API_URL=override):
+                self.assertEqual(account_service.api_root(), override.rstrip("/"))
+        with mock.patch.dict(os.environ):
+            os.environ.pop("XINGTU_ACCOUNT_API_URL", None)
+            self.assertEqual(account_service.api_root(), account_service.PRODUCTION_ROOT)
+        with mock.patch.dict(os.environ):
+            os.environ.pop("XINGTU_ACCOUNT_API_URL", None)
+            self.assertFalse(route_plaza._download_url_allowed("https://evil.example/x.zip"))
+            self.assertFalse(route_plaza._download_url_allowed("http://bucket.oss-cn-hangzhou.aliyuncs.com/x"))
+            self.assertTrue(route_plaza._download_url_allowed("https://bucket.oss-cn-hangzhou.aliyuncs.com/x"))
+
+    def test_unset_override_uses_production_transport_without_real_network(self):
+        with mock.patch.dict(os.environ), mock.patch.object(account_service._OPENER, "open") as open_request:
+            os.environ.pop("XINGTU_ACCOUNT_API_URL", None)
+            open_request.return_value.__enter__.return_value.read.return_value = b'{"ok": true}'
+            self.assertEqual(account_service.call("GET", "/v1/test"), {"ok": True})
+            self.assertEqual(open_request.call_args.args[0].full_url,
+                             account_service.PRODUCTION_ROOT + "/v1/test")
+
+
 class RoutePlazaTests(unittest.TestCase):
     def setUp(self):
+        self.navigation = mock.patch.object(route_plaza, "NAVIGATION_TEMPLATES", synthetic_navigation_catalog())
+        self.navigation.start()
+        self.addCleanup(self.navigation.stop)
         self.server = FakeServer()
         self.env = mock.patch.dict(os.environ, {"XINGTU_ACCOUNT_API_URL": self.server.url})
         self.env.start()
@@ -163,16 +215,6 @@ class RoutePlazaTests(unittest.TestCase):
         self.env.stop()
         self.server.close()
         self.folder.cleanup()
-
-    def test_only_local_test_servers_override_production(self):
-        with mock.patch.dict(os.environ, {"XINGTU_ACCOUNT_API_URL": "https://evil.example"}):
-            with self.assertRaises(AccountError):
-                account_service.api_root()
-        with mock.patch.dict(os.environ, {"XINGTU_ACCOUNT_API_URL": ""}):
-            self.assertEqual(account_service.api_root(), "https://api.xingchenmap.cn")
-            self.assertFalse(route_plaza._download_url_allowed("https://evil.example/x.zip"))
-            self.assertFalse(route_plaza._download_url_allowed("http://bucket.oss-cn-hangzhou.aliyuncs.com/x"))
-            self.assertTrue(route_plaza._download_url_allowed("https://bucket.oss-cn-hangzhou.aliyuncs.com/x"))
 
     def test_login_errors_and_session_survives_restart(self):
         with self.assertRaisesRegex(AccountError, "密码错误"):
@@ -201,7 +243,8 @@ class RoutePlazaTests(unittest.TestCase):
         self.account.login("alice", "secret1")
         route = route_plaza.list_routes()[0]
         gallery, report = route_plaza.install(self.account, self.library, self.store, route)
-        self.assertEqual(report, dict(maps=1, missingMaps=1, droppedPoints=1))
+        self.assertEqual(report, dict(maps=1, missingMaps=1, droppedPoints=1, versionMismatchMaps=0,
+                                     versionMismatches=[], outOfRangePoints=1, legacyNavigationMaps=0))
         points = self.store.route(gallery, "m")
         self.assertEqual([(p["floor"], p["kind"], p["room"], p["x"], p["y"], p["color"], p.get("start", False))
                           for p in points],

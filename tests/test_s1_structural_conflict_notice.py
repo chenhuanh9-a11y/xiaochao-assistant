@@ -31,7 +31,7 @@ def all_conflict(ids, floor='-1'):
 
 
 def computed_all_conflict(ids, floor='-1'):
-    """Real comparator decision logic; only resources/domain/extracted edges are fixtures."""
+    """Real wall pixels and comparator; only resources/domain are fixtures."""
     from s1_common_coordinate_filter import CommonCoordinateFilter
     observer = CommonCoordinateFilter.__new__(CommonCoordinateFilter)
     observer.mode, observer.resource_key = 'nightmare', 'fixture'
@@ -40,10 +40,12 @@ def computed_all_conflict(ids, floor='-1'):
         fields=[np.full((96, 96), 20., dtype=float) for _ in ids])
     observer._pool = lambda *args: data
     observer._domains_from_common = lambda *args: [(np.array([[1., 0., 0.]]), np.eye(3), {})]
-    edges = np.zeros((96, 96), dtype=bool); edges[20:80:2, 20:80:2] = True
-    with patch('single_map_structure.current_part', return_value=edges):
-        return observer.evaluate(np.zeros((96, 96, 3), dtype=np.uint8), [{}], ids, floor,
-            cancelled=lambda: False)
+    frame = np.full((96, 96, 3), 25, dtype=np.uint8)
+    frame[20:80, 20:80] = 112
+    query = np.zeros((96, 96), dtype=np.uint8)
+    query[20:80, 20:80] = 1
+    return observer.evaluate(frame, [dict(query=query, observationBounds=(0, 0, 96, 96))],
+        ids, floor, cancelled=lambda: False)
 
 
 class PoolConflictEvidence(unittest.TestCase):
@@ -435,7 +437,7 @@ class StructuralConflictNotice(unittest.TestCase):
                     self.assertEqual(fx.notices, [])
                 finally: fx.doCleanups()
 
-    def test_difficult_modes_share_conflict_and_recovery_contract(self):
+    def test_active_difficult_conflict_and_retired_mode_contract(self):
         for mode in ('difficult', 'difficulty2'):
             with self.subTest(mode=mode):
                 fx = StructuralConflictNotice(); fx.setUp()
@@ -449,6 +451,15 @@ class StructuralConflictNotice(unittest.TestCase):
                     with patch('s1_structure_selection.StructureCatalog.from_engine',
                             return_value=fx.producer.registry.catalog):
                         self.assertTrue(fx.runtime.dispatch('set_context', dict(season='s1', mode=mode))['success'])
+                        if mode == 'difficulty2':
+                            # The retired identity remains selectable for old
+                            # settings/resources, but may not start recognition.
+                            result = fx.runtime.dispatch('start_round')
+                            self.assertFalse(result['success'])
+                            self.assertEqual(result['reason'], 'retired-mode')
+                            self.assertEqual(fx.reports, 0)
+                            self.assertIsNone(fx.producer.current_payload())
+                            continue
                         pool = fx.lock(); fx.release.set(); fx.settle()
                         self.assertEqual(len(fx.conflict_notices()), 1)
                         self.assertFalse(pool.locked_id)

@@ -340,6 +340,25 @@ def locate_vertical_floor_controls(frame: np.ndarray, mode: str, *, season="s0",
     result = (_read_vertical_contrast(column, contract.observed_values, origin, frame.shape[1::-1], "auto-located")
               if column is not None else _unread("region-too-small"))
     if not expanded:
+        if column is not None and result.get('reason') != 'columns-ambiguous':
+            # A complete client can place the top highlight across the search
+            # boundary. Recover its missing pixels before the same signed
+            # column/geometry checks; a cropped tile is not click geometry.
+            exposure = result.get('controlExposure', 1.)
+            probe = column if exposure == 1. else cv2.convertScaleAbs(column, alpha=exposure)
+            width, height = frame.shape[1], frame.shape[0]
+            tiles = _candidate_tiles(np.ascontiguousarray(probe.T), round(width * .0036),
+                                     width * .010, width * .06)
+            top = [tile for tile in tiles if tile[0] <= 1]
+            bottom = [tile for tile in tiles if tile[0] + tile[2] >= column.shape[0] - 1]
+            if top or bottom:
+                padding = max(max(tile[2:4]) for tile in (*top, *bottom))
+                y0 = max(0, origin[1] - padding) if top else origin[1]
+                y1 = min(height, origin[1] + column.shape[0] + padding) if bottom else origin[1] + column.shape[0]
+                area = (area[0], y0 / height, area[2], (y1 - y0) / height)
+                column, origin = _crop(frame, area)
+                result = _read_vertical_contrast(column, contract.observed_values, origin,
+                                                 frame.shape[1::-1], "auto-located")
         return dict(result, controlSearchRegion=list(area))
     # The broad search domain is metadata, never an automatic screenshot ROI.
     # Once verified, retain only the measured column for failure diagnostics.

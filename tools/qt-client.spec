@@ -40,6 +40,7 @@ for name in ("version.json", "THIRD_PARTY_NOTICES.md", "THIRD_PARTY_LUCIDE_LICEN
     datas.append((str(root / name), "."))
 datas.append((str(qt_root / "THIRD_PARTY.md"), "qt-notices"))
 datas.append((str(root / "app" / "custom_default_gallery.json"), "."))
+datas.append((str(root / "app" / "control-data" / "s0-floor-templates-v1.npz"), "control-data"))
 datas.append((str(Path(inputs["profilePath"])), "."))
 for distribution in ("PySide6-Essentials", "shiboken6", "numpy", "opencv-python-headless", "Pillow", "psutil"):
     datas += copy_metadata(distribution)
@@ -51,7 +52,7 @@ a = Analysis(
                    "PySide6.QtQuick", "PySide6.QtQuickControls2", "numpy", "cv2",
                    "PIL.PngImagePlugin", "PIL.JpegImagePlugin", "PIL.WebPImagePlugin",
                    "client_providers", "map_identity_engine", "alignment_core_v2",
-                   "fast_structure_alignment", "shared_structure_context", "s0_floor_templates"],
+                   "fast_structure_alignment", "csharp_grid_runtime", "shared_structure_context", "s0_floor_templates"],
     hookspath=[], hooksconfig={}, runtime_hooks=[str(root / "tools" / "qt_startup_hint_hook.py")],
     excludes=[*PYTHON_MODULE_EXCLUSIONS, "tkinter", "_tkinter", "PIL.ImageTk",
               "turtle", "PyQt5", "PyQt6", "PySide2", "identityv_daily_assistant"],

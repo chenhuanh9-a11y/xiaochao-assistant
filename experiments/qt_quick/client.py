@@ -4,15 +4,15 @@ import argparse
 import json
 import os
 from pathlib import Path
-import shutil
 import sys
 import traceback
 from uuid import uuid4
 from PySide6.QtCore import QTimer, QUrl, QThreadPool, Qt
 from PySide6.QtGui import QFont, QGuiApplication, QIcon, QWindow
 from PySide6.QtQml import QQmlApplicationEngine
-from client_paths import APP_ROOT, DEFAULT_SANDBOX, FROZEN, PRODUCTION, RESOURCE_ROOT, WORK_ROOT, owned_sandbox, runtime_paths
+from client_paths import APP_ROOT, DEFAULT_SANDBOX, FROZEN, PRODUCTION, RESOURCE_ROOT, WORK_ROOT, RuntimePaths, owned_sandbox, runtime_paths
 from client_manual_map_service import ManualMapPickerService
+from qt_quick_style import pin_quick_controls_style
 from qt_startup_splash import set_startup_stage
 
 if str(APP_ROOT) not in sys.path:
@@ -24,7 +24,7 @@ HERE = Path(__file__).resolve().parent
 
 
 def prepare_first_run(sandbox):
-    """Stage a new test resource tree and publish it only when complete."""
+    """Create the isolated app's ownership marker without seeding map data."""
     sandbox = Path(sandbox).resolve()
     if PRODUCTION:
         # An upgrade uses the installed tree in place and never seeds test data.
@@ -33,27 +33,49 @@ def prepare_first_run(sandbox):
         return owned_sandbox(sandbox)
     if not sandbox.is_relative_to(WORK_ROOT):
         raise ValueError("The Qt client can initialize only its own work directory")
-    if not FROZEN:
-        raise ValueError("Source client needs seed_sandbox.py before first launch")
-    from seed_sandbox import seed
+    from map_package_upgrade import _write_new, _matches
+    from resource_transaction import rename_owned_directory_no_replace
+    from star_map_import import _rollback_published, _no_links
+    import hashlib
+    _no_links(sandbox.parent)
+    sandbox.parent.mkdir(parents=True, exist_ok=True)
+    _no_links(sandbox.parent)
     staging = sandbox.with_name(sandbox.name + ".preparing-" + uuid4().hex)
+    staging.mkdir()
+    info = staging.stat()
+    directory_identity = [info.st_dev, info.st_ino]
+    marker = staging / '.qt-lab-owner'
+    raw = b'qt-quick-isolated-v1\n'
+    marker_identity = None
     try:
-        seed(Path(sys.executable).resolve().parent, staging)
-        if sandbox.exists():
-            raise ValueError("Runtime data appeared while preparing; reopen without overwriting it")
-        os.replace(staging, sandbox)
+        marker_identity = _write_new(marker, raw)
+        marker_row = dict(path=marker.name, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+        def verify():
+            _no_links(staging)
+            if set(path.name for path in staging.iterdir()) != {marker.name} or not _matches(marker, marker_row, marker_identity):
+                raise ValueError('Isolated app ownership changed while preparing')
+        rename_owned_directory_no_replace(staging, sandbox, directory_identity, before_move=verify)
         return owned_sandbox(sandbox)
     except Exception:
-        # This exact fresh staging directory is ours; existing runtime data is
-        # never deleted or replaced by first-run recovery.
-        if staging.is_relative_to(WORK_ROOT) and staging.name.startswith(sandbox.name + ".preparing-"):
-            shutil.rmtree(staging, ignore_errors=True)
+        # Only a verified marker and an otherwise empty original directory may
+        # be removed; unknown or replaced objects remain for inspection.
+        try:
+            _no_links(staging)
+            current = staging.stat()
+            if ([current.st_dev, current.st_ino] == directory_identity
+                    and set(path.name for path in staging.iterdir()) == {marker.name}
+                    and marker_identity is not None
+                    and _rollback_published(marker, tuple(marker_identity), hashlib.sha256(raw).hexdigest())):
+                staging.rmdir()
+        except (OSError, ValueError):
+            pass
         raise
 
 
 class QtClient:
     def __init__(self, app, sandbox, *, probe_output=None, info_fetch=None, on_created=None,
-                 g_cycle_evidence=False, g_cycle_full_input=False):
+                 g_cycle_evidence=False, g_cycle_full_input=False, grid_backend="python"):
+        pin_quick_controls_style()
         if g_cycle_full_input and not g_cycle_evidence:
             raise ValueError("full solver evidence requires explicit test evidence")
         set_startup_stage("create-services")
@@ -64,13 +86,13 @@ class QtClient:
             on_created(self)
         from backend import Backend
         from client_settings import SettingsService
-        from client_resources import ResourceService
-        from client_package_manager import PackageManagerService
+        from client_imported_resources import ImportedResourceService
         from client_session import SessionService
         from client_windows import WindowController
         from client_input import NativeShortcutBackend
         from client_capture import ClientCaptureProvider
-        from client_providers import build_engine_factories
+        from client_imported_providers import build_imported_engine_factories, SUPPORTED_CAPABILITIES
+        from imported_resource_catalog import ResourceResolver
         from client_live_runtime import LiveRuntime
         from client_info import ClientInfoService
         from client_custom_gallery import CustomGalleryService
@@ -87,14 +109,13 @@ class QtClient:
         from client_reference_presentation import ReferencePreviewProvider
         self.app, self.sandbox = app, owned_sandbox(sandbox)
         self.paths = runtime_paths(self.sandbox)
-        # Startup housekeeping shared with the Tk client, before this session
-        # opens its own logs: earlier logs beyond the diagnostic export window,
-        # and download archives whose exact package is already installed.
+        self.resource_resolver = ResourceResolver(self.paths.imported_resource_root,
+                                                  supported_capabilities=SUPPORTED_CAPABILITIES)
+        # Keep the existing bounded diagnostic retention. Legacy downloaded
+        # archives are retained for conversion rather than pruned by old receipts.
         try:
             from diagnostic_export import DIAGNOSTIC_LOG_LIMIT, prune_diagnostic_logs
-            from star_map_download import prune_installed_downloads
             prune_diagnostic_logs(self.paths.work_root / "nightmare-live", DIAGNOSTIC_LOG_LIMIT - 1)
-            prune_installed_downloads(self.sandbox / "work/map-packages/downloads", self.sandbox)
         except Exception:
             pass  # Housekeeping never blocks startup; the files simply remain.
         from client_lifecycle_trace import create_lifecycle_trace
@@ -122,12 +143,20 @@ class QtClient:
             is_closing=lambda: self._closed or bool(getattr(getattr(self, "coordinator", None), "closing", False)))
         self.capture = ClientCaptureProvider(full_capture=self.capture_exclusion.full_capture)
         self.input = NativeShortcutBackend()
-        self.providers = build_engine_factories(self.paths.resource_root)
+        self.providers = build_imported_engine_factories(self.resource_resolver, self.paths)
         self.providers.set_custom_display(self.custom_display.layer, base_provider=self.custom_display.base_layer)
+        if grid_backend not in {"python", "csharp"}:
+            raise ValueError("Unknown grid backend")
+        self.grid_runtime = None
+        if grid_backend == "csharp":
+            from csharp_grid_runtime import CSharpGridRuntime
+            executable = (RESOURCE_ROOT / "csharp-grid/StarMap.Grid.exe" if FROZEN else
+                APP_ROOT.parent / "hybrid/StarMap.Grid/bin/Release/net10.0/StarMap.Grid.exe")
+            self.grid_runtime = CSharpGridRuntime(executable, self.paths.work_root / "grid-cache")
         self.runtime = LiveRuntime(engine_factories=self.providers, capture_provider=self.capture,
                                    allowed_read_root=WORK_ROOT, evidence_kind="live-client-capture",
                                     diagnostics=self.lifecycle_trace,
-                                    s1_candidate_purpose=candidate_purpose)
+                                    s1_candidate_purpose=candidate_purpose, grid_runtime=self.grid_runtime)
         values = self.settings.persistedValues
         self.runtime.configure_settings(values)
         mode, profile, season = ClientCoordinator._settings_context(values)
@@ -140,16 +169,23 @@ class QtClient:
         # preparation/recognition starts later on SessionService's worker.
         self.runtime.dispatch("set_context", {"season": season, "mode": mode, "profileId": profile})
         self.session = SessionService(self.runtime)
-        self.resources = ResourceService(self.sandbox)
+        self.resources = ImportedResourceService(self.resource_resolver, paths=self.paths,
+                                                engine_factories=self.providers)
         self.resources.setLeaseProvider(self.session)
-        self.package_manager = PackageManagerService(self.sandbox, self.resources)
-        self.package_manager.setLeaseProvider(self.session)
-        self.package_manager.resourcesChanged.connect(self.resources.resourcesChanged.emit)
-        self.resources.resourcesChanged.connect(self.package_manager.requestRefresh)
+        self.settings.setAvailableContexts(self.resources.availableContexts)
+        self.resources.availabilityChanged.connect(lambda:
+            self.settings.setAvailableContexts(self.resources.availableContexts))
+        QTimer.singleShot(0, self.resources.listPackages)
         self.online_packages = OnlinePackagesService(self.sandbox, self.resources,
-            index_url=None if probe_output else os.environ.get("STAR_MAP_PACKAGE_INDEX_URL"))
-        self.backend = Backend(self.sandbox)
-        self.route_choices = Backend(self.sandbox)
+            index_url=None if probe_output else os.environ.get("STAR_MAP_PACKAGE_INDEX_URL"),
+            save_only=True,
+            installed_package=lambda package_id, sha, cancelled: dict(status='unverified'))
+        from client_imported_gallery_images import ImportedGalleryImages
+        self.gallery_images = ImportedGalleryImages()
+        self.backend = Backend(self.sandbox, resource_resolver=self.resource_resolver,
+                               gallery_images=self.gallery_images, defer_loading=True)
+        self.backend.setContextAvailability(self.resources.contextAvailable)
+        self.route_choices = Backend(self.sandbox, resource_resolver=self.resource_resolver)
         self.resources.resourcesChanged.connect(self.route_choices.refresh)
         self.resources.resourcesChanged.connect(self._schedule_resource_preparation)
         self.resources.resourcesChanged.connect(self.custom_galleries.refresh)
@@ -187,18 +223,7 @@ class QtClient:
         self._recovery_process = None
         self._recovery_request = None
         self._import_handoff = None
-        if self.paths.production:
-            from client_import_handoff import ImportHandoff
-            self._import_handoff = ImportHandoff(self.sandbox)
-            self.resources.setImportLauncher(self._import_handoff.launch)
-            self.resources.importCloseRequested.connect(self.coordinator.requestClose)
-            receipt = self._import_handoff.read_receipt()
-            if receipt is not None:
-                self.resources.recordImportReceipt(receipt)
-            self.resources.setRecoveryLauncher(self._launch_recovery)
-            self.resources.recoveryCloseRequested.connect(self.coordinator.requestClose)
-            self._read_recovery_receipt()
-        self.info = ClientInfoService(self.sandbox, fetch=info_fetch)
+        self.info = ClientInfoService(self.sandbox, fetch=info_fetch, resource_resolver=self.resource_resolver)
         from client_tutorial import TutorialService
         self.tutorial = TutorialService(self.paths.tutorial_state_path, settings=self.settings, parent=self.coordinator)
         self.problems = ProblemsService(self.paths, build_fingerprint=self.info._build_fingerprint,
@@ -228,9 +253,6 @@ class QtClient:
         self.coordinator.errorReported.connect(self.problems.record)
         self.chest_auto_tap.errorReported.connect(self.problems.record)
         self.resources.errorReported.connect(self._resource_problem)
-        self.package_manager.errorReported.connect(self._resource_problem)
-        self.package_manager.removalCompleted.connect(
-            lambda title, message: self.coordinator.notificationRequested.emit(title, message, "success"))
         self.online_packages.errorReported.connect(self._resource_problem)
         self.coordinator.traceReported.connect(self.problems.recordTrace)
         self.info.setProviders(session=self.session, resources=self.resources, input=self.input,
@@ -239,7 +261,7 @@ class QtClient:
         self.coordinator.close_writers = (self.custom_galleries, self.info, self.online_packages,
                                          self.route_plaza,
                                          self.backend, self.route_choices, self.problems, self.reference_preview,
-                                         self.capture_exclusion, self.manual_map_picker, self.package_manager,
+                                         self.capture_exclusion, self.manual_map_picker,
                                          self.performance)
         if self.lifecycle_trace is not None:
             self.coordinator.close_writers += (self.lifecycle_trace,)
@@ -275,6 +297,7 @@ class QtClient:
         self.engine = QQmlApplicationEngine()
         self.engine.addImageProvider("live", self.images)
         self.engine.addImageProvider("floorregion", self.floor_region_images)
+        self.engine.addImageProvider("importedgallery", self.gallery_images)
         self.warnings = []
         self.engine.warnings.connect(self._record_qml_warnings)
         context = self.engine.rootContext()
@@ -282,7 +305,7 @@ class QtClient:
         context.setContextProperty("tutorialService", self.tutorial)
         for key, value in dict(backend=self.backend, resourceModel=self.backend.model, routeChoices=self.route_choices,
             settingsService=self.settings, gameStartupService=self.game_startup, resourceService=self.resources,
-            packageManagerService=self.package_manager, session=self.session,
+            session=self.session,
             windows=self.windows, clientCoordinator=self.coordinator, infoService=self.info,
             customGalleryService=self.custom_galleries, onlinePackageService=self.online_packages,
             routePlazaService=self.route_plaza,
@@ -595,9 +618,12 @@ class QtClient:
 
 
 def main():
+    pin_quick_controls_style()
     from qt_startup_splash import close_startup_splash
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sandbox", type=Path, default=DEFAULT_SANDBOX)
+    parser.add_argument("--grid-backend", choices=("csharp", "python"), default="csharp",
+                        help="candidate grid implementation; the original Python pipeline owns decisions")
     parser.add_argument("--probe-output", type=Path)
     parser.add_argument("--g-cycle-evidence", action="store_true",
                         help="this process only: bounded local G-attempt algorithm ROI evidence; may contain game text; no upload")
@@ -618,10 +644,11 @@ def main():
         parser.error("--offline-resource-root requires --self-check")
     if args.self_check:
         from client_engine import EngineAdapter
-        from client_providers import build_engine_factories
-        from client_live_runtime import LiveRuntime
-        from client_input import NativeShortcutBackend
+        from s0_floor_templates import _bank
+        floor_vectors, floor_labels = _bank()
         result = dict(ready=True, frozen=FROZEN, resourceRoot=str(RESOURCE_ROOT),
+                      floorTemplateResource=dict(shape=list(floor_vectors.shape),
+                          dtype=str(floor_vectors.dtype), labels=len(floor_labels)),
                       qml=all((HERE / name).is_file() for name in (
                           "Client.qml", "ClientControls.qml", "ClientReference.qml", "ClientAligned.qml",
                           "ClientMapPicker.qml")),
@@ -633,56 +660,38 @@ def main():
             result["offlineGallery"] = verify_offline_inventory(args.offline_resource_root.resolve())
             result["ready"] = result["offlineGallery"]["ready"]
         if args.verify_resources:
-            root = RESOURCE_ROOT if FROZEN else args.sandbox.resolve() / "_internal"
-            from client_resource_startup import readable_resources
+            from client_imported_providers import build_imported_engine_factories, SUPPORTED_CAPABILITIES
+            from imported_resource_catalog import ResourceResolver
+            from season_context import SEASONS, modes_for_season
+            from client_resource_startup import program_runtime
             installation = owned_sandbox(args.sandbox.resolve()) if PRODUCTION else args.sandbox.resolve()
-            with readable_resources(installation, production=PRODUCTION):
-                registry = build_engine_factories(root)
-                registry.prepare()
-                result["providers"] = registry.capabilities()
-                from s1_private_resources import validated_s1_resources, S1_RUNTIME_MODES, private_profile_modes
-                from packaged_product_identity import PRIVATE_S1_INSTANCES
-                required_s1 = False
-                native_modes = S1_RUNTIME_MODES
-                formal_s1_contexts = None
-                if FROZEN:
-                    profile = json.loads((RESOURCE_ROOT / "installation-profile.json").read_text(encoding="utf-8"))
-                    required_s1 = profile["installerInstance"]["id"] in PRIVATE_S1_INSTANCES
-                    if required_s1:
-                        native_modes = private_profile_modes(profile)
-                    declared = profile.get("includedResourceContexts")
-                    if PRODUCTION and "includedResourceContexts" in profile:
-                        s0_contexts = {"s0:nightmare", "s0:difficult"}
-                        if (type(declared) is not list or any(type(key) is not str for key in declared)
-                                or len(declared) != len(set(declared))):
-                            raise ValueError("Invalid production resource context declaration")
-                        if set(declared) != s0_contexts:
-                            expected = s0_contexts | {"s1:" + mode for mode in S1_RUNTIME_MODES}
-                            if set(declared) != expected:
-                                raise ValueError("Incomplete production S1 resource context declaration")
-                            # A declaration requires validation; it never grants runtime capability.
-                            formal_s1_contexts = expected
-                            required_s1 = True
-                native = validated_s1_resources(root, required=required_s1, modes=native_modes)
-                result["resourceContexts"] = {"s0:" + mode: row for mode, row in result["providers"].items()}
-                result["resourceContexts"].update({"s1:" + mode: row for mode, row in native["providers"].items()})
-                result["s1Included"] = native["included"]
-                if formal_s1_contexts is not None:
-                    if native["included"] is not True or set(result["resourceContexts"]) != formal_s1_contexts:
-                        raise ValueError("Declared production S1 resource context missing or extra")
-                    for key, row in result["resourceContexts"].items():
-                        season, mode = key.split(":", 1)
-                        if (not isinstance(row, dict) or row.get("available") is not True
-                                or row.get("prepared") is not True or row.get("season") != season
-                                or row.get("mode") != mode):
-                            raise ValueError("Declared production resource context unavailable or misbound: " + key)
+            # Explicit source self-checks may inspect a not-yet-initialized
+            # directory. They neither create an ownership marker nor start IO
+            # services; normal clients still require their owned installation.
+            paths = runtime_paths(installation) if PRODUCTION else RuntimePaths(installation, False)
+            resolver = ResourceResolver(paths.imported_resource_root, supported_capabilities=SUPPORTED_CAPABILITIES)
+            with program_runtime(installation, production=PRODUCTION):
+                registry = build_imported_engine_factories(resolver, paths)
+                result['resourceRoot'] = str(resolver.root)
+                result['resourceContexts'] = {}
+                for season in SEASONS:
+                    for mode in modes_for_season(season):
+                        registry.prepare_context(mode, season=season)
+                        row = dict(registry.capabilities(season)[mode])
+                        if row.get('available'):
+                            engine = registry.get_engine(mode, season=season)
+                            controls = getattr(engine, 'qt_controls_profile', None)
+                            row['controlsValidation'] = getattr(controls, 'source_qualification', None)
+                        result['resourceContexts'][context_key(mode, season)] = row
+                result['providers'] = registry.capabilities()
             result["tkLoaded"] = "tkinter" in sys.modules
-            result["ready"] = result["ready"] and all(row.get("available") for row in result["resourceContexts"].values())
+            result['resourcesReady'] = all(row.get('available') for row in result['resourceContexts'].values())
         if FROZEN:
             WORK_ROOT.mkdir(parents=True, exist_ok=True)
             (WORK_ROOT / "client-self-check.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
         print(json.dumps(result))
-        return 0 if result["ready"] and result["qml"] and not result["tkLoaded"] else 1
+        return 0 if (result["ready"] and result["qml"] and not result["tkLoaded"]
+                     and result.get('resourcesReady', True)) else 1
     if os.name == "nt":
         import ctypes
         from packaged_product_identity import qt_application_model_id
@@ -716,19 +725,13 @@ def main():
         close_startup_splash()
         guard.close()
         return 0
-    from client_resource_startup import production_resources
-    from client_resource_startup_recovery import offer_startup_recovery
-    def recover_startup(error):
-        close_startup_splash()
-        return offer_startup_recovery(resource_root, error)
+    from client_resource_startup import program_runtime
     try:
         resource_root = owned_sandbox(args.sandbox.resolve()) if PRODUCTION else args.sandbox.resolve()
         set_startup_stage("resource-check")
         args.resource_startup_report = {}
-        with production_resources(resource_root, production=PRODUCTION,
-                on_failure=recover_startup, startup_report=args.resource_startup_report) as recovery:
-            if recovery is not None:
-                return recovery.exit_code
+        with program_runtime(resource_root, production=PRODUCTION,
+                startup_report=args.resource_startup_report):
             return _run_primary_client(app, args, guard)
     finally:
         guard.close()
@@ -768,7 +771,8 @@ def _run_primary_client(app, args, guard):
             client = holder["client"] = QtClient(app, sandbox, probe_output=args.probe_output, info_fetch=local_manifest,
                 on_created=lambda partial: holder.update(client=partial),
                 g_cycle_evidence=getattr(args, "g_cycle_evidence", False),
-                g_cycle_full_input=getattr(args, "g_cycle_full_input", False))
+                g_cycle_full_input=getattr(args, "g_cycle_full_input", False),
+                grid_backend=getattr(args, "grid_backend", "csharp"))
             client.resources.setStartupCompatibilityReport(getattr(args, 'resource_startup_report', {}))
             if holder.pop("activationPending", False):
                 restore_main_window(client.main)

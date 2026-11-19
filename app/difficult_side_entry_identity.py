@@ -14,7 +14,9 @@ import numpy as np
 class MapLocalEntryIdentity:
     def __init__(self, root, *, route_loader=None, shared_reference_provider=None, geometry_provider=None, author_visible_provider=None,
                  mode='difficult', profile_id='zhan10-speed', floors=('1','2'),
-                 exit_icon_path=None, structure_store=None, profile_for_map=None):
+                 exit_icon_path=None, structure_store=None, profile_for_map=None,
+                 read_resource=None, typed_index_path=None):
+        self.read_resource = read_resource
         self.root = Path(root)
         self.mode = mode
         self.profile_id = profile_id
@@ -27,7 +29,8 @@ class MapLocalEntryIdentity:
         self.author_visible_provider = author_visible_provider
         from author_structure_resources import AuthorStructureResourceStore
         self.structures = structure_store if structure_store is not None else AuthorStructureResourceStore(self.root / 'index.json', self.root)
-        payload = json.loads((self.root / 'side-entries.json').read_text(encoding='utf8'))
+        path = self.root / 'side-entries.json'
+        payload = json.loads(path.read_text(encoding='utf8') if read_resource is None else read_resource(path))
         if payload.get('schemaVersion') != 1 or payload.get('mode') != self.mode or payload.get('profileId') != self.profile_id:
             raise ValueError('entry index mode/profile mismatch')
         self.semantic_gaps = payload['semanticGaps']
@@ -42,14 +45,17 @@ class MapLocalEntryIdentity:
         self.registered_floors=frozenset((str(item['mapId']),str(item['floor']))
             for item,_,_,_ in self.entries)
         from side_entry_geometry import load_side_doors
-        self.side_doors, self.side_door_error = load_side_doors(self.root, self.entries, self.mode, self.profile_id)
+        self.side_doors, self.side_door_error = load_side_doors(self.root, self.entries, self.mode, self.profile_id,
+            read_resource=read_resource, typed_index_path=typed_index_path)
         from side_entry_search import load_index
-        self.side_search, self.side_search_error = load_index(self.root, self.entries, self.side_doors)
+        self.side_search, self.side_search_error = load_index(self.root, self.entries, self.side_doors,
+            read_resource=read_resource)
         self.passports = []
         self.entry_coverage = []
         self.passport_error = None
         try:
-            passport = json.loads((self.root / 'entry-passports.json').read_text(encoding='utf8'))
+            path = self.root / 'entry-passports.json'
+            passport = json.loads(path.read_text(encoding='utf8') if read_resource is None else read_resource(path))
             if (passport.get('schemaVersion'), passport.get('mode'), passport.get('profileId')) != (1, self.mode, self.profile_id):
                 raise ValueError('entrance passport mode/profile mismatch')
             self.passports = passport['entries']
@@ -67,7 +73,7 @@ class MapLocalEntryIdentity:
         from side_door_recognition import SideDoorRecognizer
         from nightmare_candidate import visible_map_component, local_side_door_rectangle, live_side_door_direction
         if self._exit_recognizer is None:
-            self._exit_recognizer = SideDoorRecognizer(self.exit_icon_path)
+            self._exit_recognizer = SideDoorRecognizer(self.exit_icon_path, read_resource=self.read_resource)
         bounds = context.get('observationBounds') if context is not None else None
         if bounds is None:
             visible = visible_map_component(frame)

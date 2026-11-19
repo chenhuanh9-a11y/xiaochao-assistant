@@ -100,6 +100,25 @@ class SeasonPersistenceTests(SettingsTests):
         self.assertFalse(service.saveFields(['gameSeason']))
         self.assertFalse(self.path.exists())
 
+    def test_imported_context_projection_blocks_direct_changes_and_allows_atomic_pair(self):
+        service = self.service()
+        original = service.values
+        service.setAvailableContexts([])
+        self.assertFalse(service.setGameContext('s1', 'difficult'))
+        self.assertFalse(service.setValue('gameMode', 'difficult'))
+        self.assertEqual(service.values, original)
+        service.setAvailableContexts(['s1:difficult'])
+        # The final pair must not visit an unavailable intermediate context.
+        self.assertTrue(service.setGameContext('s1', 'difficult'))
+        self.assertEqual((service.values['gameSeason'], service.values['gameMode']), ('s1', 'difficult'))
+        flags = {row['id'] + ':' + mode: value['available']
+                 for row in service.seasonOptions for mode, value in row['capabilities'].items()}
+        self.assertTrue(flags['s1:difficult'])
+        self.assertFalse(flags['s1:nightmare'])
+        service.setAvailableContexts([])
+        self.assertFalse(next(row for row in service.seasonOptions if row['id'] == 's1')['capabilities']['difficult']['available'])
+        self.assertEqual((service.values['gameSeason'], service.values['gameMode']), ('s1', 'difficult'))
+
 
 # Inherited tests belong to their original module; leave only this class's new cases.
 for _name in dir(SettingsTests):

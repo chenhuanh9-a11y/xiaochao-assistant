@@ -12,6 +12,8 @@ import threading
 import time
 from collections import OrderedDict
 from collections import Counter
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,6 +35,20 @@ class PreparedStructure:
 _prepared = OrderedDict()
 _prepared_lock = threading.Lock()
 PREPARED_CACHE_MAX_BYTES = 512 * 1024 * 1024
+
+# Only the candidate search changes inside this caller's computation scope.
+_grid_backend = ContextVar("structure_grid_backend", default=None)
+
+
+@contextmanager
+def using_grid_backend(backend):
+    if not callable(backend):
+        raise TypeError("grid backend must be callable")
+    token = _grid_backend.set(backend)
+    try:
+        yield
+    finally:
+        _grid_backend.reset(token)
 
 
 def _prepared_arrays(entry):
@@ -95,7 +111,9 @@ def prepared_path_for(reference):
     return directory / (path.stem + '-fast.npz')
 
 
-def load_prepared(reference):
+def load_prepared(reference, *, source=None):
+    if source is not None:
+        return source.read(reference)
     prepared_path = prepared_path_for(reference)
     if not prepared_path.is_file():
         return None
@@ -335,7 +353,8 @@ def propose(frame, reference, prepared, *, prior=None, cancelled=None, context=N
     searches = []
     def grid(scale, seed):
         began = time.perf_counter()
-        found = _grid(coarse, prepared, scale, seed, cancelled)
+        backend = _grid_backend.get()
+        found = (backend if backend is not None else _grid)(coarse, prepared, scale, seed, cancelled)
         searches.append(dict(scope='local' if seed is not None else 'global',
             elapsedMs=(time.perf_counter()-began)*1000,
             bestScore=found[0][0] if found else None))
@@ -462,7 +481,7 @@ def _try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_see
     reference = assistant._shared_structure_reference('shared-structure', map_id, floor)
     if reference is None:
         return None
-    prepared = load_prepared(reference)
+    prepared = load_prepared(reference, source=getattr(getattr(assistant, 'engine', None), 'qt_fast_structure_source', None))
     if prepared is None:
         if getattr(assistant, 'collect_fit_diagnostics', False):
             assistant._log('experimental-fast-alignment', mapId=map_id, floor=floor,

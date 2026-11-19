@@ -65,25 +65,33 @@ class LockedIdentityContracts(unittest.TestCase):
         self.calls.clear(); self.plans.clear()
         return pool, row
 
-    def assert_pending_identity(self, pool, old_row, *, geometry_pending=True):
+    def assert_pending_identity(self, pool, old_row, *, geometry_pending=True, retained=False):
         self.assertIs(self.runtime._s1_private_pool, pool)
         self.assertEqual(pool.remaining, ('a',))
         self.assertEqual(pool.locked_id, 'a')
-        self.assertIsNone(self.current_payload())
-        self.assertIsNone(self.runtime.render_payload(old_row['token']))
+        if retained:
+            current = self.current_payload()
+            for field in ('token', 'floor', 'frameId', 'generation', 'authorizationId'):
+                self.assertEqual(current[field], old_row[field])
+            self.assertIsNotNone(self.runtime.render_payload(old_row['token']))
+            self.assertNotEqual(self.runtime._frame_id, old_row['frameId'])
+            self.assertEqual(self.runtime._core.active_observation.frame_generation, old_row['generation'])
+        else:
+            self.assertIsNone(self.current_payload())
+            self.assertIsNone(self.runtime.render_payload(old_row['token']))
         self.assertFalse(self.runtime.acknowledge_render_material(old_row['token'])['success'])
         if geometry_pending:
             self.assertFalse(self.runtime.snapshot()['structureEvidence']['currentSupportedMapIds'])
         self.assertFalse(any(row['event'] == 'private-experimental-unlocked' for row in self.events))
 
-    def test_locked_unknown_withdraws_pixels_and_next_frame_relocates_only_locked_id(self):
+    def test_locked_unknown_retains_completed_grant_and_next_frame_relocates_only_locked_id(self):
         pool, row = self.locked(); revision = pool.revision
         self.unknown.add('a')
         result = self.runtime.dispatch('capture_now'); self.idle()
         self.assertFalse(result['success'], result)
         self.assertEqual(self.calls, [('a', '-1')])
         self.assertEqual(self.plans, [('a',)])
-        self.assert_pending_identity(pool, row)
+        self.assert_pending_identity(pool, row, retained=True)
         self.assertEqual(pool.revision, revision)
         self.calls.clear(); self.unknown.clear()
         result = self.runtime.dispatch('capture_now'); self.idle()
@@ -125,33 +133,46 @@ class LockedIdentityContracts(unittest.TestCase):
                         result = fx.runtime.dispatch('capture_now'); fx.idle()
                         self.assertFalse(result['success'], result)
                         self.assertEqual(fx.calls, [('a', '-1')])
-                        fx.assert_pending_identity(pool, row)
+                        fx.assert_pending_identity(pool, row, retained=True)
                 finally:
                     fx.doCleanups()
 
-    def test_unknown_floor_never_uses_locked_old_pixels(self):
+    def test_unknown_floor_retains_completed_grant_without_new_floor_evidence(self):
         pool, row = self.locked(); self.floor = None
         result = self.runtime.dispatch('capture_now'); self.idle()
         self.assertFalse(result['success'], result)
         self.assertEqual(self.calls, [])
-        self.assert_pending_identity(pool, row)
+        self.assert_pending_identity(pool, row, retained=True)
+        self.assertEqual(self.runtime._observed_floor, '')
 
-    def test_material_failure_retains_identity_but_no_pixels(self):
+    def test_ordinary_material_preparation_failure_retains_completed_grant(self):
         pool, row = self.locked()
         with patch.object(self.runtime, '_display_layer', side_effect=ValueError('fixture unavailable')):
             result = self.runtime.dispatch('capture_now')
         self.idle()
         self.assertFalse(result['success'], result)
         self.assertEqual(self.calls, [('a', '-1')])
-        self.assert_pending_identity(pool, row, geometry_pending=False)
+        self.assert_pending_identity(pool, row, geometry_pending=False, retained=True)
 
-    def test_unverified_current_residual_cannot_use_locked_identity_for_display(self):
+    def test_proven_display_resource_change_retires_completed_grant(self):
+        from client_providers import DisplayResourceChanged
+        pool, row = self.locked()
+        with patch.object(self.runtime, '_display_layer', side_effect=DisplayResourceChanged('fixture-resource-replaced')):
+            result = self.runtime.dispatch('capture_now')
+        self.idle()
+        self.assertFalse(result['success'], result)
+        self.assertTrue(result['error'], result)
+        self.assertIsNone(self.runtime.render_payload(row['token']))
+        self.assertIsNone(self.current_payload())
+        self.assertFalse(self.runtime.acknowledge_render_material(row['token'])['success'])
+
+    def test_unverified_current_residual_cannot_authorize_a_new_locked_display(self):
         pool, row = self.locked()
         self.fit['selectedRouteCurrentFrameResidual']['verified'] = False
         result = self.runtime.dispatch('capture_now'); self.idle()
         self.assertFalse(result['success'], result)
         self.assertEqual(self.calls, [('a', '-1')])
-        self.assert_pending_identity(pool, row)
+        self.assert_pending_identity(pool, row, retained=True)
 
     def test_unlocked_singleton_unknown_can_restore_competition_without_inventing_lock(self):
         self.show(); self.idle()

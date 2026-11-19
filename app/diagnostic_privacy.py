@@ -11,7 +11,7 @@ from diagnostic_schema import FIELDS, CODES, MODULES, EXCEPTIONS, ENVIRONMENT_TE
 PRIVATE = re.compile(r'username|nickname|playername|account|password|secret|tokenvalue|(?:window|process|program)(?:name|title|exe|path)|foreground(hwnd|pid|name)|executable|commandline|hostname',re.I)
 FREE = frozenset(('raw','summary','title','message','error','errorMessage','details','stateGetterError'))
 STACK = frozenset(('traceback','stack'))
-EXCEPTION = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*(?:Error|Exception|Unavailable|Unsupported))\b')
+EXCEPTION = re.compile(r'\b(' + '|'.join(re.escape(name) for name in sorted(EXCEPTIONS)) + r')\b')
 HEX = re.compile(r'[a-fA-F0-9]{16,64}\Z')
 CLOCK = re.compile(r'\d{4}-\d{2}-\d{2}T[0-9:.+Z-]{8,32}\Z')
 
@@ -46,7 +46,10 @@ def safe_record(value):
         if type(item) is float:return item if math.isfinite(item) else None
         if isinstance(item,str):
             if key in STACK:return stack_text(item[:32768])
-            if key in FREE:return exception_text(item[:16384])
+            if key in FREE:
+                # A fixed product code is already public diagnostic vocabulary.
+                # Keep it even when an older producer puts it in raw/message.
+                return item if item in CODES else exception_text(item[:16384])
             if item in CODES or item in EXCEPTIONS or HEX.fullmatch(item) or CLOCK.fullmatch(item):return item
             if key == 'reason' and item in ENVIRONMENT_TEXT:return item
             if key.lower().endswith('version') and re.fullmatch(r'\d+(?:\.\d+){1,3}',item):return item

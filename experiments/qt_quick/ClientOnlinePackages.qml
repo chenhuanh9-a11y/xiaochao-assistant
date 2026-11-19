@@ -9,7 +9,7 @@ Item {
         anchors.fill: parent; spacing: 12
         RowLayout {
             Layout.fillWidth: true
-            Label { text: "S0 在线图包"; font.pixelSize: 20; font.bold: true; color: "#17365e" }
+            Label { text: "在线图包"; font.pixelSize: 20; font.bold: true; color: "#142b4b" }
             Item { Layout.fillWidth: true }
             AppButton { objectName: "onlineCheck"; text: "检查在线列表"; enabled: panel.state.canCheck; onClicked: onlinePackageService.checkPackages() }
             AppButton { text: "取消下载"; enabled: panel.state.canCancel; onClicked: onlinePackageService.cancel() }
@@ -23,6 +23,16 @@ Item {
             objectName: "onlinePackageList"; Layout.fillWidth: true; Layout.fillHeight: true
             clip: true; spacing: 8; model: panel.state.packages
             ScrollBar.vertical: ScrollBar {}
+            Label {
+                objectName: "onlinePackageEmpty"
+                anchors.centerIn: parent; width: Math.min(parent.width - 24, 420)
+                horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
+                visible: panel.state.packages.length === 0
+                color: "#526785"
+                text: panel.state.busy || panel.state.stage === "checking"
+                    ? "正在读取在线列表…"
+                    : "列表是空的。点右上角「检查在线列表」再获取一次。"
+            }
             delegate: Rectangle {
                 required property var modelData
                 width: ListView.view.width; height: packageContents.implicitHeight + 28
@@ -35,12 +45,18 @@ Item {
                         Label { text: (modelData.bytes / 1048576).toFixed(1) + " MiB"; color: "#567096" }
                         Item { Layout.fillWidth: true }
                         AppButton { text: "选择"; selected: modelData.packageId === panel.state.selectedPackageId; onClicked: onlinePackageService.selectPackage(modelData.packageId) }
-                        AppButton { objectName: "onlineDownload-" + modelData.packageId; text: modelData.installation && modelData.installation.status === "installed" ? "校验本地安装" : "下载并检查导入"; primary: true; enabled: panel.state.canDownload; onClicked: onlinePackageService.downloadPackage(modelData.packageId) }
+                        AppButton {
+                            objectName: "onlineDownload-" + modelData.packageId
+                            text: modelData.installation && modelData.installation.status === "installed" ? "校验本地安装" : "下载并导入"
+                            Accessible.description: "下载后会先核对，再导入"
+                            primary: true; enabled: panel.state.canDownload
+                            onClicked: onlinePackageService.downloadPackage(modelData.packageId)
+                        }
                     }
                 }
             }
         }
         Label { visible: panel.state.stage === "handoff"; text: panel.state.localMessage; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#567096" }
-        Label { text: "下载完成不等于安装完成。后续覆盖确认与取消使用本地资源流程。"; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#567096"; font.pixelSize: 12 }
+        Label { text: panel.state.saveOnly ? "基础结构里带有楼层控件。下载后会先核对再导入，并一并启用。作者图需要先有对应的基础资源。" : "下载完成还不算安装完成。如果需要覆盖或取消，会走本地资源那一步。"; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#567096"; font.pixelSize: 12 }
     }
 }

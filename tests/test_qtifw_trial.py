@@ -7,8 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-import zipfile
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 from io import StringIO
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -16,8 +15,162 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "tools"), str(ROOT / "app")]
 import qtifw_trial_helper as helper
+import build_qtifw_trial as builder
+from resource_transaction import resource_runtime_lease, resource_write_lock
 from qtifw_trial_helper import OWNER, prepare, verify, verify_program, clear_data, scoped, check_target
-from build_qtifw_trial import check_archive_inventory, map_inputs
+from build_qtifw_trial import check_archive_inventory
+
+
+def program_only_stage(folder):
+    """Real freeze receipts over synthetic bytes; no compiler or EXE runs."""
+    build = builder.build
+    stage, output = folder / 'freeze-stage', folder / 'freeze-output'
+    stage.mkdir(); output.mkdir()
+    source = dict(commit='a' * 40, tree='b' * 40, clean=True)
+    profile = dict(product='星图', sourceCommit=source['commit'],
+        resourceInstallationPolicy=build.RESOURCE_INSTALLATION_POLICY,
+        installerInstance=dict(id='production', **build.INSTANCES['production']))
+    version = json.loads((ROOT / 'version.json').read_text(encoding='utf8'))
+    payload = {'星图.exe': b'synthetic main, never executed', 'version.json': json.dumps(version).encode(),
+        'installation-profile.json': json.dumps(profile).encode(),
+        '_internal/installation-profile.json': json.dumps(profile).encode(),
+        '_installer-owned-files.txt': b'', '_internal/references/base.json': b'independent base, not installed',
+        '_internal/' + build.BRAND_ICON: b'synthetic icon',
+        '_internal/assets/brand/xingtu-round.png': b'synthetic brand image'}
+    record = dict(source=source, compiledPayloadSourceCommit=source['commit'], product='星图', version=version)
+    for kind in ('import', 'recovery', 'reset'):
+        exe, runtime = 'star-map-' + kind + '-helper.exe', '_star_map_' + kind + '_runtime'
+        values = {exe: b'synthetic helper, never executed', runtime + '/python313.dll': b'synthetic runtime'}
+        payload.update(values)
+        record[kind + 'Helper'] = dict(included=True, executable=exe, runtimeDirectory=runtime,
+            files={name: dict(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()) for name, raw in values.items()})
+    payload['XingtuGameWatcher.exe'] = b'synthetic watcher, never executed'
+    record['gameWatcher'] = dict(included=True, executable='XingtuGameWatcher.exe', files={
+        'XingtuGameWatcher.exe': dict(bytes=len(payload['XingtuGameWatcher.exe']),
+            sha256=hashlib.sha256(payload['XingtuGameWatcher.exe']).hexdigest())})
+    for name, raw in payload.items():
+        path = stage / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+    record['releaseReport'] = build.stage_release_report(stage, product='星图', source=source, version=version,
+        resource_version='fixture-independent-resources', resource_inventory_sha256='d' * 64)
+    inputs = {name[len('_internal/'):]: dict(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+              for name, raw in payload.items() if name.startswith(('_internal/references/', '_internal/assets/'))}
+    _, record['fileProjection'] = build.write_production_files_include(stage, inputs, output, source=source)
+    build.write_program_ownership(stage, record)
+    return stage, record, source
+
+
+@unittest.skipUnless(os.name == "nt", "Win32 exclusive handles and native parent lifetime")
+class UninstallLeaseTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.target = Path(temporary.name) / "安装 中文"
+        self.program = self.target / "program"
+        self.resources = self.program / "resources"
+        self.program.mkdir(parents=True)
+        (self.target / "trial-maintenance.exe").write_bytes(b"synthetic expected parent, never executed")
+
+    def native_parent(self):
+        # Python stands in for the native maintenance EXE. Its child runs the
+        # real hold function, native locks, DuplicateHandle and all parent
+        # identity/time/byte validation, substituting only the expected image.
+        child_code = """
+import hashlib, json, sys
+from pathlib import Path
+sys.path[:0] = sys.argv[2:4]
+import qtifw_trial_lease as lease
+actual_image = Path(sys.executable)
+actual_digest = hashlib.sha256(actual_image.read_bytes()).hexdigest()
+validate = lease._parent
+lease._parent = lambda api, handle, pid, created, expected, digest: validate(
+    api, handle, pid, created, actual_image, actual_digest)
+try:
+    result = dict(success=True, **lease.hold_uninstaller_lease(sys.argv[1]))
+except (OSError, ValueError) as error:
+    result = dict(success=False, reason=str(error))
+print(json.dumps(result), flush=True)
+"""
+        parent_code = """
+import json, subprocess, sys
+child = subprocess.run([sys.executable, '-B', '-c', *sys.argv[1:]],
+    capture_output=True, text=True, encoding='utf-8')
+print(json.dumps(dict(code=child.returncode, output=child.stdout, errors=child.stderr)), flush=True)
+sys.stdin.read(1)
+"""
+        # A Windows venv python.exe is a redirector. Use the actual interpreter
+        # here so the helper's direct parent is our intended maintenance stand-in.
+        process = subprocess.Popen([getattr(sys, '_base_executable', sys.executable), "-B", "-c", parent_code, child_code,
+                str(self.target), str(ROOT / "tools"), str(ROOT / "app")],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", creationflags=subprocess.CREATE_NO_WINDOW)
+        self.addCleanup(lambda: process.communicate("x", timeout=10) if process.poll() is None else None)
+        report = json.loads(process.stdout.readline())
+        self.assertEqual(report["code"], 0, report["errors"])
+        return process, json.loads(report["output"])
+
+    def assert_busy(self, root):
+        with self.assertRaisesRegex(ValueError, "resource-busy"):
+            with resource_runtime_lease(root):
+                pass
+
+    def test_both_leases_survive_helper_exit_until_native_parent_exit_with_pending_catalog(self):
+        pending = self.resources / "transactions/pending-catalog.json"
+        pending.parent.mkdir(parents=True)
+        pending.write_bytes(b"unfinished resource catalog, explicitly uninstalling")
+        process, result = self.native_parent()
+        self.assertTrue(result["success"], result)
+        self.assertEqual(result["roots"], 2)
+        self.assertEqual(result["parentPid"], process.pid)
+        self.assertEqual(result["release"], "native-parent-exit")
+        self.assertIsNone(process.poll())
+        self.assert_busy(self.program)
+        self.assert_busy(self.resources)
+        self.assertEqual(pending.read_bytes(), b"unfinished resource catalog, explicitly uninstalling")
+        process.communicate("x", timeout=10)
+        self.assertEqual(process.returncode, 0)
+        for root in (self.program, self.resources):
+            with resource_runtime_lease(root):
+                pass
+
+    def test_missing_resources_are_not_created_by_uninstall(self):
+        process, result = self.native_parent()
+        self.assertTrue(result["success"], result)
+        self.assertEqual(result["roots"], 1)
+        self.assertFalse(self.resources.exists())
+        self.assert_busy(self.program)
+        process.communicate("x", timeout=10)
+        self.assertFalse(self.resources.exists())
+        with resource_runtime_lease(self.program):
+            pass
+
+    def test_resource_only_writer_blocks_uninstall_and_releases_partial_program_lease(self):
+        self.resources.mkdir()
+        with resource_write_lock(self.resources):
+            process, result = self.native_parent()
+            self.assertFalse(result["success"], result)
+            self.assertEqual(result["reason"], "uninstall-resource-busy")
+            # A resource writer in this process never owned the program root;
+            # failure must close the helper's first, partially acquired lease.
+            with resource_runtime_lease(self.program):
+                pass
+            process.communicate("x", timeout=10)
+
+    def test_resources_with_outside_hardlink_still_block_full_uninstall(self):
+        self.resources.mkdir()
+        original = self.resources / "package.bin"
+        original.write_bytes(b"resource bytes shared outside this installation")
+        outside = self.target.parent / "outside.bin"
+        os.link(original, outside)
+        process, result = self.native_parent()
+        self.assertFalse(result["success"], result)
+        self.assertEqual(result["reason"], "installation-hardlink-outside-target")
+        for root in (self.program, self.resources):
+            with resource_runtime_lease(root):
+                pass
+        self.assertEqual(outside.read_bytes(), original.read_bytes())
+        process.communicate("x", timeout=10)
 
 
 class TrialTests(unittest.TestCase):
@@ -93,24 +246,139 @@ class TrialTests(unittest.TestCase):
         self.assertEqual(outside.read_bytes(), b"immutable snapshot pointer")
         self.assertEqual(original.stat().st_nlink, 3)
 
-    def test_accepted_map_delivery_is_copied_by_exact_archive_identity(self):
-        archives = self.scope / "archives"
-        archives.mkdir()
-        original = archives / "author.zip"
-        with zipfile.ZipFile(original, "w") as archive:
-            archive.writestr("map-package.json", json.dumps(dict(packageId="author-example", season="s1")))
-        payload = original.read_bytes()
-        report = self.scope / "delivery.json"
-        report.write_text(json.dumps(dict(packages=[dict(path="author.zip", outputBytes=len(payload),
-                                                       sha256=hashlib.sha256(payload).hexdigest())])))
-        packages, sources = map_inputs(archives, report)
-        self.assertEqual(packages[0]["path"], "_installer-support/maps/author.zip")
-        self.assertEqual(packages[0]["packageId"], "author-example")
-        self.assertTrue(packages[0]["versionedAuthor"])
-        self.assertEqual(sources, [(original, packages[0]["path"])])
-        original.write_bytes(payload + b"changed")
-        with self.assertRaisesRegex(ValueError, "archive changed"):
-            map_inputs(archives, report)
+    def test_retired_map_install_cli_rejects_before_touching_target(self):
+        work = self.seed()
+        personal = work / 'settings.json'
+        before = personal.read_bytes()
+        with patch.object(sys, 'argv', ['qtifw-trial-helper', 'install-maps', str(self.target)]), \
+             redirect_stderr(StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                helper.main()
+        self.assertEqual(error.exception.code, 2)
+        self.assertEqual(personal.read_bytes(), before)
+        self.assertFalse((self.target / '_installer-support/maps').exists())
+
+    def test_retired_map_pack_build_flags_reject_before_staging(self):
+        output = self.scope / 'new-setup-output'
+        args = ['build-qtifw', '--stage', str(self.scope / 'source'),
+                '--build-record', str(self.scope / 'record.json'), '--ifw-bin', str(self.scope / 'ifw'),
+                '--output', str(output), '--release', '--map-pack-root', str(self.scope / 'maps'),
+                '--map-pack-report', str(self.scope / 'delivery.json')]
+        with patch.object(sys, 'argv', args), redirect_stderr(StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                builder.main()
+        self.assertEqual(error.exception.code, 2)
+        self.assertFalse(output.exists())
+
+    def test_current_program_only_freeze_stages_exact_program_without_base(self):
+        stage, record, source = program_only_stage(self.scope)
+        output = self.scope / 'trial-stage'
+        output.mkdir()
+        before = {p.relative_to(stage): (p.read_bytes(), p.stat().st_ino) for p in stage.rglob('*') if p.is_file()}
+        with patch.object(builder.build, '_git', return_value=''):
+            compiled, inventory = builder.stage_payload(stage, record, output)
+        self.assertEqual(compiled, source['commit'])
+        program = output / 'packages' / builder.PACKAGE / 'data/program'
+        self.assertEqual({p.relative_to(program).as_posix() for p in program.rglob('*') if p.is_file()}, set(inventory['files']))
+        self.assertNotIn('_internal/references/base.json', inventory['files'])
+        self.assertFalse(any('managed-base-resources' in name for name in inventory['files']))
+        for name, expected in before.items():
+            path = stage / name
+            self.assertEqual((path.read_bytes(), path.stat().st_ino), expected)
+
+    def test_normal_builder_emits_uninstall_data_component_without_map_seed(self):
+        import xml.etree.ElementTree as ET
+        stage, record, source = program_only_stage(self.scope)
+        build_record = self.scope / 'freeze-record.json'
+        build_record.write_text(json.dumps(record), encoding='utf8')
+        output = self.scope / 'new-normal-qtifw'
+        def git(*args):
+            return source['commit'] if args == ('rev-parse', 'HEAD') else ''
+        def external_compiler(command, **kwargs):
+            # Compiler/PE validation are explicit external substitutes; all
+            # staging, identities, scripts, XML and receipts execute unchanged.
+            if 'PyInstaller' in command:
+                helper = output / 'helper/qtifw-trial-helper'
+                helper.mkdir(parents=True)
+                (helper / 'qtifw-trial-helper.exe').write_bytes(b'synthetic helper')
+            elif Path(command[0]).name == 'binarycreator.exe':
+                Path(command[-1]).write_bytes(b'synthetic test output, never executed')
+            else:
+                self.fail('unexpected external command')
+            return subprocess.CompletedProcess(command, 0)
+        args = ['build-qtifw', '--stage', str(stage), '--build-record', str(build_record),
+                '--ifw-bin', str(self.scope / 'ifw'), '--output', str(output)]
+        with patch.object(sys, 'argv', args), patch.object(builder.build, '_git', side_effect=git), \
+             patch.object(builder.build, 'source_identity', return_value=source), \
+             patch.object(builder.build, 'verify_invoker_manifest', return_value=None), \
+             patch.object(builder.subprocess, 'run', side_effect=external_compiler), redirect_stdout(StringIO()):
+            builder.main()
+        package = ET.parse(output / 'packages' / builder.PACKAGE / 'meta/package.xml').getroot()
+        self.assertEqual(package.findtext('Dependencies'), 'org.xingtu.qtifw.trialdata')
+        self.assertTrue((output / 'packages/org.xingtu.qtifw.trialdata/meta/data-component.js').is_file())
+        policy = json.loads((output / 'qtifw-trial-policy.json').read_bytes())
+        self.assertEqual(policy['mapPackages'], [])
+        self.assertNotIn('_internal/references/base.json', policy['files'])
+
+    def test_upgrade_release_builder_keeps_program_only_projection_and_retired_map_entries(self):
+        import xml.etree.ElementTree as ET
+        stage, record, source = program_only_stage(self.scope)
+        build_record = self.scope / 'freeze-record.json'
+        build_record.write_text(json.dumps(record), encoding='utf8')
+        output, ifw = self.scope / 'upgrade-release', self.scope / 'ifw'
+        ifw.mkdir()
+        (ifw / 'installerbase.exe').write_bytes(b'synthetic installer base, never run')
+        (ifw / 'devtool.exe').write_bytes(b'synthetic native archive reader, never run')
+        def git(*args):
+            return source['commit'] if args == ('rev-parse', 'HEAD') else ''
+        def external_compiler(command, **kwargs):
+            # Only external compilers are replaced. Exact freeze validation,
+            # inventory, stage, XML, scripts and bootstrap layout remain real.
+            executable = Path(command[0]).name
+            if 'PyInstaller' in command:
+                helper = output / 'helper/qtifw-trial-helper'
+                helper.mkdir(parents=True)
+                (helper / 'qtifw-trial-helper.exe').write_bytes(b'synthetic helper')
+            elif executable == 'repogen.exe':
+                repository = Path(command[-1])
+                repository.mkdir()
+                (repository / 'Updates.xml').write_text('<Updates />')
+            elif executable == 'binarycreator.exe':
+                path = Path(kwargs['cwd']) / 'update.rcc' if '-rcc' in command else Path(command[-1])
+                path.write_bytes(b'synthetic output, never run')
+            else:
+                self.fail('unexpected external command: ' + executable)
+            return subprocess.CompletedProcess(command, 0)
+        args = ['build-qtifw', '--stage', str(stage), '--build-record', str(build_record),
+                '--ifw-bin', str(ifw), '--output', str(output), '--release', '--upgrade-capable']
+        with patch.object(sys, 'argv', args), patch.object(builder.build, '_git', side_effect=git), \
+             patch.object(builder.build, 'source_identity', return_value=source), \
+             patch.object(builder.build, 'verify_invoker_manifest', return_value=None), \
+             patch.object(builder, 'administrator_installer_base', return_value=ifw / 'installerbase.exe'), \
+             patch.object(builder.build, 'verify_administrator_manifest', return_value=1), \
+             patch.object(builder.subprocess, 'run', side_effect=external_compiler), redirect_stdout(StringIO()):
+            builder.main()
+        policy = json.loads((output / 'qtifw-trial-policy.json').read_bytes())
+        self.assertTrue(policy['upgradeCapable'])
+        self.assertEqual(policy['targetVersion'], record['version'])
+        self.assertEqual(policy['packageVersion'], builder.qtifw_component_version(record['version']['version'], release=True))
+        self.assertEqual(policy['mapPackages'], [])
+        self.assertNotIn('scope', policy)
+        self.assertFalse(any('managed-base-resources' in name or name.endswith('/base.json') for name in policy['files']))
+        for package in (builder.PACKAGE, builder.DATA_PACKAGE):
+            metadata = ET.parse(output / 'packages' / package / 'meta/package.xml').getroot()
+            self.assertEqual(metadata.findtext('Version'), policy['packageVersion'])
+        component = (output / 'packages' / builder.PACKAGE / 'meta/component.js').read_text(encoding='utf8')
+        self.assertNotIn('install-maps', component)
+        self.assertIn('TrialUpgradeActive', component)
+        self.assertTrue((output / 'upgrade-support/boot/repository/Updates.xml').is_file())
+        self.assertTrue((output / 'upgrade-support/boot/update.rcc').is_file())
+        self.assertFalse((output / 'upgrade-support/boot/native-setup.exe').exists())
+        receipt = json.loads((output / 'qtifw-build-record.json').read_bytes())
+        self.assertEqual(receipt['payloadSource'], source['commit'])
+        self.assertEqual(receipt['qtifwPackageVersion'], policy['packageVersion'])
+        self.assertFalse(receipt['installed'])
+        self.assertEqual(receipt['bridgeMode'], 'native-qtifw-offline-maintenance-handoff')
 
     @unittest.skipUnless(os.name == "nt", "Win32 per-install Run entry")
     def test_uninstall_disables_own_run_entry_even_if_watcher_exe_is_missing(self):

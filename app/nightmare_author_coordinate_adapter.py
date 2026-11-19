@@ -22,9 +22,13 @@ LEGACY_SCHEMA = "identityv-nightmare-author-coordinate-adapters-v1"
 
 class AuthorCoordinateAdapters:
     def __init__(self, path: Path = DEFAULT_ADAPTERS, *,
-                 native_static_context: dict | None = None) -> None:
+                 native_static_context: dict | None = None,
+                 read_resource=None) -> None:
         self.path = Path(path)
-        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        self._read_resource = read_resource
+        raw_text = (self.path.read_text(encoding="utf-8") if read_resource is None
+                    else read_resource(self.path).decode("utf-8"))
+        raw = json.loads(raw_text)
         schema = raw.get("schema")
         if schema not in {CANONICAL_SCHEMA, LEGACY_SCHEMA}:
             raise ValueError("unsupported author coordinate adapter schema")
@@ -524,7 +528,9 @@ class AuthorCoordinateAdapters:
         if legacy_path.is_file():
             source = "embedded+external-cross-check"
             try:
-                legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
+                legacy_text = (legacy_path.read_text(encoding="utf-8") if self._read_resource is None
+                               else self._read_resource(legacy_path).decode("utf-8"))
+                legacy = json.loads(legacy_text)
                 external = {}
                 for profile_id, profile_row in (legacy.get("profiles") or {}).items():
                     for map_id, maps_row in (profile_row.get("maps") or {}).items():

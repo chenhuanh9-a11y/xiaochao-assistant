@@ -3,6 +3,19 @@ function Component() {
         component.loaded.connect(this, Component.prototype.installLocationLoaded);
 }
 
+function nativeUpdateResult(result) {
+    if (result.length !== 2) throw new Error("无法启动更新支持工具。");
+    try { return JSON.parse(result[0]); }
+    catch (error) { throw new Error("更新工具未返回完整结果，请保留现场。" + result[0]); }
+}
+
+Component.prototype.beginInstallation = function() {
+    // QtIFW calls this before clearing its fresh-install component database.
+    // A createOperations-only refusal happens after that destructive boundary.
+    if (installer.isInstaller() && installer.value("TrialNativeHandoff", "false") === "true")
+        throw new Error("已有安装只允许原维护器更新，未启动新装事务。");
+};
+
 function locationProblem(result) {
     var reason = "";
     try { reason = JSON.parse(result[0]).reason || ""; } catch (error) {}
@@ -18,15 +31,53 @@ function locationProblem(result) {
 }
 
 Component.prototype.installLocationLoaded = function() {
+    if (installer.value("TrialNativeHandoff", "false") === "true") {
+        this.addExistingUpdate(QInstaller.TargetDirectory);
+        return;
+    }
     if (!installer.addWizardPage(component, "InstallLocation", QInstaller.TargetDirectory))
         throw new Error("无法加载安装位置页面");
     var widget = gui.pageWidgetByObjectName("DynamicInstallLocation");
     widget.windowTitle = "选择安装位置";
     widget.InstallPath.text = installer.toNativeSeparators(installer.value("TargetDir"));
+    try {
+        var discovery = JSON.parse(installer.value("TrialInstallDiscovery", "{}"));
+        if (discovery.mode === "select") {
+            var message = discovery.reason === "multiple-valid-installations" ?
+                "发现多个有效安装，请明确选择要更新的旧安装根目录，或使用新的空文件夹。" :
+                "已有安装登记需要检查，请明确选择安装位置。";
+            for (var n = 0; n < discovery.candidates.length; ++n)
+                message += "\n" + discovery.candidates[n].target;
+            for (var n = 0; n < discovery.rejected.length; ++n)
+                message += "\n" + discovery.rejected[n].target + "：" + discovery.rejected[n].reason;
+            widget.LocationHelp.text = message;
+        }
+    } catch (error) {}
     widget.BrowseButton.clicked.connect(this, Component.prototype.browseLocation);
     widget.InstallPath.textChanged.connect(this, Component.prototype.locationChanged);
     installer.setValidatorForCustomPage(component, "InstallLocation", "validateLocation");
     this.locationChanged(widget.InstallPath.text);
+};
+
+Component.prototype.addExistingUpdate = function(beforePage) {
+    if (installer.value("TrialExistingUpdateAdded", "false") === "true") return;
+    if (!installer.addWizardPage(component, "ExistingUpdate", beforePage))
+        throw new Error("无法加载更新页面");
+    installer.setValue("TrialExistingUpdateAdded", "true");
+    installer.setValue("TrialHandoffTarget", installer.value("TargetDir"));
+    installer.setDefaultPageVisible(QInstaller.ReadyForInstallation, false);
+    installer.setDefaultPageVisible(QInstaller.PerformInstallation, false);
+    installer.setDefaultPageVisible(QInstaller.InstallationFinished, false);
+    var update = gui.pageWidgetByObjectName("DynamicExistingUpdate");
+    update.windowTitle = "更新星图";
+    update.ExistingPath.text = installer.toNativeSeparators(installer.value("TargetDir"));
+    update.UpdateButton.clicked.connect(this, Component.prototype.updateExisting);
+    update.CloseBackgroundButton.clicked.connect(this, Component.prototype.closeBackground);
+    update.UpdatePollButton.visible = false;
+    update.UpdatePollButton.clicked.connect(this, Component.prototype.updateExistingTick);
+    update.CloseButton.clicked.connect(function() { gui.rejectWithoutPrompt(); });
+    update.complete = false;
+    installer.setValidatorForCustomPage(component, "ExistingUpdate", "preventFreshInstall");
 };
 
 Component.prototype.locationChanged = function(text) {
@@ -47,13 +98,219 @@ Component.prototype.browseLocation = function() {
 };
 
 Component.prototype.validateLocation = function() {
-    var result = installer.execute(installer.value("TrialHelper"), ["check-target", installer.value("TargetDir")]);
+    var upgrade = JSON.parse(installer.value("TrialNativeUpgradeFiles", "[]")).length > 0;
+    var result = installer.execute(installer.value("TrialHelper"), [upgrade ? "bootstrap-check" : "check-target", installer.value("TargetDir")]);
+    if (upgrade && result.length === 2 && result[1] === 10) {
+        installer.setValue("TrialNativeHandoff", "true");
+        // Validation has no update side effect. Both automatic and explicit
+        // old-root selection continue to the same stateful update page.
+        this.addExistingUpdate(QInstaller.ReadyForInstallation);
+        return true;
+    }
     if (result.length === 2 && result[1] === 0) return true;
     gui.pageWidgetByObjectName("DynamicInstallLocation").LocationError.text = locationProblem(result);
     return false;
 };
 
+Component.prototype.preventFreshInstall = function() { return false; };
+
+Component.prototype.updateExisting = function() {
+    if (installer.value("TrialHandoffBusy", "false") === "true" ||
+            installer.value("TrialHandoffUnknown", "false") === "true" ||
+            installer.value("TrialHandoffSuccess", "false") === "true") return false;
+    var widget = gui.pageWidgetByObjectName("DynamicExistingUpdate");
+    installer.setValue("TrialHandoffBusy", "true");
+    installer.setValue("TrialHandoffFailure", "");
+    widget.UpdateButton.enabled = false;
+    widget.CloseBackgroundButton.enabled = false;
+    widget.CloseButton.enabled = true;
+    installer.setMessageBoxAutomaticAnswer("cancelInstallation", QMessageBox.No);
+    widget.UpdateStatus.text = "正在准备离线更新工具。设置、地图包和自建路线将保留。";
+    this.updateStage = "prepare";
+    this.operation = "update";
+    this.updateCopyIndex = 0;
+    this.updateFiles = JSON.parse(installer.value("TrialNativeUpgradeFiles", "[]"));
+    this.updateTarget = installer.value("TrialHandoffTarget");
+    this.updateResultFile = installer.value("TrialSupport") + "/update-attempt-" +
+        String(Date.now()) + "-" + String(Math.random()).substring(2) + ".json";
+    this.updateJob = null;
+    // clickButton(objectName, delay) is QtIFW's queued QTimer-backed API.
+    // The click handler returns before any large QRC copy or helper work.
+    gui.clickButton("UpdatePollButton", 0);
+    return false;
+};
+
+Component.prototype.closeBackground = function() {
+    if (installer.value("TrialHandoffBusy", "false") === "true" ||
+            installer.value("TrialHandoffUnknown", "false") === "true") return;
+    var widget = gui.pageWidgetByObjectName("DynamicExistingUpdate");
+    var force = this.closeNeedsForce === true;
+    if (force && QMessageBox.question("ForceCloseXingtu", "结束星图后台",
+            "星图尚未正常退出。强制结束可能丢失尚未保存的操作。是否结束当前安装目录下的星图进程？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No) !== QMessageBox.Yes) return;
+    installer.setValue("TrialHandoffBusy", "true");
+    widget.UpdateButton.enabled = false;
+    widget.CloseBackgroundButton.enabled = false;
+    widget.UpdateStatus.text = force ? "正在结束星图后台。" : "正在请求星图退出，请稍候；若星图弹出退出选择，请选择退出。";
+    this.operation = "close";
+    this.closeForce = force;
+    this.updateStage = "launch";
+    this.updateTarget = installer.value("TrialHandoffTarget");
+    this.updateResultFile = installer.value("TrialSupport") + "/close-attempt-" +
+        String(Date.now()) + "-" + String(Math.random()).substring(2) + ".json";
+    this.updateJob = null;
+    gui.clickButton("UpdatePollButton", 0);
+};
+
+Component.prototype.finishBackgroundClose = function(success, message, retryable, remaining, matchedCount) {
+    var widget = gui.pageWidgetByObjectName("DynamicExistingUpdate");
+    installer.setValue("TrialHandoffBusy", "false");
+    installer.setValue("TrialHandoffUnknown", retryable ? "false" : "true");
+    widget.CloseButton.text = "关闭";
+    widget.CloseButton.enabled = true;
+    widget.UpdateButton.enabled = retryable;
+    widget.CloseBackgroundButton.enabled = retryable;
+    this.closeNeedsForce = !success && remaining > 0;
+    widget.CloseBackgroundButton.text = this.closeNeedsForce ? "强制结束星图后台…" : "关闭星图后台";
+    widget.UpdateStatus.text = success ? (matchedCount === 0 ? "未发现当前安装目录下有星图后台运行，可以开始更新。" :
+        "当前安装目录下的星图后台已退出，可以开始更新。") :
+        "关闭后台未完成：" + message + (this.closeNeedsForce ?
+        "\n星图可能仍在等待退出确认，请在星图窗口选择退出；也可在此确认强制结束。" : "");
+};
+
+Component.prototype.finishExistingUpdate = function(success, message, retryable) {
+    var widget = gui.pageWidgetByObjectName("DynamicExistingUpdate");
+    installer.setValue("TrialHandoffBusy", "false");
+    installer.setValue("TrialHandoffUnknown", !success && !retryable ? "true" : "false");
+    widget.CloseButton.enabled = true;
+    widget.CloseButton.text = "关闭";
+    widget.CloseBackgroundButton.enabled = retryable;
+    if (success) {
+        installer.setValue("TrialHandoffSuccess", "true");
+        widget.UpdateStatus.text = "星图已更新。原有设置、地图包和自建路线已保留。\n可关闭安装器后启动星图。";
+        widget.UpdateButton.visible = false;
+    } else {
+        installer.setValue("TrialHandoffFailure", message);
+        widget.UpdateStatus.text = (retryable ? "更新未完成：" : "尚未确认更新完成：") + message +
+            "\n原有资料与恢复现场已保留。" + (retryable ?
+            (message.indexOf("busy") >= 0 ? "资源正在被使用，可先点击“关闭星图后台”再重试。" :
+            "请保留以上具体错误；文件备份或路径错误不代表星图仍在运行。") :
+            "尚不能确认支持工具的状态。请保留现场，关闭向导后重新运行同一个 Setup 检查。");
+        widget.UpdateButton.enabled = retryable;
+    }
+};
+
+Component.prototype.updateExistingTick = function() {
+    if (installer.value("TrialHandoffBusy", "false") !== "true") return;
+    var widget = gui.pageWidgetByObjectName("DynamicExistingUpdate");
+    var support = installer.value("TrialSupport");
+    var helper = installer.value("TrialHelper");
+    var retryable = true;
+    try {
+        if (this.updateStage === "prepare") {
+            if (installer.value("TrialNativeSupportReady", "false") !== "true") {
+                if (this.updateCopyIndex < this.updateFiles.length) {
+                    var relative = this.updateFiles[this.updateCopyIndex];
+                    var slash = relative.lastIndexOf("/");
+                    if (slash >= 0 && !installer.performOperation("Mkdir", [support + "/" + relative.substring(0, slash)]))
+                        throw new Error("无法准备离线更新目录。");
+                    if (!installer.performOperation("Copy", [":/qtifw-upgrade/" + relative, support + "/" + relative]))
+                        throw new Error("无法读取随包更新工具。");
+                    ++this.updateCopyIndex;
+                    widget.UpdateStatus.text = "正在准备离线更新工具（" + this.updateCopyIndex + "/" + this.updateFiles.length + "）。";
+                    gui.clickButton("UpdatePollButton", 0);
+                    return;
+                }
+                var attrib = installer.environmentVariable("SystemRoot") + "/System32/attrib.exe";
+                var writable = installer.execute(attrib, ["-R", installer.toNativeSeparators(support + "/boot/*"), "/S"]);
+                if (writable.length !== 2 || writable[1] !== 0) throw new Error("无法准备可写的更新工具。");
+                installer.setValue("TrialNativeSupportReady", "true");
+            }
+            this.updateStage = "launch";
+            gui.clickButton("UpdatePollButton", 0);
+            return;
+        }
+        if (this.updateStage === "launch") {
+            retryable = false; // A malformed starter reply cannot prove no child was started.
+            var args = this.operation === "close" ? ["close-background-start", this.updateTarget,
+                "--result-file", this.updateResultFile] : ["bootstrap-start", this.updateTarget,
+                "--result-file", this.updateResultFile, "--setup-source", installer.value("InstallerFilePath"), "--interactive"];
+            if (this.operation === "close" && this.closeForce) args.push("--force");
+            var started = installer.execute(helper, args);
+            this.updateJob = nativeUpdateResult(started);
+            function normal(path) { return path.replace(/\\/g, "/").toLowerCase(); }
+            if (started[1] !== 0 || this.updateJob.started !== true) {
+                retryable = this.updateJob.started === false;
+                throw new Error(this.updateJob.reason || "无法启动更新支持工具。");
+            }
+            if (this.updateJob.instance !== installer.value("TrialInstallerInstance") ||
+                    normal(this.updateJob.target) !== normal(this.updateTarget) ||
+                    normal(this.updateJob.resultFile) !== normal(this.updateResultFile) ||
+                    !(this.updateJob.pid > 0) || !this.updateJob.created)
+                throw new Error("更新支持工具返回了不匹配的任务。");
+            this.updateStage = "wait";
+            this.updatePolls = 0;
+            widget.CloseButton.text = "关闭向导（任务继续）";
+            widget.UpdateStatus.text = this.operation === "close" ? "正在关闭当前安装目录下的星图后台，请稍候。" :
+                "正在更新，请等待维护器完成。关闭此向导不会中断已启动的更新。";
+        } else if (this.updateStage === "wait") {
+            retryable = false;
+            if (installer.fileExists(this.updateResultFile)) {
+                var outcome;
+                try { outcome = JSON.parse(installer.readFile(this.updateResultFile, "UTF-8")); }
+                catch (error) { throw new Error("更新工具未返回完整结果，请保留现场。"); }
+                var job = outcome.job || {};
+                var expected = this.updateJob;
+                function normalResult(path) { return String(path).replace(/\\/g, "/").toLowerCase(); }
+                if (job.instance !== expected.instance ||
+                        normalResult(job.target) !== normalResult(expected.target) ||
+                        normalResult(job.resultFile) !== normalResult(expected.resultFile))
+                    throw new Error("更新结果与本次任务不匹配，请保留现场。");
+                if (outcome.success === true && normalResult(outcome.target) === normalResult(this.updateTarget)) {
+                    if (this.operation === "close") this.finishBackgroundClose(true, "", true, 0, outcome.matchedCount);
+                    else this.finishExistingUpdate(true, "", false);
+                    return;
+                }
+                if (outcome.success === false) {
+                    retryable = true; // A trusted terminal failure follows release of the helper's leases.
+                    if (this.operation === "close") {
+                        this.finishBackgroundClose(false, outcome.reason || "无法确认星图退出状态。", true,
+                            Array.isArray(outcome.remaining) ? outcome.remaining.length : outcome.remaining || 0);
+                        return;
+                    }
+                    throw new Error(outcome.reason || "维护器未完成");
+                }
+                throw new Error("更新工具未返回可确认的完成状态，请保留现场。");
+            }
+            if (++this.updatePolls % 5 === 0) {
+                var checked = installer.execute(helper, ["bootstrap-status", this.updateTarget,
+                    "--process-id", String(this.updateJob.pid), "--process-created", this.updateJob.created]);
+                var state = nativeUpdateResult(checked);
+                if (checked[1] !== 0 || typeof state.running !== "boolean")
+                    throw new Error(state.reason || "无法确认更新支持工具状态。");
+                if (!state.running) {
+                    // Completion can race the first fileExists check; the
+                    // child publishes before exiting, so check once more.
+                    if (installer.fileExists(this.updateResultFile)) {
+                        gui.clickButton("UpdatePollButton", 0);
+                        return;
+                    }
+                    // The worker may have exited while its native maintenance
+                    // child is still alive. No result is not a terminal failure.
+                    throw new Error("更新支持工具已退出，但没有返回完成结果，无法确认维护器是否已结束。请保留现场。");
+                }
+            }
+        }
+        gui.clickButton("UpdatePollButton", 200);
+    } catch (error) {
+        if (this.operation === "close") this.finishBackgroundClose(false, error.message, retryable, 0);
+        else this.finishExistingUpdate(false, error.message, retryable);
+    }
+};
+
 Component.prototype.createOperations = function() {
+    if (installer.value("TrialNativeHandoff", "false") === "true")
+        throw new Error("已有安装只允许原维护器更新，未启动新装事务。");
     if (installer.value("TrialRootRejected", "") === "true")
         throw new Error("目录覆盖被拒绝。请使用 TrialTarget=已核准测试目录，而不是 --root。");
     function normal(path) { return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase(); }
@@ -106,8 +363,18 @@ Component.prototype.createOperations = function() {
     // A signal-handler exception cannot fail native installation. Make program
     // integrity an ordinary DO operation before writing the maintenance tool.
     component.addOperation("Execute", "{0}", helper, "verify-program", "@TargetDir@");
-    if (installer.value("TrialPortable") === "true")
-        component.addOperation("Execute", "{0}", helper, "install-maps", "@TargetDir@");
+    if (installer.value("TrialUpgradeActive", "false") === "true") {
+        // QtIFW re-registers the product only on first install. Keep this
+        // update in its native operation journal, including normal UNDO.
+        var guid = installer.value("ProductUUID", "");
+        var hive = installer.value("AllUsers", "false") === "true" ? "HKEY_LOCAL_MACHINE" : "HKEY_CURRENT_USER";
+        var registration = hive + "\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" + guid;
+        var location = installer.value(registration + "\\InstallLocation", "", QSettings.NativeFormat);
+        if (!/^\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}$/i.test(guid) ||
+                normal(location) !== normal(installer.value("TargetDir")))
+            throw new Error("无法核对原安装的 Windows 版本登记，请保留现场并检查日志。");
+        component.addOperation("GlobalConfig", registration, "DisplayVersion", installer.value("ProductVersion"));
+    }
     if (fault === "after-extract")
         component.addOperation("Execute", "{0}", helper, "pause", "@TargetDir@");
     if (fault === "fail")

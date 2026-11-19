@@ -100,7 +100,8 @@ def references(root, modes):
             native.validate_versions(versions)
         else:
             raise ValueError(f'Unknown game mode: {mode}')
-        provider = SharedReferenceProvider(root, resources, versions, native=native)
+        provider = SharedReferenceProvider(root, resources, versions,
+            legacy_reference_loader=native.legacy_reference if native is not None else None)
         for item in pack.maps:
             for floor in item.layers:
                 yield mode, item.id, str(floor), provider

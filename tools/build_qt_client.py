@@ -77,18 +77,18 @@ QT_LICENSE_ROOT = ROOT / "experiments/qt_quick/qt-licenses"
 RUNTIME_DISTRIBUTIONS = ("PySide6-Essentials", "shiboken6", "numpy", "opencv-python-headless", "Pillow", "psutil")
 BRAND_ICON = "assets/brand/xingtu.ico"
 BRAND_ICON_SHA256 = "7aad9827252a62999ff214c4cb0cf08dd8f64473f584dd82ca2b4a2fee353b6b"
-# Runtime libraries from LGPL-capable QtBase/QtDeclarative/QtSvg. Unexpected
-# modules stop the build for review rather than inheriting the app's license.
-QT_LGPL_MODULES = set("""Concurrent Core DBus Gui Network OpenGL OpenGLWidgets PrintSupport
-Qml QmlCore QmlLocalStorage QmlMeta QmlModels QmlNetwork QmlWorkerScript QmlXmlListModel
+PROGRAM_UI_RESOURCES = (BRAND_ICON, "assets/brand/xingtu-round.png")
+GRID_PROJECT = "hybrid/StarMap.Grid/StarMap.Grid.csproj"
+GRID_DIRECTORY = "_internal/csharp-grid"
+GRID_RUNTIME_PACK = "Microsoft.NETCore.App.Runtime.win-x64"
+GRID_SDK = "10.0.403"
+# Runtime libraries from LGPL-capable QtBase/QtDeclarative used by Basic QML.
+# Unexpected modules stop the build for review rather than inheriting the app's license.
+QT_LGPL_MODULES = set("""Concurrent Core Gui Network OpenGL
+Qml QmlCore QmlMeta QmlModels QmlWorkerScript
 Quick QuickControls2 QuickControls2Basic QuickControls2BasicStyleImpl QuickControls2Impl
-QuickControls2FluentWinUI3StyleImpl QuickControls2Fusion QuickControls2FusionStyleImpl
-QuickControls2Imagine QuickControls2ImagineStyleImpl QuickControls2Material QuickControls2MaterialStyleImpl
-QuickControls2Universal QuickControls2UniversalStyleImpl QuickControls2WindowsStyleImpl
-QuickDialogs2 QuickDialogs2QuickImpl QuickDialogs2Utils QuickEffects QuickLayouts QuickParticles
-QuickShapes QuickTemplates2 QuickTest QuickVectorImage QuickVectorImageGenerator QuickVectorImageHelpers
-QuickWidgets Sql Svg SvgWidgets Test Widgets Xml LabsAnimation LabsFolderListModel LabsPlatform
-LabsQmlModels LabsSettings LabsSharedImage LabsStyleKit LabsStyleKitImpl LabsSynchronizer LabsWavefrontMesh""".split())
+QuickDialogs2 QuickDialogs2QuickImpl QuickDialogs2Utils QuickLayouts QuickShapes QuickTemplates2
+QuickTest Test Widgets LabsFolderListModel""".split())
 
 
 def sha256(path):
@@ -244,7 +244,6 @@ def write_program_ownership(stage, record):
 def write_installer_program_inventory(stage, record, output, source):
     """Pin installed destinations, not the different candidate staging paths."""
     from installer_native_observation import program_paths_from_ownership, MAX_FILE, MAX_METADATA
-    from managed_base_resources import CANDIDATE
     stage, output = Path(stage), Path(output)
     if not re.fullmatch('[0-9a-f]{40}', str(source.get('commit'))):
         raise ValueError('Invalid installer source commit')
@@ -267,7 +266,9 @@ def write_installer_program_inventory(stage, record, output, source):
         if family not in ('program', 'base', 'editor'):
             raise ValueError('Unknown installer projection family')
         for name in paths:
-            target = CANDIDATE + '/payload/' + name if family == 'base' else name
+            if family == 'base':
+                continue
+            target = name
             if target in mappings:
                 raise ValueError('Duplicate installed projection path')
             mappings[target] = name
@@ -351,24 +352,34 @@ def resource_reset_installer_defines(stage, record, output, source):
     listing = output / 'reset-helper-inventory.txt'
     listing.write_text('\n'.join(rows) + '\n', encoding='utf-8-sig')
     report = _local_file(stage, record['releaseReport']['file'])
-    candidate = _local_file(stage, record['fileProjection']['managedBaseManifest'])
-    if (sha256(report) != record['releaseReport']['sha256'] or
-            sha256(candidate) != record['fileProjection']['managedBaseManifestSha256']):
-        raise ValueError('Resource reset target report/candidate differs from build receipt')
+    projection = record['fileProjection']
+    candidate_name = projection['managedBaseManifest']
+    candidate = _local_file(stage, candidate_name) if candidate_name is not None else None
+    if sha256(report) != record['releaseReport']['sha256']:
+        raise ValueError('Installer target report differs from build receipt')
+    if candidate is None:
+        if (projection.get('policy') != RESOURCE_INSTALLATION_POLICY
+                or any(name not in projection or projection[name] is not None for name in (
+                    'managedBaseManifest', 'managedBaseBundleId', 'managedBaseManifestSha256'))):
+            raise ValueError('Program-only resource policy differs from build receipt')
+    elif sha256(candidate) != projection['managedBaseManifestSha256']:
+        raise ValueError('Resource reset candidate differs from build receipt')
     program_inventory = write_installer_program_inventory(stage, record, output, source)
     (output / 'production-file-projection.json').write_text(
         json.dumps(record['fileProjection'], indent=2), encoding='utf-8')
     record['resourceResetInstaller'] = dict(sourceCommit=source['commit'],
         programInventorySha256=sha256(program_inventory),
         helperInventorySha256=sha256(listing), targetReportSha256=sha256(report),
-        targetManifestSha256=sha256(candidate), lease='verified-duplicate-of-setup-share-zero-handle',
+        targetManifestSha256=sha256(candidate) if candidate is not None else None,
+        resourceAction='preserve' if candidate is None else 'reset',
+        lease='verified-duplicate-of-setup-share-zero-handle',
         confirmation='exact-plan-sha256', nativeTested=False,
         capacityPreflight=native_capacity_preflight(program_inventory, report, source))
-    return [f'/DResetHelperInventory={listing}', f'/DResetHelperInventorySHA256={sha256(listing)}',
+    defines = [f'/DResetHelperInventory={listing}', f'/DResetHelperInventorySHA256={sha256(listing)}',
             f'/DResetSourceCommit={source["commit"]}', f'/DResetTargetReportSHA256={sha256(report)}',
-            f'/DResetCandidateSHA256={sha256(candidate)}',
             f'/DResetProgramInventory={program_inventory}',
             f'/DResetProgramInventorySha256={sha256(program_inventory)}']
+    return defines + ([f'/DResetCandidateSHA256={sha256(candidate)}'] if candidate is not None else ['/DProgramOnlyInstaller'])
 
 
 def notice_inputs():
@@ -399,29 +410,39 @@ def source_support_assets(resources):
 
 
 def prune_unneeded_qt(stage):
-    """Remove unused GPL-only families and optional, unreviewed software GL.
+    """Remove unused Qt styles, plugins, translations and unreferenced bindings.
 
-    Main QML uses Quick/Basic/Dialogs/Layouts, not these optional imports. No
-    installed library is changed: only this build's uninstalled staging files.
+    Main QML imports Quick/Basic/Dialogs/Layouts, and file dialogs import
+    Qt.labs.folderlistmodel. No installed library is changed: only this build's
+    uninstalled staging files. Helper runtimes live outside ``_internal``.
     """
+    from runtime_exclusions import unreferenced_qt_binaries, unused_staged_relative
     internal = stage / "_internal"
-    qml_prefixes = ("pyside6/qml/qtquick/timeline/", "pyside6/qml/qtquick/virtualkeyboard/",
-                    "pyside6/qml/qtquick/pdf/", "pyside6/qml/qtquick3d/", "pyside6/qml/qtquick3dphysics/",
-                    "pyside6/qml/qtcharts/", "pyside6/qml/qtgraphs/", "pyside6/qml/qtdatavisualization/",
-                    "pyside6/qml/qt/labs/lottieqt/")
-    binary = re.compile(r"qt6(?:Lottie|QuickTimeline|VirtualKeyboard|QmlCompiler|Charts|Graphs|DataVisualization|"
-                        r"CanvasPainter|HttpServer|Mqtt|Coap|Grpc|Quick3D|Pdf|WebEngine).*\.dll", re.I)
     removed = []
+
+    def take(path, reason):
+        relative = path.relative_to(internal).as_posix()
+        removed.append(dict(path=relative, sha256=sha256(path), bytes=path.stat().st_size, reason=reason))
+        path.unlink()
+
     for path in internal.rglob("*"):
         if not path.is_file():
             continue
-        relative = path.relative_to(internal).as_posix()
-        name = path.name.lower()
-        if (relative.lower().startswith(qml_prefixes) or binary.fullmatch(path.name)
-                or any(family in name for family in ("lottie", "virtualkeyboard", "quick3d", "quicktimeline", "qmlcompiler"))
-                or name in {"qpdf.dll", "opengl32sw.dll"}):
-            removed.append(dict(path=relative, sha256=sha256(path), bytes=path.stat().st_size))
-            path.unlink()
+        reason = unused_staged_relative(path.relative_to(internal).as_posix())
+        if reason:
+            take(path, reason)
+    present = [path.relative_to(internal).as_posix() for path in internal.rglob("*") if path.is_file()]
+
+    def imports_of(relative):
+        import pefile
+        with pefile.PE(str(internal / relative), fast_load=True) as pe:
+            pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"],
+                                                   pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT"]])
+            entries = [*getattr(pe, "DIRECTORY_ENTRY_IMPORT", []), *getattr(pe, "DIRECTORY_ENTRY_DELAY_IMPORT", [])]
+            return [entry.dll.decode("ascii") for entry in entries]
+
+    for relative in unreferenced_qt_binaries(present, imports_of):
+        take(internal / relative, "unreferenced-qt-binding")
     windows_icu = use_windows_icu(internal)
     removed.extend(windows_icu["removed"])
     # Check both normal and delay imports without loading any binary. This
@@ -477,11 +498,18 @@ def use_windows_icu(internal):
         removed.append(dict(path=path.relative_to(internal).as_posix(), bytes=path.stat().st_size,
                             sha256=sha256(path), reason="Qt uses Windows native unversioned ICU ABI"))
         path.unlink()
+    # Qt6Core links icuuc.dll and does not reference this bundled data file.
+    # System ICU supplies the data after the symbol check above.
+    data = internal / "PySide6/resources/icudtl.dat"
+    if data.is_file():
+        removed.append(dict(path=data.relative_to(internal).as_posix(), bytes=data.stat().st_size,
+                            sha256=sha256(data), reason="Windows ICU carries its own data"))
+        data.unlink()
     return dict(provider="Windows System32/icuuc.dll", requiredSymbols=sorted(name.decode("ascii") for name in required),
                 systemLibraryBundled=False, removed=removed)
 
 
-def collect_notices(stage, qt_closure):
+def collect_notices(stage, qt_closure, grid_runtime_pack):
     """Copy exact upstream/wheel license files plus actual binary inventory."""
     target = stage / "_internal/qt-notices"
     target.mkdir(parents=True, exist_ok=True)
@@ -510,6 +538,14 @@ def collect_notices(stage, qt_closure):
     shutil.copy2(python_license, target / "Python-LICENSE.txt")
     rows.append(dict(distribution="Python", version=sys.version.split()[0], path="Python-LICENSE.txt",
                      bytes=python_license.stat().st_size, sha256=sha256(python_license)))
+    for name in ("LICENSE.TXT", "THIRD-PARTY-NOTICES.TXT"):
+        original = _local_file(grid_runtime_pack, name)
+        destination = target / "dependencies" / GRID_RUNTIME_PACK / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(original, destination)
+        rows.append(dict(distribution=GRID_RUNTIME_PACK, version=grid_runtime_pack.name,
+                         path=destination.relative_to(target).as_posix(), bytes=destination.stat().st_size,
+                         sha256=sha256(destination)))
     artifacts = []
     for path in sorted((stage / "_internal").rglob("*")):
         if path.is_file() and path.suffix.lower() in {".dll", ".pyd"}:
@@ -567,7 +603,7 @@ def _requirements(path, seen=None):
     return result
 
 
-def environment(iscc):
+def environment(iscc, *, stage_only=False):
     packages, errors = {}, []
     for name, expected in _requirements(TOOLS / "requirements-qt-build.txt").items():
         try:
@@ -580,7 +616,7 @@ def environment(iscc):
     if sys.platform != "win32" or sys.maxsize <= 2**32 or sys.version_info[:2] != (3, 13):
         errors.append("Use the isolated Windows x64 Python 3.13 interpreter")
     compiler = Path(iscc).resolve() if iscc else None
-    if not compiler or not compiler.is_file() or compiler.name.lower() != "iscc.exe":
+    if not stage_only and (not compiler or not compiler.is_file() or compiler.name.lower() != "iscc.exe"):
         errors.append("Pass an existing Inno Setup 6 compiler explicitly with --iscc")
     qml_root = None
     try:
@@ -598,6 +634,69 @@ def environment(iscc):
                 compiler=str(compiler) if compiler else None,
                 compilerSha256=sha256(compiler) if compiler and compiler.is_file() else None,
                 qmlRoot=str(qml_root) if qml_root else None, errors=errors)
+
+
+def grid_sdk_info(dotnet):
+    selected = dotnet or os.environ.get("STARMAP_DOTNET") or shutil.which("dotnet")
+    executable = Path(selected).resolve() if selected else None
+    if not executable or not executable.is_file():
+        raise ValueError("Pass the .NET SDK executable with --dotnet or STARMAP_DOTNET")
+    version = subprocess.check_output([str(executable), "--version"], cwd=ROOT, text=True).strip()
+    if version != GRID_SDK:
+        raise ValueError(f"Grid build requires .NET SDK {GRID_SDK}, found {version}")
+    return dict(executable=str(executable), version=version)
+
+
+def verify_csharp_grid(stage):
+    """Check the apphost and the assets declared by the published self-contained runtime."""
+    directory = Path(stage) / GRID_DIRECTORY
+    config = _read(_local_file(directory, "StarMap.Grid.runtimeconfig.json"))["runtimeOptions"]
+    frameworks = config.get("includedFrameworks", [])
+    if (config.get("tfm") != "net10.0" or "framework" in config or "frameworks" in config
+            or len(frameworks) != 1 or frameworks[0].get("name") != "Microsoft.NETCore.App"):
+        raise ValueError("Grid must include its own .NET 10 runtime")
+    version = frameworks[0]["version"]
+    deps = _read(_local_file(directory, "StarMap.Grid.deps.json"))
+    target = ".NETCoreApp,Version=v10.0/win-x64"
+    pack = "runtimepack." + GRID_RUNTIME_PACK + "/" + version
+    if deps["runtimeTarget"]["name"] != target or pack not in deps["targets"].get(target, {}):
+        raise ValueError("Grid self-contained win-x64 runtime pack is missing")
+    required = {"StarMap.Grid.exe", "StarMap.Grid.dll", "hostfxr.dll", "hostpolicy.dll", "coreclr.dll",
+                "System.Private.CoreLib.dll"}
+    for library in deps["targets"][target].values():
+        required.update(library.get("runtime", {}))
+        required.update(library.get("native", {}))
+    for name in required:
+        _local_file(directory, name)
+    return dict(directory=GRID_DIRECTORY, executable="StarMap.Grid.exe", runtimeIdentifier="win-x64",
+                selfContained=True, runtimeVersion=version)
+
+
+def publish_csharp_grid(output, stage, sdk):
+    """Build the grid from this checkout into the embedded resource root, with offline restore."""
+    directory = stage / GRID_DIRECTORY
+    artifacts = output / "grid-build"
+    if directory.exists() or artifacts.exists():
+        raise ValueError("Grid publish requires fresh build and stage directories")
+    # Only the SDK's existing packs and NuGet cache may satisfy this offline build.
+    local_feed = artifacts / "offline-feed"
+    local_feed.mkdir(parents=True)
+    subprocess.run([sdk["executable"], "publish", str(_local_file(ROOT, GRID_PROJECT)),
+                    "-c", "Release", "-r", "win-x64", "--self-contained", "true",
+                    "--artifacts-path", str(artifacts), "--output", str(directory), "--nologo",
+                    "-p:UseSharedCompilation=false", "-p:DebugType=None", "-p:NuGetAudit=false",
+                    f"-p:RestoreSources={local_feed}"], cwd=ROOT, check=True,
+                   env=dict(os.environ, DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE="true",
+                            DOTNET_CLI_TELEMETRY_OPTOUT="1"))
+    info = verify_csharp_grid(stage)
+    assets = _read(artifacts / "obj/StarMap.Grid/project.assets.json")
+    # Follow the SDK's restore order. Some SDK layouts supply the pack under packs/.
+    roots = [Path(sdk["executable"]).parent / "packs", *map(Path, assets["packageFolders"])]
+    for root in roots:
+        package = root / GRID_RUNTIME_PACK.lower() / info["runtimeVersion"]
+        if package.is_dir():
+            return package
+    raise ValueError("Cannot locate the published grid runtime pack's license and notices")
 
 
 def _local_file(root, name):
@@ -747,6 +846,8 @@ def production_s1_release(resources, resource_version="", *, source=None, bundle
     """
     if bundled_packages:
         raise ValueError("Production Setup no longer bundles optional author packages; use map-package downloads")
+    if program_only_resource_inputs(resources):
+        return None  # No base bytes are being built or granted a release identity.
     if any(name.casefold().startswith("seasons/s1/difficulty2/") for name in resources):
         raise ValueError("Production Setup cannot include retired S1 difficulty2 resources")
     lock_path = _local_file(ROOT, S1_PRODUCTION_LOCK)
@@ -801,6 +902,8 @@ def production_s1_release(resources, resource_version="", *, source=None, bundle
 
 def included_resource_contexts(instance, resources, resource_version="", *, source=None, bundled_packages=()):
     """Declarations follow verified release identity; they are not authority."""
+    if instance == "production" and program_only_resource_inputs(resources):
+        return []
     include_s1 = instance in PRIVATE_S1_INSTANCES
     if instance == "production":
         include_s1 = production_s1_release(resources, resource_version, source=source, bundled_packages=bundled_packages) is not None
@@ -822,6 +925,7 @@ def validate_resources(root, inventory, *, bundled_packages=(), instance="client
     rows = declaration.get("files")
     if not isinstance(rows, dict) or not rows:
         raise ValueError("Resource inventory requires a nonempty path -> {bytes, sha256} files object")
+    program_only = instance == "production" and program_only_resource_inputs(rows)
     production_release = (production_s1_release(rows, declaration["resourceVersion"], source=source, bundled_packages=bundled_packages)
                           if instance == "production" else None)
     for name, row in rows.items():
@@ -845,10 +949,14 @@ def validate_resources(root, inventory, *, bundled_packages=(), instance="client
     # The source version describes this client; the input's resourceVersion is
     # retained independently in the profile/record. Never ship an old EXE version.
     replaced = {"version.json": retained.pop("version.json")} if "version.json" in retained else {}
-    missing = set(REQUIRED_RESOURCES) - set(retained)
+    missing = set(PROGRAM_UI_RESOURCES if program_only else REQUIRED_RESOURCES) - set(retained)
     if missing:
-        raise ValueError(f"Required two-mode base metadata missing: {sorted(missing)}")
-    contract = check_package(root)
+        label = "program UI assets" if program_only else "two-mode base metadata"
+        raise ValueError(f"Required {label} missing: {sorted(missing)}")
+    # The exact input inventory was checked above. Map-provider validation only
+    # applies when those providers are actually among this build's inputs.
+    contract = (dict(success=True, resourceMode="program-only", checkedFiles=len(rows))
+                if program_only else check_package(root))
     if not contract["success"]:
         raise ValueError(f"Packaged runtime path contract rejected: {contract['errors']}")
     if instance in PRIVATE_S1_INSTANCES or production_release:
@@ -893,17 +1001,17 @@ def verify_frozen(stage, resources, qml_names, product=PRODUCT, *, bundled_autho
             prohibited.append(path.relative_to(stage).as_posix())
     if prohibited:
         raise ValueError(f"Unexpected Tk runtime in Qt package: {prohibited}")
-    return dict(administratorManifests=manifests, qmlModules=list(QML_MODULES),
+    return dict(administratorManifests=manifests, qmlModules=list(QML_MODULES), csharpGrid=verify_csharp_grid(stage),
                 resourceFiles=len(resources), clientQmlFiles=len(qml_names), tkRuntimeAbsent=True)
 
 
 # Product identity travels with program updates, even inside the resource tree.
 _PROGRAM_IDENTITY = {"_internal/version.json", "_internal/installation-profile.json",
                      "_internal/references/build-fingerprint.txt"}
-RESOURCE_INSTALLATION_POLICY = dict(existingBasePlane="manifest-owned-transaction-before-runtime",
-    missingBasePlane="repair-complete-manifest", partialExistingPlane="repair-missing-verify-entire-set",
-    editorBase="seed-whole-family-only-when-both-outer-and-internal-absent",
-    resourceVersionMeaning="candidate-baseline; actual health is verified before resource consumers",
+RESOURCE_INSTALLATION_POLICY = dict(existingBasePlane="user-imported-catalog-only",
+    missingBasePlane="valid-empty-state", partialExistingPlane="preserve-and-report-package-health",
+    editorBase="program-editor-assets-only",
+    resourceVersionMeaning="build-input-inventory; no runtime resource ownership",
     unknownOwnership="block-with-path-and-expected-actual-hashes",
     installedAuthorPackages="preserve-receipt-files-and-dependency-contracts")
 
@@ -911,16 +1019,21 @@ RESOURCE_INSTALLATION_POLICY = dict(existingBasePlane="manifest-owned-transactio
 def resource_file_family(relative):
     """Strict families used by the generated production [Files] projection."""
     relative = relative.casefold()
-    if relative in _PROGRAM_IDENTITY:
+    if relative in _PROGRAM_IDENTITY or relative.startswith(("_internal/assets/brand/", "_internal/assets/support/")):
         return "program"
     if relative.startswith("_internal/assets/custom-maps/"):
         return "editor"
     if optional_author_sidecar(relative):
         return "optional-author"
-    if (relative.startswith(("_internal/assets/", "_internal/references/", "_internal/recognition/", "_internal/seasons/"))
+    if (relative.startswith(("_internal/assets/", "_internal/references/", "_internal/recognition/", "_internal/seasons/",
+                             "_internal/managed-base-resources/"))
             or relative == "_internal/difficult-native-manifest.json"):
         return "base"
     return "program"
+
+
+def program_only_resource_inputs(resources):
+    return all(resource_file_family("_internal/" + name) in {"program", "editor"} for name in resources)
 
 
 BUNDLED_AUTHOR_PREFIXES = ("assets/zhan10-native/", "assets/zhan10-legacy-clean/")
@@ -985,6 +1098,8 @@ def production_file_projection(stage, resources, *, bundled_author_paths=(), res
         bundled_packages=("difficult-zhan10",) if bundled_author_paths else ())
     stage = Path(stage).resolve()
     families = dict(program=[], base=[], editor=[], **{"optional-author": []})
+    program_inputs = {"_internal/" + name: row for name, row in resources.items()
+                      if resource_file_family("_internal/" + name) == "program"}
     seen = set()
     for path in sorted(stage.rglob("*")):
         if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
@@ -992,6 +1107,11 @@ def production_file_projection(stage, resources, *, bundled_author_paths=(), res
         if not path.is_file():
             continue
         name = path.relative_to(stage).as_posix()
+        if name in program_inputs:
+            row = program_inputs[name]
+            if (not isinstance(row, dict) or path.stat().st_size != row.get("bytes")
+                    or sha256(path) != str(row.get("sha256")).lower()):
+                raise ValueError("Staged program resource bytes differ from the input inventory: " + name)
         if name.casefold().startswith("_internal/seasons/"):
             if not production_release:
                 raise ValueError("Production resource projection does not support season resources")
@@ -1007,8 +1127,9 @@ def production_file_projection(stage, resources, *, bundled_author_paths=(), res
         families[resource_file_family(name)].append(name)
     verify_bundled_author_defaults(stage, resources, bundled_author_paths)
     expected = {"_internal/" + name for name in resources
-                if name not in bundled_author_paths and resource_file_family("_internal/" + name) != "program"}
-    actual = set(families["base"]) | set(families["editor"]) | set(families["optional-author"])
+                if name not in bundled_author_paths}
+    actual = (set(families["base"]) | set(families["editor"]) | set(families["optional-author"])
+              | (set(families["program"]) & program_inputs.keys()))
     if actual != expected:
         raise ValueError(f"Resource projection differs from exact inventory: missing={sorted(expected-actual)}, extra={sorted(actual-expected)}")
     if production_release:
@@ -1070,27 +1191,9 @@ def write_production_files_include(stage, resources, output, *, resource_version
     families = production_file_projection(stage, resources, bundled_author_paths=bundled_author_paths,
                                           resource_version=resource_version, source=source)
     author_defaults = verify_bundled_author_defaults(stage, resources, bundled_author_paths)
-    # Keep active data untouched during Setup. The startup repair verifies this
-    # complete candidate manifest under the same OS lock as author transactions.
-    sys.path.insert(0, str(ROOT / "app"))
-    from managed_base_resources import CANDIDATE, manifest_for_rows
-    rows = [dict(path=name, bytes=(Path(stage) / name).stat().st_size,
-                 sha256=sha256(Path(stage) / name)) for name in families["base"]]
-    for row in rows:
-        declared = resources[row["path"][len("_internal/"):]]
-        if ("bytes" in declared and "sha256" in declared
-                and (row["bytes"] != declared["bytes"] or row["sha256"] != declared["sha256"].lower())):
-            raise ValueError("Managed candidate differs from verified resource inventory: " + row["path"])
-    # A family-only projection is useful to validate editor staging. Real full
-    # builds already require the complete two-mode base in validate_resources.
-    manifest = manifest_for_rows(rows, resource_version) if rows else None
-    manifest_name = CANDIDATE + "/manifest.json" if manifest else None
-    if manifest:
-        manifest_path = Path(stage) / manifest_name
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-        if manifest_name not in families["program"]:
-            families["program"].append(manifest_name)
+    # Recognition resources are imported by the user as independent packages.
+    # A program upgrade must not stage a base candidate which startup can later
+    # mistake for an owned repair source.
     lines = ["; Generated exact production projection; no directory wildcard copies."]
     installed_files = []
     for family, names in families.items():
@@ -1099,9 +1202,11 @@ def write_production_files_include(stage, resources, output, *, resource_version
             # older copy as base or program data would overwrite the author or
             # resurrect it after the user removes its package.
             continue
+        if family == "base":
+            continue
         for name in names:
             source = name.replace("/", "\\")
-            installed = CANDIDATE + "/payload/" + name if family == "base" else name
+            installed = name
             installed_files.append(installed)
             parent = str(PurePosixPath(installed).parent)
             destination = "{app}" + ("\\" + parent.replace("/", "\\") if parent != "." else "")
@@ -1116,8 +1221,8 @@ def write_production_files_include(stage, resources, output, *, resource_version
                                for names in families.values() for name in names},
                   bundledAuthorDefaults=author_defaults,
                   omittedOptionalAuthorFiles=families["optional-author"],
-                  managedBaseManifest=manifest_name, managedBaseBundleId=manifest["bundleId"] if manifest else None,
-                  managedBaseManifestSha256=sha256(Path(stage) / manifest_name) if manifest else None,
+                  managedBaseManifest=None, managedBaseBundleId=None,
+                  managedBaseManifestSha256=None,
                   includeSha256=sha256(include))
     (Path(output) / "production-file-projection.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     return include, report
@@ -1138,9 +1243,12 @@ def stage_release_report(stage, *, product, source, version, resource_version, r
         numericVersion=version['numericVersion'], buildFingerprint=source['commit'][:8].upper(),
         fingerprintScheme='source-commit-prefix', executableSha256=sha256(stage / (product + '.exe')),
         resourceVersion=resource_version, resourceInventorySha256=resource_inventory_sha256,
-        resourceVersionMeaning='candidate-baseline; installed health verified separately before resource consumers',
+        resourceVersionMeaning='build-input-inventory; no runtime resource ownership',
         identityFiles={name: row for name, row in selected_file_identities(stage).items()
                        if row['status'] == 'hashed'})
+    if (stage / GRID_DIRECTORY).is_dir():
+        report["csharpGrid"] = dict(verify_csharp_grid(stage), project=GRID_PROJECT,
+                                    sourceCommit=report["compiledPayloadSourceCommit"])
     path = stage / 'release-report.json'
     path.write_text(json.dumps(report, indent=2), encoding='utf-8')
     return dict(file=path.name, sha256=sha256(path), executableSha256=report['executableSha256'])
@@ -1158,17 +1266,26 @@ def main(argv=None):
     parser.add_argument("--bundled-package", action="append", choices=("difficult-zhan10",), default=[],
                         help="Include this explicitly authorized read-only display default in an isolated client/private Setup only")
     parser.add_argument("--iscc", type=Path)
+    parser.add_argument("--stage-only", action="store_true",
+                        help="Freeze and verify the program for QtIFW; do not require or run Inno Setup")
+    parser.add_argument("--dotnet", type=Path, help="Path to dotnet.exe (or set STARMAP_DOTNET)")
     parser.add_argument("--output-dir", type=Path, help="NEW directory within this checkout's work/ or dist/")
     args = parser.parse_args(argv)
-    tools = environment(args.iscc)
+    tools = environment(args.iscc, stage_only=args.stage_only)
+    try:
+        tools["gridSdk"] = grid_sdk_info(args.dotnet)
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        tools["errors"].append(str(error))
+        tools["success"] = False
     if args.check_environment:
         print(json.dumps(tools, indent=2))
         return 0 if tools["success"] else 1
-    if not all((args.source_commit, args.resource_root, args.resource_inventory, args.iscc)):
-        parser.error("--source-commit, --resource-root, --resource-inventory and --iscc are required")
+    if not all((args.source_commit, args.resource_root, args.resource_inventory)) or (not args.stage_only and not args.iscc):
+        parser.error("--source-commit, --resource-root and --resource-inventory are required; --iscc is required unless --stage-only")
     if not tools["success"]:
         raise ValueError("Build environment is not pinned: " + "; ".join(tools["errors"]))
     source = source_identity(args.source_commit)
+    _local_file(ROOT, GRID_PROJECT)
     qt = ROOT / "experiments/qt_quick"
     if not (qt / "client.py").is_file() or not (qt / "Client.qml").is_file():
         raise ValueError("Integrated Qt entrypoint is not present")
@@ -1207,6 +1324,8 @@ def main(argv=None):
                 importHelper=dict(included=args.instance == "production", product="star-map-import-helper"),
                 resetHelper=dict(included=args.instance == "production", product="star-map-reset-helper"),
                 gameWatcher=dict(included=args.instance == "production", executable="XingtuGameWatcher.exe"),
+                csharpGrid=dict(project=GRID_PROJECT, sourceCommit=source["commit"], directory=GRID_DIRECTORY,
+                                runtimeIdentifier="win-x64", selfContained=True),
                 sourceRoot=str(ROOT), version=version, profileId=LIGHT_PROFILE,
                 resourceRoot=str(args.resource_root.resolve()), resourceVersion=declaration["resourceVersion"],
                 resourceInventorySha256=sha256(args.resource_inventory), resourceFiles=len(resources),
@@ -1217,7 +1336,7 @@ def main(argv=None):
                 productBrand=dict(icon=BRAND_ICON, iconSha256=BRAND_ICON_SHA256,
                                   artworkSource="existing supplied 3438365b/38490F4F brand resource; unchanged bytes",
                                   fileDescription=instance["appName"], productName=instance["appName"]),
-                action="plan-only" if args.plan_only else "build-setup-only",
+                action="plan-only" if args.plan_only else "freeze-only" if args.stage_only else "build-setup-only",
                 buildCompleted=False, installPerformed=False, executableLaunched=False, published=False)
     if args.instance == "production":
         plan.update(buildFingerprint=source["commit"][:8].upper(), fingerprintScheme="source-commit-prefix",
@@ -1275,13 +1394,14 @@ def main(argv=None):
                     "--distpath", str(output / "freeze"), "--workpath", str(output / "pyinstaller"),
                     str(TOOLS / "qt-client.spec")], cwd=ROOT, env=environment_vars, check=True)
     stage = output / "freeze" / product
+    grid_runtime_pack = publish_csharp_grid(output, stage, tools["gridSdk"])
     if args.instance == "production":
         plan["recoveryHelper"] = assemble_recovery_helper(output, stage, environment_vars)
         plan["importHelper"] = assemble_recovery_helper(output, stage, environment_vars, kind="import")
         plan["resetHelper"] = assemble_recovery_helper(output, stage, environment_vars, kind="reset")
         plan['gameWatcher'] = assemble_game_watcher(output, stage, environment_vars)
     plan["qtClosure"] = prune_unneeded_qt(stage)
-    plan["notices"] = collect_notices(stage, plan["qtClosure"])
+    plan["notices"] = collect_notices(stage, plan["qtClosure"], grid_runtime_pack)
     plan["frozenVerification"] = verify_frozen(stage, resources, [p.name for p in qt.glob("*.qml")], product,
                                              bundled_author_paths=author_paths)
     if author_paths:
@@ -1312,7 +1432,8 @@ def main(argv=None):
         production_defines = ["/DProductionInstaller", f"/DProductionFilesInclude={include}"]
         production_defines += resource_reset_installer_defines(stage, plan, output, source)
     setup_name = setup_basename(instance, display, source["commit"])
-    subprocess.run([str(args.iscc.resolve()), f"/DStageDir={stage}", f"/DSetupOutputDir={output / 'setup'}",
+    if not args.stage_only:
+        subprocess.run([str(args.iscc.resolve()), f"/DStageDir={stage}", f"/DSetupOutputDir={output / 'setup'}",
                     f"/DSetupName={setup_name}", f"/DDisplayVersion={display}", f"/DNumericVersion={numeric}",
                     "/DInstallerAppId={{" + instance["appId"] + "}",
                     f"/DInstallerAppName={instance['appName']}",
@@ -1320,11 +1441,14 @@ def main(argv=None):
                     f"/DInstallerGroup={instance['startMenuGroup']}",
                     f"/DInstallerExeName={product}.exe",
                     *production_defines,
-                    str(TOOLS / "qt-client.iss")], cwd=ROOT, check=True)
-    setup = output / "setup" / (setup_name + ".exe")
-    if not setup.is_file():
-        raise ValueError("Inno Setup completed without the expected Setup artifact")
-    plan["installer"] = dict(fileName=setup.name, bytes=setup.stat().st_size, sha256=sha256(setup))
+                        str(TOOLS / "qt-client.iss")], cwd=ROOT, check=True)
+    setup = None if args.stage_only else output / "setup" / (setup_name + ".exe")
+    if setup is not None:
+        if not setup.is_file():
+            raise ValueError("Inno Setup completed without the expected Setup artifact")
+        plan["installer"] = dict(fileName=setup.name, bytes=setup.stat().st_size, sha256=sha256(setup))
+    else:
+        plan["installer"] = None
     recipes = [Path(__file__), TOOLS / "qt-client.spec", TOOLS / "qt-recovery-helper.spec",
                TOOLS / "qt-import-helper.spec", TOOLS / "qt-reset-helper.spec", TOOLS / "qt-game-watcher.spec", TOOLS / "qt-client.iss"]
     if args.instance == 'production':
@@ -1333,7 +1457,8 @@ def main(argv=None):
     plan["source"] = source_identity(args.source_commit)
     plan["buildCompleted"] = True
     record_path.write_text(json.dumps(plan, indent=2), encoding="utf-8")
-    print(json.dumps(dict(setup=str(setup), **plan["installer"], record=str(record_path)), indent=2))
+    print(json.dumps(dict(setup=str(setup) if setup else None, stage=str(stage),
+                         **(plan["installer"] or {}), record=str(record_path)), indent=2))
     return 0
 
 

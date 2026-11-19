@@ -5,6 +5,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'app'))
 from account_service import AccountError, AccountService, BLOCKED_CODES, Session, SessionVault
@@ -15,6 +16,63 @@ def tokens(name='new'):
                 access_expires_at=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
                 refresh_expires_at=(datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
                 recovery_code='ABCD-EFGH-JKMP-QRST')
+
+
+class SessionPersistenceTests(unittest.TestCase):
+    """Real vault I/O with synthetic transport/encryption; no sockets or DPAPI."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.vault = SessionVault(Path(self.folder.name) / 'session',
+                                  protect=lambda data: data[::-1], unprotect=lambda data: data[::-1])
+        def api(method, path, body=None, **kwargs):
+            if path == '/v1/auth/refresh':
+                return tokens('rotated')
+            if path == '/v1/auth/login':
+                return tokens('initial')
+            return {'ok': True}
+        self.api = mock.Mock(side_effect=api)
+        self.account = AccountService(Path(self.folder.name), vault=self.vault, api=self.api)
+        self.addCleanup(self.account.shutdown)
+
+    def test_failed_rotated_token_save_warns_but_keeps_authorized_session(self):
+        self.account.login('alice', 'secret1')
+        stored = self.vault.path.read_bytes()
+        identity = self.account.identity_context
+        self.account._session.access_expires = 0
+        with mock.patch('account_service.os.replace', side_effect=OSError('private-path/rotated-refresh')):
+            self.assertEqual(self.account.authorized('GET', '/protected'), {'ok': True})
+        self.assertEqual(self.account.persistence_warning, '这次没写入，重启后可能要重新登录')
+        self.assertEqual(self.account.identity_context, identity)
+        self.assertEqual(self.account._session.refresh_token, 'rotated-refresh')
+        self.assertEqual(self.api.call_args.kwargs['token'], 'rotated')
+        self.assertEqual(self.vault.path.read_bytes(), stored)
+        self.assertEqual(self.account.authorized('GET', '/protected'), {'ok': True})
+        self.assertEqual(sum(call.args[1] == '/v1/auth/refresh' for call in self.api.call_args_list), 1)
+        # A later successful rotation repairs storage and clears the warning.
+        self.account._session.access_expires = 0
+        self.account.authorized('GET', '/protected')
+        self.assertEqual(self.account.persistence_warning, '')
+        self.assertEqual(self.vault.load().refresh_token, 'rotated-refresh')
+
+    def test_failed_encryption_at_login_warns_without_exposing_exception(self):
+        with mock.patch.object(self.vault, '_protect', side_effect=OSError('secret1/private-path/initial-refresh')):
+            self.assertEqual(self.account.login('alice', 'secret1'), 'alice')
+        self.assertEqual(self.account.username, 'alice')
+        self.assertEqual(self.account.persistence_warning, '这次没写入，重启后可能要重新登录')
+        self.assertFalse(self.vault.path.exists())
+        self.account.logout()
+        self.assertIsNone(self.account.username)
+        self.assertEqual(self.account.persistence_warning, '')
+
+    def test_intentional_nonpersistent_session_has_no_save_failure_warning(self):
+        with mock.patch.object(self.vault, '_protect', None):
+            self.account.login('alice', 'secret1')
+            self.assertFalse(self.account.persistent)
+            self.assertEqual(self.account.persistence_warning, '')
+            self.assertEqual(self.account.username, 'alice')
+            self.assertFalse(self.vault.path.exists())
 
 
 class AccountConcurrencyTests(unittest.TestCase):
@@ -80,13 +138,18 @@ class AccountConcurrencyTests(unittest.TestCase):
         self.assertEqual(sum(path == '/v1/auth/refresh' for path, _, _ in self.calls), 1)
         self.assertFalse(any(isinstance(x, Exception) for x in second))
 
-    def slow_vault(self, operation=None):
+    def slow_vault(self, operation=None, *, failure=None):
         entered, release = threading.Event(), threading.Event()
         self.addCleanup(release.set)
+        saves = 0
         def protect(data):
+            nonlocal saves
+            saves += 1
             entered.set()
             if not release.wait(3):
                 raise AssertionError('test vault not released')
+            if saves == 1 and failure is not None:
+                raise failure
             return data[::-1]
         vault = SessionVault(Path(self.folder.name) / 'session', protect=protect,
                              unprotect=lambda data: data[::-1])
@@ -158,6 +221,38 @@ class AccountConcurrencyTests(unittest.TestCase):
         self.assertIsInstance(output[0], AccountError)
         self.assertIsNone(self.account.username)
         self.assertEqual(vault.load().username, 'bob')
+
+    def test_late_failed_save_does_not_warn_after_shutdown(self):
+        _vault, release, _output = self.slow_vault(failure=OSError('private-path'))
+        self.account.shutdown()
+        release.set()
+        self.drain()
+        self.assertIsNone(self.account.username)
+        self.assertEqual(self.account.persistence_warning, '')
+
+    def failed_save_during_account_change(self, operation, username):
+        vault, release, _output = self.slow_vault(failure=OSError('private-path'))
+        original = self.account._persist_session
+        committed = threading.Event()
+        def persist(session, revision):
+            committed.set()
+            original(session, revision)
+        self.account._persist_session = persist
+        self.start(operation)
+        self.assertTrue(committed.wait(.3), 'account change waited on old save')
+        self.assertEqual(self.account.username, username)
+        release.set()
+        self.drain()
+        self.assertEqual(self.account.persistence_warning, '')
+        return vault
+
+    def test_late_failed_save_does_not_warn_new_login(self):
+        vault = self.failed_save_during_account_change(lambda: self.account.login('bob', 'secret1'), 'bob')
+        self.assertEqual(vault.load().username, 'bob')
+
+    def test_late_failed_save_does_not_warn_after_logout(self):
+        vault = self.failed_save_during_account_change(self.account.logout, None)
+        self.assertFalse(vault.path.exists())
 
     def test_blocked_codes_after_401_retry_clear_session_and_preserve_error(self):
         for code in BLOCKED_CODES:

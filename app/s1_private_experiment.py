@@ -108,15 +108,15 @@ class PrivateRoundPool:
 
 class PrivateCoordinateObserver:
     """Fresh-frame gate and common structure, immutable packaged resources."""
-    def __init__(self, engine, catalog, asset_dir):
+    def __init__(self, engine, catalog, asset_dir, *, read_resource=None):
         from s1_gate_anchor import GateAnchorLocator
         from s1_common_coordinate_filter import CommonCoordinateFilter
         self.engine = engine
-        self.locator = GateAnchorLocator(asset_dir=asset_dir)
+        self.locator = GateAnchorLocator(asset_dir=asset_dir, read_resource=read_resource)
         self.filter = CommonCoordinateFilter(
             lambda mid, floor: engine.qt_shared_provider("shared-structure", mid, floor),
             asset_dir / "s1_entrance_coordinate_index.json",
-            mode=catalog.mode, resource_key=catalog.resource_key)
+            mode=catalog.mode, resource_key=catalog.resource_key, read_resource=read_resource)
 
     def prepare(self, frame, pool_ids, floor, *, cancelled, stage=None):
         from nightmare_candidate import visible_map_components

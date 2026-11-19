@@ -1,4 +1,4 @@
-"""Real build projection and repair functions, isolated byte fixtures only."""
+"""Legacy candidate repair/transactions, with explicit old-install byte fixtures."""
 from pathlib import Path
 import copy
 import hashlib
@@ -42,7 +42,8 @@ class ManagedBaseResourcesTests(unittest.TestCase):
         path.write_bytes(data)
 
     def project(self):
-        include, _ = build.write_production_files_include(self.stage, self.resources, self.output)
+        """Model an existing legacy installer, not a newly seeded resource plane."""
+        include, projection = build.write_production_files_include(self.stage, self.resources, self.output)
         existing_base = any((self.target / name).exists() for name in (
             "_internal/assets", "_internal/references", "_internal/recognition",
             "_internal/difficult-native-manifest.json"))
@@ -56,16 +57,26 @@ class ManagedBaseResourcesTests(unittest.TestCase):
             source = re.search(r'Source: "\{#StageDir\}\\([^"]+)"', line)[1].replace("\\", "/")
             dest = re.search(r'DestDir: "\{app\}([^"]*)"', line)[1].replace("\\", "/").lstrip("/")
             self.write(self.target / dest / Path(source).name, (self.stage / source).read_bytes())
+        # New Setup omits candidates. These tests exercise old installed repair
+        # and pending transactions, so declare their old candidate explicitly.
+        rows = []
+        for name in projection['families']['base']:
+            data = (self.stage / name).read_bytes()
+            rows.append(self.row(name, data))
+            self.write(self.target / managed.CANDIDATE / 'payload' / name, data)
+        self.write(self.target / managed.CANDIDATE / 'manifest.json',
+                   managed._encoded(managed.manifest_for_rows(rows)))
         return include
 
-    def test_generated_installer_stages_candidates_without_overwriting_active_base(self):
+    def test_new_installer_omits_candidates_and_preserves_existing_base(self):
         target = self.target / "_internal/references/catalog.json"
         self.write(target, b"unknown-author-content")
-        include = self.project()
+        include, projection = build.write_production_files_include(self.stage, self.resources, self.output)
         self.assertEqual(target.read_bytes(), b"unknown-author-content",
                          "Generated installer must not overwrite an active resource before ownership/compatibility checks")
-        self.assertIn("managed-base-resources", include.read_text("utf-8-sig"),
-                      "Generated production entry must carry the complete candidate payload for first-run repair")
+        self.assertNotIn("managed-base-resources", include.read_text("utf-8-sig"))
+        self.assertIsNone(projection['managedBaseManifest'])
+        self.assertFalse((self.target / managed.CANDIDATE).exists())
 
     def test_existing_empty_directory_repairs_entire_dependency_set(self):
         (self.target / "_internal/assets").mkdir(parents=True)
@@ -713,13 +724,25 @@ class ManagedBaseResourcesTests(unittest.TestCase):
             managed.repair_managed_base_resources(self.target)
         self.assertFalse((self.target / "_internal/difficult-native-manifest.json").exists())
 
-    def test_new_profile_missing_candidate_is_a_deployment_failure(self):
+    def test_legacy_managed_profile_missing_candidate_is_a_deployment_failure(self):
         self.write(self.target / "installation-profile.json", json.dumps(
-            dict(resourceInstallationPolicy=build.RESOURCE_INSTALLATION_POLICY)).encode())
+            dict(resourceInstallationPolicy=dict(
+                existingBasePlane='manifest-owned-transaction-before-runtime'))).encode())
         with self.assertRaises(managed.ManagedBaseResourceError) as caught:
             managed.repair_managed_base_resources(self.target)
         self.assertEqual(caught.exception.code, "base-candidate-manifest-missing")
         self.assertEqual(caught.exception.details["issueCount"], 1)
+
+    def test_new_imported_profile_has_valid_empty_resource_state(self):
+        self.write(self.target / 'installation-profile.json', json.dumps(
+            dict(resourceInstallationPolicy=build.RESOURCE_INSTALLATION_POLICY)).encode())
+        personal = self.target / 'work/user-routes/personal.json'
+        self.write(personal, b'preserve imported-era user route')
+        result = managed.repair_managed_base_resources(self.target)
+        self.assertEqual(result['status'], 'not-managed')
+        self.assertEqual(result['changes'], [])
+        self.assertEqual(personal.read_bytes(), b'preserve imported-era user route')
+        self.assertFalse((self.target / managed.CANDIDATE).exists())
 
     def test_real_handoff_and_helper_metadata_are_not_package_receipts(self):
         from client_import_handoff import ImportHandoff

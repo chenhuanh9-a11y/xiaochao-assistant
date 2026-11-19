@@ -18,6 +18,7 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 from reference_position_editor import ReferencePositionEdit
 from client_problem_messages import operation_problem
+from client_fit_reporting import RETRY_REASONS, reportable_opening_reason
 from client_input_diagnostics import InputDiagnostics, map_attempt
 from client_manual_map import MANUAL_PICKER_ACTION, normalize_selection_mode
 from season_context import SEASONS, season_label, normalize_season, context_key, selected_profile, CONTEXTS
@@ -302,6 +303,9 @@ class ClientCoordinator(QObject):
         if context_finished is not None:
             context_finished.connect(self._context_finished)
         session.actionRequested.connect(self._action_requested)
+        registry_validated = getattr(session, 'siblingRegistryValidated', None)
+        if registry_validated is not None:
+            registry_validated.connect(self._sibling_registry_validated)
         resources.resourcesChanged.connect(self._resources_changed)
         resources.changed.connect(self._resource_readiness_changed)
         native_input.actionTriggered.connect(self._native_action)
@@ -508,6 +512,43 @@ class ClientCoordinator(QObject):
             finish(token, committed)
         self.changed.emit()
 
+    @Slot(str, dict)
+    def _sibling_registry_validated(self, token, receipt):
+        pending = self._pending_aligned
+        if (self._closed or self._closing or not pending or pending.get('token') != token
+                or not pending.get('registryCheckPending')):
+            return
+        self._finish_sibling_material(token, bool(receipt.get('success')),
+                                     reason=receipt.get('reason', 'registered-group-resource-unavailable'))
+
+    def _finish_sibling_material(self, token, accepted, *, reason):
+        pending = self._pending_aligned
+        if self._closed or self._closing or not pending or pending.get('token') != token:
+            return
+        acknowledge = getattr(self.runtime, 'acknowledge_sibling', None)
+        if not callable(acknowledge):
+            return
+        self._material_timer.stop()
+        result = acknowledge(token, bool(accepted), reason=reason)
+        self._pending_aligned = {}
+        committed = bool(accepted and isinstance(result, dict) and result.get("success"))
+        if committed:
+            self._accepted_material = pending
+            self._present_runtime_state(self.runtime.snapshot(), trigger="sibling-material-accepted")
+        else:
+            self._trace("sibling-material-rejected", payload=pending,
+                        reason=(result or {}).get("reason", "target-material-rejected"))
+            if not accepted and reason == 'target-material-rejected':
+                self._report_display_failure(pending, "target-material-rejected", "Target Image rejected the route material")
+            if isinstance(result, dict) and not result.get("sourceRetained"):
+                self._present_runtime_state(self.runtime.snapshot(), trigger="sibling-source-expired")
+        if not self.session.busy:
+            self.session.refreshRuntime()
+        finish = getattr(self.images, "finish_staging", None)
+        if callable(finish):
+            finish(token, committed)
+        self.changed.emit()
+
     def _manual_floor_observation_ready(self, state):
         """A narrow manual identity capability, never global live readiness."""
         return bool(state.get("season") == "s1" and state.get("roundActive")
@@ -540,21 +581,30 @@ class ClientCoordinator(QObject):
         if self.resources.busy or self.resources.pendingKind or state.get("resourceLocked"):
             return ((mode, "resource-operation"), "正在更新地图资源，请等待资源操作完成后再打开地图")
         report = (state.get("savedFrameCapabilities") or {}).get(mode) or {}
+        candidate_ready = (report.get('dataReady') is True
+            and season == 's0' and state.get('candidateStructureAvailable') is True
+            and not state.get('manualAlignmentSession')) or self._native_candidate_preview_ready(state)
         reason = str(report.get("reason") or state.get("liveUnavailableReason") or "")
         if reason == "resource-validation-pending" or state.get("pendingAction") == "inspect_engine_resources":
             return ((mode, "resource-validation-pending"), "正在校验地图识别资源，请稍后再打开地图")
-        if report.get("available") is False:
+        if report.get("available") is False and not candidate_ready:
+            if report.get('dataReady') is True and report.get('rankReady') is False:
+                return ((season, mode, 'recognition-data-only'),
+                    f"{season_label(season)} 地图数据已就绪，识别功能尚未开放，暂不能开始识别")
             label = {"difficulty2": "普通模式", "difficult": "困难模式", "nightmare": "噩梦模式"}.get(mode, "当前模式")
             if "missing-resource:" in reason or "FileNotFoundError" in reason:
                 summary = f"{label}缺少地图识别资源，请到地图资源页补齐或重新导入资源"
             else:
                 summary = f"{label}地图识别资源未通过校验或无法读取，请到地图资源页检查并重新导入"
             return ((mode, reason), summary)
-        if (season != "s0" and not report.get("liveReady", False)
+        if (not report.get("liveReady", season == "s0")
                 and not (allow_manual_floor and self._manual_floor_observation_ready(state))
-                and not self._native_candidate_preview_ready(state)):
+                and not candidate_ready):
             gaps = ";".join(report.get("liveGaps", ())) or "season-live-contract-unavailable"
-            return ((season, mode, gaps), f"{season_label(season)} 生产结构资源可离线读取，楼层控件尚未完成验证，暂不能开始实机识别")
+            summary = (f"{season_label(season)} 地图数据可读取，实时识别尚未完成验证，暂不能开始识别"
+                       if season == "s0" else
+                       f"{season_label(season)} 生产结构资源可离线读取，楼层控件尚未完成验证，暂不能开始实机识别")
+            return ((season, mode, gaps), summary)
         return None
 
     def _show_map_resource_problem(self, problem):
@@ -1415,6 +1465,12 @@ class ClientCoordinator(QObject):
         from season_context import modes_for_season
         if season not in SEASONS or mode not in modes_for_season(season) or self.settings.busy or self.resources.busy:
             return
+        available = getattr(self.resources, 'contextAvailable', None)
+        if callable(available) and not available(season, mode):
+            self._message = '请先导入此模式的基础结构包。'
+            self.notificationRequested.emit('基础资源未就绪', self._message, 'warning')
+            self.changed.emit()
+            return
         current = self._settings_context(self.settings.persistedValues)
         if (mode, season) == (current[0], current[2]):
             # Saved defaults are intent, not evidence that the runtime applied
@@ -1433,7 +1489,10 @@ class ClientCoordinator(QObject):
             return
         self._clear_reference()
         self._revoke_runtime("game-context-preference-changed")
-        if self.settings.setValue("gameSeason", season) and self.settings.setValue("gameMode", mode):
+        set_context = getattr(self.settings, 'setGameContext', None)
+        accepted = (set_context(season, mode) if callable(set_context) else
+                    self.settings.setValue('gameSeason', season) and self.settings.setValue('gameMode', mode))
+        if accepted:
             self.settings.saveFields(["gameSeason", "gameMode"])
 
     @Slot(str, str, str)
@@ -1494,8 +1553,8 @@ class ClientCoordinator(QObject):
                 mapId=payload.get("mapId"), floor=payload.get("floor"), profileId=payload.get("profileId"))
         for key in ("season", "mode", "identityPhase", "identityLocked", "provisional", "groupId", "durableMapId", "roundId", "cycleId", "frameId", "generation", "s1CandidateReference"):
             self._reference[key] = payload.get(key)
-        label = ("定点地图（已锁定）" if payload.get("s1CandidateReference") and payload.get("identityLocked") else
-                 "定点地图（暂用）" if payload.get("s1CandidateReference") else
+        label = ("定点地图（已锁定）" if payload.get("season") == "s1" and payload.get("identityLocked") else
+                 "定点地图" if payload.get("season") == "s1" else
                  "暂用地图" if payload.get("provisional") else "定点地图")
         floor_label = (f"上次 {payload.get('floor')}层 · 当前楼层待核对"
             if payload.get("referenceFloorCurrent") is False else f"{payload.get('floor')}层")
@@ -1834,7 +1893,7 @@ class ClientCoordinator(QObject):
         if invalidate:
             invalidate("resources-changed")
         self.session.refreshRuntime()
-        self.backend.refresh()
+        getattr(self.backend, 'invalidateResources', self.backend.refresh)()
         self.changed.emit()
 
     def _invalidate_display(self, reason="display-invalidated"):
@@ -1886,7 +1945,11 @@ class ClientCoordinator(QObject):
             reprojecting = (pending == "set_context" and self._pending_context
                             and self._pending_context[0] == self._applied_context[0]
                             and self._pending_context[2] == self._applied_context[2])
-            if not reprojecting and pending not in {
+            if pending == "capture_now":
+                # Recapture owns a new observation, not the completed material.
+                # Only the runtime can retain or revoke that material's grant.
+                self._present_runtime_state(self.session.snapshot, trigger="capture-requested")
+            elif not reprojecting and pending not in {
                     "refresh_map", "observe_manual_floor", "observe_candidate_floor", "recover_map_open", "probe_map_after_drag", "reselect_map", "previous_candidate", "next_candidate",
                     "select_candidate", "confirm_route", "set_floor", "cycle_floor",
                     "select_group_member"}:
@@ -2128,25 +2191,83 @@ class ClientCoordinator(QObject):
             else:
                 self._fallback_notices.end_round()
                 self._clear_reference()
-                self.notificationRequested.emit("本局已结束", "本局显示与识别已停止", "info")
+                terminal_key = ("round-end-incomplete", current.get("season", "s0"), current.get("mode"), current.get("roundId"))
+                if terminal_key not in self._notified:
+                    self.notificationRequested.emit("本局已结束", "本局显示与识别已停止", "info")
         receipt = state.get("lastReceipt", {})
         reason = receipt.get("reason", "")
         expected_candidate_close = (receipt.get("action") == "observe_candidate_floor"
                                     and reason == "candidate-map-closed" and not receipt.get("error"))
-        if (receipt.get("success") is False and receipt.get("action") != "observe_manual_floor"
+        if (receipt.get("success") is False
+                and (receipt.get("action") != "observe_manual_floor" or receipt.get("error"))
                 and not expected_candidate_close
+                and (receipt.get("error") or reportable_opening_reason(reason))
                 and not (reason == "private-contradiction-recovery" and not receipt.get("error"))
-                and not receipt.get("fitReportingDeferred")
+                and not (receipt.get("fitReportingDeferred") and reason not in RETRY_REASONS)
+                and self._operation_feedback_is_current(state, current, receipt)
                 and not (receipt.get("action") == "recover_map_open" and receipt.get("recoveryPending"))):
-            key = ("failure", state.get("roundId"), state.get("cycleId"), receipt.get("action"), reason)
+            deferred = bool(receipt.get("fitReportingDeferred"))
+            opening = (receipt.get("openingId") or current.get("openingId")) if active else None
+            # Ordinary observations may recover while this map remains open.
+            # Its terminal report owns the single reason notice. Worker errors
+            # remain immediate and consume that same one-notice slot.
+            if not receipt.get("error") and (deferred or opening):
+                return
+            notice_state = dict(state, **{key: current[key] for key in ("openingId", "resourceIdentity") if key in current})
+            key = (("opening-failure-notice", self._failure_notice_scope(notice_state, receipt)) if opening else
+                   ("failure", self._failure_notice_scope(state, receipt), reason))
             if key not in self._notified:
                 self._notified.add(key)
                 problem = operation_problem(receipt, state)
                 self.errorReported.emit(problem)
-                pose = state.get("poseResult") or {}
-                meaningful_pose_failure = pose.get("status") == "rejected" and not state.get("displayAuthorized")
-                if receipt.get("action") not in {"refresh_map", "recover_map_open", "inspect_engine_resources"} or meaningful_pose_failure:
-                    self.notificationRequested.emit(problem["title"], problem["summary"], problem["kind"])
+                self.notificationRequested.emit(problem["title"], problem["summary"], problem["kind"])
+
+    @staticmethod
+    def _failure_notice_scope(state, receipt=None):
+        receipt = receipt or {}
+        opening = receipt.get("openingId") or (receipt.get("mapAttempt") or {}).get("openingId") or state.get("openingId")
+        resource = receipt.get("resourceIdentity", state.get("resourceIdentity"))
+        return (state.get("season", "s0"), state.get("mode"), state.get("profileId"), state.get("roundId"),
+                opening or ("cycle", state.get("cycleId")), json.dumps(resource, sort_keys=True, default=str))
+
+    def _operation_feedback_is_current(self, state, current, receipt):
+        if receipt.get("stale") or receipt.get("cancelled"):
+            return False
+        grid_worker_failure = False
+        if (receipt.get("error") and receipt.get("exceptionType") in {"GridFailure", "InterruptedError"}
+                and receipt.get("exceptionOrigin") in {"session-worker:runtime-dispatch", "session-worker:runtime-snapshot"}
+                and current.get("message") == "grid-computation-failed" and "generation" in state):
+            accepted = self.session.snapshot
+            grid_worker_failure = (state["generation"] == accepted.get("generation")
+                                   and receipt == accepted.get("lastReceipt"))
+        # Session admits worker receipts. Recheck the live snapshot as queued
+        # UI work may run after another close, frame, resource or round change.
+        fields = ("season", "mode", "profileId", "roundId", "openingId", "resourceIdentity")
+        if not grid_worker_failure:
+            fields += ("cycleId", "epoch", "frameId")
+        # A failed native scope revokes its own runtime epoch, sometimes after
+        # this job advanced the frame/cycle. Session retains its request-time
+        # state on errors; only its exact still-current worker receipt may use
+        # this exception. Opening/resource/round changes remain hard boundaries.
+        for key in fields:
+            if key in state and key in current and state[key] != current[key]:
+                return False
+        result = receipt.get("resultContext") or {}
+        if any(key in receipt and key in current and receipt[key] != current[key]
+               for key in ("openingId", "resourceIdentity")):
+            return False
+        return all(key not in current or value == current[key] for key, value in result.items())
+
+    def _failure_event_is_current(self, event):
+        check = getattr(self.runtime, "failure_event_is_current", None)
+        if callable(check):
+            return bool(check(event))
+        state = self.runtime.snapshot()
+        # Compatibility only for older injected runtime fixtures. Production
+        # owns the opening's terminal lifetime, including a close before solve.
+        return all(key not in state or key not in event or state[key] == event[key]
+                   for key in ("season", "mode", "profileId", "roundId", "cycleId", "openingId", "resourceIdentity"))
+
     def _native_action(self, action):
         if self._closing or self._closed:
             return
@@ -2429,12 +2550,20 @@ class ClientCoordinator(QObject):
         if name == "map-fit-incomplete":
             # A finalized historical segment is independent of the current open.
             # It cannot mutate current runtime/input/display state.
-            key = ("map-fit-incomplete", event.get("season", "s0"), event.get("mode"), event.get("roundId"),
-                   event.get("cycleId"), event.get("epoch"))
+            key = ("map-fit-incomplete", event.get("reportId") or (self._failure_notice_scope(event), event.get("epoch")))
             if key not in self._notified:
                 from client_fit_reporting import incomplete_problem
                 self._notified.add(key)
-                self.errorReported.emit(incomplete_problem(event))
+                problem = incomplete_problem(event)
+                if problem is None:
+                    return
+                self.errorReported.emit(problem)
+                notice_key = ("opening-failure-notice", self._failure_notice_scope(event))
+                if self._failure_event_is_current(event) and notice_key not in self._notified:
+                    self._notified.add(notice_key)
+                    if event.get("terminationReason") in {"end_round", "stop_round", "reset_round", "end-round", "stop-round", "input-end_round"}:
+                        self._notified.add(("round-end-incomplete", event.get("season", "s0"), event.get("mode"), event.get("roundId")))
+                    self.notificationRequested.emit(problem["title"], problem["summary"], problem["kind"])
         elif name == "map-fit-waiting":
             state = self.runtime.snapshot()
             if all(event.get(k) == state.get(k) for k in

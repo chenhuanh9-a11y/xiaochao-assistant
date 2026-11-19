@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 from pathlib import Path
 import zipfile
 import numpy as np
@@ -13,7 +14,8 @@ SUJU_ROUTE_PROFILE_ID = "suju"
 def load_shared_version_context(root, pack, resources, adapters, catalog, side_entries, *,
                                  neutral_relative='references/nightmare-structure-display.json',
                                  author_profile_id=SUJU_ROUTE_PROFILE_ID,
-                                 entry_root_relative='references/nightmare-entries'):
+                                 entry_root_relative='references/nightmare-entries',
+                                 read_resource=None):
     """Read ordinary per-floor dependency identities once per installation."""
     root = Path(root).resolve()
     def local(relative):
@@ -21,14 +23,18 @@ def load_shared_version_context(root, pack, resources, adapters, catalog, side_e
         if not path.is_relative_to(root):
             raise ValueError('shared dependency escapes its resource root')
         return path
-    index = json.loads(resources.index_path.read_text(encoding='utf-8'))
+    def read_json(path):
+        path = local(path)
+        raw = path.read_text(encoding='utf-8') if read_resource is None else read_resource(path).decode('utf-8')
+        return json.loads(raw)
+    index = read_json(resources.index_path)
     registry_path = index.get('structureVersionBindings')
     if not registry_path:
         raise ValueError('shared structure version bindings are missing')
-    registry = json.loads(local(registry_path).read_text(encoding='utf-8'))
+    registry = read_json(registry_path)
     if registry.get('schemaVersion') != 1 or registry.get('resourceKind') != 'native-structure-version-bindings':
         raise ValueError('shared structure version bindings are incompatible')
-    neutral = json.loads(local(neutral_relative).read_text(encoding='utf-8'))
+    neutral = read_json(neutral_relative)
     if (neutral.get('schemaVersion') != 1 or neutral.get('resourceKind') != 'typed-shared-structure-display'
             or local(neutral.get('indexPath')) != resources.index_path.resolve()):
         raise ValueError('shared neutral display index is incompatible')
@@ -42,7 +48,7 @@ def load_shared_version_context(root, pack, resources, adapters, catalog, side_e
         return result
     versions = rows_by_floor(registry.get('entries') or [])
     neutral_rows = rows_by_floor(neutral.get('entries') or [])
-    source_rows = {str(row['id']): row for row in json.loads(pack.manifest_path.read_text(encoding='utf-8'))['maps']}
+    source_rows = {str(row['id']): row for row in read_json(pack.manifest_path)['maps']}
     side_rows = rows_by_floor([item[0] for item in side_entries])
     reference_profile = getattr(adapters, 'coordinate_reference_profile_id', SHARED_STRUCTURE_PROFILE_ID)
     raw_catalog = getattr(catalog, '_raw', {})
@@ -91,7 +97,8 @@ def load_shared_version_context(root, pack, resources, adapters, catalog, side_e
         try:
             # Read only the scalar declaration here, not every mask/SIFT
             # array. Full typed pixel checks still belong to the loader.
-            with np.load(product_path, allow_pickle=False) as archive:
+            archive_source = product_path if read_resource is None else BytesIO(read_resource(product_path))
+            with np.load(archive_source, allow_pickle=False) as archive:
                 metadata = json.loads(str(archive['metadata'].item()))
             if (metadata.get('binding') != binding or metadata.get('canvas') != display.get('canvas')
                     or any(metadata.get(name) != value for name, value in expected.items())):

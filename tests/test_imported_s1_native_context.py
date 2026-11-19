@@ -1,0 +1,348 @@
+"""Real exported S1D components and current consumers; no solver/game proof."""
+import hashlib
+import json
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+
+import numpy as np
+
+import imported_resource_archive as archives
+from imported_native_base import decode_native_base
+from imported_resource_packages import PackageView
+from imported_s1_controls_profile import S1ControlsProfile
+from imported_s1_native_context import ImportedS1NativeContext
+from test_export_s1_native_base_package import S1NativeBaseSourceFixture
+from test_imported_s1_controls_profile import ProfilePackage, document
+
+
+class ImportedS1NativeContextTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source_temporary = tempfile.TemporaryDirectory(prefix='imported-s1-context-source-')
+        cls.addClassCleanup(cls.source_temporary.cleanup)
+        cls.fixture = S1NativeBaseSourceFixture(Path(cls.source_temporary.name))
+        cls.fixture.export()
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='imported-s1-context-')
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.current = dict(base=True, controls=True)
+        saved = archives.save_archive(self.fixture.output, self.root)
+        self.refs = {ref.component_id: ref for ref in saved.component_refs}
+
+        def guard(component):
+            def check():
+                if not self.current[component]:
+                    raise ValueError(component + '-selection-superseded')
+            return check
+
+        self.base = PackageView(self.root, self.refs['base'], assert_current=guard('base'))
+        self.controls_view = PackageView(self.root, self.refs['controls'], assert_current=guard('controls'))
+        self.bundle = decode_native_base(self.base, season='s1', mode='difficult')
+        self.controls = S1ControlsProfile(self.controls_view)
+        self.context = ImportedS1NativeContext(self.base, self.bundle, self.controls)
+
+    def engine(self):
+        from client_providers import SharedReferenceProvider
+        native = self.context
+        provider = SharedReferenceProvider(native.root, native.resources, native.versions,
+            legacy_reference_loader=native.legacy_reference, check_current=native.assert_current)
+        return SimpleNamespace(pack=native.pack, qt_season='s1', qt_native_context=native,
+            qt_shared_provider=provider, qt_adapters=native.adapters, qt_catalog=native.catalog,
+            qt_optional_displays=None, identity_floors=native.pack.floors)
+
+    def test_actual_component_surface_feeds_catalog_and_alignment_reference(self):
+        from client_live_runtime import _AlignmentHost
+        from s1_structure_selection import StructureCatalog
+        native = self.context
+        self.assertEqual((native.season, native.mode), ('s1', 'difficult'))
+        self.assertEqual(native.root, self.base.root)
+        self.assertEqual(native.component_ref, self.base.component_ref)
+        for name in ('pack', 'resources', 'adapters', 'versions', 'interfaces', 'reader'):
+            self.assertIs(getattr(native, name), getattr(self.bundle, name))
+        self.assertIs(native.controls, self.controls)
+        self.assertEqual(native.manifest, self.base.manifest)
+        self.assertEqual(native.neutral_relative, self.bundle.interfaces['neutralDisplay'])
+        self.assertEqual(len(native.pack.by_id), 14)
+        self.assertEqual(len(native.resources.entries), 56)
+        engine = self.engine()
+        catalog = StructureCatalog.from_engine(engine)
+        expected_key = hashlib.sha256(json.dumps(self.base.manifest, sort_keys=True,
+            separators=(',', ':')).encode()).hexdigest()
+        self.assertEqual(catalog.resource_key, expected_key)
+        self.assertEqual(catalog.map_ids, self.fixture.ids)
+        self.assertEqual(catalog.floors, self.fixture.floors)
+        host = _AlignmentHost(engine)
+        self.assertIs(host.author_coordinate_adapters, self.bundle.adapters)
+        for floor in self.fixture.floors:
+            reference = host._shared_structure_reference('shared-structure', self.fixture.ids[0], floor)
+            self.assertIsNotNone(reference)
+            self.assertEqual(reference.metadata['binding']['floor'], floor)
+            self.assertTrue(native.has_reference_binding(self.fixture.ids[0], floor))
+            self.assertTrue(reference.path.resolve().is_relative_to(self.base.root.resolve()))
+        self.assertFalse(native.has_reference_binding(self.fixture.ids[0], '-5'))
+        self.assertFalse(native.has_reference_binding('missing-map', '-1'))
+
+    def test_shared_fallback_uses_real_provider_without_source_or_author_display(self):
+        from client_manual_map import manual_map_thumbnail_source
+        from client_route_preferences import prepare_display_layer
+        engine = self.engine()
+        mid = self.fixture.ids[0]
+        reference = engine.qt_shared_provider('shared-structure', mid, '-2')
+        self.assertIsNone(self.context.catalog)
+        self.assertEqual(self.context.legacy_bindings, {})
+        self.assertEqual(self.context.unbound_layers, ())
+        self.assertIsNone(self.context.legacy_reference(mid, '-2'))
+        self.assertIsNone(manual_map_thumbnail_source(engine.pack, engine.pack.by_id[mid],
+            'difficult', self.context))
+        rendered = self.context.rendered_display_layer(mid, '-2', reference)
+        self.assertIsNone(rendered.layer)
+        self.assertEqual(rendered.reason, 's1-native-display-not-installed')
+        display = prepare_display_layer(engine, mid, '-2', 'shared-structure')
+        self.assertEqual(display['displayKind'], 'shared-structure')
+        self.assertEqual(display['routeProfileId'], 'shared-structure')
+        self.assertEqual(display['resourceIdentity']['path'], str(reference.path))
+        self.assertEqual(display['resourceIdentity']['binding'], reference.metadata['binding'])
+        self.assertFalse(display['fallback'])
+        self.assertEqual(display['fallbackReason'], '')
+        fallback = prepare_display_layer(engine, mid, '-2', 'missing-author')
+        self.assertTrue(fallback['fallback'])
+        self.assertIn('s1-native-display-not-installed', fallback['fallbackReason'])
+        np.testing.assert_array_equal(display['matrixDisplayToReference'], np.eye(3))
+        np.testing.assert_array_equal(display['pixels'][..., 3] != 0, reference.clean_mask != 0)
+
+    def test_equivalent_controls_reuse_replay_scope_without_general_live_authority(self):
+        from client_live_runtime import LiveRuntime
+        native = self.context
+        floor = native.floor_observation_capability
+        candidate = native.structure_candidate_capability
+        self.assertEqual(floor['dataFloors'], list(self.fixture.floors))
+        self.assertEqual(candidate['dataFloors'], list(self.fixture.floors))
+        self.assertTrue(candidate['operatorDeclaredScanReady'])
+        self.assertEqual(candidate['operatorDeclaredFloors'], [-1, -2, -3, -4])
+        self.assertEqual(floor['sourceReplayFloors'], [-1, -2, -3, -4])
+        self.assertEqual(floor['automaticFloors'], [-1, -2, -3, -4])
+        self.assertEqual(candidate['observedFloors'], (-1, -2, -3, -4))
+        for capability in (floor, candidate):
+            self.assertFalse(capability['liveValidated'])
+            self.assertEqual(capability['validationScope'], 'source-image-replay')
+        self.assertIn('s1-floor-control-detector-unvalidated', native.live_gaps)
+        engine = self.engine()
+        # Invoke the real capability consumers without starting capture, a
+        # session, a solver, or constructing a replacement runtime controller.
+        for kind, preview in (('recorded', False), ('live-client-capture', True)):
+            consumer = SimpleNamespace(_season='s1', _mode='difficult', _engine=engine,
+                _evidence_kind=kind, _native_s1_candidate_preview=preview)
+            self.assertTrue(LiveRuntime._s1_candidate_available(consumer, engine=engine))
+            self.assertTrue(LiveRuntime._s1_floor_observer_available(consumer, engine=engine))
+        # Callers cannot persistently mutate the capability declaration.
+        candidate['candidateReady'] = False
+        floor['automaticFloors'].clear()
+        self.assertTrue(native.structure_candidate_capability['candidateReady'])
+        self.assertEqual(native.floor_observation_capability['automaticFloors'], [-1, -2, -3, -4])
+
+    def test_changed_controls_keep_operator_declared_scope_and_specific_gap(self):
+        from client_live_runtime import LiveRuntime
+        value = document(('difficult',))
+        value['mapUi']['minimumCorrelation']['close'] = .63
+        package = ProfilePackage(self.root / 'changed-controls', value)
+        controls = S1ControlsProfile(package.view)
+        native = ImportedS1NativeContext(self.base, self.bundle, controls)
+        engine = self.engine()
+        engine.qt_native_context = native
+        floor, candidate = native.floor_observation_capability, native.structure_candidate_capability
+        self.assertTrue(candidate['operatorDeclaredScanReady'])
+        self.assertFalse(candidate['candidateReady'])
+        self.assertEqual(candidate['observedFloors'], [])
+        self.assertEqual(floor['sourceReplayFloors'], [])
+        self.assertEqual(floor['automaticFloors'], [])
+        for capability in (floor, candidate):
+            self.assertFalse(capability['observedFloorValidated'])
+            self.assertFalse(capability['automaticFloorEligible'])
+            self.assertFalse(capability['liveValidated'])
+            self.assertEqual(capability['qualificationGaps'],
+                ['s1-controls-map-ui-correlation-not-source-replay-equivalent'])
+        self.assertIn('s1-controls-map-ui-correlation-not-source-replay-equivalent', native.live_gaps)
+        consumer = SimpleNamespace(_season='s1', _mode='difficult', _engine=engine,
+            _evidence_kind='recorded', _native_s1_candidate_preview=False)
+        self.assertFalse(LiveRuntime._s1_candidate_available(consumer, engine=engine))
+        self.assertFalse(LiveRuntime._s1_floor_observer_available(consumer, engine=engine))
+
+    def test_constructor_rejects_other_installation_and_incompatible_controls(self):
+        other_root = self.root / 'other-installation'
+        archives.save_archive(self.fixture.output, other_root)
+        other_base = PackageView(other_root, self.refs['base'])
+        self.assertEqual(other_base.component_ref, self.base.component_ref)
+        with self.assertRaisesRegex(ValueError, 'base-bundle-mismatch'):
+            ImportedS1NativeContext(other_base, self.bundle, self.controls)
+        with self.assertRaisesRegex(ValueError, 'base-bundle-mismatch'):
+            ImportedS1NativeContext(self.controls_view, self.bundle, self.controls)
+        other_controls_package = ProfilePackage(self.root / 'other-controls', document(('nightmare',)))
+        other_controls = S1ControlsProfile(other_controls_package.view)
+        with self.assertRaisesRegex(ValueError, 'controls-base-floors-mismatch'):
+            ImportedS1NativeContext(self.base, self.bundle, other_controls)
+        original_floors = self.bundle.pack.floors
+        self.bundle.pack.floors = ('-1', '-2', '-3')
+        try:
+            with self.assertRaisesRegex(ValueError, 'controls-base-floors-mismatch'):
+                ImportedS1NativeContext(self.base, self.bundle, self.controls)
+        finally:
+            self.bundle.pack.floors = original_floors
+        with self.assertRaisesRegex(ValueError, 'validated-components-required'):
+            ImportedS1NativeContext(self.base, self.bundle, None)
+
+    def test_context_binding_brackets_controls_without_reloading_fields(self):
+        with patch.object(self.base, '_load', wraps=self.base._load) as base_load, \
+             patch.object(self.controls_view, '_load', wraps=self.controls_view._load) as controls_load:
+            self.context.assert_current()
+        self.assertEqual(base_load.call_count, 2)
+        self.assertEqual(controls_load.call_count, 1)
+
+    def test_independent_base_view_keeps_its_own_selection_check(self):
+        current = [True]
+        def guard():
+            if not current[0]:
+                raise ValueError('independent-base-superseded')
+        other = PackageView(self.root, self.refs['base'], assert_current=guard)
+        native = ImportedS1NativeContext(other, self.bundle, self.controls)
+        with patch.object(self.base, '_load', wraps=self.base._load) as bundle_load, \
+             patch.object(other, '_load', wraps=other._load) as context_load:
+            native.assert_current()
+        self.assertEqual(bundle_load.call_count, 3)
+        self.assertEqual(context_load.call_count, 1)
+        current[0] = False
+        with self.assertRaisesRegex(ValueError, 'independent-base-superseded'):
+            native.assert_current()
+        current[0], self.current['base'] = True, False
+        with self.assertRaisesRegex(ValueError, 'base-selection-superseded'):
+            native.assert_current()
+
+    def test_context_still_checks_current_bundle_reference_and_reader_root(self):
+        with patch.dict(self.bundle._values, component_ref=self.refs['controls']):
+            with self.assertRaisesRegex(ValueError, 'base-bundle-mismatch'):
+                self.context.assert_current()
+        reader = self.bundle.reader
+        foreign = self.root/'foreign-reader-root'
+        foreign.mkdir()
+        with patch.object(reader, 'root', foreign):
+            with self.assertRaisesRegex(ValueError, 'base-bundle-mismatch'):
+                self.context.assert_current()
+
+    def test_context_rechecks_base_after_controls_change_its_manifest(self):
+        manifest = self.base.root.parent.parent/'manifest.json'
+        current = self.controls.assert_current
+        def change_base():
+            current()
+            replacement = manifest.with_suffix('.replacement')
+            replacement.write_bytes(manifest.read_bytes())
+            replacement.replace(manifest)
+        with patch.object(self.controls, 'assert_current', side_effect=change_base):
+            with self.assertRaises(ValueError):
+                self.context.assert_current()
+
+    def test_independent_view_ref_change_after_root_read_is_rejected(self):
+        other = PackageView(self.root, self.refs['base'])
+        native = ImportedS1NativeContext(other, self.bundle, self.controls)
+        component_root = PackageView._component_root
+        base_reads = [0]
+        def change_ref(data_root, ref):
+            result = component_root(data_root, ref)
+            if ref == self.refs['base']:
+                base_reads[0] += 1
+                if base_reads[0] == 2:
+                    self.base.component_ref = self.refs['controls']
+            return result
+        with patch.object(self.base, 'component_ref', self.refs['base']), \
+             patch.object(PackageView, '_component_root', staticmethod(change_ref)):
+            with self.assertRaises(ValueError):
+                native.assert_current()
+
+    def test_independent_short_path_base_view_keeps_same_binding(self):
+        from test_imported_resource_reader import ComponentResourceReaderTests
+        alias = ComponentResourceReaderTests.short_path_alias(self, self.root)
+        other = PackageView(alias, self.refs['base'])
+        native = ImportedS1NativeContext(other, self.bundle, self.controls)
+        native.assert_current()
+        self.assertEqual(native.component_ref, self.base.component_ref)
+        self.assertTrue(native.root.samefile(self.base.root))
+
+    def test_independent_view_read_cannot_revoke_bundle_after_its_last_check(self):
+        armed = [False]
+        def guard():
+            if armed[0]:
+                self.current['base'] = False
+        other = PackageView(self.root, self.refs['base'], assert_current=guard)
+        native = ImportedS1NativeContext(other, self.bundle, self.controls)
+        armed[0] = True
+        with self.assertRaisesRegex(ValueError, 'base-selection-superseded'):
+            native.assert_current()
+
+    def test_independent_view_read_cannot_replace_the_bundle_reader(self):
+        from copy import copy
+        reader = self.bundle.reader
+        changed = copy(reader)
+        changed.root = self.root/'different-reader-root'
+        changed.root.mkdir()
+        armed = [False]
+        def guard():
+            if armed[0]:
+                self.bundle._values['reader'] = changed
+        other = PackageView(self.root, self.refs['base'], assert_current=guard)
+        native = ImportedS1NativeContext(other, self.bundle, self.controls)
+        with patch.dict(self.bundle._values, reader=reader):
+            armed[0] = True
+            with self.assertRaisesRegex(ValueError, 'base-bundle-mismatch'):
+                native.assert_current()
+
+    def test_every_metadata_access_and_provider_cache_hit_checks_both_views(self):
+        native = self.context
+        engine = self.engine()
+        mid = self.fixture.ids[0]
+        provider = engine.qt_shared_provider
+        reference = provider('shared-structure', mid, '-1')
+        self.assertIs(reference, provider('shared-structure', mid, '-1'))
+        accesses = [lambda name=name: getattr(native, name) for name in (
+            'pack', 'resources', 'adapters', 'versions', 'interfaces', 'reader', 'season', 'mode',
+            'root', 'component_ref', 'manifest', 'controls', 'neutral_relative', 'legacy_bindings',
+            'unbound_layers', 'catalog', 'live_gaps', 'floor_observation_capability',
+            'structure_candidate_capability')]
+        accesses += [native.assert_current,
+            lambda: native.has_reference_binding(mid, '-1'),
+            lambda: native.legacy_reference(mid, '-1'),
+            lambda: native.display_reference(mid, '-1'),
+            lambda: native.rendered_display_layer(mid, '-1', reference),
+            lambda: provider('shared-structure', mid, '-1'),
+            lambda: provider.binding_metadata('shared-structure', mid, '-1')]
+        for owner in ('base', 'controls'):
+            self.current[owner] = False
+            try:
+                for access in accesses:
+                    with self.subTest(owner=owner, access=access):
+                        with self.assertRaisesRegex(ValueError, owner + '-selection-superseded'):
+                            access()
+            finally:
+                self.current[owner] = True
+
+    def test_actual_same_byte_manifest_replacement_invalidates_cached_context(self):
+        from s1_structure_selection import StructureCatalog
+        engine = self.engine()
+        engine.qt_shared_provider('shared-structure', self.fixture.ids[0], '-1')
+        manifest = self.base.root.parent.parent / 'manifest.json'
+        raw = manifest.read_bytes()
+        # Preserve the original to prove a new same-byte filesystem object is
+        # still a replacement under the owning PackageView's existing checks.
+        manifest.rename(manifest.with_name('retained-manifest.json'))
+        manifest.write_bytes(raw)
+        for access in (lambda: self.context.manifest,
+                       lambda: StructureCatalog.from_engine(engine),
+                       lambda: engine.qt_shared_provider('shared-structure', self.fixture.ids[0], '-1')):
+            with self.assertRaisesRegex(ValueError, 'manifest-replaced'):
+                access()
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -29,10 +29,11 @@ class Windows(QObject):
 owner=Coordinator(); windows=Windows(); engine=QQmlApplicationEngine()
 engine.rootContext().setContextProperty('clientCoordinator',owner)
 engine.rootContext().setContextProperty('windows',windows)
-path=Path('experiments/qt_quick/Client.qml').resolve(); source=path.read_text()
+path=Path('experiments/qt_quick/Client.qml').resolve(); source=path.read_text(encoding='utf-8')
 assert '最小化到任务栏' not in source
 closing='onClosing:'+source.split('onClosing:',1)[1].split('    RowLayout',1)[0]
-choice=source[source.index('    Dialog {\n        id: closeChoice'):source.index('    Dialog {\n        id: importSuccess')]
+choice_start=source.index('    Dialog {\n        id: closeChoice')
+choice=source[choice_start:source.index('    Popup {\n',choice_start)]
 engine.loadData(('import QtQuick\nimport QtQuick.Controls.Basic\nimport QtQuick.Layouts\nApplicationWindow { id:root; visible:true; width:600; height:500; '+closing+choice+'\n}').encode(),QUrl.fromLocalFile(str(path.with_name('concise-close-test.qml'))))
 window=engine.rootObjects()[0]; dialog=window.findChild(QObject,'clientCloseChoice')
 def button(name): return window.findChild(QQuickItem,name)
@@ -55,8 +56,8 @@ print('concise close actions passed')
 '''
         root=Path(__file__).resolve().parents[2]
         result=subprocess.run([sys.executable,'-c',code],cwd=root,
-            env=dict(os.environ,QT_QPA_PLATFORM='offscreen',QT_QUICK_BACKEND='software'),
-            capture_output=True,text=True,timeout=20)
+            env=dict(os.environ,QT_QPA_PLATFORM='offscreen',QT_QUICK_BACKEND='software',PYTHONUTF8='1'),
+            capture_output=True,text=True,encoding='utf-8',timeout=20)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         self.assertIn('concise close actions passed',result.stdout)
 

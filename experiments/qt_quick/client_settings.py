@@ -36,7 +36,8 @@ FRESH_ACTIONS = ["F9", "F6", "F7", "F8", "", "", "F11", "", "F10",
                  MANUAL_MAP_PICKER_DEFAULT_HOTKEY]
 BOOL_DEFAULTS = {"automaticFailureEvidence": True, "referenceSheetVisible": True, "sheetVisibilityEnabled": True,
                  "orbVisible": True, "qtControlsVisible": True, "reduceMotion": False, "uiSoundEnabled": False,
-                 "difficultGridEnabled": False, "onboardingCompleted": False, "routePointNumbers": False}
+                 "difficultGridEnabled": False, "onboardingCompleted": False, "routePointNumbers": False,
+                 "manualMapLock": False}
 RANGES = {"sheetOpacity": (0., 1.), "referenceOpacity": (0., 1.),
           "interfaceOpacity": (.65, .95), "sheetScale": (.5, 1.5)}
 DEFAULTS = {**BOOL_DEFAULTS, "sheetOpacity": .55, "referenceOpacity": .55,
@@ -186,6 +187,7 @@ class _Write(QRunnable):
 
 class SettingsService(QObject):
     changed = Signal()
+    seasonOptionsChanged = Signal()
     saved = Signal()
     controlsVisibilitySaveFailed = Signal(str)
     shortcutRecordingChanged = Signal(bool)
@@ -224,6 +226,7 @@ class SettingsService(QObject):
         self._route_generation = 0
         self._route_runtime = None
         self._mode_change_guard = lambda: True
+        self._available_contexts = None
         self.reload()
 
     def _application_panel_shortcut(self):
@@ -235,7 +238,30 @@ class SettingsService(QObject):
 
     applicationPanelShortcut = Property(str, _application_panel_shortcut, notify=changed)
 
-    seasonOptions = Property("QVariantList", lambda s: season_options(), constant=True)
+    def _reserved_shell_shortcuts(self):
+        # Saved user bindings own their chord, including native-only actions.
+        # Draft edits must not disable navigation before the binding is live.
+        bindings = [self._baseline["hotkey"], *self._baseline["actionHotkeys"]]
+        identities = {parse_chord(value, _primary_hotkey_to_vk).identity
+                      for value in bindings if value}
+        sequences = {**{f"Ctrl+{i}": f"Ctrl+{i}" for i in range(1, 7)},
+                     "Ctrl+Tab": "Ctrl+TAB", "Ctrl+Shift+Tab": "Ctrl+Shift+TAB",
+                     "Ctrl+PgDown": "Ctrl+PAGEDOWN", "Ctrl+PgUp": "Ctrl+PAGEUP",
+                     "Alt+Left": "Alt+LEFT"}
+        return [sequence for sequence, native in sequences.items()
+                if parse_chord(native, _primary_hotkey_to_vk).identity in identities]
+
+    reservedShellShortcuts = Property("QStringList", _reserved_shell_shortcuts, notify=changed)
+
+    def _season_options(self):
+        rows = season_options()
+        if self._available_contexts is not None:
+            for row in rows:
+                for mode, capability in row['capabilities'].items():
+                    capability['available'] = context_key(mode, row['id']) in self._available_contexts
+        return rows
+
+    seasonOptions = Property('QVariantList', _season_options, notify=seasonOptionsChanged)
     values = Property("QVariantMap", lambda s: deepcopy(s._draft), notify=changed)
     persistedValues = Property("QVariantMap", lambda s: deepcopy(s._baseline), notify=changed)
     loadFailed = Property(bool, lambda s: bool(s._read_error), notify=changed)
@@ -514,6 +540,40 @@ class SettingsService(QObject):
             raise TypeError("mode change guard must be callable")
         self._mode_change_guard = guard
 
+    def setAvailableContexts(self, contexts):
+        contexts = frozenset(contexts)
+        if not contexts <= CONTEXTS.keys():
+            raise ValueError('Unknown imported resource context')
+        if contexts != self._available_contexts:
+            self._available_contexts = contexts
+            self.seasonOptionsChanged.emit()
+
+    def _context_available(self, season, mode):
+        return self._available_contexts is None or context_key(mode, season) in self._available_contexts
+
+    @Slot(str, str, result=bool)
+    def setGameContext(self, season, mode):
+        from season_context import is_retired_mode, RETIRED_MODE_MESSAGE
+        try:
+            values = dict(gameSeason=_validate('gameSeason', season), gameMode=_validate('gameMode', mode))
+            if not all(self._mode_change_allowed(value, key) for key, value in values.items()):
+                return False
+            if is_retired_mode(mode, season):
+                raise ValueError(RETIRED_MODE_MESSAGE)
+            if not self._context_available(season, mode):
+                raise ValueError('请先导入此模式的基础结构包。')
+            if all(self._draft.get(key) == value and key not in self._invalid for key, value in values.items()):
+                return True
+            self._draft.update(values)
+            self._repairs.update(key for key in values if key in self._invalid)
+            self._message = self._read_error or self._write_error or '有未保存的更改'
+            self.changed.emit()
+            return True
+        except (ValueError, TypeError) as error:
+            self._message = self._read_error or str(error)
+            self.changed.emit()
+            return False
+
     def _mode_change_allowed(self, value, key="gameMode"):
         if value == self._baseline.get(key) or self._mode_change_guard():
             return True
@@ -530,6 +590,9 @@ class SettingsService(QObject):
             if key in ("gameMode", "gameSeason") and not self._mode_change_allowed(value, key):
                 return False
             proposal = {**self._draft, key: value}
+            if (key in ('gameMode', 'gameSeason') and self._draft.get(key) != value
+                    and not self._context_available(proposal['gameSeason'], proposal['gameMode'])):
+                raise ValueError('请先导入此模式的基础结构包。')
             from season_context import is_retired_mode, RETIRED_MODE_MESSAGE
             if (key in ("gameMode", "gameSeason") and self._draft.get(key) != value
                     and is_retired_mode(proposal["gameMode"], proposal["gameSeason"])):

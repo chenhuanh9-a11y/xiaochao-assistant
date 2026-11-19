@@ -1,6 +1,7 @@
 """Real Settings QML and isolated settings file; no installed preferences/game."""
 import unittest
 from PySide6.QtTest import QTest
+from PySide6.QtCore import Qt
 import test_settings_accessibility as fixture
 
 
@@ -63,6 +64,41 @@ class S1ManualSettingsUiTests(unittest.TestCase):
             self.assertEqual(service.values['floorControlMode'], floor_mode)
             self.assertEqual(service.values['floorControlRegion'], floor_region)
             self.assertEqual(self.path.read_bytes(), original)
+        self.assertEqual(view.qml_warnings, [])
+
+    def test_manual_lock_is_operable_in_s0_auto_and_preserves_shortcuts(self):
+        service = self.service()
+        view = self.create_view(service)
+        view.rootObject().setProperty('modeExpanded', True)
+        self.app.processEvents(); QTest.qWait(20)
+        toggle = self.item(view, 'setting_manualMapLock')
+        keys = service.values['actionHotkeys'][:]
+        self.assertEqual(service.values['mapSelectionMode'], 'auto')
+        self.assertTrue(toggle.isVisible())
+        self.assertTrue(toggle.isEnabled())
+        self.assertFalse(toggle.property('checked'))
+        toggle.forceActiveFocus()
+        QTest.keyClick(view, Qt.Key_Space)
+        self.app.processEvents()
+        self.assertTrue(service.values['manualMapLock'])
+        self.assertTrue(service.saveFields(['manualMapLock']))
+        self.wait(lambda: not service.busy)
+        self.assertTrue(service.persistedValues['manualMapLock'])
+        for season, mode, visible, enabled in (
+                ('s0', 'manual', True, False), ('s1', 'auto', False, False),
+                ('s0', 'auto', True, True)):
+            self.assertTrue(service.setValue('gameSeason', season))
+            self.assertTrue(service.setValue('mapSelectionMode', mode))
+            self.app.processEvents(); QTest.qWait(20)
+            self.assertIs(self.item(view, 'setting_manualMapLock'), toggle)
+            self.assertEqual(toggle.isVisible(), visible)
+            self.assertEqual(toggle.isEnabled(), enabled)
+            self.assertTrue(toggle.property('checked'))
+            self.assertEqual(service.values['actionHotkeys'], keys)
+        toggle.forceActiveFocus()
+        QTest.keyClick(view, Qt.Key_Space)
+        self.app.processEvents()
+        self.assertFalse(service.values['manualMapLock'])
         self.assertEqual(view.qml_warnings, [])
 
     def test_switch_to_s1_cancels_uncommitted_manual_shortcut_capture_only(self):

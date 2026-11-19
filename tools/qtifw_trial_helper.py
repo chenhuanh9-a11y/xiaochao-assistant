@@ -66,7 +66,9 @@ def bound_owner(policy, target):
     target = scoped(policy, target)
     owner = json.loads(_safe(target / OWNER).read_text(encoding="utf-8"))
     if owner.get("instance") != policy["instance"] or owner.get("payloadSource") != policy["payloadSource"]:
-        raise ValueError("trial-owner-mismatch")
+        from qtifw_upgrade import accepts_previous_owner
+        if not accepts_previous_owner(policy, target, owner):
+            raise ValueError("trial-owner-mismatch")
     if policy.get("allowNewTargets") and os.path.normcase(owner.get("target", "")) != os.path.normcase(str(target)):
         raise ValueError("trial-owner-target-mismatch")
     return target, owner
@@ -82,6 +84,11 @@ def owned_program(policy, target):
                 or name.casefold().startswith("work/")):
             raise ValueError("invalid-program-inventory")
         path = _safe(target / "program" / relative)
+        for parent in path.parents:
+            if parent == target:
+                break
+            if parent.exists() and not parent.is_dir():
+                raise ValueError("program-parent-not-directory")
         if path.exists():
             info = path.stat()
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
@@ -231,14 +238,65 @@ def receipt(policy, target, name, value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("check-target", "prepare", "verify-program", "verify", "install-maps", "disable-watcher", "inspect-data", "hold-uninstall", "select-data", "undo-data", "noop", "data", "pause", "fail"))
-    parser.add_argument("target", type=Path)
+    parser.add_argument("action", choices=("discover-installation", "hold-setup-instance", "close-background-start", "close-background-run", "bootstrap-check", "bootstrap-start", "bootstrap-status", "bootstrap-run", "check-target", "prepare", "verify-program", "verify", "disable-watcher", "inspect-data", "hold-uninstall", "select-data", "undo-data", "noop", "data", "pause", "fail"))
+    parser.add_argument("target", type=Path, nargs="?")
     parser.add_argument("choice", nargs="?", default="keep")
     parser.add_argument("operation", nargs="?", default="none", choices=("none", "purge"))
+    parser.add_argument("--result-file", type=Path)
+    parser.add_argument("--setup-source", type=Path,
+                        help="Current native Setup; only its component archives are read")
+    parser.add_argument("--interactive", action="store_true", help="Show the native maintenance update progress")
+    parser.add_argument("--process-id", type=int)
+    parser.add_argument("--process-created")
+    parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
+    if args.action != "discover-installation" and args.target is None:
+        parser.error("target is required for this action")
     policy = json.loads(Path(__file__).with_name("qtifw-trial-policy.json").read_text(encoding="utf-8"))
     try:
-        if args.action == "check-target":
+        if args.action == "hold-setup-instance":
+            from qtifw_setup_instance import hold
+            print(json.dumps(hold(policy, args.target), ensure_ascii=True))
+            return 0
+        if args.action == "close-background-run":
+            from qtifw_process_control import close_background
+            result = dict(close_background(policy, args.target, force=args.force), target=str(args.target.resolve()))
+            if args.result_file:
+                from qtifw_update_job import publish
+                publish(policy, args.target, args.result_file, result)
+            print(json.dumps(result, ensure_ascii=True))
+            return 0
+        if args.action == "discover-installation":
+            from qtifw_installation import discover
+            print(json.dumps(discover(policy), ensure_ascii=True))
+            return 0
+        if args.action in {"bootstrap-start", "bootstrap-status", "close-background-start"}:
+            from qtifw_update_job import start, status
+            if args.action == "close-background-start":
+                if args.result_file is None:
+                    raise ValueError("native-close-job-arguments-required")
+                result = start(policy, args.target, args.result_file, operation="close", force=args.force)
+            elif args.action == "bootstrap-start":
+                if args.result_file is None or args.setup_source is None:
+                    raise ValueError("native-update-job-arguments-required")
+                result = start(policy, args.target, args.result_file,
+                               setup_source=args.setup_source, interactive=args.interactive)
+            else:
+                if not args.process_id or not args.process_created:
+                    raise ValueError("native-update-process-identity-required")
+                result = status(args.process_id, args.process_created)
+            print(json.dumps(result, ensure_ascii=True))
+            return 0
+        if args.action in {"bootstrap-check", "bootstrap-run"}:
+            from qtifw_upgrade import check, run
+            result = check(policy, args.target) if args.action == "bootstrap-check" else run(
+                policy, args.target, setup_source=args.setup_source, interactive=args.interactive)
+            if args.result_file:
+                from qtifw_update_job import publish
+                publish(policy, args.target, args.result_file, result)
+            print(json.dumps(result, ensure_ascii=True))
+            return 10 if args.action == "bootstrap-check" and result["mode"] == "update" else 0
+        elif args.action == "check-target":
             # Browsing/validation must not create the target, marker or receipt.
             print(json.dumps(check_target(policy, args.target), ensure_ascii=True))
             return 0
@@ -251,15 +309,6 @@ def main():
             if not _safe(target / "trial-maintenance.exe").is_file():
                 raise ValueError("maintenance-not-created")
             result = verify(policy, args.target)
-        elif args.action == "install-maps":
-            target, owner = bound_owner(policy, args.target)
-            if owner["phase"] != "installing":
-                raise ValueError("maps-require-new-installation")
-            verify_program(policy, target)
-            result = dict(installed=0, packages=[])
-            if policy.get("mapPackages"):
-                from qtifw_map_seed import install_bundled_maps
-                result = install_bundled_maps(target, policy["mapPackages"])
         elif args.action == "select-data":
             bound_owner(policy, args.target)
             if args.choice not in {"keep", "clear"}:
@@ -327,6 +376,9 @@ def main():
         print(json.dumps(result, ensure_ascii=True))
         return 0
     except (ValueError, OSError, KeyError) as error:
+        if args.result_file and args.action not in {"bootstrap-start", "bootstrap-status", "close-background-start"}:
+            from qtifw_update_job import publish
+            publish(policy, args.target, args.result_file, dict(success=False, reason=str(error)))
         if args.action in {"data", "undo-data", "verify", "verify-program"}:
             try:
                 name = "data" if args.action in {"data", "undo-data"} else args.action

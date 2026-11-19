@@ -236,7 +236,7 @@ class AuthorFallbackTests(unittest.TestCase):
         self.assertEqual((layer["preferredProfileId"],layer["effectiveProfileId"],layer["displayKind"]),
                          ("suju","suju","author-route"))
         self.assertFalse(layer["fallback"])
-        np.testing.assert_array_equal(layer["pixels"],cv2.imread(str(self.root/"suju.png"),cv2.IMREAD_UNCHANGED))
+        np.testing.assert_array_equal(layer["pixels"],np.full((20,24,4),(40,30,60,255),np.uint8))
         np.testing.assert_allclose(layer["matrixDisplayToReference"],np.diag([1.5,1.5,1.]))
         self.assertEqual(engine.rank_count,0)
 

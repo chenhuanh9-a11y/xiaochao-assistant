@@ -1,0 +1,3068 @@
+{
+  "schema": "hub-resource-measurements-v1",
+  "generatedAtUtc": "2026-11-16T10:45:27.159355+00:00",
+  "commits": {
+    "baseline": "083b1ac60d41cf70667df6b43c633f875cf056dd",
+    "candidate": "367fea63c8435999f4edb93e9da3fc90496c4226"
+  },
+  "inputs": {
+    "inputs": [
+      {
+        "context": "s0:nightmare",
+        "kind": "base",
+        "file": "xingtu-1.1.8-controls-plan-20261114-r2/地图资源/结构包/S0噩梦.xingtu-base",
+        "bytes": 61971823,
+        "sha256": "3e22cd85ba0c1ce9ad78702f70ecf65fec27ddd8fc126e5f89f60819e6bebeb4",
+        "packageId": "benchmark-s0-nightmare-fast",
+        "resourceVersion": "2026.11.14.controls-bank-r2",
+        "manifestSha256": "e64b11161b4584e309dbd8560fe5ee107589fa09d397e70180585e25952f64a0"
+      },
+      {
+        "context": "s0:nightmare",
+        "kind": "route",
+        "file": "xingtu-author-routes-repin2-c16d45f4-20261114/作者路线包/s0厄运之女/噩梦/S0噩梦_爱吃醋_作者路线.xingtu-route",
+        "bytes": 11821567,
+        "sha256": "741751292f8e0aafb8ce5d4932ad26c8336ea96e300b4d9a821bd89c2823c949",
+        "packageId": "routes-s0-nightmare-nightingale",
+        "resourceVersion": "2026.11.13.routes-original-d7063612-repin2",
+        "manifestSha256": "36a6f43d6a3e03f5c5799bb1f2eb6a7fe7ff57e210364516f74755bc30427f35"
+      },
+      {
+        "context": "s0:difficult",
+        "kind": "base",
+        "file": "xingtu-1.1.8-controls-plan-20261114-r2/地图资源/结构包/S0困难.xingtu-base",
+        "bytes": 62354179,
+        "sha256": "8587b6cae1bc2a61ba0784b80315b069cdbdc8ff16443b82468dcf39af730137",
+        "packageId": "benchmark-s0-difficult",
+        "resourceVersion": "2026.11.14.controls-bank-r2",
+        "manifestSha256": "1fd8f43b05788fccfc10ee444acfd7000ce73a5b53aa548ffcd9d75231baca49"
+      },
+      {
+        "context": "s0:difficult",
+        "kind": "route",
+        "file": "xingtu-author-routes-repin2-c16d45f4-20261114/作者路线包/s0厄运之女/困难/S0困难_爱吃醋_作者路线.xingtu-route",
+        "bytes": 12813801,
+        "sha256": "f2fe5c8a0b57fc820a0d290af2755c4183ebe0537737cba17b16170c461ba3d8",
+        "packageId": "routes-s0-difficult-aichicu",
+        "resourceVersion": "2026.11.13.routes-original-d7063612-r2-repin2",
+        "manifestSha256": "b6cf4e14ac8c80ecdf97c59d0c6c0aac10d6f56ea52c8d88ce387e48976a6a4e"
+      },
+      {
+        "context": "s1:nightmare",
+        "kind": "base",
+        "file": "xingtu-1.1.8-controls-plan-20261114-r2/地图资源/结构包/S1噩梦.xingtu-base",
+        "bytes": 30684445,
+        "sha256": "9f9904c88c7327736985ca7d49467541b93cc80b3241b4bed7e083cf39698dd3",
+        "packageId": "benchmark-s1-nightmare-coordinate",
+        "resourceVersion": "2026.11.14.fixed-controls-r1",
+        "manifestSha256": "11a20ef0ee8e0fed76fdcd75c15e610ffc8d377b56dcc95296ba878767a1da31"
+      },
+      {
+        "context": "s1:nightmare",
+        "kind": "route",
+        "file": "xingtu-author-routes-repin2-c16d45f4-20261114/作者路线包/s1磷光症/噩梦/S1噩梦_爱吃醋_作者路线.xingtu-route",
+        "bytes": 8315571,
+        "sha256": "762f0e02a80f9b1b3ee89ac2a358c79362d6afce681035c77e4cacb49e893356",
+        "packageId": "author-aichicu-s1-nightmare-b75",
+        "resourceVersion": "2026.11.13.routes-original-d7063612-repin2",
+        "manifestSha256": "f402fc4751ed9a353610dc04c505ed78a79a07268103424167baac95c7fdae95"
+      },
+      {
+        "context": "s1:difficult",
+        "kind": "base",
+        "file": "xingtu-1.1.8-controls-plan-20261114-r2/地图资源/结构包/S1困难.xingtu-base",
+        "bytes": 28289568,
+        "sha256": "914930776c3478df159deb0e1bde68e219257eefd71aa5c77cd88f80fa3aacdc",
+        "packageId": "benchmark-s1-difficult-coordinate",
+        "resourceVersion": "2026.11.14.fixed-controls-r1",
+        "manifestSha256": "1146754af55e73fd0f2145a4f2e9cd21f7f66d6691d51ac98e4dcfb8aa542005"
+      },
+      {
+        "context": "s1:difficult",
+        "kind": "route",
+        "file": "xingtu-author-routes-repin2-c16d45f4-20261114/作者路线包/s1磷光症/困难/S1困难_爱吃醋_作者路线.xingtu-route",
+        "bytes": 7542107,
+        "sha256": "228f867e9da2afd27c73b998ded8a7a703b12939685d2bed18ca1b44d4193277",
+        "packageId": "author-aichicu-s1-difficult-b75",
+        "resourceVersion": "2026.11.13.routes-original-d7063612-repin2",
+        "manifestSha256": "3018e6452d4823ce0daa254450c80c1cabfab8df301c8a97b57b9822b7ef0b13"
+      }
+    ],
+    "originalArchiveReadback": true,
+    "seed": {
+      "source": "completed #172 manual candidate round 1",
+      "files": 1183,
+      "bytes": 337688013,
+      "catalogSha256": "9d16d0b3abf0ca61d982c52083dd793f74d08989435b61222d2c8193ca941476"
+    },
+    "environment": {
+      "python": "3.13.3",
+      "dependencies": {
+        "numpy": "2.2.6",
+        "Pillow": "12.3.0",
+        "opencv-python-headless": "4.12.0.88",
+        "PySide6-Essentials": "6.11.1",
+        "shiboken6": "6.11.1",
+        "psutil": "7.2.2",
+        "PyInstaller": "6.22.2",
+        "pyinstaller-hooks-contrib": "2026.7"
+      }
+    },
+    "cache": "No user/system cache clearing. QML disk cache disabled equally for both variants; shader cache redirected into this task. Original source archive hashes read before trials; copy preparation and automatic client startup can warm OS file cache.",
+    "ordering": "Trials alternate baseline/candidate, candidate/baseline, baseline/candidate. Each is a new process and new copied store. First deletion follows startup and the two four-context switch passes; it means process-first removal, not an empty OS or decoder cache."
+  },
+  "statistics": [
+    {
+      "operation": "first-client-load",
+      "baseline": {
+        "n": 3,
+        "samplesMs": [
+          23079.6241,
+          21331.1343,
+          21638.58
+        ],
+        "medianMs": 21638.58,
+        "maxMs": 23079.6241
+      },
+      "candidate": {
+        "n": 3,
+        "samplesMs": [
+          20501.6184,
+          20360.0427,
+          20132.0472
+        ],
+        "medianMs": 20360.0427,
+        "maxMs": 20501.6184
+      },
+      "medianChangePercent": -5.908600749217374
+    },
+    {
+      "operation": "switch-context:s0:difficult:pass1",
+      "baseline": {
+        "n": 3,
+        "samplesMs": [
+          8711.7503,
+          8503.8519,
+          8510.0222
+        ],
+        "medianMs": 8510.0222,
+        "maxMs": 8711.7503
+      },
+      "candidate": {
+        "n": 3,
+        "samplesMs": [
+          8208.3159,
+          8198.8538,
+          8098.4632
+        ],
+        "medianMs": 8198.8538,
+        "maxMs": 8208.3159
+      },
+      "medianChangePercent": -3.6564933990418824
+    },
+    {
+      "operation": "switch-context:s1:difficult:pass1",
+      "baseline": {
+        "n": 3,
+        "samplesMs": [
+          7156.5219,
+          6928.822,
+          7011.6345
+        ],
+        "medianMs": 7011.6345,
+        "maxMs": 7156.5219
+      },
+      "candidate": {
+        "n": 3,
+        "samplesMs": [
+          6818.2877,
+          6759.2177,
+          6768.6744
+        ],
+        "medianMs": 6768.6744,
+        "maxMs": 6818.2877
+      },
+      "medianChangePercent": -3.4650993288369514
+    },
+    {
+      "operation": "switch-context:s1:nightmare:pass1",
+      "baseline": {
+        "n": 3,
+        "samplesMs": [
+          7440.0181,
+          7255.2742,
+          7238.1481
+        ],
+        "medianMs": 7255.2742,
+        "maxMs": 7440.0181
+      },
+      "candidate": {
+        "n": 3,
+        "samplesMs": [
+          7328.9925,
+          7139.1982,
+          7128.3398
+        ],
+        "medianMs": 7139.1982,
+        "maxMs": 7328.9925
+      },
+      "medianChangePercent": -1.5998843985799982
+    },
+    {
+      "operation": "switch-context:s0:nightmare:pass1",
+      "baseline": {
+        "n": 3,
+        "samplesMs": [
+          1370.9304,
+          1308.2417,
+          1308.3363
+        ],
+        "medianMs": 1308.3363,
+        "maxMs": 1370.9304
+      },
+      "candidate": {
+        "n": 3,
+        "samplesMs": [
+          1340.4286,
+          1359.9499,
+          1374.6282
+        ],
+        "medianMs": 1359.9499,
+        "maxMs": 1374.6282
+      },
+      "medianChangePercent": 3.944979589727815
+    },
+    {
+      "operation": "switch-context:s0:difficult:pass2",
+      "baseline": {
+        "n": 3,
+        "samplesMs": [
+          1272.6078,
+          1271.6277,
+          1237.8804
+        ],
+        "medianMs": 1271.6277,
+        "maxMs": 1272.6078
+      },
+      "candidate": {
+        "n": 3,
+        "samplesMs": [
+          1294.7195,
+          1258.6404,
+          1263.8544
+        ],
+        "medianMs": 1263.8544,
+        "maxMs": 1294.7195
+      },
+      "medianChangePercent": -0.6112874074699737
+    },
+    {
+      "operation": "switch-context:s1:difficult:pass2",
+      "baseline": {
+        "n": 3,
+        "samplesMs": [
+          1246.5957,
+          1236.3315,
+          1241.323
+        ],
+        "medianMs": 1241.323,
+        "maxMs": 1246.5957
+      },
+      "candidate": {
+        "n": 3,
+        "samplesMs": [
+          1266.2039,
+          1241.2771,
+          1271.82
+        ],
+        "medianMs": 1266.2039,
+        "maxMs": 1271.82
+      },
+      "medianChangePercent": 2.0043856433821006
+    },
+    {
+      "operation": "switch-context:s1:nightmare:pass2",
+      "baseline": {
+        "n": 3,
+        "samplesMs": [
+          1288.3573,
+          1246.9122,
+          1267.5106
+        ],
+        "medianMs": 1267.5106,
+        "maxMs": 1288.3573
+      },
+      "candidate": {
+        "n": 3,
+        "samplesMs": [
+          1235.5243,
+          1236.5464,
+          1265.0562
+        ],
+        "medianMs": 1236.5464,
+        "maxMs": 1265.0562
+      },
+      "medianChangePercent": -2.442914481346359
+    },
+    {
+      "operation": "switch-context:s0:nightmare:pass2",
+      "baseline": {
+        "n": 3,
+        "samplesMs": [
+          1347.6347,
+          1345.8402,
+          1331.3496
+        ],
+        "medianMs": 1345.8402,
+        "maxMs": 1347.6347
+      },
+      "candidate": {
+        "n": 3,
+        "samplesMs": [
+          1351.9391,
+          1339.8466,
+          1313.2433
+        ],
+        "medianMs": 1339.8466,
+        "maxMs": 1351.9391
+      },
+      "medianChangePercent": -0.4453426194283683
+    },
+    {
+      "operation": "remove-route:repeat1",
+      "baseline": {
+        "n": 3,
+        "samplesMs": [
+          40507.0407,
+          42901.77,
+          40971.1066
+        ],
+        "medianMs": 40971.1066,
+        "maxMs": 42901.77
+      },
+      "candidate": {
+        "n": 3,
+        "samplesMs": [
+          36375.272,
+          37258.0081,
+          37023.3857
+        ],
+        "medianMs": 37023.3857,
+        "maxMs": 37258.0081
+      },
+      "medianChangePercent": -9.635377776200949
+    },
+    {
+      "operation": "remove-route:repeat2",
+      "baseline": {
+        "n": 3,
+        "samplesMs": [
+          25372.4427,
+          25428.0813,
+          24874.6897
+        ],
+        "medianMs": 25372.4427,
+        "maxMs": 25428.0813
+      },
+      "candidate": {
+        "n": 3,
+        "samplesMs": [
+          20810.6495,
+          20550.7545,
+          20209.6893
+        ],
+        "medianMs": 20550.7545,
+        "maxMs": 20810.6495
+      },
+      "medianChangePercent": -19.00364208921832
+    },
+    {
+      "operation": "remove-base:repeat1",
+      "baseline": {
+        "n": 3,
+        "samplesMs": [
+          20662.6923,
+          19843.3206,
+          19907.1224
+        ],
+        "medianMs": 19907.1224,
+        "maxMs": 20662.6923
+      },
+      "candidate": {
+        "n": 3,
+        "samplesMs": [
+          17027.5327,
+          17021.3934,
+          16436.1234
+        ],
+        "medianMs": 17021.3934,
+        "maxMs": 17027.5327
+      },
+      "medianChangePercent": -14.495962510382709
+    },
+    {
+      "operation": "remove-base:repeat2",
+      "baseline": {
+        "n": 3,
+        "samplesMs": [
+          19669.7293,
+          19902.3761,
+          20046.3388
+        ],
+        "medianMs": 19902.3761,
+        "maxMs": 20046.3388
+      },
+      "candidate": {
+        "n": 3,
+        "samplesMs": [
+          17257.2597,
+          16424.7791,
+          17038.445
+        ],
+        "medianMs": 17038.445,
+        "maxMs": 17257.2597
+      },
+      "medianChangePercent": -14.38989538540577
+    }
+  ],
+  "rawSamples": [
+    {
+      "file": "baseline-r1.json",
+      "schema": "resource-interactions-v1",
+      "status": "passed",
+      "sourceCommit": "083b1ac60d41cf70667df6b43c633f875cf056dd",
+      "startedAtUtc": "2026-11-16T10:18:13.379090+00:00",
+      "moduleProvenance": {
+        "client": {
+          "file": "experiments/qt_quick/client.py",
+          "sha256": "beb1316a930a656c771b7d9325ad951e57c667cd44c56761c2aeb46bfb76d5b8"
+        },
+        "client_imported_resources": {
+          "file": "experiments/qt_quick/client_imported_resources.py",
+          "sha256": "ce7025adf12340ee21d0f7e3c5ed0693639c0d8cd7fbe26e28d0fcc40b318d90"
+        },
+        "client_imported_providers": {
+          "file": "experiments/qt_quick/client_imported_providers.py",
+          "sha256": "3cc15157602be0d139421e213e152f2aee8bdfec4beb8f5d9abb8233811964ed"
+        },
+        "imported_resource_archive": {
+          "file": "app/imported_resource_archive.py",
+          "sha256": "fcb6950d9b130b95c804e45669cd04228bbbb87bba31f5f17925bf281e713ee7"
+        },
+        "star_map_download": {
+          "file": "app/star_map_download.py",
+          "sha256": "69973aa0d9e92049a7a567d569e4ab744f3c7540f1af8a93ae9fa1350bfee4f7"
+        }
+      },
+      "machine": {
+        "os": "Windows-11-10.0.22631-SP0",
+        "python": "3.13.3",
+        "cpu": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
+        "logicalCpuCount": 20
+      },
+      "conditions": {
+        "newProcess": true,
+        "copiedInventory": true,
+        "physicalColdDisk": false,
+        "userCachesCleared": false,
+        "nativeInputFixture": true,
+        "gameWindowDiscovery": false,
+        "gameStarted": false,
+        "gridBackend": "python",
+        "offscreen": true,
+        "visiblePixelsVerified": false
+      },
+      "samples": [
+        {
+          "operation": "first-client-load",
+          "elapsedMs": 23079.6241,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "consumer": {
+            "context": "s0:nightmare",
+            "basePackageId": "benchmark-s0-nightmare-fast",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-nightmare-fast",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 78,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-nightingale",
+            "authorMap": "nightmare-09",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              1391,
+              1666,
+              4
+            ],
+            "authorPixelBytes": 9269624,
+            "authorLayerUsable": true
+          },
+          "constructorIncluded": true
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 8711.7503,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "difficult"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s0:difficult",
+            "basePackageId": "benchmark-s0-difficult",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-difficult",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 58,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-aichicu-difficult",
+            "authorMap": "difficult-map-24",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              740,
+              719,
+              4
+            ],
+            "authorPixelBytes": 2128240,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 7156.5219,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "difficult"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s1:difficult",
+            "basePackageId": "benchmark-s1-difficult-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-difficult-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 56,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "106001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1617,
+              1617,
+              4
+            ],
+            "authorPixelBytes": 10458756,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 7440.0181,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "nightmare"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s1:nightmare",
+            "basePackageId": "benchmark-s1-nightmare-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-nightmare-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 60,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "107001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1155,
+              1190,
+              4
+            ],
+            "authorPixelBytes": 5497800,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1370.9304,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "nightmare"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s0:nightmare",
+            "basePackageId": "benchmark-s0-nightmare-fast",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-nightmare-fast",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 78,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-nightingale",
+            "authorMap": "nightmare-09",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              1391,
+              1666,
+              4
+            ],
+            "authorPixelBytes": 9269624,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1272.6078,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "difficult"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s0:difficult",
+            "basePackageId": "benchmark-s0-difficult",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-difficult",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 58,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-aichicu-difficult",
+            "authorMap": "difficult-map-24",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              740,
+              719,
+              4
+            ],
+            "authorPixelBytes": 2128240,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1246.5957,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "difficult"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s1:difficult",
+            "basePackageId": "benchmark-s1-difficult-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-difficult-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 56,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "106001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1617,
+              1617,
+              4
+            ],
+            "authorPixelBytes": 10458756,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1288.3573,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "nightmare"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s1:nightmare",
+            "basePackageId": "benchmark-s1-nightmare-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-nightmare-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 60,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "107001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1155,
+              1190,
+              4
+            ],
+            "authorPixelBytes": 5497800,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1347.6347,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "nightmare"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s0:nightmare",
+            "basePackageId": "benchmark-s0-nightmare-fast",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-nightmare-fast",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 78,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-nightingale",
+            "authorMap": "nightmare-09",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              1391,
+              1666,
+              4
+            ],
+            "authorPixelBytes": 9269624,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "remove-route",
+          "elapsedMs": 40507.0407,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 1,
+          "inspectMs": 419.0351,
+          "confirmThroughReadyMs": 40087.9305,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "routes-s0-nightmare-nightingale",
+          "packageKey": "routes-s0-nightmare-nightingale/2026.11.13.routes-original-d7063612-repin2",
+          "recoveryRequired": false
+        },
+        {
+          "operation": "remove-route",
+          "elapsedMs": 25372.4427,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 2,
+          "inspectMs": 392.2006,
+          "confirmThroughReadyMs": 24980.1418,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "routes-s0-nightmare-nightingale",
+          "packageKey": "routes-s0-nightmare-nightingale/2026.11.13.routes-original-d7063612-repin2",
+          "recoveryRequired": false
+        },
+        {
+          "operation": "remove-base",
+          "elapsedMs": 20662.6923,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 1,
+          "inspectMs": 698.7913,
+          "confirmThroughReadyMs": 19963.8267,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "benchmark-s0-nightmare-fast",
+          "packageKey": "benchmark-s0-nightmare-fast/2026.11.14.controls-bank-r2",
+          "recoveryRequired": false
+        },
+        {
+          "operation": "remove-base",
+          "elapsedMs": 19669.7293,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 2,
+          "inspectMs": 615.795,
+          "confirmThroughReadyMs": 19053.8475,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "benchmark-s0-nightmare-fast",
+          "packageKey": "benchmark-s0-nightmare-fast/2026.11.14.controls-bank-r2",
+          "recoveryRequired": false
+        }
+      ],
+      "errors": [],
+      "warnings": [],
+      "closed": true,
+      "finishedAtUtc": "2026-11-16T10:22:57.749689+00:00"
+    },
+    {
+      "file": "candidate-r1.json",
+      "schema": "resource-interactions-v1",
+      "status": "passed",
+      "sourceCommit": "367fea63c8435999f4edb93e9da3fc90496c4226",
+      "startedAtUtc": "2026-11-16T10:22:59.545552+00:00",
+      "moduleProvenance": {
+        "client": {
+          "file": "experiments/qt_quick/client.py",
+          "sha256": "beb1316a930a656c771b7d9325ad951e57c667cd44c56761c2aeb46bfb76d5b8"
+        },
+        "client_imported_resources": {
+          "file": "experiments/qt_quick/client_imported_resources.py",
+          "sha256": "e1a0f69c1690b978e286be756546bd1448f73352cd97b31c7f7d6a1d75047d29"
+        },
+        "client_imported_providers": {
+          "file": "experiments/qt_quick/client_imported_providers.py",
+          "sha256": "3cc15157602be0d139421e213e152f2aee8bdfec4beb8f5d9abb8233811964ed"
+        },
+        "imported_resource_archive": {
+          "file": "app/imported_resource_archive.py",
+          "sha256": "b645124bb71f8042ec113354f00f1bceda73dc5128fe9ff29d6c6ab5f4a1e199"
+        },
+        "star_map_download": {
+          "file": "app/star_map_download.py",
+          "sha256": "ba8f7f098c580653f7a2ee998f73e7ab9e6c698a2934e57abd16b8db59378244"
+        }
+      },
+      "machine": {
+        "os": "Windows-11-10.0.22631-SP0",
+        "python": "3.13.3",
+        "cpu": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
+        "logicalCpuCount": 20
+      },
+      "conditions": {
+        "newProcess": true,
+        "copiedInventory": true,
+        "physicalColdDisk": false,
+        "userCachesCleared": false,
+        "nativeInputFixture": true,
+        "gameWindowDiscovery": false,
+        "gameStarted": false,
+        "gridBackend": "python",
+        "offscreen": true,
+        "visiblePixelsVerified": false
+      },
+      "samples": [
+        {
+          "operation": "first-client-load",
+          "elapsedMs": 20501.6184,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "consumer": {
+            "context": "s0:nightmare",
+            "basePackageId": "benchmark-s0-nightmare-fast",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-nightmare-fast",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 78,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-nightingale",
+            "authorMap": "nightmare-09",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              1391,
+              1666,
+              4
+            ],
+            "authorPixelBytes": 9269624,
+            "authorLayerUsable": true
+          },
+          "constructorIncluded": true
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 8208.3159,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "difficult"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s0:difficult",
+            "basePackageId": "benchmark-s0-difficult",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-difficult",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 58,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-aichicu-difficult",
+            "authorMap": "difficult-map-24",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              740,
+              719,
+              4
+            ],
+            "authorPixelBytes": 2128240,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 6818.2877,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "difficult"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s1:difficult",
+            "basePackageId": "benchmark-s1-difficult-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-difficult-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 56,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "106001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1617,
+              1617,
+              4
+            ],
+            "authorPixelBytes": 10458756,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 7328.9925,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "nightmare"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s1:nightmare",
+            "basePackageId": "benchmark-s1-nightmare-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-nightmare-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 60,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "107001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1155,
+              1190,
+              4
+            ],
+            "authorPixelBytes": 5497800,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1340.4286,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "nightmare"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s0:nightmare",
+            "basePackageId": "benchmark-s0-nightmare-fast",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-nightmare-fast",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 78,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-nightingale",
+            "authorMap": "nightmare-09",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              1391,
+              1666,
+              4
+            ],
+            "authorPixelBytes": 9269624,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1294.7195,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "difficult"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s0:difficult",
+            "basePackageId": "benchmark-s0-difficult",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-difficult",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 58,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-aichicu-difficult",
+            "authorMap": "difficult-map-24",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              740,
+              719,
+              4
+            ],
+            "authorPixelBytes": 2128240,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1266.2039,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "difficult"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s1:difficult",
+            "basePackageId": "benchmark-s1-difficult-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-difficult-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 56,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "106001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1617,
+              1617,
+              4
+            ],
+            "authorPixelBytes": 10458756,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1235.5243,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "nightmare"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s1:nightmare",
+            "basePackageId": "benchmark-s1-nightmare-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-nightmare-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 60,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "107001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1155,
+              1190,
+              4
+            ],
+            "authorPixelBytes": 5497800,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1351.9391,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "nightmare"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s0:nightmare",
+            "basePackageId": "benchmark-s0-nightmare-fast",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-nightmare-fast",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 78,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-nightingale",
+            "authorMap": "nightmare-09",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              1391,
+              1666,
+              4
+            ],
+            "authorPixelBytes": 9269624,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "remove-route",
+          "elapsedMs": 36375.272,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 1,
+          "inspectMs": 408.3449,
+          "confirmThroughReadyMs": 35966.8047,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "routes-s0-nightmare-nightingale",
+          "packageKey": "routes-s0-nightmare-nightingale/2026.11.13.routes-original-d7063612-repin2",
+          "recoveryRequired": false
+        },
+        {
+          "operation": "remove-route",
+          "elapsedMs": 20810.6495,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 2,
+          "inspectMs": 391.6937,
+          "confirmThroughReadyMs": 20418.8578,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "routes-s0-nightmare-nightingale",
+          "packageKey": "routes-s0-nightmare-nightingale/2026.11.13.routes-original-d7063612-repin2",
+          "recoveryRequired": false
+        },
+        {
+          "operation": "remove-base",
+          "elapsedMs": 17027.5327,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 1,
+          "inspectMs": 673.3688,
+          "confirmThroughReadyMs": 16354.0686,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "benchmark-s0-nightmare-fast",
+          "packageKey": "benchmark-s0-nightmare-fast/2026.11.14.controls-bank-r2",
+          "recoveryRequired": false
+        },
+        {
+          "operation": "remove-base",
+          "elapsedMs": 17257.2597,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 2,
+          "inspectMs": 639.267,
+          "confirmThroughReadyMs": 16617.9034,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "benchmark-s0-nightmare-fast",
+          "packageKey": "benchmark-s0-nightmare-fast/2026.11.14.controls-bank-r2",
+          "recoveryRequired": false
+        }
+      ],
+      "errors": [],
+      "warnings": [],
+      "closed": true,
+      "finishedAtUtc": "2026-11-16T10:27:05.329508+00:00"
+    },
+    {
+      "file": "baseline-r2.json",
+      "schema": "resource-interactions-v1",
+      "status": "passed",
+      "sourceCommit": "083b1ac60d41cf70667df6b43c633f875cf056dd",
+      "startedAtUtc": "2026-11-16T10:31:12.117840+00:00",
+      "moduleProvenance": {
+        "client": {
+          "file": "experiments/qt_quick/client.py",
+          "sha256": "beb1316a930a656c771b7d9325ad951e57c667cd44c56761c2aeb46bfb76d5b8"
+        },
+        "client_imported_resources": {
+          "file": "experiments/qt_quick/client_imported_resources.py",
+          "sha256": "ce7025adf12340ee21d0f7e3c5ed0693639c0d8cd7fbe26e28d0fcc40b318d90"
+        },
+        "client_imported_providers": {
+          "file": "experiments/qt_quick/client_imported_providers.py",
+          "sha256": "3cc15157602be0d139421e213e152f2aee8bdfec4beb8f5d9abb8233811964ed"
+        },
+        "imported_resource_archive": {
+          "file": "app/imported_resource_archive.py",
+          "sha256": "fcb6950d9b130b95c804e45669cd04228bbbb87bba31f5f17925bf281e713ee7"
+        },
+        "star_map_download": {
+          "file": "app/star_map_download.py",
+          "sha256": "69973aa0d9e92049a7a567d569e4ab744f3c7540f1af8a93ae9fa1350bfee4f7"
+        }
+      },
+      "machine": {
+        "os": "Windows-11-10.0.22631-SP0",
+        "python": "3.13.3",
+        "cpu": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
+        "logicalCpuCount": 20
+      },
+      "conditions": {
+        "newProcess": true,
+        "copiedInventory": true,
+        "physicalColdDisk": false,
+        "userCachesCleared": false,
+        "nativeInputFixture": true,
+        "gameWindowDiscovery": false,
+        "gameStarted": false,
+        "gridBackend": "python",
+        "offscreen": true,
+        "visiblePixelsVerified": false
+      },
+      "samples": [
+        {
+          "operation": "first-client-load",
+          "elapsedMs": 21331.1343,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "consumer": {
+            "context": "s0:nightmare",
+            "basePackageId": "benchmark-s0-nightmare-fast",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-nightmare-fast",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 78,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-nightingale",
+            "authorMap": "nightmare-09",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              1391,
+              1666,
+              4
+            ],
+            "authorPixelBytes": 9269624,
+            "authorLayerUsable": true
+          },
+          "constructorIncluded": true
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 8503.8519,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "difficult"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s0:difficult",
+            "basePackageId": "benchmark-s0-difficult",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-difficult",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 58,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-aichicu-difficult",
+            "authorMap": "difficult-map-24",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              740,
+              719,
+              4
+            ],
+            "authorPixelBytes": 2128240,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 6928.822,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "difficult"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s1:difficult",
+            "basePackageId": "benchmark-s1-difficult-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-difficult-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 56,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "106001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1617,
+              1617,
+              4
+            ],
+            "authorPixelBytes": 10458756,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 7255.2742,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "nightmare"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s1:nightmare",
+            "basePackageId": "benchmark-s1-nightmare-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-nightmare-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 60,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "107001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1155,
+              1190,
+              4
+            ],
+            "authorPixelBytes": 5497800,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1308.2417,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "nightmare"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s0:nightmare",
+            "basePackageId": "benchmark-s0-nightmare-fast",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-nightmare-fast",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 78,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-nightingale",
+            "authorMap": "nightmare-09",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              1391,
+              1666,
+              4
+            ],
+            "authorPixelBytes": 9269624,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1271.6277,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "difficult"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s0:difficult",
+            "basePackageId": "benchmark-s0-difficult",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-difficult",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 58,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-aichicu-difficult",
+            "authorMap": "difficult-map-24",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              740,
+              719,
+              4
+            ],
+            "authorPixelBytes": 2128240,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1236.3315,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "difficult"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s1:difficult",
+            "basePackageId": "benchmark-s1-difficult-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-difficult-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 56,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "106001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1617,
+              1617,
+              4
+            ],
+            "authorPixelBytes": 10458756,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1246.9122,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "nightmare"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s1:nightmare",
+            "basePackageId": "benchmark-s1-nightmare-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-nightmare-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 60,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "107001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1155,
+              1190,
+              4
+            ],
+            "authorPixelBytes": 5497800,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1345.8402,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "nightmare"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s0:nightmare",
+            "basePackageId": "benchmark-s0-nightmare-fast",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-nightmare-fast",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 78,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-nightingale",
+            "authorMap": "nightmare-09",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              1391,
+              1666,
+              4
+            ],
+            "authorPixelBytes": 9269624,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "remove-route",
+          "elapsedMs": 42901.77,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 1,
+          "inspectMs": 392.7323,
+          "confirmThroughReadyMs": 42508.9616,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "routes-s0-nightmare-nightingale",
+          "packageKey": "routes-s0-nightmare-nightingale/2026.11.13.routes-original-d7063612-repin2",
+          "recoveryRequired": false
+        },
+        {
+          "operation": "remove-route",
+          "elapsedMs": 25428.0813,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 2,
+          "inspectMs": 392.2712,
+          "confirmThroughReadyMs": 25035.7173,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "routes-s0-nightmare-nightingale",
+          "packageKey": "routes-s0-nightmare-nightingale/2026.11.13.routes-original-d7063612-repin2",
+          "recoveryRequired": false
+        },
+        {
+          "operation": "remove-base",
+          "elapsedMs": 19843.3206,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 1,
+          "inspectMs": 686.382,
+          "confirmThroughReadyMs": 19156.8143,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "benchmark-s0-nightmare-fast",
+          "packageKey": "benchmark-s0-nightmare-fast/2026.11.14.controls-bank-r2",
+          "recoveryRequired": false
+        },
+        {
+          "operation": "remove-base",
+          "elapsedMs": 19902.3761,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 2,
+          "inspectMs": 602.1322,
+          "confirmThroughReadyMs": 19300.163,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "benchmark-s0-nightmare-fast",
+          "packageKey": "benchmark-s0-nightmare-fast/2026.11.14.controls-bank-r2",
+          "recoveryRequired": false
+        }
+      ],
+      "errors": [],
+      "warnings": [],
+      "closed": true,
+      "finishedAtUtc": "2026-11-16T10:35:56.828125+00:00"
+    },
+    {
+      "file": "candidate-r2.json",
+      "schema": "resource-interactions-v1",
+      "status": "passed",
+      "sourceCommit": "367fea63c8435999f4edb93e9da3fc90496c4226",
+      "startedAtUtc": "2026-11-16T10:27:07.065441+00:00",
+      "moduleProvenance": {
+        "client": {
+          "file": "experiments/qt_quick/client.py",
+          "sha256": "beb1316a930a656c771b7d9325ad951e57c667cd44c56761c2aeb46bfb76d5b8"
+        },
+        "client_imported_resources": {
+          "file": "experiments/qt_quick/client_imported_resources.py",
+          "sha256": "e1a0f69c1690b978e286be756546bd1448f73352cd97b31c7f7d6a1d75047d29"
+        },
+        "client_imported_providers": {
+          "file": "experiments/qt_quick/client_imported_providers.py",
+          "sha256": "3cc15157602be0d139421e213e152f2aee8bdfec4beb8f5d9abb8233811964ed"
+        },
+        "imported_resource_archive": {
+          "file": "app/imported_resource_archive.py",
+          "sha256": "b645124bb71f8042ec113354f00f1bceda73dc5128fe9ff29d6c6ab5f4a1e199"
+        },
+        "star_map_download": {
+          "file": "app/star_map_download.py",
+          "sha256": "ba8f7f098c580653f7a2ee998f73e7ab9e6c698a2934e57abd16b8db59378244"
+        }
+      },
+      "machine": {
+        "os": "Windows-11-10.0.22631-SP0",
+        "python": "3.13.3",
+        "cpu": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
+        "logicalCpuCount": 20
+      },
+      "conditions": {
+        "newProcess": true,
+        "copiedInventory": true,
+        "physicalColdDisk": false,
+        "userCachesCleared": false,
+        "nativeInputFixture": true,
+        "gameWindowDiscovery": false,
+        "gameStarted": false,
+        "gridBackend": "python",
+        "offscreen": true,
+        "visiblePixelsVerified": false
+      },
+      "samples": [
+        {
+          "operation": "first-client-load",
+          "elapsedMs": 20360.0427,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "consumer": {
+            "context": "s0:nightmare",
+            "basePackageId": "benchmark-s0-nightmare-fast",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-nightmare-fast",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 78,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-nightingale",
+            "authorMap": "nightmare-09",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              1391,
+              1666,
+              4
+            ],
+            "authorPixelBytes": 9269624,
+            "authorLayerUsable": true
+          },
+          "constructorIncluded": true
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 8198.8538,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "difficult"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s0:difficult",
+            "basePackageId": "benchmark-s0-difficult",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-difficult",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 58,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-aichicu-difficult",
+            "authorMap": "difficult-map-24",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              740,
+              719,
+              4
+            ],
+            "authorPixelBytes": 2128240,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 6759.2177,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "difficult"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s1:difficult",
+            "basePackageId": "benchmark-s1-difficult-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-difficult-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 56,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "106001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1617,
+              1617,
+              4
+            ],
+            "authorPixelBytes": 10458756,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 7139.1982,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "nightmare"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s1:nightmare",
+            "basePackageId": "benchmark-s1-nightmare-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-nightmare-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 60,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "107001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1155,
+              1190,
+              4
+            ],
+            "authorPixelBytes": 5497800,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1359.9499,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "nightmare"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s0:nightmare",
+            "basePackageId": "benchmark-s0-nightmare-fast",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-nightmare-fast",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 78,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-nightingale",
+            "authorMap": "nightmare-09",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              1391,
+              1666,
+              4
+            ],
+            "authorPixelBytes": 9269624,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1258.6404,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "difficult"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s0:difficult",
+            "basePackageId": "benchmark-s0-difficult",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-difficult",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 58,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-aichicu-difficult",
+            "authorMap": "difficult-map-24",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              740,
+              719,
+              4
+            ],
+            "authorPixelBytes": 2128240,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1241.2771,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "difficult"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s1:difficult",
+            "basePackageId": "benchmark-s1-difficult-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-difficult-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 56,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "106001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1617,
+              1617,
+              4
+            ],
+            "authorPixelBytes": 10458756,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1236.5464,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "nightmare"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s1:nightmare",
+            "basePackageId": "benchmark-s1-nightmare-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-nightmare-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 60,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "107001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1155,
+              1190,
+              4
+            ],
+            "authorPixelBytes": 5497800,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1339.8466,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "nightmare"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s0:nightmare",
+            "basePackageId": "benchmark-s0-nightmare-fast",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-nightmare-fast",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 78,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-nightingale",
+            "authorMap": "nightmare-09",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              1391,
+              1666,
+              4
+            ],
+            "authorPixelBytes": 9269624,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "remove-route",
+          "elapsedMs": 37258.0081,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 1,
+          "inspectMs": 412.5834,
+          "confirmThroughReadyMs": 36845.3122,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "routes-s0-nightmare-nightingale",
+          "packageKey": "routes-s0-nightmare-nightingale/2026.11.13.routes-original-d7063612-repin2",
+          "recoveryRequired": false
+        },
+        {
+          "operation": "remove-route",
+          "elapsedMs": 20550.7545,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 2,
+          "inspectMs": 404.5198,
+          "confirmThroughReadyMs": 20146.1341,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "routes-s0-nightmare-nightingale",
+          "packageKey": "routes-s0-nightmare-nightingale/2026.11.13.routes-original-d7063612-repin2",
+          "recoveryRequired": false
+        },
+        {
+          "operation": "remove-base",
+          "elapsedMs": 17021.3934,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 1,
+          "inspectMs": 648.609,
+          "confirmThroughReadyMs": 16372.7057,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "benchmark-s0-nightmare-fast",
+          "packageKey": "benchmark-s0-nightmare-fast/2026.11.14.controls-bank-r2",
+          "recoveryRequired": false
+        },
+        {
+          "operation": "remove-base",
+          "elapsedMs": 16424.7791,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 2,
+          "inspectMs": 631.0011,
+          "confirmThroughReadyMs": 15793.6801,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "benchmark-s0-nightmare-fast",
+          "packageKey": "benchmark-s0-nightmare-fast/2026.11.14.controls-bank-r2",
+          "recoveryRequired": false
+        }
+      ],
+      "errors": [],
+      "warnings": [],
+      "closed": true,
+      "finishedAtUtc": "2026-11-16T10:31:10.532065+00:00"
+    },
+    {
+      "file": "baseline-r3.json",
+      "schema": "resource-interactions-v1",
+      "status": "passed",
+      "sourceCommit": "083b1ac60d41cf70667df6b43c633f875cf056dd",
+      "startedAtUtc": "2026-11-16T10:35:58.616530+00:00",
+      "moduleProvenance": {
+        "client": {
+          "file": "experiments/qt_quick/client.py",
+          "sha256": "beb1316a930a656c771b7d9325ad951e57c667cd44c56761c2aeb46bfb76d5b8"
+        },
+        "client_imported_resources": {
+          "file": "experiments/qt_quick/client_imported_resources.py",
+          "sha256": "ce7025adf12340ee21d0f7e3c5ed0693639c0d8cd7fbe26e28d0fcc40b318d90"
+        },
+        "client_imported_providers": {
+          "file": "experiments/qt_quick/client_imported_providers.py",
+          "sha256": "3cc15157602be0d139421e213e152f2aee8bdfec4beb8f5d9abb8233811964ed"
+        },
+        "imported_resource_archive": {
+          "file": "app/imported_resource_archive.py",
+          "sha256": "fcb6950d9b130b95c804e45669cd04228bbbb87bba31f5f17925bf281e713ee7"
+        },
+        "star_map_download": {
+          "file": "app/star_map_download.py",
+          "sha256": "69973aa0d9e92049a7a567d569e4ab744f3c7540f1af8a93ae9fa1350bfee4f7"
+        }
+      },
+      "machine": {
+        "os": "Windows-11-10.0.22631-SP0",
+        "python": "3.13.3",
+        "cpu": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
+        "logicalCpuCount": 20
+      },
+      "conditions": {
+        "newProcess": true,
+        "copiedInventory": true,
+        "physicalColdDisk": false,
+        "userCachesCleared": false,
+        "nativeInputFixture": true,
+        "gameWindowDiscovery": false,
+        "gameStarted": false,
+        "gridBackend": "python",
+        "offscreen": true,
+        "visiblePixelsVerified": false
+      },
+      "samples": [
+        {
+          "operation": "first-client-load",
+          "elapsedMs": 21638.58,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "consumer": {
+            "context": "s0:nightmare",
+            "basePackageId": "benchmark-s0-nightmare-fast",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-nightmare-fast",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 78,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-nightingale",
+            "authorMap": "nightmare-09",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              1391,
+              1666,
+              4
+            ],
+            "authorPixelBytes": 9269624,
+            "authorLayerUsable": true
+          },
+          "constructorIncluded": true
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 8510.0222,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "difficult"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s0:difficult",
+            "basePackageId": "benchmark-s0-difficult",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-difficult",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 58,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-aichicu-difficult",
+            "authorMap": "difficult-map-24",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              740,
+              719,
+              4
+            ],
+            "authorPixelBytes": 2128240,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 7011.6345,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "difficult"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s1:difficult",
+            "basePackageId": "benchmark-s1-difficult-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-difficult-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 56,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "106001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1617,
+              1617,
+              4
+            ],
+            "authorPixelBytes": 10458756,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 7238.1481,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "nightmare"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s1:nightmare",
+            "basePackageId": "benchmark-s1-nightmare-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-nightmare-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 60,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "107001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1155,
+              1190,
+              4
+            ],
+            "authorPixelBytes": 5497800,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1308.3363,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "nightmare"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s0:nightmare",
+            "basePackageId": "benchmark-s0-nightmare-fast",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-nightmare-fast",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 78,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-nightingale",
+            "authorMap": "nightmare-09",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              1391,
+              1666,
+              4
+            ],
+            "authorPixelBytes": 9269624,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1237.8804,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "difficult"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s0:difficult",
+            "basePackageId": "benchmark-s0-difficult",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-difficult",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 58,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-aichicu-difficult",
+            "authorMap": "difficult-map-24",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              740,
+              719,
+              4
+            ],
+            "authorPixelBytes": 2128240,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1241.323,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "difficult"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s1:difficult",
+            "basePackageId": "benchmark-s1-difficult-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-difficult-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 56,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "106001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1617,
+              1617,
+              4
+            ],
+            "authorPixelBytes": 10458756,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1267.5106,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "nightmare"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s1:nightmare",
+            "basePackageId": "benchmark-s1-nightmare-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-nightmare-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 60,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "107001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1155,
+              1190,
+              4
+            ],
+            "authorPixelBytes": 5497800,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1331.3496,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "nightmare"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s0:nightmare",
+            "basePackageId": "benchmark-s0-nightmare-fast",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-nightmare-fast",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 78,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-nightingale",
+            "authorMap": "nightmare-09",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              1391,
+              1666,
+              4
+            ],
+            "authorPixelBytes": 9269624,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "remove-route",
+          "elapsedMs": 40971.1066,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 1,
+          "inspectMs": 367.038,
+          "confirmThroughReadyMs": 40603.9761,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "routes-s0-nightmare-nightingale",
+          "packageKey": "routes-s0-nightmare-nightingale/2026.11.13.routes-original-d7063612-repin2",
+          "recoveryRequired": false
+        },
+        {
+          "operation": "remove-route",
+          "elapsedMs": 24874.6897,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 2,
+          "inspectMs": 393.3162,
+          "confirmThroughReadyMs": 24481.2955,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "routes-s0-nightmare-nightingale",
+          "packageKey": "routes-s0-nightmare-nightingale/2026.11.13.routes-original-d7063612-repin2",
+          "recoveryRequired": false
+        },
+        {
+          "operation": "remove-base",
+          "elapsedMs": 19907.1224,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 1,
+          "inspectMs": 679.563,
+          "confirmThroughReadyMs": 19227.4713,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "benchmark-s0-nightmare-fast",
+          "packageKey": "benchmark-s0-nightmare-fast/2026.11.14.controls-bank-r2",
+          "recoveryRequired": false
+        },
+        {
+          "operation": "remove-base",
+          "elapsedMs": 20046.3388,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 2,
+          "inspectMs": 636.8987,
+          "confirmThroughReadyMs": 19409.3701,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "benchmark-s0-nightmare-fast",
+          "packageKey": "benchmark-s0-nightmare-fast/2026.11.14.controls-bank-r2",
+          "recoveryRequired": false
+        }
+      ],
+      "errors": [],
+      "warnings": [],
+      "closed": true,
+      "finishedAtUtc": "2026-11-16T10:40:40.468734+00:00"
+    },
+    {
+      "file": "candidate-r3.json",
+      "schema": "resource-interactions-v1",
+      "status": "passed",
+      "sourceCommit": "367fea63c8435999f4edb93e9da3fc90496c4226",
+      "startedAtUtc": "2026-11-16T10:40:42.151939+00:00",
+      "moduleProvenance": {
+        "client": {
+          "file": "experiments/qt_quick/client.py",
+          "sha256": "beb1316a930a656c771b7d9325ad951e57c667cd44c56761c2aeb46bfb76d5b8"
+        },
+        "client_imported_resources": {
+          "file": "experiments/qt_quick/client_imported_resources.py",
+          "sha256": "e1a0f69c1690b978e286be756546bd1448f73352cd97b31c7f7d6a1d75047d29"
+        },
+        "client_imported_providers": {
+          "file": "experiments/qt_quick/client_imported_providers.py",
+          "sha256": "3cc15157602be0d139421e213e152f2aee8bdfec4beb8f5d9abb8233811964ed"
+        },
+        "imported_resource_archive": {
+          "file": "app/imported_resource_archive.py",
+          "sha256": "b645124bb71f8042ec113354f00f1bceda73dc5128fe9ff29d6c6ab5f4a1e199"
+        },
+        "star_map_download": {
+          "file": "app/star_map_download.py",
+          "sha256": "ba8f7f098c580653f7a2ee998f73e7ab9e6c698a2934e57abd16b8db59378244"
+        }
+      },
+      "machine": {
+        "os": "Windows-11-10.0.22631-SP0",
+        "python": "3.13.3",
+        "cpu": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
+        "logicalCpuCount": 20
+      },
+      "conditions": {
+        "newProcess": true,
+        "copiedInventory": true,
+        "physicalColdDisk": false,
+        "userCachesCleared": false,
+        "nativeInputFixture": true,
+        "gameWindowDiscovery": false,
+        "gameStarted": false,
+        "gridBackend": "python",
+        "offscreen": true,
+        "visiblePixelsVerified": false
+      },
+      "samples": [
+        {
+          "operation": "first-client-load",
+          "elapsedMs": 20132.0472,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "consumer": {
+            "context": "s0:nightmare",
+            "basePackageId": "benchmark-s0-nightmare-fast",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-nightmare-fast",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 78,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-nightingale",
+            "authorMap": "nightmare-09",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              1391,
+              1666,
+              4
+            ],
+            "authorPixelBytes": 9269624,
+            "authorLayerUsable": true
+          },
+          "constructorIncluded": true
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 8098.4632,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "difficult"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s0:difficult",
+            "basePackageId": "benchmark-s0-difficult",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-difficult",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 58,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-aichicu-difficult",
+            "authorMap": "difficult-map-24",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              740,
+              719,
+              4
+            ],
+            "authorPixelBytes": 2128240,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 6768.6744,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "difficult"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s1:difficult",
+            "basePackageId": "benchmark-s1-difficult-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-difficult-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 56,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "106001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1617,
+              1617,
+              4
+            ],
+            "authorPixelBytes": 10458756,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 7128.3398,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "nightmare"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s1:nightmare",
+            "basePackageId": "benchmark-s1-nightmare-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-nightmare-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 60,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "107001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1155,
+              1190,
+              4
+            ],
+            "authorPixelBytes": 5497800,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1374.6282,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "nightmare"
+          ],
+          "passIndex": 1,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s0:nightmare",
+            "basePackageId": "benchmark-s0-nightmare-fast",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-nightmare-fast",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 78,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-nightingale",
+            "authorMap": "nightmare-09",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              1391,
+              1666,
+              4
+            ],
+            "authorPixelBytes": 9269624,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1263.8544,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "difficult"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s0:difficult",
+            "basePackageId": "benchmark-s0-difficult",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-difficult",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 58,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-aichicu-difficult",
+            "authorMap": "difficult-map-24",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              740,
+              719,
+              4
+            ],
+            "authorPixelBytes": 2128240,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1271.82,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s0",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "difficult"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s1:difficult",
+            "basePackageId": "benchmark-s1-difficult-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-difficult-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 56,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "106001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1617,
+              1617,
+              4
+            ],
+            "authorPixelBytes": 10458756,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1265.0562,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "difficult"
+          ],
+          "target": [
+            "s1",
+            "nightmare"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse on real QML difficulty button",
+          "consumer": {
+            "context": "s1:nightmare",
+            "basePackageId": "benchmark-s1-nightmare-coordinate",
+            "baseVersion": "2026.11.14.fixed-controls-r1",
+            "controlsPackageId": "benchmark-s1-nightmare-coordinate",
+            "controlsVersion": "2026.11.14.fixed-controls-r1",
+            "typedLayers": 60,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": false,
+            "authorProfile": "author-aichicu-s1",
+            "authorMap": "107001",
+            "authorFloor": "-1",
+            "authorPixelShape": [
+              1155,
+              1190,
+              4
+            ],
+            "authorPixelBytes": 5497800,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "switch-context",
+          "elapsedMs": 1313.2433,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "source": [
+            "s1",
+            "nightmare"
+          ],
+          "target": [
+            "s0",
+            "nightmare"
+          ],
+          "passIndex": 2,
+          "entrypoint": "QTest mouse + ComboBox keyboard",
+          "consumer": {
+            "context": "s0:nightmare",
+            "basePackageId": "benchmark-s0-nightmare-fast",
+            "baseVersion": "2026.11.14.controls-bank-r2",
+            "controlsPackageId": "benchmark-s0-nightmare-fast",
+            "controlsVersion": "2026.11.14.controls-bank-r2",
+            "typedLayers": 78,
+            "dataReady": true,
+            "rankReady": true,
+            "liveReady": true,
+            "authorProfile": "author-s0-nightingale",
+            "authorMap": "nightmare-09",
+            "authorFloor": "1",
+            "authorPixelShape": [
+              1391,
+              1666,
+              4
+            ],
+            "authorPixelBytes": 9269624,
+            "authorLayerUsable": true
+          }
+        },
+        {
+          "operation": "remove-route",
+          "elapsedMs": 37023.3857,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 1,
+          "inspectMs": 403.5435,
+          "confirmThroughReadyMs": 36619.7658,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "routes-s0-nightmare-nightingale",
+          "packageKey": "routes-s0-nightmare-nightingale/2026.11.13.routes-original-d7063612-repin2",
+          "recoveryRequired": false
+        },
+        {
+          "operation": "remove-route",
+          "elapsedMs": 20209.6893,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 2,
+          "inspectMs": 385.2701,
+          "confirmThroughReadyMs": 19824.3186,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "routes-s0-nightmare-nightingale",
+          "packageKey": "routes-s0-nightmare-nightingale/2026.11.13.routes-original-d7063612-repin2",
+          "recoveryRequired": false
+        },
+        {
+          "operation": "remove-base",
+          "elapsedMs": 16436.1234,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 1,
+          "inspectMs": 641.4268,
+          "confirmThroughReadyMs": 15794.6158,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "benchmark-s0-nightmare-fast",
+          "packageKey": "benchmark-s0-nightmare-fast/2026.11.14.controls-bank-r2",
+          "recoveryRequired": false
+        },
+        {
+          "operation": "remove-base",
+          "elapsedMs": 17038.445,
+          "endpoint": "real-client-state + offscreen-frame-submitted + event-loop-heartbeat",
+          "visiblePixelsVerified": false,
+          "repetition": 2,
+          "inspectMs": 616.2544,
+          "confirmThroughReadyMs": 16422.0826,
+          "entrypoint": "ImportedResourceService.requestRemoval + confirmRemoval; no human dwell",
+          "remainingPackages": 7,
+          "packageId": "benchmark-s0-nightmare-fast",
+          "packageKey": "benchmark-s0-nightmare-fast/2026.11.14.controls-bank-r2",
+          "recoveryRequired": false
+        }
+      ],
+      "errors": [],
+      "warnings": [],
+      "closed": true,
+      "finishedAtUtc": "2026-11-16T10:44:44.217302+00:00"
+    }
+  ],
+  "trials": {
+    "validProcesses": 6,
+    "failedOfficialProcesses": 0,
+    "measuredOperations": 78,
+    "excludedPilots": [
+      {
+        "file": "interaction-pilot.json",
+        "status": "failed",
+        "reason": "The initial harness did not wait for delayed client preparation before repeated confirmation; preserved, not included."
+      },
+      {
+        "file": "interaction-pilot-r2.json",
+        "status": "passed",
+        "reason": "Preflight only, overlapped own regression/build workload; not included."
+      }
+    ]
+  },
+  "setup": {
+    "payloadSource": "367fea63c8435999f4edb93e9da3fc90496c4226",
+    "installerSource": "367fea63c8435999f4edb93e9da3fc90496c4226",
+    "programFiles": 3030,
+    "bytes": 216578476,
+    "sha256": "97815af2d17c6efd3b5028d36a03a15e664ac0686aae96f6d0f032ee9f4b29d4",
+    "portable": false
+  },
+  "frozenVerification": {
+    "status": "passed",
+    "compiledModuleCount": 10,
+    "initialReady": true,
+    "resourcesReady": true
+  },
+  "limits": [
+    "Offscreen software frames and event-loop response; no real monitor pixels.",
+    "Startup starts at QtClient construction, excludes process/Python import and seed copy.",
+    "Season/difficulty switches use actual QML controls. Deletion starts at the public service request and confirmation, excludes human dwell.",
+    "Process-first deletion follows automatic startup and two four-context switch passes; not a cold disk or empty decoder-cache claim.",
+    "Only representative S0 nightmare route/base deletions are timed. Other modes have resource handoff checks, not deletion timing.",
+    "The client timing uses Python grid backend and inert native input; default C# packaged service has separate real process/ownership checks.",
+    "No user/system cache clear, user program stop, real installation, game, online-source timing or user acceptance."
+  ]
+}

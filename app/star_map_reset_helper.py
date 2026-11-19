@@ -111,6 +111,14 @@ def _execute(args, api, target):
     if args.action == 'pending':
         return api.resource_upgrade_status(root)
     if args.action == 'inspect':
+        if getattr(args, 'resource_action', 'reset') == 'preserve':
+            from installer_upgrade_coordinator import native_context
+            from installer_native_observation import preflight_native_evidence
+            context = native_context(args, target)
+            preflight_native_evidence(root, **context)
+            api.assert_resource_upgrade_ready(root)
+            return dict(status='inspected', resourceAction='preserve',
+                        planSha256=args.program_inventory_sha256, sessionId=str(uuid.uuid4()))
         plan = api.inspect_resource_upgrade(root, candidate_directory=args.candidate_directory,
                                             target_identity=target)
         _write_new(Path(args.result_directory) / 'plan.json',
@@ -217,6 +225,7 @@ def main(argv=None):
     for name in ('parent-pid', 'lock-handle'):
         parser.add_argument('--' + name, type=int, required=True)
     parser.add_argument('--candidate-directory')
+    parser.add_argument('--resource-action', choices=('reset', 'preserve'), default='reset')
     parser.add_argument('--plan-sha256')
     parser.add_argument('--transaction-id')
     parser.add_argument('--confirmed', action='store_true')

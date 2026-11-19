@@ -7,10 +7,13 @@ Legacy packages retain their separate, stricter original contracts.
 from __future__ import annotations
 
 import hashlib
-import io
-import math
 import re
 from pathlib import Path
+
+from author_display_validation import (
+    validate_display_affine as _validate_display_affine,
+    validate_display_authority, validate_display_image, validate_display_reference,
+)
 
 SCHEMA = 'xingtu-author-display-package-v2'
 BINDINGS_SCHEMA = 'xingtu-author-display-bindings-v2'
@@ -196,17 +199,7 @@ def validate_display_affine(value):
     principal scales 0.01..100; apply that same range to BOTH affine axes so an
     area-preserving but numerically near-singular shear cannot pass.
     """
-    import numpy as np
-    if (not isinstance(value, list) or len(value) != 3
-            or any(not isinstance(row, list) or len(row) != 3 for row in value)
-            or any(type(n) not in (int, float) or abs(n) > 100000 or not math.isfinite(n)
-                   for row in value for n in row) or value[2] != [0, 0, 1]):
-        _reject('invalid-display-affine')
-    linear = np.asarray(value, dtype=np.float64)[:2, :2]
-    scales = np.linalg.svd(linear, compute_uv=False)
-    if (np.linalg.det(linear) <= 0 or scales[-1] < .01 - 1e-12
-            or scales[0] > 100 + 1e-10):
-        _reject('invalid-display-affine')
+    _validate_display_affine(value, reject=_reject)
 
 
 def validate_bindings(raw, rows, dependencies, read, *, root, dependency_paths=None,
@@ -219,11 +212,9 @@ def validate_bindings(raw, rows, dependencies, read, *, root, dependency_paths=N
     doc = api._json(raw)
     profile, season = doc.get('profileId'), doc.get('season')
     if (doc.get('schema') != BINDINGS_SCHEMA or not is_generic_profile(profile) or not valid_season(season)
-            or not _label(doc.get('authorName')) or not _label(doc.get('displayName'))
-            or doc.get('identityAuthority') is not False or doc.get('structureValidationAuthority') is not False
-            or doc.get('crossFloorProjectionAllowed') is not False
-            or doc.get('currentFrameGeometryFitRequired') is not True):
+            or not _label(doc.get('authorName')) or not _label(doc.get('displayName'))):
         _reject('binding-context-mismatch')
+    validate_display_authority(doc, reject=_reject)
     layers = doc.get('layers')
     if not isinstance(layers, list) or not 1 <= len(layers) <= MAX_LAYERS:
         _reject('invalid-layers')
@@ -257,22 +248,8 @@ def validate_bindings(raw, rows, dependencies, read, *, root, dependency_paths=N
         try:
             data = read(path)
             check_browse_cancelled()
-            # Pillow exposes 16-bit RGB/RGBA PNG as RGB/RGBA, but the display
-            # consumer decodes it as uint16. Reject it before installation.
-            if extension == 'png' and (len(data) < 29 or data[24] != 8):
-                _reject('image-bit-depth-mismatch')
-            with Image.open(io.BytesIO(data)) as image:
-                if (image.format != {'png': 'PNG', 'jpeg': 'JPEG'}[extension]
-                        or list(reversed(image.size)) != row['displayShapeHW']
-                        or image.mode not in (('RGB', 'RGBA') if extension == 'png' else ('RGB', 'L'))
-                        or getattr(image, 'n_frames', 1) != 1):
-                    _reject('image-format-mismatch')
-                # Import validates every compressed pixel. Installed readers
-                # still verify all bytes and the image contract, but defer pixel
-                # allocation/decompression to the selected display consumer.
-                if decode_images:
-                    image.load()
-                check_browse_cancelled()
+            validate_display_image(data, extension, row['displayShapeHW'], reject=_reject,
+                decode_images=decode_images, check_cancelled=check_browse_cancelled)
         except (OSError, ValueError, UnidentifiedImageError, Image.DecompressionBombError) as error:
             if not isolate_incompatible_layers or not tolerate_damaged_images:
                 _reject('invalid-image')
@@ -289,10 +266,7 @@ def validate_bindings(raw, rows, dependencies, read, *, root, dependency_paths=N
             if reason is None:
                 required.update(base['dependencies'])
                 try:
-                    for field in ('referenceResource', 'referenceShapeHW', 'coordinateSpace',
-                                  'structureVersionKey', 'baseSnapshot', 'sourceVersion'):
-                        if row.get(field) != base[field]:
-                            _reject('reference-binding-mismatch:' + field)
+                    validate_display_reference(row, base, reject=_reject)
                     dep = active_dependencies.get(base['referenceResource'].casefold())
                     if dep is None or row.get('referenceSha256') != dep['sha256']:
                         _reject('reference-inventory-mismatch')
