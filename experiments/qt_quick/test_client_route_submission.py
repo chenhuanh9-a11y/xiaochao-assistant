@@ -248,7 +248,8 @@ ClientAccount {}
             QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, point)
             APP.processEvents()
         try:
-            click("routePointNumbersSwitch")
+            self.assertTrue(settings.setValue("routePointNumbers", True))
+            settings.saveFields(["routePointNumbers"])
             until(lambda: not settings.busy and settings.persistedValues["routePointNumbers"])
             click("plazaSubmit")
             until(lambda: item(window, "routeSubmissionDialog").property("opened"))

@@ -749,6 +749,26 @@ class CustomGalleryService(QObject):
                     for scope_id, saved in self._scope_snapshots.items() if not saved["error"]
                     for row in saved["galleries"].values() if row.get("source")}
 
+    def plazaPreviewInput(self, scope_id, work_id, version_id):
+        """Capture resource identity and the exact downloaded revision without changing editor selection."""
+        with self._committed_lock:
+            saved = self._scope_snapshots.get(scope_id, {})
+            exact = next((row for row in saved.get("galleries", {}).values()
+                          if row.get("source", {}).get("workId") == work_id
+                          and row["source"].get("versionId") == version_id), None)
+            maps = deepcopy(exact["maps"]) if exact is not None and not saved.get("error") else None
+        if scope_id == "legacy-nightmare":
+            root = self._legacy_library_root
+        else:
+            root = self.paths.resource_root / "assets/android-route-editor"
+            if not root.exists():
+                from client_paths import RESOURCE_ROOT
+                root = RESOURCE_ROOT / "assets/android-route-editor"
+        return root, self._resource_generation, maps
+
+    def plazaPreviewCurrent(self, resource_generation):
+        return not self._closed and not self._refresh_pending and resource_generation == self._resource_generation
+
     def submissionChoices(self):
         """UI snapshot only; never read the writer's mutable GalleryStore."""
         return [dict(id=row["id"], name=row["name"]) for row in self._state["galleries"]

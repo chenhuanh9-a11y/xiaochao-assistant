@@ -551,6 +551,16 @@ ClientAccount {}
             sort = item(window, "plazaSort")
             self.assertFalse(scope.property("visible"))
             self.assertTrue(sort.property("visible"))
+            self.assertTrue(item(window, "plazaSeasonFilter").property("visible"))
+            self.assertTrue(item(window, "plazaModeFilter").property("visible"))
+            until(lambda: item(window, "plazaPreview_ver-2") is not None)
+            click("plazaPreview_ver-2")
+            preview = item(window, "plazaPreviewDialog")
+            until(lambda: preview.property("opened"))
+            self.assertEqual(preview.property("title"), "噩梦速通")
+            self.assertTrue(item(window, "plazaLoadPreview").property("visible"))
+            QTest.keyClick(window, Qt.Key_Escape)
+            until(lambda: not preview.property("visible"))
             self.service.structure_available = lambda *_: False
             until(lambda: item(window, "plazaDownload_ver-2") is not None)
             click("plazaDownload_ver-2")
@@ -608,6 +618,89 @@ ClientAccount {}
             engine.deleteLater()
             QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
             APP.processEvents()
+
+    def test_public_filters_preserve_scope_and_use_loaded_rows(self):
+        from dataclasses import replace
+
+        rows = route_plaza.list_routes()
+        route = rows[0]
+        self.service.listing = lambda _query: [route,
+            replace(route, scenario="phosphorescence", mode="hard", version_id="s1"),
+            replace(route, mode="hard")]
+        self.service.setActive(True)
+        until(lambda: not self.service.snapshot["busy"])
+        model = self.service.model
+        requests = len(self.server.calls)
+        self.assertEqual(len(model.rows), 3)
+        self.assertIn("2 套", self.service.snapshot["message"])
+        self.service.setPublicFilter("", "hard")
+        self.assertEqual([row["key"] for row in model.rows], ["s1:season-s1-hard", "ver-2:classic-hard"])
+        self.service.setPublicFilter("s1", "nightmare")
+        self.assertEqual(model.rows, [])
+        self.assertIn("没有符合条件", self.service.snapshot["message"])
+        self.service.setPublicFilter("s1", "hard")
+        self.assertEqual([row["scopeLabel"] for row in model.rows], ["磷光症 · 困难"])
+        self.service.setPublicFilter("", "")
+        self.assertEqual(len(model.rows), 3)
+        self.assertEqual(len(self.server.calls), requests)
+        self.assertEqual(self.galleries.scopeId, "legacy-nightmare")
+
+    def test_preview_renders_route_without_import_and_revokes_stale_results(self):
+        import base64
+        import io
+        from PIL import Image
+
+        self.load()
+        self.service.openPreview("ver-2")
+        self.assertEqual(self.service.previewState["mapCount"], 2)
+        self.assertNotIn("image", self.service.previewState)
+        self.sign_in()
+        self.service.loadPreview(False)
+        until(lambda: not self.service.snapshot["busy"])
+        state = self.service.previewState
+        self.assertFalse(state["error"], state.get("message"))
+        self.assertEqual(state["map"], "m")
+        self.assertEqual(state["floor"], "1")
+        with Image.open(io.BytesIO(base64.b64decode(state["image"].split(",", 1)[1]))) as image:
+            self.assertEqual(image.size, (120, 90))
+            self.assertIn((255, 107, 129, 255), list(image.getdata()))
+        self.service.selectPreview("m", "2", True)
+        until(lambda: not self.service.snapshot["busy"])
+        self.assertEqual(self.service.previewState["floor"], "2")
+        self.assertFalse(self.galleries.path.exists())
+        self.galleries.refresh()
+        self.assertNotIn("image", self.service.previewState)
+        until(lambda: not self.galleries.busy)
+
+        entered, release = threading.Event(), threading.Event()
+        original = route_plaza.fetch_archive
+
+        def hold(*args):
+            entered.set()
+            release.wait(5)
+            return original(*args)
+
+        with patch.object(route_plaza, "fetch_archive", side_effect=hold):
+            self.service.loadPreview(False)
+            try:
+                self.assertTrue(entered.wait(2))
+                self.service.closePreview()
+            finally:
+                release.set()
+            until(lambda: not self.service.snapshot["busy"])
+        self.assertEqual(self.service.previewState, {})
+        self.assertFalse(self.galleries.path.exists())
+
+        self.download()
+        self.service.logout()
+        until(lambda: not self.service.snapshot["busy"])
+        self.service.openPreview("ver-2")
+        self.assertTrue(self.service.previewState["local"])
+        requests = len(self.server.calls)
+        self.service.loadPreview(True)
+        until(lambda: not self.service.snapshot["busy"])
+        self.assertIn("image", self.service.previewState)
+        self.assertEqual(len(self.server.calls), requests)
 
     def test_hard_download_uses_matching_structure_and_gallery_scope(self):
         from hashlib import sha256
@@ -924,14 +1017,27 @@ def composition(*, submitting=False):
             # Real root wiring: the saved intent reaches display workers before
             # runtime presentation settings.
             assert not client.settings.persistedValues["routePointNumbers"]
-            click("routePointNumbersSwitch")
+            if submitting:
+                assert client.settings.setValue("routePointNumbers", True)
+                client.settings.saveFields(["routePointNumbers"])
+            else:
+                until(lambda: item(client.main, "plazaPreview_ver-2") is not None)
+                click("plazaPreview_ver-2")
+                until(lambda: item(client.main, "plazaPreviewDialog").property("opened"))
+                click("routePointNumbersSwitch")
             until(lambda: not client.settings.busy and client.settings.persistedValues["routePointNumbers"])
             assert client.custom_display._point_numbers
             assert client.runtime._settings["routePointNumbers"]
-            capture("qt-route-plaza.png")
-            click("routePointNumbersSwitch")
+            if submitting:
+                assert client.settings.setValue("routePointNumbers", False)
+                client.settings.saveFields(["routePointNumbers"])
+            else:
+                click("routePointNumbersSwitch")
+                QTest.keyClick(client.main, Qt.Key_Escape)
+                until(lambda: not item(client.main, "plazaPreviewDialog").property("visible"))
             until(lambda: not client.settings.busy and not client.settings.persistedValues["routePointNumbers"])
             assert not client.custom_display._point_numbers
+            capture("qt-route-plaza.png")
             client.main.resize(650, 470)
             QTest.qWait(250)
             capture("qt-route-plaza-small.png")

@@ -6,6 +6,7 @@ import QtQuick.Layouts
 Item {
     id: root
     objectName: "routePlazaPage"
+    readonly property bool compact: width < 680
     property var state: ({busy:false, username:"", operation:"", message:"", error:false, loaded:false, downloading:""})
     function sync() { if (visible) state = routePlazaService.snapshot }
     Connections {
@@ -25,6 +26,7 @@ Item {
     Component.onCompleted: { sync(); routePlazaService.setActive(visible) }
     ClientRouteSubmission {}
     ClientRouteDiscussion {}
+    ClientRoutePreview {}
     Dialog {
         id: resourceRequired
         objectName: "plazaStructureRequired"
@@ -39,46 +41,78 @@ Item {
         }
     }
     ColumnLayout {
-        anchors.fill: parent; spacing: 12
-        Label { text: "路线广场"; color: "#142b4b"; font.pixelSize: 24; font.bold: true }
-        Label { text: "分享、下载和投稿你的自定义路线。"; color: "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-        RowLayout {
+        anchors.fill: parent; spacing: 8
+        GridLayout {
+            objectName: "plazaToolbar"
             Layout.fillWidth: true
-            RoutePointNumbersSwitch {}
-            Label { text: "仅标起终点和手选目标，每层从 1 开始"; color: "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+            columns: root.compact ? 2 : 3; columnSpacing: 8; rowSpacing: 6
+            Label { text: "路线广场"; color: "#142b4b"; font.pixelSize: 22; font.bold: true; Layout.fillWidth: true }
+            RowLayout {
+                spacing: 4
+                AppButton { objectName: "plazaSquare"; text: "广场"; selected: root.state.tab !== "mine"; enabled: !root.state.busy; onClicked: routePlazaService.selectTab("square") }
+                AppButton { objectName: "plazaMine"; text: "我的投稿"; selected: root.state.tab === "mine"; enabled: !root.state.busy; onClicked: routePlazaService.selectTab("mine") }
+            }
+            RowLayout {
+                Layout.columnSpan: root.compact ? 2 : 1; Layout.alignment: Qt.AlignRight
+                spacing: 6
+                Label { objectName: "plazaAccountStatus"; text: root.state.username ? "已登录：" + root.state.username : "未登录"; color: "#526785"; textFormat: Text.PlainText; Layout.maximumWidth: 118; elide: Text.ElideRight }
+                AppButton { objectName: "plazaLogin"; text: "登录"; visible: !root.state.username; enabled: !root.state.busy; onClicked: routePlazaService.openAccount() }
+                AppButton { objectName: "plazaRecovery"; text: "领取恢复码"; visible: !!root.state.recoveryPending; enabled: !root.state.busy; onClicked: routePlazaService.openAccount() }
+                AppButton { objectName: "plazaLogout"; text: "退出登录"; visible: !!root.state.username; enabled: !root.state.busy; onClicked: routePlazaService.logout() }
+                AppButton { text: "自定义图库"; onClicked: clientCoordinator.navigate("custom") }
+                AppButton { objectName: "plazaSubmit"; text: "投稿"; enabled: !root.state.busy; onClicked: routePlazaService.openSubmission("") }
+            }
         }
         Label { visible: settingsService && (settingsService.loadFailed || settingsService.message.indexOf("失败") >= 0); text: settingsService ? settingsService.message : ""; color: "#b91c1c"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-        RowLayout {
-            Layout.fillWidth: true
-            Label { objectName: "plazaAccountStatus"; text: root.state.username ? "已登录：" + root.state.username : "未登录 · 登录后可下载和投稿"; color: "#354f75"; Layout.fillWidth: true; elide: Text.ElideRight }
-            AppButton { objectName: "plazaLogin"; text: "账号登录"; primary: true; visible: !root.state.username; enabled: !root.state.busy; onClicked: routePlazaService.openAccount() }
-            AppButton { objectName: "plazaRecovery"; text: "领取恢复码"; primary: true; visible: !!root.state.recoveryPending; enabled: !root.state.busy; onClicked: routePlazaService.openAccount() }
-            AppButton { objectName: "plazaLogout"; text: "退出登录"; visible: !!root.state.username; enabled: !root.state.busy; onClicked: routePlazaService.logout() }
-            AppButton { text: "自定义图库"; onClicked: clientCoordinator.navigate("custom") }
-        }
-        RowLayout {
-            Layout.fillWidth: true
-            AppButton { objectName: "plazaSquare"; text: "广场"; selected: root.state.tab !== "mine"; enabled: !root.state.busy; onClicked: routePlazaService.selectTab("square") }
-            AppButton { objectName: "plazaMine"; text: "我的投稿"; selected: root.state.tab === "mine"; enabled: !root.state.busy; onClicked: routePlazaService.selectTab("mine") }
-            Item { Layout.fillWidth: true }
-            AppButton { objectName: "plazaSubmit"; text: "投稿"; primary: true; enabled: !root.state.busy; onClicked: routePlazaService.openSubmission("") }
-        }
-        RowLayout {
+        GridLayout {
             visible: root.state.tab !== "mine"
             Layout.fillWidth: true
-            TextField { id: search; objectName: "plazaSearch"; Layout.fillWidth: true; placeholderText: "搜索路线"; selectByMouse: true; maximumLength: 80; onAccepted: routePlazaService.search(text) }
-            AppButton { objectName: "plazaSearchButton"; text: "搜索"; enabled: !root.state.busy; onClicked: routePlazaService.search(search.text) }
-            ComboBox {
-                objectName: "plazaSort"
-                model: [{id:"latest",name:"最新"},{id:"likes",name:"点赞最多"},{id:"comments",name:"讨论最多"}]
-                textRole: "name"; valueRole: "id"
-                enabled: !root.state.busy
-                onActivated: routePlazaService.setSort(currentValue)
+            columns: root.compact ? 1 : 2
+            columnSpacing: 8; rowSpacing: 6
+            RowLayout {
+                Layout.fillWidth: true; spacing: 6
+                TextField { id: search; objectName: "plazaSearch"; Layout.fillWidth: true; Layout.minimumWidth: 100; Layout.preferredHeight: 38; placeholderText: "搜索路线"; Accessible.name: "搜索路线"; selectByMouse: true; maximumLength: 80; onAccepted: routePlazaService.search(text) }
+                AppButton { objectName: "plazaSearchButton"; text: "搜索"; enabled: !root.state.busy; onClicked: routePlazaService.search(search.text) }
             }
-            AppButton { objectName: "plazaRefresh"; text: "刷新"; enabled: !root.state.busy; onClicked: routePlazaService.search(search.text) }
-            AppButton { objectName: "plazaCancelDownload"; visible: root.state.operation === "download"; text: "取消下载"; onClicked: routePlazaService.cancelDownload() }
+            RowLayout {
+                Layout.fillWidth: root.compact; spacing: 6
+                ComboBox {
+                    objectName: "plazaSeasonFilter"
+                    Layout.minimumWidth: 104; Layout.preferredWidth: 104; Layout.maximumWidth: 104
+                    model: [{id:"",name:"全部赛季"},{id:"s0",name:"灾厄之女"},{id:"s1",name:"磷光症"}]
+                    textRole: "name"; valueRole: "id"; Accessible.name: "按赛季筛选"
+                    currentIndex: indexOfValue(root.state.publicSeason || "")
+                    enabled: !root.state.busy
+                    onActivated: routePlazaService.setPublicFilter(currentValue, root.state.publicMode || "")
+                }
+                ComboBox {
+                    objectName: "plazaModeFilter"
+                    Layout.minimumWidth: 104; Layout.preferredWidth: 104; Layout.maximumWidth: 104
+                    model: [{id:"",name:"全部难度"},{id:"nightmare",name:"噩梦"},{id:"hard",name:"困难"}]
+                    textRole: "name"; valueRole: "id"; Accessible.name: "按难度筛选"
+                    currentIndex: indexOfValue(root.state.publicMode || "")
+                    enabled: !root.state.busy
+                    onActivated: routePlazaService.setPublicFilter(root.state.publicSeason || "", currentValue)
+                }
+                ComboBox {
+                    objectName: "plazaSort"
+                    Layout.minimumWidth: 104; Layout.preferredWidth: 104; Layout.maximumWidth: 104
+                    model: [{id:"latest",name:"最新"},{id:"likes",name:"点赞最多"},{id:"comments",name:"讨论最多"}]
+                    textRole: "name"; valueRole: "id"; Accessible.name: "路线排序"
+                    currentIndex: indexOfValue(root.state.sort || "latest")
+                    enabled: !root.state.busy
+                    onActivated: routePlazaService.setSort(currentValue)
+                }
+                StackLayout {
+                    Layout.fillWidth: false; Layout.fillHeight: false
+                    Layout.preferredWidth: 92; Layout.preferredHeight: 38
+                    currentIndex: root.state.operation === "download" ? 1 : 0
+                    AppButton { objectName: "plazaRefresh"; text: "刷新"; enabled: !root.state.busy; onClicked: routePlazaService.search(search.text) }
+                    AppButton { objectName: "plazaCancelDownload"; text: "取消下载"; onClicked: routePlazaService.cancelDownload() }
+                }
+            }
         }
-        Label { objectName: "plazaStatus"; text: root.state.message; color: root.state.error ? "#b91c1c" : "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+        Label { objectName: "plazaStatus"; text: root.state.message; textFormat: Text.PlainText; color: root.state.error ? "#b91c1c" : "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
         RowLayout {
             visible: root.state.tab === "mine"
             Layout.fillWidth: true
@@ -104,8 +138,8 @@ Item {
             ListView {
                 id: routes
                 objectName: "plazaRouteList"
-                anchors.fill: parent; anchors.margins: 12
-                clip: true; spacing: 10; model: routePlazaService.routeModel
+                anchors.fill: parent; anchors.margins: 8
+                clip: true; spacing: 6; model: routePlazaService.routeModel
                 ScrollBar.vertical: ScrollBar {}
                 delegate: Rectangle {
                     id: card
@@ -119,13 +153,14 @@ Item {
                     required property string updatedDate
                     required property bool installed
                     required property bool updateAvailable
-                    width: routes.width; implicitHeight: contents.implicitHeight + 24; radius: 10; color: "#f3f7ff"
+                    width: routes.width; implicitHeight: contents.implicitHeight + 16; radius: 10; color: "#f3f7ff"
                     ColumnLayout {
-                        id: contents; anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 12; spacing: 6
+                        id: contents; anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 8; spacing: 2
                         RowLayout {
                             Layout.fillWidth: true
                             Label { text: card.title; textFormat: Text.PlainText; font.bold: true; font.pixelSize: 16; color: "#17365e"; Layout.fillWidth: true; elide: Text.ElideRight }
-                            AppButton { objectName: "plazaDetails_" + card.key; text: "详情与讨论"; enabled: !root.state.busy; onClicked: routePlazaService.openDetails(card.key) }
+                            AppButton { objectName: "plazaPreview_" + card.key; text: "预览"; enabled: !root.state.busy; onClicked: routePlazaService.openPreview(card.key) }
+                            AppButton { objectName: "plazaDetails_" + card.key; text: "讨论"; enabled: !root.state.busy; onClicked: routePlazaService.openDetails(card.key) }
                             AppButton {
                                 objectName: "plazaDownload_" + card.key
                                 text: root.state.downloading === card.key ? "下载中…" : card.installed ? "去使用 ›" : card.updateAvailable ? "更新路线" : "下载路线"
@@ -134,7 +169,7 @@ Item {
                             }
                         }
                         Label { text: card.scopeLabel + " · 作者 " + card.author + " · " + card.mapCount + " 张图 · 下载 " + card.downloadCount + " 次" + (card.updatedDate ? " · 更新于 " + card.updatedDate : "") + (card.installed ? " · 已下载" : ""); textFormat: Text.PlainText; color: "#526785"; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-                        Label { visible: !!card.description; text: card.description; textFormat: Text.PlainText; color: "#354f75"; Layout.fillWidth: true; wrapMode: Text.Wrap }
+                        Label { visible: !!card.description; text: card.description; textFormat: Text.PlainText; color: "#354f75"; Layout.fillWidth: true; elide: Text.ElideRight }
                     }
                 }
                 Label { anchors.centerIn: parent; visible: routes.count === 0; text: root.state.busy ? "正在读取…" : root.state.loaded ? "暂无可显示的路线" : "读取公开路线"; color: "#526785" }
