@@ -12,14 +12,37 @@ Item {
     onVisibleChanged: { sync(); routePlazaService.setActive(visible) }
     Component.onCompleted: { sync(); routePlazaService.setActive(visible) }
     ClientRouteSubmission {}
+    ClientRouteDiscussion {}
     ColumnLayout {
         anchors.fill: parent; spacing: 12
         Label { text: "路线广场"; color: "#142b4b"; font.pixelSize: 24; font.bold: true }
-        Label { text: "分享和下载玩家的噩梦路线。困难模式暂不支持投稿。"; color: "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+        Label { text: "分享、下载和投稿你的自定义路线。"; color: "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
         RowLayout {
             Layout.fillWidth: true
             RoutePointNumbersSwitch {}
             Label { text: "仅标起终点和手选目标，每层从 1 开始"; color: "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            ComboBox {
+                objectName: "plazaRouteScope"
+                Layout.fillWidth: true
+                model: root.state.scopeOptions || []; textRole: "name"; valueRole: "id"
+                currentIndex: {
+                    var rows = root.state.scopeOptions || []
+                    for (var i=0; i<rows.length; ++i) if (rows[i].id === root.state.scopeId) return i
+                    return -1
+                }
+                enabled: !root.state.busy && !root.state.editorOpen && !root.state.galleryBusy
+                onActivated: routePlazaService.selectScope(currentValue)
+            }
+            ComboBox {
+                objectName: "plazaSort"
+                model: [{id:"latest",name:"最新"},{id:"likes",name:"点赞最多"},{id:"comments",name:"讨论最多"}]
+                textRole: "name"; valueRole: "id"
+                enabled: !root.state.busy
+                onActivated: routePlazaService.setSort(currentValue)
+            }
         }
         Label { visible: settingsService && (settingsService.loadFailed || settingsService.message.indexOf("失败") >= 0); text: settingsService ? settingsService.message : ""; color: "#b91c1c"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
         RowLayout {
@@ -77,7 +100,8 @@ Item {
                         id: contents; anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 12; spacing: 6
                         RowLayout {
                             Layout.fillWidth: true
-                            Label { text: card.title; font.bold: true; font.pixelSize: 16; color: "#17365e"; Layout.fillWidth: true; elide: Text.ElideRight }
+                            Label { text: card.title; textFormat: Text.PlainText; font.bold: true; font.pixelSize: 16; color: "#17365e"; Layout.fillWidth: true; elide: Text.ElideRight }
+                            AppButton { objectName: "plazaDetails_" + card.key; text: "详情与讨论"; enabled: !root.state.busy; onClicked: routePlazaService.openDetails(card.key) }
                             AppButton {
                                 objectName: "plazaDownload_" + card.key
                                 text: root.state.downloading === card.key ? "下载中…" : card.installed ? "去使用 ›" : card.updateAvailable ? "更新路线" : "下载路线"
@@ -86,7 +110,7 @@ Item {
                             }
                         }
                         Label { text: "作者 " + card.author + " · " + card.mapCount + " 张图 · 下载 " + card.downloadCount + " 次" + (card.updatedDate ? " · 更新于 " + card.updatedDate : "") + (card.installed ? " · 已下载" : ""); color: "#526785"; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-                        Label { visible: !!card.description; text: card.description; color: "#354f75"; Layout.fillWidth: true; wrapMode: Text.Wrap }
+                        Label { visible: !!card.description; text: card.description; textFormat: Text.PlainText; color: "#354f75"; Layout.fillWidth: true; wrapMode: Text.Wrap }
                     }
                 }
                 Label { anchors.centerIn: parent; visible: routes.count === 0; text: root.state.busy ? "正在读取…" : root.state.loaded ? "暂无可显示的路线" : "读取公开路线"; color: "#526785" }
