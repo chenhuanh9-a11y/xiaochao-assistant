@@ -16,20 +16,23 @@ replanned on this app's road data, exactly like targets placed by hand.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import hashlib
 import io
 import json
 import math
 import re
 from urllib import error, request
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlencode, urljoin, urlsplit
 import zipfile
 
 import numpy as np
 
-from account_service import AccountError, AccountService, USER_AGENT, api_root, call, quoted
+from account_service import AccountError, AccountService, USER_AGENT, _OPENER, api_root, call, quoted
 from custom_maps import DEFAULT_COLOR, MAX_POINTS, CustomMapLibrary, RouteError
 from route_plaza_navigation import NAVIGATION_VERSION, TEMPLATES as NAVIGATION_TEMPLATES
+
+from route_scopes import SCOPES, scope_for
 
 CONTENT_KIND = "nightmare-routes"
 PACKAGE_SCHEMA = 3
@@ -43,6 +46,8 @@ MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
 MAX_MANIFEST_BYTES = 6 * 1024 * 1024
 DOWNLOAD_HOST_SUFFIX = ".aliyuncs.com"
 TIMEOUT_SECONDS = 30
+PUBLIC_COVER_PREFIX = "/v1/community/map-gallery-covers/"
+MAX_COVER_BYTES = 256 * 1024
 
 
 @dataclass(frozen=True)
@@ -56,10 +61,24 @@ class PlazaRoute:
     map_count: int
     download_count: int
     updated_at: str
+    scenario: str = "lady-of-misfortune"
+    mode: str = "nightmare"
+    like_count: int = 0
+    comment_count: int = 0
+    cover_url: str = ""
 
     @property
     def updated_date(self) -> str:
         return self.updated_at[:10]
+
+    @property
+    def scope(self):
+        return scope_for(self.scenario, self.mode)
+
+    @property
+    def key(self) -> str:
+        scope = self.scope
+        return self.version_id if scope.id == "legacy-nightmare" else f"{self.version_id}:{scope.id}"
 
 
 def _text(value, limit) -> str:
@@ -70,27 +89,89 @@ def _count(value) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
-def parse_summary(row) -> PlazaRoute | None:
+def cover_path(version_id, mode):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", version_id) or mode not in ("hard", "nightmare"):
+        return ""
+    return f"{PUBLIC_COVER_PREFIX}{version_id}/{mode}.webp"
+
+
+def _cover_url(value, path):
+    if not path or not isinstance(value, str) or not value or len(value) > 2048:
+        return ""
+    expected = urljoin(api_root(), path)
+    return expected if value in (path, expected) else ""
+
+
+def fetch_public_cover(url):
+    """Read one immutable public image without using the account or download API."""
+    path = urlsplit(url).path
+    if not path.startswith(PUBLIC_COVER_PREFIX) or _cover_url(url, path) != url:
+        return None
+    req = request.Request(url, headers={"Accept": "image/webp", "User-Agent": USER_AGENT})
+    try:
+        with _OPENER.open(req, timeout=4) as response:
+            if response.headers.get_content_type() != "image/webp":
+                return None
+            data = response.read(MAX_COVER_BYTES + 1)
+    except (error.URLError, OSError):
+        return None
+    return data if 0 < len(data) <= MAX_COVER_BYTES else None
+
+
+def parse_summary(row, *, scope_id="legacy-nightmare") -> PlazaRoute | None:
+    scope = SCOPES[scope_id]
     if not isinstance(row, dict) or row.get("content_kind") != CONTENT_KIND or row.get("status") != "approved":
         return None
     version_id, work_id = _text(row.get("id"), 64), _text(row.get("work_id"), 64)
-    if not version_id or not work_id or "nightmare" not in (row.get("modes") or ["nightmare"]):
+    modes = row.get("modes") or ["nightmare"]
+    if (not version_id or not work_id or not isinstance(modes, list) or scope.mode not in modes
+            or row.get("scenario", "lady-of-misfortune") != scope.scenario):
         return None
+    covers = row.get("cover_urls")
+    cover = row.get("cover_url") if len(modes) == 1 else None
+    if isinstance(covers, dict):
+        cover = covers.get(scope.mode)
     return PlazaRoute(version_id=version_id, work_id=work_id, revision=_count(row.get("revision")),
                       title=_text(row.get("title"), 80) or "未命名路线", description=_text(row.get("description"), 500),
                       author=_text(row.get("owner_username"), 40) or "匿名",
-                      map_count=_count(row.get("nightmare_map_count")), download_count=_count(row.get("download_count")),
-                      updated_at=_text(row.get("updated_at"), 40))
+                      map_count=_count(row.get(scope.mode + "_map_count")), download_count=_count(row.get("download_count")),
+                      updated_at=_text(row.get("updated_at"), 40), scenario=scope.scenario, mode=scope.mode,
+                      like_count=_count(row.get("like_count")), comment_count=_count(row.get("comment_count")),
+                      cover_url=_cover_url(cover, cover_path(version_id, scope.mode)))
 
 
-def list_routes(query: str = "", *, api=call) -> list[PlazaRoute]:
-    params = dict(mode="nightmare", content_kind=CONTENT_KIND, limit=50)
-    if str(query or "").strip():
-        params["query"] = str(query).strip()[:80]
-    rows = api("GET", "/v1/community/map-galleries?" + urlencode(params))
-    if not isinstance(rows, list):
-        raise AccountError("路线广场返回的内容无法识别")
-    return [route for route in map(parse_summary, rows) if route is not None]
+def list_routes(query: str = "", *, api=call, scope_id="legacy-nightmare", sort="latest") -> list[PlazaRoute]:
+    if sort not in ("latest", "likes", "comments"):
+        raise AccountError("路线排序无效")
+    scopes = SCOPES.values() if scope_id is None else (SCOPES[scope_id],)
+    by_scenario = {}
+    for scope in scopes:
+        by_scenario.setdefault(scope.scenario, []).append(scope)
+    params = dict(content_kind=CONTENT_KIND, limit=100 if scope_id is None else 50, sort=sort)
+    if scope_id is not None:
+        params["mode"] = SCOPES[scope_id].mode
+    if query := str(query or "").strip()[:80]:
+        params["query"] = query
+    routes = []
+    # The API defaults to S0 when scenario is omitted, even without a mode filter.
+    for scenario, scenario_scopes in by_scenario.items():
+        rows = api("GET", "/v1/community/map-galleries?" + urlencode(dict(params, scenario=scenario)))
+        if not isinstance(rows, list):
+            raise AccountError("路线广场返回的内容无法识别")
+        routes.extend(route for row in rows for scope in scenario_scopes
+                      if (route := parse_summary(row, scope_id=scope.id)) is not None)
+    if scope_id is None:
+        metric = {"likes": "like_count", "comments": "comment_count"}.get(sort, "")
+        routes.sort(key=lambda route: (getattr(route, metric, 0), _updated_time(route.updated_at)), reverse=True)
+    return routes
+
+
+def _updated_time(value: str) -> datetime:
+    try:
+        date = datetime.fromisoformat(value)
+        return date if date.tzinfo else date.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return datetime.min.replace(tzinfo=timezone.utc)
 
 
 # Download -------------------------------------------------------------------
@@ -150,22 +231,27 @@ def read_manifest(archive: bytes, package: dict, version: dict) -> dict:
         manifest = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
         raise AccountError("路线包内容无法识别") from None
-    expected = dict(schemaVersion=PACKAGE_SCHEMA, contentKind=CONTENT_KIND, mode="nightmare",
+    scope = scope_for(version.get("scenario", "lady-of-misfortune"), package.get("mode", "nightmare"))
+    expected = dict(schemaVersion=scope.schema_version, contentKind=CONTENT_KIND, mode=scope.mode,
                     packageId=package.get("package_id"), revision=package.get("revision"), workId=version.get("work_id"))
     if not isinstance(manifest, dict) or any(manifest.get(key) != value for key, value in expected.items()):
         raise AccountError("路线包与广场记录不一致")
-    if not isinstance(manifest.get("maps"), list) or len(manifest["maps"]) > 32:
+    if scope.schema_version == 4 and (manifest.get("routeCatalogId"), manifest.get("scenario")) != (scope.id, scope.scenario):
+        raise AccountError("路线包场景与下载授权不一致")
+    if not isinstance(manifest.get("maps"), list) or not 1 <= len(manifest["maps"]) <= scope.max_maps:
         raise AccountError("路线包地图数量异常")
     return manifest
 
 
 def download(account: AccountService, route: PlazaRoute) -> tuple[dict, dict]:
     """Returns (manifest, server version record)."""
-    grant = account.authorized("POST", f"/v1/community/map-galleries/{quoted(route.version_id)}/packages/nightmare/download",
+    grant = account.authorized("POST", f"/v1/community/map-galleries/{quoted(route.version_id)}/packages/{route.mode}/download",
                                dict(confirmed=True))
     package = grant.get("package") if isinstance(grant, dict) else None
     if (not isinstance(package, dict) or grant.get("content_kind") != CONTENT_KIND
-            or grant.get("version_id") != route.version_id or grant.get("work_id") != route.work_id):
+            or grant.get("version_id") != route.version_id or grant.get("work_id") != route.work_id
+            or grant.get("scenario", "lady-of-misfortune") != route.scenario
+            or package.get("mode", "nightmare") != route.mode):
         raise AccountError("下载授权与所选路线不一致")
     sha = package.get("sha256")
     if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha):
@@ -273,6 +359,8 @@ def convert_plan(library: CustomMapLibrary, map_id: str, plan: dict, *, report=N
 
 def convert_manifest(library: CustomMapLibrary, manifest: dict) -> tuple[dict, dict]:
     """Galleries maps {map id: {points}} plus a report of what did not carry over."""
+    if hasattr(library, "import_maps"):
+        return library.import_maps(manifest)
     templates = {}
     for map_id, template in library.templates().items():
         if template in templates:
@@ -313,7 +401,7 @@ def prepare_install(account: AccountService, library: CustomMapLibrary, route: P
     maps, report = convert_manifest(library, manifest)
     check_cancelled()
     if not maps:
-        if report["versionMismatchMaps"]:
+        if report.get("versionMismatchMaps"):
             raise AccountError(NAVIGATION_UPDATE_MESSAGE + "；没有可导入的地图")
         raise AccountError("这套路线里没有本软件能显示的地图")
     source = dict(workId=route.work_id, versionId=route.version_id, revision=_count(manifest.get("revision")),

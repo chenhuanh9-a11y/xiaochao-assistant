@@ -133,7 +133,6 @@ class QtClient:
             production=bool(self.paths.production and not probe_output))
         self.settings = SettingsService(self.sandbox)
         self.custom_galleries = CustomGalleryService(self.sandbox)
-        self.route_plaza = RoutePlazaService(self.sandbox, self.custom_galleries)
         self.custom_display = CustomGalleryDisplay(self.custom_galleries)
         self.custom_display.set_point_numbers(self.settings.persistedValues.get("routePointNumbers", False))
         self.settings.saved.connect(lambda: self.custom_display.set_point_numbers(
@@ -171,6 +170,8 @@ class QtClient:
         self.session = SessionService(self.runtime)
         self.resources = ImportedResourceService(self.resource_resolver, paths=self.paths,
                                                 engine_factories=self.providers)
+        self.route_plaza = RoutePlazaService(self.sandbox, self.custom_galleries,
+                                            structure_available=self.resources.contextAvailable)
         self.resources.setLeaseProvider(self.session)
         self.settings.setAvailableContexts(self.resources.availableContexts)
         self.resources.availabilityChanged.connect(lambda:
@@ -298,6 +299,7 @@ class QtClient:
         self.engine.addImageProvider("live", self.images)
         self.engine.addImageProvider("floorregion", self.floor_region_images)
         self.engine.addImageProvider("importedgallery", self.gallery_images)
+        self.engine.addImageProvider("plazaroute", self.route_plaza.thumbnails)
         self.warnings = []
         self.engine.warnings.connect(self._record_qml_warnings)
         context = self.engine.rootContext()
@@ -561,8 +563,6 @@ class QtClient:
         values = self.settings.persistedValues
         season = values.get("gameSeason", "s0")
         mode = values.get("gameMode", "nightmare")
-        if season != "s0":
-            return dict(success=False, applied=False, message=f"{season_label(season)} 资源待补齐，不能使用 S0 自定义路线")
         previous = selected_profile(values, mode, season)
         remembered = getattr(self, "_previous_author_profiles", {})
         if previous and not str(previous).startswith("custom:"):
@@ -572,14 +572,15 @@ class QtClient:
                            if (self.route_choices.season, self.route_choices.mode) == (season, mode) else ())
         fallback = remembered.get(context_key(mode, season)) or next((row["id"] for row in current_options
                          if not row["id"].startswith("custom:")), "shared-structure")
-        proposal = self.custom_display.use_request(gallery_id, mode, fallback_profile=fallback)
+        proposal = self.custom_display.use_request(gallery_id, mode, season, fallback_profile=fallback)
         if not proposal.get("success"):
             return proposal
         profile = proposal["profileId"]
         profiles = dict(values.get("contextRouteProfiles", {}))
         profiles[context_key(mode, season)] = profile
         legacy_profiles = dict(values.get("modeRouteProfiles", {}))
-        legacy_profiles[mode] = profile
+        if season == "s0":
+            legacy_profiles[mode] = profile
         if not (self.settings.setValue("routeProfileId", profile)
                 and self.settings.setValue("contextRouteProfiles", profiles)
                 and self.settings.setValue("modeRouteProfiles", legacy_profiles)
@@ -596,7 +597,7 @@ class QtClient:
         mode = values.get("gameMode", "nightmare")
         profile = selected_profile(values, mode, season)
         applied = (state.get("mode"), state.get("profileId")) == (mode, profile)
-        active = self.custom_display.active_gallery(profile, mode) if applied and season == "s0" and state.get("season", "s0") == season else ""
+        active = self.custom_display.active_gallery(profile, mode, season) if applied and state.get("season", "s0") == season else ""
         if self.custom_galleries.snapshot.get("inUse") != active:
             self.custom_galleries.setActiveGallery(active)
 

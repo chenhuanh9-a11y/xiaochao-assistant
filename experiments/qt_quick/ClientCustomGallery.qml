@@ -16,6 +16,11 @@ Item {
         for (var i=0; i<rows.length; ++i) if (rows[i].id === id) return i
         return -1
     }
+    function floorLabel(id) {
+        var rows = root.state.floors || []
+        for (var i=0; i<rows.length; ++i) if (rows[i].id === id) return rows[i].name
+        return id + "层"
+    }
     function askName(operation, initial) {
         nameDialog.operation = operation
         nameField.text = initial
@@ -46,6 +51,19 @@ Item {
                 onActivated: customGalleryService.selectMap(currentValue)
             }
             AppButton { text: "刷新"; objectName: "customRefresh"; enabled: !root.state.busy; onClicked: customGalleryService.refresh() }
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            Label { text: "场景与难度"; color: "#526785" }
+            ComboBox {
+                objectName: "customRouteScope"
+                Layout.fillWidth: true
+                model: root.state.scopeOptions || []
+                textRole: "name"; valueRole: "id"
+                currentIndex: root.selectedIndex(root.state.scopeOptions || [], root.state.scopeId)
+                enabled: !root.state.busy && !root.state.pendingKind
+                onActivated: customGalleryService.selectScope(currentValue)
+            }
         }
         Label { visible: !root.editing; text: "选择图库，再点地图排好路线。修改会自动保存。"; color: "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
         RowLayout {
@@ -253,7 +271,7 @@ Item {
                             required property int index
                             required property var modelData
                             width: points.width; spacing: 4
-                            Label { text: (parent.index+1)+". "+parent.modelData.floor+"层 "+(parent.modelData.start ? "起点 · " : "")+(parent.modelData.kind === "room" ? "房间" : "必经点"); color: "#354f75"; Layout.fillWidth: true; elide: Text.ElideRight }
+                            Label { text: (parent.index+1)+". "+root.floorLabel(parent.modelData.floor)+" "+(parent.modelData.start ? "起点 · " : "")+(parent.modelData.kind === "room" ? "房间" : "必经点"); color: "#354f75"; Layout.fillWidth: true; elide: Text.ElideRight }
                             RowLayout {
                                 AppButton { text: "上移"; implicitWidth: 48; implicitHeight: 30; enabled: parent.parent.index>0 && !root.state.readonly && !root.state.busy; onClicked: customGalleryService.movePoint(parent.parent.index,-1) }
                                 AppButton { text: "下移"; implicitWidth: 48; implicitHeight: 30; enabled: parent.parent.index<root.state.points.length-1 && !root.state.readonly && !root.state.busy; onClicked: customGalleryService.movePoint(parent.parent.index,1) }
@@ -301,9 +319,9 @@ Item {
         title: "导出图库"
         fileMode: FileDialog.SaveFile
         currentFolder: customGalleryService.exportDirectoryUrl
-        defaultSuffix: "json"
-        nameFilters: ["星图图库 (*.json)"]
+        defaultSuffix: selectedNameFilter.index === 1 ? "xingtu-gallery" : "json"
+        nameFilters: ["星图图库 (*.json)", "安卓路线包 (*.xingtu-gallery)"]
         onAccepted: customGalleryService.exportGalleryTo(selectedFile.toString())
     }
-    FileDialog { id: importPicker; title: "导入自定义图集"; nameFilters: ["图集 JSON (*.json)"]; onAccepted: customGalleryService.importGallery(selectedFile.toString()) }
+    FileDialog { id: importPicker; title: "导入自定义图集"; nameFilters: ["星图图库与路线包 (*.json *.xingtu-gallery *.zip)"]; onAccepted: customGalleryService.importGallery(selectedFile.toString()) }
 }

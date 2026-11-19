@@ -186,6 +186,8 @@ ClientAccount {}
 
 class _EmptyGalleries(QObject):
     galleriesChanged = Signal()
+    changed = Signal()
+    busy = False
 
     def plazaSources(self):
         return {}

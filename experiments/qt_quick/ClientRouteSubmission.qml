@@ -6,6 +6,7 @@ Dialog {
     id: root
     objectName: "routeSubmissionDialog"
     readonly property var state: routePlazaService.snapshot
+    readonly property var scope: (state.scopeOptions || []).find(option => option.id === state.scopeId)
     property int generation: -1
     property var choices: []
     property string choicesKey: ""
@@ -15,7 +16,7 @@ Dialog {
     height: Math.min(580, parent ? parent.height - 24 : 580)
     modal: true; focus: true
     closePolicy: Popup.CloseOnEscape
-    title: state.editorVersion ? "更新修订" : "投稿噩梦路线"
+    title: state.editorVersion ? "更新修订" : "投稿路线"
     background: Rectangle { color: "#ffffff"; radius: 12; border.color: "#d6e0ef" }
     onClosed: routePlazaService.closeSubmission()
     Connections {
@@ -45,7 +46,8 @@ Dialog {
         clip: true; contentWidth: availableWidth
         ColumnLayout {
             width: parent.width; spacing: 10
-            Label { text: "选择自己的已保存图库。审核通过后在路线广场公开；仅支持噩梦路线，困难模式暂不支持投稿。"; color: "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+            Label { text: "选择当前场景与难度下的个人图库。审核通过后会在路线广场公开。"; color: "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+            Label { visible: !!root.scope; text: root.scope ? "投稿范围 · " + root.scope.name : ""; color: "#354f75"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
             Label { text: "作品名称（2–48 字）"; color: "#142b4b" }
             TextField { id: titleInput; objectName: "submissionTitle"; Layout.fillWidth: true; selectByMouse: true; maximumLength: 48; enabled: !root.state.busy && !root.state.submissionLocked; Accessible.name: "投稿作品名称" }
             Label { text: "作品说明（最多 500 字）"; color: "#142b4b" }
