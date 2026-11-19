@@ -47,29 +47,6 @@ Item {
             RoutePointNumbersSwitch {}
             Label { text: "仅标起终点和手选目标，每层从 1 开始"; color: "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
         }
-        RowLayout {
-            Layout.fillWidth: true
-            Label { text: "投稿范围"; color: "#526785" }
-            ComboBox {
-                objectName: "plazaRouteScope"
-                Layout.fillWidth: true
-                model: root.state.scopeOptions || []; textRole: "name"; valueRole: "id"
-                currentIndex: {
-                    var rows = root.state.scopeOptions || []
-                    for (var i=0; i<rows.length; ++i) if (rows[i].id === root.state.scopeId) return i
-                    return -1
-                }
-                enabled: !root.state.busy && !root.state.editorOpen && !root.state.galleryBusy
-                onActivated: routePlazaService.selectScope(currentValue)
-            }
-            ComboBox {
-                objectName: "plazaSort"
-                model: [{id:"latest",name:"最新"},{id:"likes",name:"点赞最多"},{id:"comments",name:"讨论最多"}]
-                textRole: "name"; valueRole: "id"
-                enabled: !root.state.busy
-                onActivated: routePlazaService.setSort(currentValue)
-            }
-        }
         Label { visible: settingsService && (settingsService.loadFailed || settingsService.message.indexOf("失败") >= 0); text: settingsService ? settingsService.message : ""; color: "#b91c1c"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
         RowLayout {
             Layout.fillWidth: true
@@ -91,10 +68,30 @@ Item {
             Layout.fillWidth: true
             TextField { id: search; objectName: "plazaSearch"; Layout.fillWidth: true; placeholderText: "搜索路线"; selectByMouse: true; maximumLength: 80; onAccepted: routePlazaService.search(text) }
             AppButton { objectName: "plazaSearchButton"; text: "搜索"; enabled: !root.state.busy; onClicked: routePlazaService.search(search.text) }
+            ComboBox {
+                objectName: "plazaSort"
+                model: [{id:"latest",name:"最新"},{id:"likes",name:"点赞最多"},{id:"comments",name:"讨论最多"}]
+                textRole: "name"; valueRole: "id"
+                enabled: !root.state.busy
+                onActivated: routePlazaService.setSort(currentValue)
+            }
             AppButton { objectName: "plazaRefresh"; text: "刷新"; enabled: !root.state.busy; onClicked: routePlazaService.search(search.text) }
             AppButton { objectName: "plazaCancelDownload"; visible: root.state.operation === "download"; text: "取消下载"; onClicked: routePlazaService.cancelDownload() }
         }
         Label { objectName: "plazaStatus"; text: root.state.message; color: root.state.error ? "#b91c1c" : "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+        RowLayout {
+            visible: root.state.tab === "mine"
+            Layout.fillWidth: true
+            Label { text: "投稿范围"; color: "#526785" }
+            ComboBox {
+                objectName: "plazaRouteScope"
+                Layout.fillWidth: true
+                model: root.state.scopeOptions || []; textRole: "name"; valueRole: "id"
+                currentIndex: indexOfValue(root.state.scopeId)
+                enabled: !root.state.busy && !root.state.editorOpen && !root.state.galleryBusy
+                onActivated: routePlazaService.selectScope(currentValue)
+            }
+        }
         RowLayout {
             visible: root.state.tab === "mine"
             Layout.fillWidth: true

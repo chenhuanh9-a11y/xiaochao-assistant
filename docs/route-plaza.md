@@ -4,7 +4,7 @@
 
 业务来源是尚未合并的 [PR #23](https://github.com/chenhuanh9-a11y/xiaochao-assistant/pull/23)（分支快照 `0d3c394`）：复用 `account_service.py`、`route_plaza.py` 和既有本机 HTTP 测试，将图库来源元数据适配到当前 `main` 的保存/恢复保护。没有合并整条旧分支，也没有将 Tk 页面装进 Qt 进程。
 
-从 Qt 侧栏进入「路线广场」即可浏览。「投稿范围」用于选择个人图库和投稿列表的场景与难度。下载、投稿和互动需要账号登录；公开浏览与讨论读取不需要登录。页面沿用 `AppButton`、`ClientPalette`、惰性页面、导航器和文本输入快捷键保护。
+从 Qt 侧栏进入「路线广场」即可浏览。「我的投稿」中的「投稿范围」用于选择个人图库和投稿列表的场景与难度。下载、投稿和互动需要账号登录；公开浏览与讨论读取不需要登录。页面沿用 `AppButton`、`ClientPalette`、惰性页面、导航器和文本输入快捷键保护。
 
 ## 账号
 
@@ -25,7 +25,7 @@
 
 ## 广场
 
-- 列表：`GET /v1/community/map-galleries`，Qt 发送 `content_kind=nightmare-routes`、`sort=latest|likes|comments`、`limit=100` 及可选搜索词，展示服务端返回的已上架路线及其场景与难度。
+- 列表：`GET /v1/community/map-galleries`，Qt 对每个支持的场景显式发送 `scenario`、`content_kind=nightmare-routes`、`sort=latest|likes|comments`、`limit=100` 及可选搜索词，再合并排序。省略场景时服务端默认只返回灾厄之女。双模式作品在同一列表保留两个下载入口。
 - 下载：点击后先核对当前安装中是否有该赛季和模式的可用结构包。缺少时弹窗提示，导入匹配结构包后可重试。下载仍需对应的路线编辑资源和登录，随后调用 `POST /v1/community/map-galleries/{版本ID}/packages/{hard|nightmare}/download`。签名对象链接不带账号令牌，沿用现有 OSS 主机、逐跳跳转检查、大小和 SHA-256 校验。
 - 校验：ZIP 里只能有 `map-gallery.json`；旧噩梦使用 schema 3，其他范围使用 schema 4，并核对 `routeCatalogId`、`scenario`、`mode`、work/package/revision、导航与跨层签名。新范围的下载连线会在相同安卓导航上重新规划。
 - 同一作品的新版本替换旧的那份图库（ID 不变，游戏内的选择不受影响）。图库可以删除，不能改名或编辑；复制、导出得到的是自己的普通图库。

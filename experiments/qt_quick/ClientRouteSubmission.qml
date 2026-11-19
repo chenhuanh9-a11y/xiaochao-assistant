@@ -6,6 +6,7 @@ Dialog {
     id: root
     objectName: "routeSubmissionDialog"
     readonly property var state: routePlazaService.snapshot
+    readonly property var scope: (state.scopeOptions || []).find(option => option.id === state.scopeId)
     property int generation: -1
     property var choices: []
     property string choicesKey: ""
@@ -46,6 +47,7 @@ Dialog {
         ColumnLayout {
             width: parent.width; spacing: 10
             Label { text: "选择当前场景与难度下的个人图库。审核通过后会在路线广场公开。"; color: "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+            Label { visible: !!root.scope; text: root.scope ? "投稿范围 · " + root.scope.name : ""; color: "#354f75"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
             Label { text: "作品名称（2–48 字）"; color: "#142b4b" }
             TextField { id: titleInput; objectName: "submissionTitle"; Layout.fillWidth: true; selectByMouse: true; maximumLength: 48; enabled: !root.state.busy && !root.state.submissionLocked; Accessible.name: "投稿作品名称" }
             Label { text: "作品说明（最多 500 字）"; color: "#142b4b" }

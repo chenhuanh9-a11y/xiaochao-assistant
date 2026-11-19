@@ -16,6 +16,7 @@ replanned on this app's road data, exactly like targets placed by hand.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import hashlib
 import io
 import json
@@ -105,17 +106,34 @@ def list_routes(query: str = "", *, api=call, scope_id="legacy-nightmare", sort=
     if sort not in ("latest", "likes", "comments"):
         raise AccountError("路线排序无效")
     scopes = SCOPES.values() if scope_id is None else (SCOPES[scope_id],)
+    by_scenario = {}
+    for scope in scopes:
+        by_scenario.setdefault(scope.scenario, []).append(scope)
     params = dict(content_kind=CONTENT_KIND, limit=100 if scope_id is None else 50, sort=sort)
     if scope_id is not None:
-        scope = SCOPES[scope_id]
-        params.update(mode=scope.mode, scenario=scope.scenario)
-    if str(query or "").strip():
-        params["query"] = str(query).strip()[:80]
-    rows = api("GET", "/v1/community/map-galleries?" + urlencode(params))
-    if not isinstance(rows, list):
-        raise AccountError("路线广场返回的内容无法识别")
-    return [route for row in rows for scope in scopes
-            if (route := parse_summary(row, scope_id=scope.id)) is not None]
+        params["mode"] = SCOPES[scope_id].mode
+    if query := str(query or "").strip()[:80]:
+        params["query"] = query
+    routes = []
+    # The API defaults to S0 when scenario is omitted, even without a mode filter.
+    for scenario, scenario_scopes in by_scenario.items():
+        rows = api("GET", "/v1/community/map-galleries?" + urlencode(dict(params, scenario=scenario)))
+        if not isinstance(rows, list):
+            raise AccountError("路线广场返回的内容无法识别")
+        routes.extend(route for row in rows for scope in scenario_scopes
+                      if (route := parse_summary(row, scope_id=scope.id)) is not None)
+    if scope_id is None:
+        metric = {"likes": "like_count", "comments": "comment_count"}.get(sort, "")
+        routes.sort(key=lambda route: (getattr(route, metric, 0), _updated_time(route.updated_at)), reverse=True)
+    return routes
+
+
+def _updated_time(value: str) -> datetime:
+    try:
+        date = datetime.fromisoformat(value)
+        return date if date.tzinfo else date.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return datetime.min.replace(tzinfo=timezone.utc)
 
 
 # Download -------------------------------------------------------------------

@@ -355,7 +355,8 @@ class RoutePlazaService(QObject):
             else:
                 self._routes = {r.key: r for r in result}
                 self._refresh_rows()
-                self._note(f"找到 {len(self._routes)} 套路线。" if result else
+                works = len({route.version_id for route in self._routes.values()})
+                self._note(f"找到 {works} 套路线。" if result else
                            "没有找到匹配的路线。" if self._query else "广场里还没有路线。")
         elif operation == "logout":
             self._clear_private()

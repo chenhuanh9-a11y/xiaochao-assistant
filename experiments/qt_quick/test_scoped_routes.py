@@ -226,24 +226,36 @@ class ScopedRoutesTests(unittest.TestCase):
         self.assertEqual(route_plaza.list_routes(api=api, scope_id="classic-hard"), [])
 
     def test_unfiltered_feed_keeps_approved_modes_and_legacy_rows(self):
+        from urllib.parse import parse_qs, urlsplit
+
         common = dict(content_kind="nightmare-routes", status="approved")
+        requested = []
 
         def api(method, path):
             self.assertEqual(method, "GET")
-            self.assertNotIn("mode=", path)
-            self.assertNotIn("scenario=", path)
-            self.assertIn("limit=100", path)
+            params = parse_qs(urlsplit(path).query)
+            self.assertNotIn("mode", params)
+            self.assertEqual(params["limit"], ["100"])
+            self.assertEqual(params["query"], ["路线"])
+            scenario = params.get("scenario", ["lady-of-misfortune"])[0]
+            requested.append(scenario)
+            if scenario == "phosphorescence":
+                return [dict(common, id="s1", work_id="season", scenario=scenario, modes=["hard"],
+                             hard_map_count=14, like_count=3, updated_at="2026-11-18T00:00:00+08:00")]
             return [dict(common, id="multi", work_id="work", modes=["hard", "nightmare"],
-                         hard_map_count=29, nightmare_map_count=26),
+                         hard_map_count=29, nightmare_map_count=26, like_count=2,
+                         updated_at="2026-11-17T18:00:00+00:00"),
                     dict(common, id="legacy", work_id="old", nightmare_map_count=1),
-                    dict(common, id="draft", work_id="rejected", status="draft"),
-                    dict(common, id="s1", work_id="season", scenario="phosphorescence", modes=["hard"],
-                         hard_map_count=14)]
+                    dict(common, id="draft", work_id="rejected", status="draft")]
 
-        routes = route_plaza.list_routes(api=api, scope_id=None)
+        routes = route_plaza.list_routes("路线", api=api, scope_id=None, sort="likes")
+        self.assertEqual(requested, ["lady-of-misfortune", "phosphorescence"])
         self.assertEqual([(r.key, r.scope.id, r.map_count) for r in routes],
-                         [("multi", "legacy-nightmare", 26), ("multi:classic-hard", "classic-hard", 29),
-                          ("legacy", "legacy-nightmare", 1), ("s1:season-s1-hard", "season-s1-hard", 14)])
+                         [("s1:season-s1-hard", "season-s1-hard", 14), ("multi", "legacy-nightmare", 26),
+                          ("multi:classic-hard", "classic-hard", 29), ("legacy", "legacy-nightmare", 1)])
+
+        routes = route_plaza.list_routes("路线", api=api, scope_id=None)
+        self.assertEqual([route.key for route in routes], ["multi", "multi:classic-hard", "s1:season-s1-hard", "legacy"])
 
     def test_display_requires_exact_declared_structure(self):
         lib = self.library("classic-hard")
