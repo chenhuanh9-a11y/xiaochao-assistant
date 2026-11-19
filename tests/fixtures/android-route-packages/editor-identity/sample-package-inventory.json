@@ -1,0 +1,80 @@
+[
+  {
+    "file": "default-lianghapi-hard.xingtu-gallery",
+    "sha256": "8a22cb9c2fdf7be8b9895d76f1184aa22c1b8177e723bae9266f0768d97a49c8",
+    "bytes": 31254,
+    "title": "困难·凉哈皮复刻",
+    "author": "凉哈皮／展十／星辰",
+    "scenario": "lady-of-misfortune",
+    "mode": "hard",
+    "routeCatalogId": "classic-hard",
+    "schemaVersion": 4,
+    "contentKind": "nightmare-routes",
+    "workId": "47b44f94-8201-5eb5-8c2b-e6521cdacca3",
+    "packageId": "da29778a-7c78-5ad8-b576-8089901d1895",
+    "revision": 2,
+    "minClientVersion": "1.11.10-android",
+    "mapCount": 29,
+    "pointCount": 2431,
+    "pointsByFloor": {
+      "1": 1397,
+      "2": 1034
+    },
+    "routePlanKindOrVersion": "drawn-route",
+    "hasNavigationSignature": false,
+    "hasArtworkSignature": true,
+    "pointStyle": "normalized-xy",
+    "firstPlanKeys": [
+      "artworkSignature",
+      "difficulty",
+      "editorFloor",
+      "kind",
+      "points",
+      "scenario",
+      "sourceMapId",
+      "templateId",
+      "version"
+    ]
+  },
+  {
+    "file": "season-nightmare-15-r1.xingtu-gallery",
+    "sha256": "d14d51cc21befa019ab543ffba881bdb66eb07d709b1de6bccb3dbfdf727fcb0",
+    "bytes": 4176,
+    "title": "磷光症",
+    "author": "星辰",
+    "scenario": "phosphorescence",
+    "mode": "nightmare",
+    "routeCatalogId": "season-s1-nightmare",
+    "schemaVersion": 4,
+    "contentKind": "nightmare-routes",
+    "workId": "717f5817-0869-4cce-a703-d5acf581984a",
+    "packageId": "0c460898-e382-3063-9be2-e78da165b6fb",
+    "revision": 1,
+    "minClientVersion": "1.11.9-android",
+    "mapCount": 15,
+    "pointCount": 60,
+    "pointsByFloor": {
+      "b1": 30,
+      "b2": 15,
+      "b3": 15
+    },
+    "routePlanKindOrVersion": 2,
+    "hasNavigationSignature": true,
+    "hasArtworkSignature": false,
+    "pointStyle": "cell",
+    "firstPlanKeys": [
+      "difficulty",
+      "editorFloor",
+      "floorAssociationSignature",
+      "lineColor",
+      "navigationSignature",
+      "navigationVersion",
+      "points",
+      "scenario",
+      "segments",
+      "sourceMapId",
+      "templateId",
+      "version"
+    ]
+  }
+]

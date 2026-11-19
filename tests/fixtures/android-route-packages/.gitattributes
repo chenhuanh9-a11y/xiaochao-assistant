@@ -1,0 +1,3 @@
+# Preserve packaged fixture bytes so SHA256SUMS remain valid.
+# editor-identity/template-signature-index.csv was generated with CRLF.
+* -text
