@@ -1,0 +1,12 @@
+{
+  "source": "Public approved route package, captured to reproduce reported installation rejection",
+  "versionId": "ce5647d2-316f-4027-8632-2e08ba6a00dd",
+  "workId": "717f5817-0869-4cce-a703-d5acf581984a",
+  "packageId": "0c460898-e382-3063-9be2-e78da165b6fb",
+  "revision": 1,
+  "mapCount": 15,
+  "bytes": 4176,
+  "sha256": "d14d51cc21befa019ab543ffba881bdb66eb07d709b1de6bccb3dbfdf727fcb0",
+  "publicPreview": "https://api.xingchenmap.cn/v1/community/map-galleries/ce5647d2-316f-4027-8632-2e08ba6a00dd/packages/nightmare/preview",
+  "capturedDate": "2026-11-09"
+}
