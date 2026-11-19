@@ -135,13 +135,18 @@ Item {
         Rectangle {
             visible: root.state.tab !== "mine"
             Layout.fillWidth: true; Layout.fillHeight: true; radius: 12; color: "white"; border.color: "#d6e0ef"
-            ListView {
+            GridView {
                 id: routes
                 objectName: "plazaRouteList"
+                readonly property int columns: Math.max(1, Math.floor(width / 232))
+                readonly property bool shortViewport: height < 220
                 anchors.fill: parent; anchors.margins: 8
-                clip: true; spacing: 6; model: routePlazaService.routeModel
+                clip: true; model: routePlazaService.routeModel
+                cellWidth: width / columns
+                cellHeight: shortViewport ? 164 : root.compact ? 218 : 246
+                cacheBuffer: cellHeight; boundsBehavior: Flickable.StopAtBounds
                 ScrollBar.vertical: ScrollBar {}
-                delegate: Rectangle {
+                delegate: Item {
                     id: card
                     required property string key
                     required property string title
@@ -156,48 +161,80 @@ Item {
                     required property string thumbnailUrl
                     readonly property bool inViewport: root.visible && routes.visible
                         && y < routes.contentY + routes.height && y + height > routes.contentY
-                    width: routes.width; implicitHeight: contents.implicitHeight + 16; radius: 10; color: "#f3f7ff"
-                    RowLayout {
-                        id: contents; anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 8; spacing: 10
-                        Rectangle {
-                            Layout.preferredWidth: root.compact ? 66 : 92
-                            Layout.preferredHeight: 64
-                            Layout.alignment: Qt.AlignTop
-                            color: "#e8eff9"; radius: 7; clip: true
-                            Image {
-                                id: thumbnail
-                                objectName: "plazaInlinePreview_" + card.key
-                                anchors.fill: parent; anchors.margins: 3
-                                source: card.inViewport ? card.thumbnailUrl : ""
-                                asynchronous: true; cache: false; fillMode: Image.PreserveAspectFit
-                                visible: card.inViewport && status === Image.Ready && sourceSize.width > 1 && sourceSize.height > 1
-                            }
-                            ColumnLayout {
-                                anchors.centerIn: parent; spacing: 0
-                                visible: !thumbnail.visible
-                                Label { text: card.mapCount; font.bold: true; font.pixelSize: 19; color: "#183a73"; Layout.alignment: Qt.AlignHCenter }
-                                Label { text: "张地图"; font.pixelSize: 11; color: "#526785"; Layout.alignment: Qt.AlignHCenter }
-                            }
-                        }
+                    width: routes.cellWidth; height: routes.cellHeight
+                    Rectangle {
+                        anchors.fill: parent; anchors.rightMargin: 8; anchors.bottomMargin: 8
+                        radius: 8; color: "#f3f6fc"; border.color: "#d6e0ef"
                         ColumnLayout {
-                            Layout.fillWidth: true; spacing: 2
+                            anchors.fill: parent; anchors.margins: routes.shortViewport ? 8 : 10
+                            spacing: routes.shortViewport ? 3 : 4
+                            Button {
+                                id: preview
+                                objectName: "plazaPreview_" + card.key
+                                Layout.fillWidth: true; Layout.fillHeight: true
+                                Layout.minimumHeight: routes.shortViewport ? 38 : root.compact ? 60 : 86
+                                padding: 5; hoverEnabled: true; focusPolicy: Qt.StrongFocus
+                                enabled: !root.state.busy
+                                Accessible.name: "预览 " + card.title
+                                ToolTip.visible: hovered && enabled
+                                ToolTip.delay: 500; ToolTip.text: "查看路线预览"
+                                HoverHandler { cursorShape: preview.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor }
+                                onClicked: routePlazaService.openPreview(card.key)
+                                background: Rectangle {
+                                    radius: 6; color: preview.down ? "#dce8ff" : preview.hovered ? "#e7effc" : "#edf1f7"
+                                    border.width: preview.activeFocus ? 2 : 0; border.color: "#2f66eb"
+                                }
+                                contentItem: Item {
+                                    Image {
+                                        id: thumbnail
+                                        objectName: "plazaInlinePreview_" + card.key
+                                        anchors.fill: parent
+                                        source: card.inViewport ? card.thumbnailUrl : ""
+                                        asynchronous: true; cache: false; fillMode: Image.PreserveAspectFit
+                                        visible: card.inViewport && status === Image.Ready && sourceSize.width > 1 && sourceSize.height > 1
+                                    }
+                                    ColumnLayout {
+                                        anchors.centerIn: parent; width: parent.width - 8; spacing: 0
+                                        visible: !thumbnail.visible
+                                        Label {
+                                            Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter
+                                            text: card.mapCount + " 张地图"; color: "#526785"; font.pixelSize: 13
+                                        }
+                                        Label {
+                                            visible: routes.shortViewport && !!card.description
+                                            Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter
+                                            text: card.description; textFormat: Text.PlainText; color: "#354f75"
+                                            font.pixelSize: 11; elide: Text.ElideRight
+                                        }
+                                    }
+                                }
+                            }
+                            Label { text: card.title; textFormat: Text.PlainText; font.bold: true; font.pixelSize: 16; color: "#183a73"; Layout.fillWidth: true; elide: Text.ElideRight }
+                            Label {
+                                text: card.scopeLabel + (thumbnail.visible ? " · " + card.mapCount + " 张图" : "") + " · 下载 " + card.downloadCount + " 次"
+                                color: "#526785"; font.pixelSize: 12; Layout.fillWidth: true; elide: Text.ElideRight
+                            }
+                            Label {
+                                text: "作者 " + card.author + (card.updatedDate ? " · " + card.updatedDate : "")
+                                textFormat: Text.PlainText; color: "#526785"; font.pixelSize: 12
+                                Layout.fillWidth: true; elide: Text.ElideRight
+                            }
+                            Label {
+                                visible: !routes.shortViewport
+                                text: card.description; textFormat: Text.PlainText; color: "#354f75"; font.pixelSize: 12
+                                Layout.fillWidth: true; Layout.preferredHeight: 16; elide: Text.ElideRight
+                            }
                             RowLayout {
-                                Layout.fillWidth: true
-                                Label { text: card.title; textFormat: Text.PlainText; font.bold: true; font.pixelSize: 16; color: "#17365e"; Layout.fillWidth: true; elide: Text.ElideRight }
-                                AppButton { objectName: "plazaPreview_" + card.key; text: "预览"; enabled: !root.state.busy; onClicked: routePlazaService.openPreview(card.key) }
-                                AppButton { objectName: "plazaDetails_" + card.key; text: "讨论"; enabled: !root.state.busy; onClicked: routePlazaService.openDetails(card.key) }
+                                Layout.fillWidth: true; spacing: 6
+                                AppButton { objectName: "plazaDetails_" + card.key; text: "讨论"; Accessible.description: card.title; enabled: !root.state.busy; onClicked: routePlazaService.openDetails(card.key) }
+                                Item { Layout.fillWidth: true }
                                 AppButton {
                                     objectName: "plazaDownload_" + card.key
                                     text: root.state.downloading === card.key ? "下载中…" : card.installed ? "去使用 ›" : card.updateAvailable ? "更新路线" : "下载路线"
+                                    Accessible.description: card.title
                                     primary: !card.installed; enabled: !root.state.busy
                                     onClicked: card.installed ? routePlazaService.openInstalledRoute(card.key) : routePlazaService.downloadRoute(card.key)
                                 }
-                            }
-                            Label { text: card.scopeLabel + " · 作者 " + card.author + (thumbnail.visible ? " · " + card.mapCount + " 张图" : "") + " · 下载 " + card.downloadCount + " 次" + (card.updatedDate ? " · 更新于 " + card.updatedDate : "") + (card.installed ? " · 已下载" : ""); textFormat: Text.PlainText; color: "#526785"; font.pixelSize: 12; Layout.fillWidth: true; elide: Text.ElideRight }
-                            Label {
-                                visible: !!card.description; text: card.description; textFormat: Text.PlainText
-                                color: "#354f75"; Layout.fillWidth: true; wrapMode: Text.Wrap; elide: Text.ElideRight
-                                maximumLineCount: root.compact ? 1 : 2
                             }
                         }
                     }
