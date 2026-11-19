@@ -521,6 +521,7 @@ class PlazaTests(unittest.TestCase):
 
     def test_qml_mouse_keyboard_login_search_and_navigation(self):
         engine = QQmlApplicationEngine()
+        engine.addImageProvider("plazaroute", self.service.thumbnails)
         router = Router()
         engine.rootContext().setContextProperty("routePlazaService", self.service)
         engine.rootContext().setContextProperty("clientCoordinator", router)
@@ -554,6 +555,9 @@ ClientAccount {}
             self.assertTrue(item(window, "plazaSeasonFilter").property("visible"))
             self.assertTrue(item(window, "plazaModeFilter").property("visible"))
             until(lambda: item(window, "plazaPreview_ver-2") is not None)
+            inline = item(window, "plazaInlinePreview_ver-2")
+            self.assertFalse(inline.property("visible"))
+            self.assertTrue(inline.property("source").isEmpty())
             click("plazaPreview_ver-2")
             preview = item(window, "plazaPreviewDialog")
             until(lambda: preview.property("opened"))
@@ -610,6 +614,10 @@ ClientAccount {}
             click("plazaDownload_ver-2")
             until(lambda: not self.service.snapshot["busy"] and not self.galleries.busy)
             self.assertTrue(self.service.model.rows[0]["installed"], self.service.snapshot)
+            requests = len(self.server.calls)
+            until(lambda: inline.property("visible"))
+            self.assertGreater(inline.property("paintedWidth"), 0)
+            self.assertEqual(len(self.server.calls), requests)
             click("plazaDownload_ver-2")
             self.assertEqual(router.pages[-1], "custom")
             self.assertEqual(warnings, [])
@@ -632,6 +640,7 @@ ClientAccount {}
         model = self.service.model
         requests = len(self.server.calls)
         self.assertEqual(len(model.rows), 3)
+        self.assertTrue(all(not row["thumbnailUrl"] for row in model.rows))
         self.assertIn("2 套", self.service.snapshot["message"])
         self.service.setPublicFilter("", "hard")
         self.assertEqual([row["key"] for row in model.rows], ["s1:season-s1-hard", "ver-2:classic-hard"])
@@ -700,6 +709,15 @@ ClientAccount {}
         self.service.loadPreview(True)
         until(lambda: not self.service.snapshot["busy"])
         self.assertIn("image", self.service.previewState)
+        self.assertEqual(len(self.server.calls), requests)
+
+        thumbnail = self.service.model.rows[0]["thumbnailUrl"].rsplit("/", 1)[-1]
+        self.assertGreater(self.service.thumbnails.requestImage(thumbnail, None, None).width(), 1)
+        self.galleries.refresh()
+        self.assertEqual(self.service.model.rows[0]["thumbnailUrl"], "")
+        self.assertEqual(self.service.thumbnails.requestImage(thumbnail, None, None).width(), 1)
+        until(lambda: not self.galleries.busy)
+        self.assertNotEqual(self.service.model.rows[0]["thumbnailUrl"].rsplit("/", 1)[-1], thumbnail)
         self.assertEqual(len(self.server.calls), requests)
 
     def test_hard_download_uses_matching_structure_and_gallery_scope(self):

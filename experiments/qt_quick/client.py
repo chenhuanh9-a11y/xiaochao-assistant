@@ -299,6 +299,7 @@ class QtClient:
         self.engine.addImageProvider("live", self.images)
         self.engine.addImageProvider("floorregion", self.floor_region_images)
         self.engine.addImageProvider("importedgallery", self.gallery_images)
+        self.engine.addImageProvider("plazaroute", self.route_plaza.thumbnails)
         self.warnings = []
         self.engine.warnings.connect(self._record_qml_warnings)
         context = self.engine.rootContext()

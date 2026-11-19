@@ -77,6 +77,7 @@ class CustomGalleryService(QObject):
         self._busy = False
         self._refresh_pending = False
         self._resource_generation = 0
+        self._resource_refreshing = False
         self._plaza_pending = None
         self._pending = None
         self._gallery = "default"
@@ -380,8 +381,10 @@ class CustomGalleryService(QObject):
     def refresh(self):
         # Revoke prepared downloads immediately, even if a writer delays reload.
         self._resource_generation += 1
+        self._resource_refreshing = True
         if self._busy:
             self._refresh_pending = True
+            self.changed.emit()
             return
         def reload():
             if not self._injected_library and self._scope_id == "legacy-nightmare":
@@ -392,7 +395,12 @@ class CustomGalleryService(QObject):
                 self._library_root = self.library.root
                 self._legacy_library_root = self.library.root
             self._load()
-        self._run(reload)
+        def refreshed(_error):
+            self._resource_refreshing = self._refresh_pending
+            self.changed.emit()
+
+        if not self._run(reload, on_done=refreshed):
+            refreshed(None)
 
     @Slot(str)
     def selectGallery(self, gid):
@@ -767,7 +775,10 @@ class CustomGalleryService(QObject):
         return root, self._resource_generation, maps
 
     def plazaPreviewCurrent(self, resource_generation):
-        return not self._closed and not self._refresh_pending and resource_generation == self._resource_generation
+        return resource_generation is not None and resource_generation == self.plazaPreviewGeneration()
+
+    def plazaPreviewGeneration(self):
+        return None if self._closed or self._resource_refreshing else self._resource_generation
 
     def submissionChoices(self):
         """UI snapshot only; never read the writer's mutable GalleryStore."""

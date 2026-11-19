@@ -153,23 +153,53 @@ Item {
                     required property string updatedDate
                     required property bool installed
                     required property bool updateAvailable
+                    required property string thumbnailUrl
+                    readonly property bool inViewport: root.visible && routes.visible
+                        && y < routes.contentY + routes.height && y + height > routes.contentY
                     width: routes.width; implicitHeight: contents.implicitHeight + 16; radius: 10; color: "#f3f7ff"
-                    ColumnLayout {
-                        id: contents; anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 8; spacing: 2
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Label { text: card.title; textFormat: Text.PlainText; font.bold: true; font.pixelSize: 16; color: "#17365e"; Layout.fillWidth: true; elide: Text.ElideRight }
-                            AppButton { objectName: "plazaPreview_" + card.key; text: "预览"; enabled: !root.state.busy; onClicked: routePlazaService.openPreview(card.key) }
-                            AppButton { objectName: "plazaDetails_" + card.key; text: "讨论"; enabled: !root.state.busy; onClicked: routePlazaService.openDetails(card.key) }
-                            AppButton {
-                                objectName: "plazaDownload_" + card.key
-                                text: root.state.downloading === card.key ? "下载中…" : card.installed ? "去使用 ›" : card.updateAvailable ? "更新路线" : "下载路线"
-                                primary: !card.installed; enabled: !root.state.busy
-                                onClicked: card.installed ? routePlazaService.openInstalledRoute(card.key) : routePlazaService.downloadRoute(card.key)
+                    RowLayout {
+                        id: contents; anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 8; spacing: 10
+                        Rectangle {
+                            Layout.preferredWidth: root.compact ? 66 : 92
+                            Layout.preferredHeight: 64
+                            Layout.alignment: Qt.AlignTop
+                            color: "#e8eff9"; radius: 7; clip: true
+                            Image {
+                                id: thumbnail
+                                objectName: "plazaInlinePreview_" + card.key
+                                anchors.fill: parent; anchors.margins: 3
+                                source: card.inViewport ? card.thumbnailUrl : ""
+                                asynchronous: true; cache: false; fillMode: Image.PreserveAspectFit
+                                visible: card.inViewport && status === Image.Ready && sourceSize.width > 1 && sourceSize.height > 1
+                            }
+                            ColumnLayout {
+                                anchors.centerIn: parent; spacing: 0
+                                visible: !thumbnail.visible
+                                Label { text: card.mapCount; font.bold: true; font.pixelSize: 19; color: "#183a73"; Layout.alignment: Qt.AlignHCenter }
+                                Label { text: "张地图"; font.pixelSize: 11; color: "#526785"; Layout.alignment: Qt.AlignHCenter }
                             }
                         }
-                        Label { text: card.scopeLabel + " · 作者 " + card.author + " · " + card.mapCount + " 张图 · 下载 " + card.downloadCount + " 次" + (card.updatedDate ? " · 更新于 " + card.updatedDate : "") + (card.installed ? " · 已下载" : ""); textFormat: Text.PlainText; color: "#526785"; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-                        Label { visible: !!card.description; text: card.description; textFormat: Text.PlainText; color: "#354f75"; Layout.fillWidth: true; elide: Text.ElideRight }
+                        ColumnLayout {
+                            Layout.fillWidth: true; spacing: 2
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label { text: card.title; textFormat: Text.PlainText; font.bold: true; font.pixelSize: 16; color: "#17365e"; Layout.fillWidth: true; elide: Text.ElideRight }
+                                AppButton { objectName: "plazaPreview_" + card.key; text: "预览"; enabled: !root.state.busy; onClicked: routePlazaService.openPreview(card.key) }
+                                AppButton { objectName: "plazaDetails_" + card.key; text: "讨论"; enabled: !root.state.busy; onClicked: routePlazaService.openDetails(card.key) }
+                                AppButton {
+                                    objectName: "plazaDownload_" + card.key
+                                    text: root.state.downloading === card.key ? "下载中…" : card.installed ? "去使用 ›" : card.updateAvailable ? "更新路线" : "下载路线"
+                                    primary: !card.installed; enabled: !root.state.busy
+                                    onClicked: card.installed ? routePlazaService.openInstalledRoute(card.key) : routePlazaService.downloadRoute(card.key)
+                                }
+                            }
+                            Label { text: card.scopeLabel + " · 作者 " + card.author + (thumbnail.visible ? " · " + card.mapCount + " 张图" : "") + " · 下载 " + card.downloadCount + " 次" + (card.updatedDate ? " · 更新于 " + card.updatedDate : "") + (card.installed ? " · 已下载" : ""); textFormat: Text.PlainText; color: "#526785"; font.pixelSize: 12; Layout.fillWidth: true; elide: Text.ElideRight }
+                            Label {
+                                visible: !!card.description; text: card.description; textFormat: Text.PlainText
+                                color: "#354f75"; Layout.fillWidth: true; wrapMode: Text.Wrap; elide: Text.ElideRight
+                                maximumLineCount: root.compact ? 1 : 2
+                            }
+                        }
                     }
                 }
                 Label { anchors.centerIn: parent; visible: routes.count === 0; text: root.state.busy ? "正在读取…" : root.state.loaded ? "暂无可显示的路线" : "读取公开路线"; color: "#526785" }

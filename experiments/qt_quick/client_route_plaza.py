@@ -8,7 +8,7 @@ from PySide6.QtGui import QGuiApplication
 
 from backend import ResourceRows
 from client_paths import runtime_paths
-from client_route_preview import load_preview, preview_frame
+from client_route_preview import PlazaThumbnailImages, load_preview, preview_frame
 from account_service import AccountError, AccountService, BLOCKED_CODES
 import route_plaza
 import route_submission
@@ -17,7 +17,7 @@ from route_scopes import SCOPES
 
 class PlazaRows(ResourceRows):
     fields = ("key", "title", "description", "author", "scopeLabel", "mapCount", "downloadCount", "updatedDate",
-              "installed", "updateAvailable")
+              "installed", "updateAvailable", "thumbnailUrl")
 
 
 class SubmissionRows(ResourceRows):
@@ -61,6 +61,8 @@ class RoutePlazaService(QObject):
         super().__init__()
         self.account = account or AccountService(runtime_paths(sandbox).settings_path.parent)
         self.galleries = galleries
+        self.thumbnails = PlazaThumbnailImages(galleries)
+        self._thumbnail_generation = None
         self.listing = listing
         self.structure_available = structure_available
         self._scope_id = getattr(galleries, "scopeId", "legacy-nightmare")
@@ -193,7 +195,13 @@ class RoutePlazaService(QObject):
         if self._preview_context is not None and not self.galleries.plazaPreviewCurrent(self._preview_context):
             self._clear_preview_image("编辑资源已更新，请重新加载地图。")
             self.previewChanged.emit()
+        if self._thumb_context() != self._thumbnail_generation:
+            self._refresh_rows()
         self.changed.emit()
+
+    def _thumb_context(self):
+        read = getattr(self.galleries, "plazaPreviewGeneration", None)
+        return read() if read is not None and self._active and self._tab == "square" else None
 
     def _clear_preview_image(self, message):
         self._preview_document = self._preview_context = None
@@ -207,6 +215,10 @@ class RoutePlazaService(QObject):
         if route is None or self._busy:
             return
         root, context, local = self.galleries.plazaPreviewInput(route.scope.id, route.work_id, route.version_id)
+        if not self.galleries.plazaPreviewCurrent(context):
+            self._clear_preview_image("编辑资源正在更新，请稍后加载地图。")
+            self.previewChanged.emit()
+            return
         if local is None and not self.account.username:
             self.openAccount()
             return
@@ -386,6 +398,8 @@ class RoutePlazaService(QObject):
             if not self._loaded and not self._busy:
                 self.search(self._query)
         else:
+            self.thumbnails.publish({})
+            self._thumbnail_generation = None
             self.closeAccount()
             self.closeSubmission()
             self.closeDetails()
@@ -396,13 +410,19 @@ class RoutePlazaService(QObject):
             return
         self._sync_mine_rows()
         installed = self.galleries.plazaSources()
+        self._thumbnail_generation = context = self._thumb_context()
+        requests = {route.key: (route.scope.id, route.work_id, route.version_id, context)
+                    for route in self._routes.values() if context is not None
+                    and installed.get((route.scope.id, route.work_id), {}).get("versionId") == route.version_id}
+        thumbnails = self.thumbnails.publish(requests)
         rows = []
         for route in self._public_routes():
             local = installed.get((route.scope.id, route.work_id), {})
             rows.append(dict(key=route.key, title=route.title, description=route.description, author=route.author,
                 scopeLabel=route.scope.label, mapCount=route.map_count, downloadCount=route.download_count,
                 updatedDate=route.updated_date, installed=local.get("versionId") == route.version_id,
-                updateAvailable=bool(local) and route.revision > local.get("revision", 0)))
+                updateAvailable=bool(local) and route.revision > local.get("revision", 0),
+                thumbnailUrl=thumbnails.get(route.key, "")))
         self.model.reconcile(rows)
 
     def _run(self, operation, function):
@@ -608,6 +628,7 @@ class RoutePlazaService(QObject):
         self._tab = tab
         self._pending_action = None
         self.closePreview()
+        self._refresh_rows()
         self.changed.emit()
         if tab == "mine" and not self._busy:
             self.loadMine()
@@ -874,6 +895,7 @@ class RoutePlazaService(QObject):
     def cancel(self):
         """Application close: drain accepted work without allowing another request."""
         self._closing = True
+        self.thumbnails.publish({})
         self.account.shutdown()
         self._cancel.set()
         self._generation += 1
