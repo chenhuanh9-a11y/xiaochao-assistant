@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 import ctypes
+from functools import lru_cache
 import hashlib
 import json
 import os
@@ -401,50 +402,25 @@ def _installed_inventory(root: Path, package_id: str, *, base_root=None):
     return rows, dependencies, hashlib.sha256(raw).hexdigest()
 
 
+@lru_cache(maxsize=2)
+def _reviewed_pre_dependency_index(contracts_table, releases_table):
+    contracts = {
+        digest: _rows([dict(zip(('path', 'bytes', 'sha256'), row)) for row in rows], dependencies=True)
+        for digest, rows in contracts_table
+    }
+    return {(package, archive, inventory): contracts[contract]
+            for package, archive, inventory, contract in releases_table}
+
+
 def _reviewed_pre_dependency_contract(receipt, package_id, rows):
     """Restore only complete source-reviewed old archive contracts, read-only."""
     from legacy_author_receipt_contracts import (
         REVIEWED_PRE_DEPENDENCY_AUTHOR_RELEASES, REVIEWED_AUTHOR_DEPENDENCY_CONTRACTS)
-
-    def inventory_digest(inventory):
-        return hashlib.sha256(json.dumps(sorted(inventory.values(), key=lambda row: row['path']),
-            sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode('utf-8')).hexdigest()
-
-    contracts = {}
-    if (type(REVIEWED_AUTHOR_DEPENDENCY_CONTRACTS) is not tuple
-            or type(REVIEWED_PRE_DEPENDENCY_AUTHOR_RELEASES) is not tuple):
-        raise ImportRejected('invalid-reviewed-author-receipt-policy')
-    for record in REVIEWED_AUTHOR_DEPENDENCY_CONTRACTS:
-        if (type(record) is not tuple or len(record) != 2 or type(record[0]) is not str
-                or not re.fullmatch(r'[a-f0-9]{64}', record[0]) or record[0] in contracts
-                or type(record[1]) is not tuple
-                or any(type(row) is not tuple or len(row) != 3 for row in record[1])):
-            raise ImportRejected('invalid-reviewed-author-receipt-policy')
-        dependencies = _rows([dict(zip(('path', 'bytes', 'sha256'), row))
-                              for row in record[1]], dependencies=True)
-        if inventory_digest(dependencies) != record[0]:
-            raise ImportRejected('invalid-reviewed-author-receipt-policy')
-        contracts[record[0]] = dependencies
-    reviewed, seen = [], set()
-    for record in REVIEWED_PRE_DEPENDENCY_AUTHOR_RELEASES:
-        if (type(record) is not tuple or len(record) != 4 or type(record[0]) is not str
-                or record[0] not in PACKAGE_IDS
-                or record[0] in S1_AUTHOR_PACKAGE_IDS
-                or any(type(value) is not str or not re.fullmatch(r'[a-f0-9]{64}', value)
-                       for value in record[1:])
-                or (record[0], record[1]) in seen or record[3] not in contracts):
-            raise ImportRejected('invalid-reviewed-author-receipt-policy')
-        seen.add((record[0], record[1]))
-        reviewed.append(record)
-    for package, archive, inventory, contract in reviewed:
-        if (package == package_id and archive == receipt['archiveSha256']
-                and inventory == inventory_digest(rows)):
-            required = (DIFFICULT_AUTHOR_DEPENDENCIES if package in
-                        {'difficult-aichicu', 'difficult-suju-speed'} else BASE_DEPENDENCIES)
-            if not required <= {row['path'] for row in contracts[contract].values()}:
-                raise ImportRejected('invalid-reviewed-author-receipt-policy')
-            return contracts[contract]
-    return None
+    index = _reviewed_pre_dependency_index(
+        REVIEWED_AUTHOR_DEPENDENCY_CONTRACTS, REVIEWED_PRE_DEPENDENCY_AUTHOR_RELEASES)
+    digest = hashlib.sha256(json.dumps(sorted(rows.values(), key=lambda row: row['path']),
+        sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode('utf-8')).hexdigest()
+    return index.get((package_id, receipt['archiveSha256'], digest))
 
 
 def _receipt_inventory(receipt, package_id):

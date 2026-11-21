@@ -545,9 +545,6 @@ def show_shared_projection(self, map_id, floor, previous_floor, event, *, displa
         self.drag_transform = np.asarray(view['matrixSourceToClient'], dtype=np.float64)
         self.drag_route_source = self._aligned_author_route_image(group.route_profile_id, map_id, floor)
         self.drag_route_profile_id = group.route_profile_id
-        self.drag_current_overlay = overlay.copy()
-        self.drag_overlay_base = overlay.copy()
-        self.drag_overlay_offset = np.zeros(2, dtype=np.float64)
         self.current_alignment_candidate = {
             'cycleId': self.active_map_cycle_id, 'mapId': map_id, 'floor': floor,
             'accepted': False, 'provisional': True, 'projectionSourceFloor': source_floor,
@@ -557,13 +554,8 @@ def show_shared_projection(self, map_id, floor, previous_floor, event, *, displa
         # This compatibility flag enables pointer following. Geometry truth
         # remains in the explicit candidate/floor authorization and core pose.
         self.alignment_succeeded = True
-        self._v2_compositor_active = True
-        try:
-            self._mark_overlay_display_verified('shared-root-provisional',
-                pose_verified=False, current_floor_authorized=True)
-        finally:
-            self._v2_compositor_active = False
-        self.show_sheet()
+        self._mark_overlay_display_verified('shared-root-provisional',
+            pose_verified=False, current_floor_authorized=True)
         self._log_core_chain_event('alignment-v2-shared-projection-displayed',
             mapId=map_id, floor=floor, sourceFloor=source_floor,
             currentFrameVerified=False, persistentPoseUpdated=False,

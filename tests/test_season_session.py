@@ -149,7 +149,7 @@ class SeasonSessionTests(unittest.TestCase):
     def test_coordinator_context_lock_and_repeat_do_not_save(self):
         for state in ({"roundActive":True}, {"roundPreparing":True}, {"roundWorkActive":True}):
             fake = SimpleNamespace(settings=SimpleNamespace(busy=False, persistedValues={}, setValue=Mock(), saveFields=Mock()),
-                resources=SimpleNamespace(busy=False), session=SimpleNamespace(snapshot=state),
+                resources=SimpleNamespace(busy=False), session=SimpleNamespace(snapshot=state), runtime=None,
                 _settings_context=ClientCoordinator._settings_context, notificationRequested=Mock(), changed=Mock(),
                 _clear_reference=Mock(), _revoke_runtime=Mock(),
                 _applied_context=("nightmare", "", "s0"), _pending_context=None)
