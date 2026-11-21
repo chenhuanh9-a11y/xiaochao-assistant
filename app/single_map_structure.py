@@ -913,58 +913,6 @@ def solve_initial_structure(frame,reference,validation,route,profile, *, cancell
         selectedRouteCurrentFrameResidual=dict(residual,validationBasis='actual-rendered-profile-structural-mask',poseVerifiedAgainstRenderedProfile=True))
 
 
-def current_point_geometry(frame, reference, target):
-    """Static-to-current patch pairs; no previous pixels or optical flow."""
-    from map_observation import map_translation_mask
-    current = map_translation_mask(frame, maximum_width=frame.shape[1])
-    if current is None:
-        return {'success': False, 'reason': 'static-point-query-empty'}
-    query = (current[0] > .22).astype(np.uint8)
-    projected = cv2.warpAffine(reference, target[:2], (frame.shape[1], frame.shape[0]),
-                               flags=cv2.INTER_NEAREST)
-    points = cv2.goodFeaturesToTrack(query, 128, .015, 16, blockSize=7)
-    if points is None:
-        return {'success': False, 'reason': 'static-point-query-empty'}
-    expected, observed, scores, roundtrips = [], [], [], []
-    for x, y in np.rint(points.reshape(-1, 2)).astype(int):
-        radius, search = 12, 48
-        if x < radius+search or y < radius+search or x+radius+search >= query.shape[1] or y+radius+search >= query.shape[0]:
-            continue
-        patch = query[y-radius:y+radius+1, x-radius:x+radius+1]
-        roi = projected[y-radius-search:y+radius+search+1, x-radius-search:x+radius+search+1]
-        corr = cv2.matchTemplate(roi, patch, cv2.TM_CCOEFF_NORMED)
-        _, score, _, (sx, sy) = cv2.minMaxLoc(corr)
-        cv2.circle(corr, (sx, sy), 4, -1, -1)
-        if score < .55 or score-float(corr.max()) < .025:
-            continue
-        px, py = x-search+sx, y-search+sy
-        source_patch = projected[py-radius:py+radius+1, px-radius:px+radius+1]
-        reverse_roi = query[y-radius-search:y+radius+search+1, x-radius-search:x+radius+search+1]
-        reverse = cv2.matchTemplate(reverse_roi, source_patch, cv2.TM_CCOEFF_NORMED)
-        _, reverse_score, _, reverse_at = cv2.minMaxLoc(reverse)
-        roundtrip = float(np.linalg.norm(np.asarray(reverse_at)-search))
-        if roundtrip > 2.5 or reverse_score < .55:
-            continue
-        expected.append([x-search+sx, y-search+sy])
-        observed.append([x, y])
-        scores.append(score)
-        roundtrips.append(roundtrip)
-    if len(expected) < 6:
-        return {'success': False, 'reason': 'static-point-pairs-insufficient', 'pairs': len(expected)}
-    expected, observed = np.asarray(expected), np.asarray(observed)
-    source_h = np.column_stack((expected, np.ones(len(expected)))) @ np.linalg.inv(target).T
-    source = source_h[:, :2] / source_h[:, 2, None]
-    # Static template round trips and correlation errors feed the existing
-    # geometric ambiguity calculation; neither value comes from temporal LK.
-    result = fit_axis_locked_point_geometry(source, observed, target,
-        local_points=observed, query_shape=query.shape,
-        forward_backward=np.asarray(roundtrips), flow_error_values=(1-np.asarray(scores))*100,
-        initial_count=len(points), component=None,
-        started=time.perf_counter(), maximum_relative_scale_correction=0.)
-    result['measuredPairs'] = {'source': source.tolist(), 'observed': observed.tolist()}
-    return result
-
-
 def retrieve(reference, query, linear, query_scale):
     """Retain repeated local peaks, then vote on their spatial arrangement."""
     projected = np.asarray(linear, dtype=np.float64) * query_scale
