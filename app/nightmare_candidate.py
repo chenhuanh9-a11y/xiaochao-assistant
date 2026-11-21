@@ -2698,7 +2698,7 @@ class NightmareCandidateEngine:
         reference builders; a clean mask is never accepted without a matching
         validation mask.
         """
-        shared_loader = getattr(self, "_shared_reference_loader", None)
+        shared_loader = self._shared_reference_loader
         if callable(shared_loader):
             try:
                 product = shared_loader(profile_id, map_id, floor)
@@ -2713,8 +2713,8 @@ class NightmareCandidateEngine:
             if isinstance(route, np.ndarray) and tuple(route.shape[:2]) != tuple(clean.shape):
                 return None
             return product
-        direct_loader = getattr(self, "_structure_direct_resource_loader", None)
-        loader = getattr(self, "_structure_resource_loader", None)
+        direct_loader = self._structure_direct_resource_loader
+        loader = self._structure_resource_loader
         if not callable(direct_loader) and (
             not callable(loader) or route is None
         ):
@@ -2746,7 +2746,7 @@ class NightmareCandidateEngine:
         return product
 
     def _active_structure_profile_id(self) -> str:
-        provider = getattr(self, "_structure_profile_provider", None)
+        provider = self._structure_profile_provider
         if not callable(provider):
             return "wang-qingxin"
         try:
@@ -2756,10 +2756,10 @@ class NightmareCandidateEngine:
         return profile_id or "wang-qingxin"
 
     def _shared_structure_enabled(self) -> bool:
-        return callable(getattr(self, "_shared_reference_loader", None))
+        return callable(self._shared_reference_loader)
 
     def _shared_structure_product(self, map_id: str, floor: str):
-        loader = getattr(self, "_shared_reference_loader", None)
+        loader = self._shared_reference_loader
         if not callable(loader):
             return None
         try:
@@ -2771,19 +2771,19 @@ class NightmareCandidateEngine:
         self, item_id: str, floor: str, profile_id: str,
     ) -> _Features | None:
         if profile_id != "wang-qingxin":
-            return getattr(self, "_profile_structure_references", {}).get(
+            return self._profile_structure_references.get(
                 (profile_id, item_id, floor),
             )
-        return getattr(self, "_structure_references", {}).get((item_id, floor))
+        return self._structure_references.get((item_id, floor))
 
     def _semantic_source_for(
         self, item_id: str, floor: str, profile_id: str,
     ) -> SemanticFingerprint | None:
         if profile_id != "wang-qingxin":
-            return getattr(self, "_profile_semantic_source_references", {}).get(
+            return self._profile_semantic_source_references.get(
                 (profile_id, item_id, floor),
             )
-        return getattr(self, "_semantic_source_references", {}).get(
+        return self._semantic_source_references.get(
             (item_id, floor),
         )
 
@@ -2791,7 +2791,7 @@ class NightmareCandidateEngine:
         self, floor: str, profile_id: str,
     ) -> None:
         """Record the structure source actually available to ranking."""
-        clean_keys = getattr(self, "_profile_clean_reference_keys", set())
+        clean_keys = self._profile_clean_reference_keys
         clean_count = 0 if profile_id == "wang-qingxin" else sum(
             (profile_id, item.id, floor) in clean_keys for item in self.pack.maps
         )
@@ -2806,17 +2806,17 @@ class NightmareCandidateEngine:
 
     def _ensure_structure_cache_context(self, profile_id: str) -> None:
         """Invalidate only profile structure data when its context changes."""
-        provider = getattr(self, "_structure_cache_context_provider", None)
+        provider = self._structure_cache_context_provider
         try:
             context = str(provider() or "") if callable(provider) else ""
         except Exception:
             context = ""
         context = f"{profile_id}|{context}"
-        if getattr(self, "_structure_cache_context", None) == context:
+        if self._structure_cache_context == context:
             return
-        getattr(self, "_profile_structure_references", {}).clear()
-        getattr(self, "_profile_semantic_source_references", {}).clear()
-        getattr(self, "_profile_clean_reference_keys", set()).clear()
+        self._profile_structure_references.clear()
+        self._profile_semantic_source_references.clear()
+        self._profile_clean_reference_keys.clear()
         self._structure_cache_context = context
 
     def route_image(self, map_id: str, floor: str) -> np.ndarray | None:

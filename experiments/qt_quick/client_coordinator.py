@@ -1050,7 +1050,7 @@ class ClientCoordinator(QObject):
         from client_screen_geometry import project_client_geometry, ScreenGeometryError
         diagnostics = dict(placement="primary-fallback", gameClientMatched=False,
                            reason="no-bound-client")
-        row = next((row for row in getattr(self, "_window_rows", ())
+        row = next((row for row in self._window_rows
                     if str(row.get("hwnd")) == self._bound), None) if self._bound else None
         if row is not None and not row.get("minimized"):
             try:
@@ -1436,8 +1436,7 @@ class ClientCoordinator(QObject):
         # Include both the queued start intent and the current runtime authority.
         if state.get("pendingAction") in {"start_round", "toggle_round"}:
             return True
-        runtime = getattr(self, "runtime", None)
-        actual = runtime.snapshot() if runtime is not None else {}
+        actual = self.runtime.snapshot() if self.runtime is not None else {}
         return any(source.get(key) for source in (state, actual)
                    for key in ("roundActive", "roundPreparing", "roundWorkActive"))
 
@@ -2778,18 +2777,8 @@ class ClientCoordinator(QObject):
             self._last_close_wait = wait_state
             self.lifecycleEvent.emit(dict(stage="close-draining", pools=pools,
                                          hookRunning=hook_running, pendingWrites=writes))
-        if getattr(self.input, "snapshot", {}).get("hookRunning", False):
+        if hook_running or writes or any(pools.values()):
             return
-        if (evidence_busy or self.resources.pool.activeThreadCount() or self.settings.pool.activeThreadCount()
-                or bool(getattr(self.settings, "pendingWrites", False))
-                or self.session._pool.activeThreadCount()):
-            return
-        for writer in self.close_writers:
-            if getattr(writer, "pendingWrites", False):
-                return
-            pool = getattr(writer, "pool", getattr(writer, "_pool", None))
-            if pool is not None and pool.activeThreadCount():
-                return
         self._close_timer.stop()
         self._close_ready = True
         self.changed.emit()

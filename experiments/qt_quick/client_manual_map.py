@@ -44,15 +44,17 @@ def manual_map_thumbnail_source(pack, item, mode: str = "nightmare", native=None
         display = getattr(native, "display_reference", None)
         return display(item.id, str(getattr(pack, "default_entry_floor", "-1"))) if callable(display) else None
     if mode == "difficult":
+        if native is not None:
+            candidate = native.full_reference(item.id)
+        else:
+            metadata = getattr(pack, "metadata", None)
+            source_root = getattr(pack, "source_root", None)
+            relative = metadata.get(item.id, {}).get("manualReference") if isinstance(metadata, dict) else None
+            candidate = Path(source_root) / relative if source_root is not None and relative else None
         try:
-            if native is not None:
-                candidate = native.full_reference(item.id)
-            else:
-                relative = pack.metadata[item.id]["manualReference"]
-                candidate = Path(pack.source_root) / relative
             path = Path(candidate) if candidate is not None else None
             return path if path is not None and path.is_file() else None
-        except Exception:
+        except (OSError, TypeError, ValueError):
             return None
     floors = (str(getattr(pack, "default_entry_floor", "1")), "1", "2", "B1")
     layers = getattr(item, "layers", None) or {}
@@ -61,6 +63,6 @@ def manual_map_thumbnail_source(pack, item, mode: str = "nightmare", native=None
             candidate = layers.get(floor)
             if candidate is not None and Path(candidate).is_file():
                 return Path(candidate)
-        except Exception:
+        except (OSError, TypeError, ValueError):
             continue
     return None

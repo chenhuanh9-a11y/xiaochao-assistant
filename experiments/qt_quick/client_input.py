@@ -617,7 +617,7 @@ class NativeShortcutBackend(QObject):
         if self._game_requested and self._hwnd and not self._binding_suspended:
             try:
                 game_valid = self._native.is_window(self._hwnd)
-            except Exception:
+            except OSError:
                 pass
         self._enabled = bool(ready and self._game_requested and game_valid)
         self._management_enabled = bool(ready and self._management_requested)

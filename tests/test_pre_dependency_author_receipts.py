@@ -104,20 +104,30 @@ class PreDependencyReceiptTests(unittest.TestCase):
         self.assertEqual(dependency.read_bytes(), b'changed-dependency')
         self.assertEqual(self.receipt_path.read_bytes(), before)
 
-    def test_incomplete_source_contract_cannot_erase_original_dependencies(self):
-        reduced = self.dependencies[:-1]; digest = inventory_digest(reduced)
-        contract = (digest, tuple((row['path'], row['bytes'], row['sha256']) for row in reduced))
-        release = (*self.release[:3], digest)
-        with patch.object(policy, 'REVIEWED_PRE_DEPENDENCY_AUTHOR_RELEASES', (release,)), \
-                patch.object(policy, 'REVIEWED_AUTHOR_DEPENDENCY_CONTRACTS', (contract,)):
-            with self.assertRaisesRegex(importer.ImportRejected, 'invalid-reviewed-author-receipt-policy'):
-                self.read()
-
-    def test_malformed_or_duplicate_source_policy_fails_before_match(self):
-        for value in ([self.release], (self.release, self.release), (([], *self.release[1:]),)):
-            with self.subTest(policy=value), patch.object(policy, 'REVIEWED_PRE_DEPENDENCY_AUTHOR_RELEASES', value):
-                with self.assertRaisesRegex(importer.ImportRejected, 'invalid-reviewed-author-receipt-policy'):
-                    self.read()
+class ReviewedPolicyTableTests(unittest.TestCase):
+    def test_source_reviewed_policy_tables_are_well_formed_and_complete(self):
+        import re
+        contracts = {}
+        self.assertIs(type(policy.REVIEWED_AUTHOR_DEPENDENCY_CONTRACTS), tuple)
+        self.assertIs(type(policy.REVIEWED_PRE_DEPENDENCY_AUTHOR_RELEASES), tuple)
+        for digest, rows in policy.REVIEWED_AUTHOR_DEPENDENCY_CONTRACTS:
+            self.assertRegex(digest, r'^[a-f0-9]{64}$')
+            self.assertNotIn(digest, contracts)
+            parsed = importer._rows([dict(zip(('path', 'bytes', 'sha256'), row)) for row in rows], dependencies=True)
+            self.assertEqual(inventory_digest(list(parsed.values())), digest)
+            contracts[digest] = parsed
+        seen = set()
+        for package, archive, inv_digest, contract_digest in policy.REVIEWED_PRE_DEPENDENCY_AUTHOR_RELEASES:
+            self.assertIn(package, importer.PACKAGE_IDS)
+            self.assertNotIn(package, importer.S1_AUTHOR_PACKAGE_IDS)
+            for value in (archive, inv_digest, contract_digest):
+                self.assertRegex(value, r'^[a-f0-9]{64}$')
+            self.assertNotIn((package, archive), seen)
+            seen.add((package, archive))
+            self.assertIn(contract_digest, contracts)
+            required = (importer.DIFFICULT_AUTHOR_DEPENDENCIES if package in
+                        {'difficult-aichicu', 'difficult-suju-speed'} else importer.BASE_DEPENDENCIES)
+            self.assertTrue(required <= {row['path'] for row in contracts[contract_digest].values()})
 
 
 if __name__ == '__main__':

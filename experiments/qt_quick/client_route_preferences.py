@@ -99,8 +99,17 @@ class _DisplaySelection:
         self.reference = reference
 
     def _base_author_status(self, map_id, floor):
-        from base_display_integration import BaseDisplayIntegrationMixin
-        return BaseDisplayIntegrationMixin._base_author_status(self, map_id, floor)
+        preferred = self.preferred_route_profile_id
+        catalog = self.author_route_catalog
+        variants = catalog.variants(preferred, str(map_id), include_inactive=True) if catalog else ()
+        declared = any(str(floor) in row.layers for row in variants)
+        optional = self.optional_author_displays
+        binding = optional.binding(preferred, map_id, floor) if optional else None
+        if not declared and binding is None:
+            return 'missing'
+        if binding is not None and not binding.get('usable'):
+            return 'registration-failed'
+        return 'available'
 
     def _shared_structure_mode_enabled(self): return True
     def _custom_route_active(self, map_id, floor): return False

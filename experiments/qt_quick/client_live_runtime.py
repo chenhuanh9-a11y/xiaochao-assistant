@@ -169,6 +169,7 @@ class _AlignmentHost:
         self.collect_fit_diagnostics = collect_fit_diagnostics
         self.grid_runtime = grid_runtime
         self.diagnostic_event_counts = {}
+        self._observation_residual_cache = None
 
     def _log(self, event, **values):
         if self.collect_fit_diagnostics:
@@ -220,7 +221,7 @@ class _AlignmentHost:
         # Never trust a residual supplied by a solver or retain one across
         # observations. The canonical evidence wrapper still runs below.
         import numpy as np
-        cache = getattr(self, "_observation_residual_cache", None)
+        cache = self._observation_residual_cache
         visible = kwargs.get("visible_override")
         transform = np.asarray(matrix)
         key = (str(map_id), str(floor), id(frame), id(reference), id(reference.validation_mask),
@@ -573,7 +574,7 @@ class _AlignmentHost:
         return rendered_profile_residual_is_verified(residual)
 
     def _fit_observation(self, frame, map_id, floor, cancelled, entry_candidate=None, *, observation_bounds=None, _context=None):
-        previous = getattr(self, "_observation_residual_cache", None)
+        previous = self._observation_residual_cache
         self._observation_residual_cache = {}
         try:
             return self._fit_observation_uncached(frame, map_id, floor, cancelled, entry_candidate,
@@ -767,6 +768,7 @@ class LiveRuntime:
         self._reference_capture_context = None
         self._settings = {}
         self._settings_generation = 0
+        self._display_generation = 0
         self._s1_solver_policy_generation = 0
         # Latest full-client frame in which the map was seen open; only the
         # floor-region editor reads it. A reference, never a copy per frame.
@@ -781,6 +783,7 @@ class LiveRuntime:
         self._s1_raw_floor = None
         self._s1_floor_reason = "not-observed"
         self._manual_capture_owner = None
+        self._capture_activation_owner = None
         self._observed_floor = ""
         self._last_observation = None
         self._pointer_context_snapshot = None
@@ -789,6 +792,9 @@ class LiveRuntime:
         self._steady = Idvb0059Adapter()
         from s1_private_experiment import LatestEvidenceQueue
         self._s1_private_jobs = LatestEvidenceQueue()
+        self._s1_private_pool = None
+        self._s1_structure_session = None
+        self._group_intent_generation = 0
         self._private_observation_sequence = 0
         self._reset_identity()
         self._reset_floor_policy()
@@ -888,15 +894,14 @@ class LiveRuntime:
         self._s1_candidate_preference = None
         self._s1_candidate_pose_hint = None
         self._clear_private_pool()
-        old_structure = getattr(self, "_s1_structure_session", None)
+        old_structure = self._s1_structure_session
         if old_structure is not None:
             old_structure.end_round()
         self._s1_structure_session = self._s1_structure_ticket = None
-        for row in getattr(self, "_candidate_rows", ()):
+        for row in self._candidate_rows:
             row["structureSupported"] = False
         self._transient_drag = self._transient_cycle = None
-        if hasattr(self, "_steady"):
-            self._steady.reset()
+        self._steady.reset()
         self._steady_material_ready = False
         self._remember_proposals = {}
         self._pending_sibling = None
@@ -905,7 +910,7 @@ class LiveRuntime:
         self._desired_group_member = None
         self._group_member_choice_status = ""
         self._automatic_candidate_rows = []
-        self._group_intent_generation = getattr(self, "_group_intent_generation", 0) + 1
+        self._group_intent_generation += 1
         self._group_choice_inflight = None
         self._group_choice_reason = ""
         self._identity_native = None
@@ -978,7 +983,7 @@ class LiveRuntime:
             proposal = self._remember_proposals.get(token)
             if (proposal is None or proposal["accepted"] or self._render is None
                     or self._render["token"] != token or not self._display_current(self._render) or self._render.get("transient")
-                    or self._render.get("displayGeneration") != getattr(self, "_display_generation", 0)
+                    or self._render.get("displayGeneration") != self._display_generation
                     or proposal["context"] != self._steady_context() or proposal["group"] is not self._group):
                 return dict(success=False, reason="material-token-expired-or-already-accepted", token=token)
             if proposal.get("candidateOnly"):
@@ -1076,7 +1081,7 @@ class LiveRuntime:
         phase = ("MANUAL_MEMBER_CONFIRMED" if held else "MEMBER_VERIFIED" if self._durable_map_id
                  else "GROUP_LOCKED" if grouped else "UNLOCKED")
         provisional_id = self._provisional_display_map_id
-        pool = getattr(self, "_s1_private_pool", None)
+        pool = self._s1_private_pool
         formal_lock = self._s1_round_locked_map()
         return dict(identityPhase="MEMBER_VERIFIED" if formal_lock else "CANDIDATE_DISPLAY" if provisional_id else phase, identitySource=self._identity_source,
             candidateFullImage=bool(provisional_id), candidateDisplayOnly=bool(provisional_id),
@@ -1243,7 +1248,7 @@ class LiveRuntime:
                 self._revoke_render("locked-map-resource-unavailable")
                 return self._receipt(action, payload, success=False,
                     reason="locked-map-resource-unavailable", posePending=True)
-            pool = getattr(self, "_s1_private_pool", None)
+            pool = self._s1_private_pool
             if private_enabled and (pool is None or pool.scope != preference_scope):
                 from s1_private_experiment import PrivateRoundPool
                 pool = self._s1_private_pool = PrivateRoundPool(preference_scope, catalog.map_ids,
@@ -1270,7 +1275,7 @@ class LiveRuntime:
             owner = object()
             self._stream_owner = owner
             settings_generation = self._settings_generation
-            display_generation = getattr(self, "_display_generation", 0)
+            display_generation = self._display_generation
             intent_generation = self._group_intent_generation
             round_id = self._round
             priority_handles = dict(self._stream_priority_handles)
@@ -1296,7 +1301,7 @@ class LiveRuntime:
             return (owns_ticket() and not self._cancelled(cancelled)
                 and self._active and self._map_open and self._s1_provisional_enabled()
                 and settings_generation == self._settings_generation
-                and display_generation == getattr(self, "_display_generation", 0)
+                and display_generation == self._display_generation
                 and intent_generation == self._group_intent_generation
                 and floor == self._floor == self._observed_floor
                 and capture_generation == self._capture_generation()
@@ -1620,9 +1625,7 @@ class LiveRuntime:
 
     def _clear_private_pool(self):
         self._s1_private_pool = None
-        jobs = getattr(self, "_s1_private_jobs", None)
-        if jobs is not None:
-            jobs.discard_pending()
+        self._s1_private_jobs.discard_pending()
 
     def _private_pool_scope_current(self, pool):
         if pool is None or self._s1_private_pool is not pool:
@@ -1985,7 +1988,7 @@ class LiveRuntime:
     def _sibling_scope(self):
         return (self._epoch, self._mode, self._profile, self._round, self._cycle,
             self._frame_id, self._frame_generation, str(self._floor),
-            getattr(self, "_display_generation", 0), id(self._engine))
+            self._display_generation, id(self._engine))
 
     @staticmethod
     def _copy_pose_core(core):
@@ -2092,11 +2095,8 @@ class LiveRuntime:
                 target = pending["render"]["mapId"]
                 gate = copy.copy(self._gate)
                 gate.select(target)
-                try:
-                    committed = bool(gate.confirm() and (pending.get("manualChoice") is not None
-                        or state.confirm(target, self._floor, self._identity_context())))
-                except Exception:
-                    committed = False
+                committed = bool(gate.confirm() and (pending.get("manualChoice") is not None
+                    or state.confirm(target, self._floor, self._identity_context())))
                 if not committed:
                     failure = "sibling-identity-commit-failed"
                 else:
@@ -3252,7 +3252,7 @@ class LiveRuntime:
                 displayAuthorized=bool(metadata), liveAuthorization=bool(metadata.get("liveAuthorization")),
                 privateExperiment=(dict(self._s1_private_pool.snapshot(),
                     privateExperimental=self._native_s1_private_experiment,
-                    privateResourceDigest=self._s1_private_pool.scope[4].resource_key) if getattr(self, "_s1_private_pool", None)
+                    privateResourceDigest=self._s1_private_pool.scope[4].resource_key) if self._s1_private_pool
                     else dict(privateExperimental=bool(self._native_s1_private_experiment and self._season == "s1" and not self._manual_alignment),
                         privateExperimentalLocked=False, privateLockMapId="", privatePoolMapIds=[])),
                 message=self._message, core=self._core.snapshot(), evidenceKind=self._evidence_kind)
@@ -3576,7 +3576,7 @@ class LiveRuntime:
                     self._s1_candidate_pose_hint = None
                     self.invalidate("s1-candidate-settings-changed")
             if variant_changed or numbers_display_changed:
-                self._display_generation = getattr(self, "_display_generation", 0) + 1
+                self._display_generation = self._display_generation + 1
                 if (self._profile, self._map_id, str(self._floor)) == ("zhan10-coffin", "nightmare-01", "1"):
                     # Retain identity, floor and canonical pose. Only presentation
                     # authority expires; the next normal refresh revalidates it.
@@ -3674,7 +3674,7 @@ class LiveRuntime:
         with self._work:
             with self._lock:
                 engine, profile, map_id, floor = self._engine, self._profile, self._map_id, self._floor
-                generation = getattr(self, "_display_generation", 0)
+                generation = self._display_generation
                 scope = (self._epoch, self._round, self._cycle, self._frame_id, engine, profile, map_id, floor, generation)
                 source = self._render
                 sheet = self._reference_sheet
@@ -3722,14 +3722,14 @@ class LiveRuntime:
             except Exception as error:
                 with self._lock:
                     if scope == (self._epoch, self._round, self._cycle, self._frame_id, self._engine,
-                            self._profile, self._map_id, self._floor, getattr(self, "_display_generation", 0)):
+                            self._profile, self._map_id, self._floor, self._display_generation):
                         self._render = self._render_capture_context = None
                         self._reference_sheet = self._reference_capture_context = None
                 return self._receipt(action, payload, success=False, reason=f"route-display-reprojection-failed:{error}")
             with self._lock:
                 if (self._cancelled(cancelled) or scope != (self._epoch, self._round, self._cycle,
                         self._frame_id, self._engine, self._profile, self._map_id, self._floor,
-                        getattr(self, "_display_generation", 0))):
+                        self._display_generation)):
                     return self._receipt(action, payload, success=False, reason="stale-display-settings", stale=True)
                 if (sheet is not None and sheet.get("s1CandidateReference")
                         and (self._reference_sheet is not sheet
@@ -3836,7 +3836,7 @@ class LiveRuntime:
         with self._lock:
             row = self._render
             if (row is None or row["token"] != token or not self._display_current(row)
-                    or row.get("displayGeneration") != getattr(self, "_display_generation", 0)):
+                    or row.get("displayGeneration") != self._display_generation):
                 return None
             if not self._capture_is_current(self._render_capture_context, row.get("captureGeneration")):
                 self.invalidate("capture-context-changed")
@@ -3873,7 +3873,7 @@ class LiveRuntime:
                 return
             if previous.get("mapId") == map_id and self._s1_reference_current(previous):
                 return
-            profile, generation = self._profile, getattr(self, "_display_generation", 0)
+            profile, generation = self._profile, self._display_generation
             variant = self._settings.get("zhan10CoffinVariantId", "variant-01")
         try:
             display = self._display_layer(engine, map_id, floor, profile, variant_id=variant)
@@ -3883,7 +3883,7 @@ class LiveRuntime:
             return  # Missing static resources cannot be replaced by old-floor pixels.
         with self._lock:
             if (not current() or self._s1_private_pool is not pool or map_id not in pool.remaining
-                    or profile != self._profile or generation != getattr(self, "_display_generation", 0)):
+                    or profile != self._profile or generation != self._display_generation):
                 return
             self._reference_sheet = dict(token=uuid4().hex, pixels=pixels,
                 season=self._season, mode=self._mode, profileId=profile, mapId=map_id,
@@ -3925,7 +3925,7 @@ class LiveRuntime:
                 ("s1ReferenceRecoveryRevision", pool.recovery_revision if pool is not None else None)))
             and (self._evidence_kind != "live-client-capture" or row.get("captureGeneration") is not None)
             and (not check_display or (row.get("profileId") == self._profile
-                and row.get("displayGeneration") == getattr(self, "_display_generation", 0)))
+                and row.get("displayGeneration") == self._display_generation))
             and (pool is None or row.get("mapId") in pool.remaining))
 
     def reference_payload(self):
@@ -3959,7 +3959,7 @@ class LiveRuntime:
                     or any(row.get(key) != expected for key, expected in (
                         ("season", self._season), ("mode", self._mode), ("profileId", self._profile), ("mapId", self._map_id),
                         ("floor", self._floor), ("roundId", self._round),
-                        ("displayGeneration", getattr(self, "_display_generation", 0)),
+                        ("displayGeneration", self._display_generation),
                         ("engineIdentity", id(self._engine))))
                     or row.get("captureGeneration") != self._capture_generation()
                     or (self._evidence_kind == "live-client-capture" and row.get("captureGeneration") is None)):
@@ -3983,7 +3983,7 @@ class LiveRuntime:
     def _failure_capture_scope(self):
         # An image belongs to its originating lifetime, never the state at save time.
         return (self._epoch, self._round, self._season, self._mode, self._profile,
-            id(self._engine), getattr(self, "_display_generation", 0))
+            id(self._engine), self._display_generation)
 
     @staticmethod
     def _new_diagnostic_attempt(payload):
@@ -4244,11 +4244,8 @@ class LiveRuntime:
                 if key in diagnostics:
                     diagnostics[key] = cleaner(diagnostics[key])
             try:
-                state = getattr(self._capture, "snapshot", {})
-                state = state() if callable(state) else state
-                generation = getattr(self._capture, "generation", None)
-                if generation is None and isinstance(state, dict):
-                    generation = state.get("generation")
+                state = self._capture_snapshot()
+                generation = self._capture_generation(state)
                 if type(generation) is int:
                     diagnostics["providerGeneration"] = generation
                     diagnostics["providerGenerationSource"] = "current-provider-at-error"
@@ -4259,11 +4256,15 @@ class LiveRuntime:
             fields["captureDiagnostics"] = diagnostics
         return fields
 
-    def _capture_generation(self):
+    def _capture_snapshot(self):
+        state = getattr(self._capture, "snapshot", {})
+        return state() if callable(state) else state
+
+    def _capture_generation(self, state=None):
         generation = getattr(self._capture, "generation", None)
         if generation is None:
-            state = getattr(self._capture, "snapshot", {})
-            state = state() if callable(state) else state
+            if state is None:
+                state = self._capture_snapshot()
             generation = state.get("generation") if isinstance(state, dict) else None
         return generation
 
@@ -4274,12 +4275,12 @@ class LiveRuntime:
         if callable(guard):
             try:
                 return bool(guard(context, generation=generation))
-            except Exception:
+            except (OSError, ValueError, RuntimeError):
                 return False
         return True  # Explicit synthetic/offline capture provider only.
 
     def _display_current(self, row):
-        pool = getattr(self, "_s1_private_pool", None)
+        pool = self._s1_private_pool
         if (row.get("candidateDisplayOnly") and pool is not None
                 and (not self._private_pool_scope_current(pool) or row.get("mapId") not in pool.remaining)):
             return False
@@ -4611,7 +4612,7 @@ class LiveRuntime:
                     self._manual_alignment = False
                     self.invalidate("mode-changed")
                 elif changed_profile:
-                    self._display_generation = getattr(self, "_display_generation", 0) + 1
+                    self._display_generation = self._display_generation + 1
                     self._discard_sibling()
                 if changed_mode:
                     self._active = self._map_open = self._round_preparing = False
@@ -4815,7 +4816,7 @@ class LiveRuntime:
                 return dict(success=False, reason="cancelled-or-stale", stale=True)
             epoch, engine = self._epoch, self._engine
             capture = self._capture
-            previous = getattr(self, "_capture_activation_owner", None)
+            previous = self._capture_activation_owner
             activation_owner = self._capture_activation_owner = dict(
                 provider=capture, status="pending", cleanup=False)
             if previous is not None and previous["provider"] is capture:
@@ -4854,7 +4855,7 @@ class LiveRuntime:
 
     def _map_recovery_scope(self):
         return (self._epoch, self._round, self._cycle, self._mode, self._profile,
-            getattr(self, "_display_generation", 0), self._capture_generation(), self._last_map_input_sequence)
+            self._display_generation, self._capture_generation(), self._last_map_input_sequence)
 
     @staticmethod
     def _map_observed(engine, observation, floor_read):
@@ -5017,14 +5018,14 @@ class LiveRuntime:
                 and owner == self._refresh_render_owner() and self._display_current(row)
                 and row["profileId"] == self._profile
                 and row.get("engineIdentity") == id(self._engine)
-                and row.get("displayGeneration") == getattr(self, "_display_generation", 0)
+                and row.get("displayGeneration") == self._display_generation
                 and self._capture_is_current(self._render_capture_context, row.get("captureGeneration"))):
             return False
         check_current = getattr(self._engine, 'qt_assert_resource_current', None)
         try:
             if callable(check_current):
                 check_current()
-        except Exception:
+        except (OSError, ValueError, RuntimeError):
             return False
         return True
 
@@ -5913,7 +5914,7 @@ class LiveRuntime:
             _alignment_v2_show_overlay=lambda *args,**kwargs:True,
             _aligned_author_route_image=lambda *args:layer["pixels"],
             _mark_overlay_display_verified=lambda *args,**kwargs:None,
-            _log_core_chain_event=lambda *args,**kwargs:None,show_sheet=lambda:None)
+            _log_core_chain_event=lambda *args,**kwargs:None)
         if not show_shared_projection(owner,map_id,str(floor),previous,{},display_environment_signature=lambda _:signature):
             return None
         with self._lock:
@@ -5923,7 +5924,7 @@ class LiveRuntime:
                 return None
             metadata=dict(season=self._season, mode=self._mode,profileId=profile,preferredProfileId=profile,
                 effectiveProfileId=layer.get("effectiveProfileId","shared-structure"),mapId=map_id,floor=str(floor),
-                roundId=self._round,variantId=layer.get("variantId"),displayGeneration=getattr(self,"_display_generation",0),
+                roundId=self._round,variantId=layer.get("variantId"),displayGeneration=self._display_generation,
                 resourceIdentity=layer["resourceIdentity"],engineIdentity=id(engine),captureGeneration=capture_generation,
                 displayKind=layer["displayKind"],displayLabel=layer["displayLabel"],routeProfileId=layer["routeProfileId"],
                 authorStatus=layer.get("authorStatus","none"),fallback=layer.get("fallback",False),
@@ -6016,7 +6017,7 @@ class LiveRuntime:
                     observedFloor=observed_floor, targetFloor=str(floor), fitAttempted=False)
                 return self._receipt(action, payload, success=False, reason=reason,
                     observedFloor=observed_floor, targetFloor=str(floor), fitAttempted=False)
-            display_generation = getattr(self, "_display_generation", 0)
+            display_generation = self._display_generation
             group_intent_generation = self._group_intent_generation
             variant_id = self._settings.get("zhan10CoffinVariantId", "variant-01")
         # Static reference follows the independently confirmed map and floor;
@@ -6025,7 +6026,7 @@ class LiveRuntime:
         reference_pixels = np.ascontiguousarray(display["pixels"][:, :, [2, 1, 0, 3]])
         reference_pixels.setflags(write=False)
         with self._lock:
-            if display_generation != getattr(self, "_display_generation", 0):
+            if display_generation != self._display_generation:
                 return self._receipt(action, payload, success=False, reason="stale-display-settings", stale=True)
             if (group_intent_generation != self._group_intent_generation
                     or manual_choice is None and self._group_choice_inflight is not None):
@@ -6182,7 +6183,7 @@ class LiveRuntime:
             return self._receipt(action, payload, success=False, reason=reason)
         self._verify_resource_read_scope(engine)
         with self._lock:
-            if display_generation != getattr(self, "_display_generation", 0):
+            if display_generation != self._display_generation:
                 return self._receipt(action, payload, success=False, reason="stale-display-settings", stale=True)
             if (group_intent_generation != self._group_intent_generation
                     or manual_choice is None and self._group_choice_inflight is not None):
@@ -6327,7 +6328,7 @@ class LiveRuntime:
 
     def _observe(self, engine, frame):
         started = time.monotonic()
-        settings = dict(getattr(self, "_settings", None) or {}, gameSeason=self._season)
+        settings = dict(self._settings, gameSeason=self._season)
         if self._manual_alignment and self._s1_floor_observer_available(engine):
             from s1_floor_observation import detect_s1_floor
             read = detect_s1_floor(frame, season=self._season, mode=self._mode,

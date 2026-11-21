@@ -44,58 +44,25 @@ _UNSPECIFIED_RESOURCE_VERSION = object()
 @lru_cache(maxsize=1)
 def _s1_release_catalogue(releases):
     """Immutable exact locks; parsing old/new inventory is not live authority."""
-    if type(releases) is not tuple or len(releases) > 16:
-        raise ManagedBaseResourceError("invalid-reviewed-s1-release-policy")
-    result, paths, versions = [], set(), set()
-    for release in releases:
-        if type(release) is not tuple or len(release) != 2:
-            raise ManagedBaseResourceError("invalid-reviewed-s1-release-policy")
-        version, values = release
-        if (type(version) is not str or not version.strip() or len(version) > 256
-                or version in versions or type(values) is not tuple or not 0 < len(values) <= 20000):
-            raise ManagedBaseResourceError("invalid-reviewed-s1-release-policy")
-        versions.add(version)
-        rows, seen, modes = set(), set(), set()
-        for value in values:
-            if type(value) is not tuple or len(value) != 3:
-                raise ManagedBaseResourceError("invalid-reviewed-s1-release-policy")
-            path, size, digest = value
-            row = next(iter(files._rows([dict(path=path, bytes=size, sha256=digest)]).values()))
-            parts = row["path"].split("/")
-            if (len(parts) < 5 or parts[:3] != ["_internal", "seasons", "s1"]
-                    or parts[3] not in {"difficulty2", "difficult", "nightmare"}
-                    or not ((len(parts) == 5 and parts[4] == "native-map-manifest.json")
-                            or (len(parts) > 5 and parts[4] in {"assets", "references", "recognition"}))
-                    or Path(path).suffix.lower() not in {".json", ".gz", ".npz", ".png", ".webp", ".jpg",
-                        ".jpeg", ".txt", ".md", ".ico", ".svg"}
-                    or row["path"].casefold() in seen):
-                raise ManagedBaseResourceError("invalid-reviewed-s1-release-path")
-            seen.add(row["path"].casefold())
-            if len(parts) == 5:
-                modes.add(parts[3])
-            rows.add((row["path"], row["bytes"], row["sha256"]))
-        if modes != {"difficulty2", "difficult", "nightmare"}:
-            raise ManagedBaseResourceError("incomplete-reviewed-s1-release-policy")
-        result.append((version, frozenset(rows)))
-        paths.update(row[0] for row in rows)
     from s1_resource_retirement import projected_release
+    result, paths = [], set()
+    for version, values in releases:
+        rows = frozenset(
+            (row["path"], row["bytes"], row["sha256"])
+            for path, size, digest in values
+            for row in files._rows([dict(path=path, bytes=size, sha256=digest)]).values()
+        )
+        result.append((version, rows))
+        paths.update(row[0] for row in rows)
     for version, rows in tuple(result):
         projection = projected_release(version, rows)
         if projection is not None:
-            if projection[0] in versions:
-                raise ManagedBaseResourceError("duplicate-s1-retirement-target")
             result.append(projection)
-            versions.add(projection[0])
     return tuple(result), frozenset(paths)
 
 
 def _reviewed_s1_catalogue():
-    try:
-        return _s1_release_catalogue(_REVIEWED_S1_BASE_RELEASES)
-    except (TypeError, ValueError) as error:
-        if isinstance(error, ManagedBaseResourceError):
-            raise
-        raise ManagedBaseResourceError("invalid-reviewed-s1-release-policy") from error
+    return _s1_release_catalogue(_REVIEWED_S1_BASE_RELEASES)
 
 
 def _verify_reviewed_s1_inventory(rows, resource_version=_UNSPECIFIED_RESOURCE_VERSION):
@@ -321,29 +288,17 @@ def _package_constraints(root, *, prospective_base_root=None):
     return owned, dependencies, unrecorded
 
 
+@lru_cache(maxsize=1)
+def _legacy_s0_catalogue(releases):
+    return tuple(
+        _rows([dict(zip(("path", "bytes", "sha256"), value)) for value in release[2]])
+        for release in releases
+    )
+
+
 def _legacy_s0_previous(root, candidate):
     """Recognize only an entire source-reviewed predecessor, before any write."""
-    if type(REVIEWED_LEGACY_S0_BASE_RELEASES) is not tuple:
-        raise ManagedBaseResourceError("invalid-reviewed-legacy-s0-policy")
-    seen, catalogue = set(), []
-    for release in REVIEWED_LEGACY_S0_BASE_RELEASES:
-        if (type(release) is not tuple or len(release) != 3
-                or type(release[0]) is not str or not re.fullmatch("[0-9a-f]{40}", release[0])
-                or type(release[1]) is not str or not re.fullmatch("[0-9a-f]{64}", release[1])
-                or release[1] in seen or type(release[2]) is not tuple or not release[2]):
-            raise ManagedBaseResourceError("invalid-reviewed-legacy-s0-policy")
-        seen.add(release[1])
-        rows = []
-        for value in release[2]:
-            if type(value) is not tuple or len(value) != 3:
-                raise ManagedBaseResourceError("invalid-reviewed-legacy-s0-policy")
-            rows.append(dict(zip(("path", "bytes", "sha256"), value)))
-        previous = _rows(rows)
-        if any(key.startswith("_internal/seasons/") or optional_author_sidecar(row["path"])
-               for key, row in previous.items()):
-            raise ManagedBaseResourceError("invalid-reviewed-legacy-s0-policy")
-        catalogue.append(previous)
-    for previous in catalogue:
+    for previous in _legacy_s0_catalogue(REVIEWED_LEGACY_S0_BASE_RELEASES):
         # This recognition adds no retirement authority or partial adoption.
         if (set(previous) <= set(candidate) and all(
                 _same(_actual(files._target(root, row["path"])), row)
