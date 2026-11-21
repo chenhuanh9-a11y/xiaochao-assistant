@@ -5,7 +5,7 @@ import time
 import cv2
 from pathlib import Path
 import numpy as np
-from nightmare_candidate import NightmarePack, NightmareMap, NightmareCandidateEngine
+from nightmare_candidate import NightmarePack, NightmareMap
 from nightmare_author_coordinate_adapter import AuthorCoordinateAdapters, CANONICAL_SCHEMA
 from author_route_catalog import AuthorRouteCatalog, AuthorRouteProfile, AuthorRouteVariant
 from author_structure_resources import AuthorStructureResourceStore
