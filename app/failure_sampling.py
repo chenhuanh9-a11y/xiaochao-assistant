@@ -338,41 +338,16 @@ def read_automatic_image(root, row, *, limit=_IMAGE_BYTES, namespace='automatic-
 
 
 def _open_delete_image(path):
-    import ctypes
-    import msvcrt
-    from ctypes import wintypes
-    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
-    create = kernel.CreateFileW
-    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
-                       wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
-    create.restype = wintypes.HANDLE
+    from local_path_safety import win32_open_handle_fd
     # GENERIC_READ | DELETE, FILE_SHARE_READ only, OPEN_EXISTING,
     # FILE_FLAG_OPEN_REPARSE_POINT. No path unlink/rename fallback exists.
-    handle = create(str(path), 0x80000000 | 0x00010000, 1, None, 3, 0x00200000, None)
-    if handle == wintypes.HANDLE(-1).value:
-        raise ctypes.WinError(ctypes.get_last_error())
-    try:
-        return msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
-    except BaseException:
-        close = kernel.CloseHandle
-        close.argtypes = [wintypes.HANDLE]
-        close.restype = wintypes.BOOL
-        close(handle)
-        raise
+    return win32_open_handle_fd(path)
 
 
 def _mark_delete_image(fd):
     import ctypes
-    import msvcrt
-    from ctypes import wintypes
-    class FileDispositionInfo(ctypes.Structure):
-        _fields_ = [('DeleteFile', ctypes.c_ubyte)]
-    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
-    dispose = kernel.SetFileInformationByHandle
-    dispose.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
-    dispose.restype = wintypes.BOOL
-    value = FileDispositionInfo(1)
-    if not dispose(msvcrt.get_osfhandle(fd), 4, ctypes.byref(value), ctypes.sizeof(value)):
+    from local_path_safety import win32_set_delete_disposition
+    if not win32_set_delete_disposition(fd):
         raise ctypes.WinError(ctypes.get_last_error())
 
 

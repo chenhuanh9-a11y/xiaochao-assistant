@@ -411,18 +411,7 @@ def _remove_empty_directory(root, row, plan):
         _reject('directory-not-owned')
     if os.name != 'nt':
         return 'empty-directory-platform-unsupported'
-    import ctypes
-    from ctypes import wintypes
-    import msvcrt
-    api = ctypes.WinDLL('kernel32', use_last_error=True)
-    api.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
-        ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
-    api.CreateFileW.restype = wintypes.HANDLE
-    api.CloseHandle.argtypes = [wintypes.HANDLE]
-    api.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int,
-        ctypes.c_void_p, wintypes.DWORD]
-    api.SetFileInformationByHandle.restype = wintypes.BOOL
-    native = None
+    from local_path_safety import win32_open_handle_fd, win32_set_delete_disposition
     try:
         path = files._target(root, relative)
         try:
@@ -437,12 +426,10 @@ def _remove_empty_directory(root, row, plan):
             if relative == parent['path'] or relative.startswith(parent['path'] + '/'):
                 if _directory_identity(files._target(root, parent['path'])) != parent['identity']:
                     return 'directory-changed'
-        native = api.CreateFileW(str(path), 0x80010000, 1, None, 3, 0x02200000, None)
-        if native == ctypes.c_void_p(-1).value:
-            native = None
+        try:
+            descriptor = win32_open_handle_fd(path, flags=0x02200000)
+        except OSError:
             return 'directory-not-empty-or-unavailable'
-        descriptor = msvcrt.open_osfhandle(int(native), os.O_RDONLY | os.O_BINARY)
-        native = None
         try:
             info = os.fstat(descriptor)
             if (not stat.S_ISDIR(info.st_mode) or publication._identity(info) != row['identity']
@@ -451,9 +438,7 @@ def _remove_empty_directory(root, row, plan):
             files._no_links(path)
             if _directory_identity(path) != row['identity']:
                 return 'directory-changed'
-            disposition = ctypes.c_ubyte(1)
-            if not api.SetFileInformationByHandle(msvcrt.get_osfhandle(descriptor), 4,
-                                                ctypes.byref(disposition), ctypes.sizeof(disposition)):
+            if not win32_set_delete_disposition(descriptor):
                 return 'directory-not-empty-or-unavailable'
         finally:
             os.close(descriptor)
@@ -461,9 +446,6 @@ def _remove_empty_directory(root, row, plan):
         return None
     except (OSError, files.ImportRejected):
         return 'directory-changed-or-unavailable'
-    finally:
-        if native is not None:
-            api.CloseHandle(native)
 
 
 def _prune_version_directories(root, plan):

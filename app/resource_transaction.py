@@ -12,7 +12,8 @@ from pathlib import Path, PurePosixPath
 import stat
 import tempfile
 import threading
-from local_path_safety import is_link_or_reparse
+from local_path_safety import (is_link_or_reparse, reject_links, win32_open_handle_fd,
+                               win32_rename_handle, win32_set_delete_disposition)
 
 
 class ResourceTransactionError(ValueError):
@@ -27,14 +28,9 @@ _states = {}
 
 
 def _safe(path):
-    for item in (path, *path.parents):
-        try:
-            linked = is_link_or_reparse(item)
-        except FileNotFoundError:
-            continue
-        if linked:
-            raise ResourceTransactionError('resource-linked-target')
-    return path
+    def on_link(_item):
+        raise ResourceTransactionError('resource-linked-target')
+    return reject_links(path, on_link=on_link)
 
 
 def _state(root):
@@ -273,20 +269,8 @@ def remove_owned_empty_directory(path, expected_identity, *, validate_namespace=
         raise ResourceTransactionError('resource-directory-invalid-identity')
     if os.name != 'nt':
         return 'empty-directory-platform-unsupported'
-    import ctypes
-    from ctypes import wintypes
-    import msvcrt
-    api = ctypes.WinDLL('kernel32', use_last_error=True)
-    api.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
-        ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
-    api.CreateFileW.restype = wintypes.HANDLE
-    api.CloseHandle.argtypes = [wintypes.HANDLE]
-    api.CloseHandle.restype = wintypes.BOOL
-    api.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int,
-        ctypes.c_void_p, wintypes.DWORD]
-    api.SetFileInformationByHandle.restype = wintypes.BOOL
     path = Path(os.path.abspath(path))
-    native, descriptor = None, None
+    descriptor = None
 
     def matches(info):
         return (stat.S_ISDIR(info.st_mode)
@@ -305,12 +289,10 @@ def remove_owned_empty_directory(path, expected_identity, *, validate_namespace=
                 return reason
         # READ|DELETE, share READ only. OPEN_REPARSE_POINT prevents following a
         # replaced link; BACKUP_SEMANTICS permits opening the directory itself.
-        native = api.CreateFileW(str(path), 0x80010000, 1, None, 3, 0x02200000, None)
-        if native == ctypes.c_void_p(-1).value:
-            native = None
+        try:
+            descriptor = win32_open_handle_fd(path, flags=0x02200000)
+        except OSError:
             return 'directory-not-empty-or-unavailable'
-        descriptor = msvcrt.open_osfhandle(int(native), os.O_RDONLY | os.O_BINARY)
-        native = None  # The CRT descriptor now owns this exact DELETE handle.
         if not matches(os.fstat(descriptor)):
             return 'directory-changed'
         _safe(path)
@@ -320,9 +302,7 @@ def remove_owned_empty_directory(path, expected_identity, *, validate_namespace=
             reason = validate_namespace()
             if reason is not None:
                 return reason
-        disposition = ctypes.c_ubyte(1)
-        if not api.SetFileInformationByHandle(msvcrt.get_osfhandle(descriptor), 4,
-                                             ctypes.byref(disposition), ctypes.sizeof(disposition)):
+        if not win32_set_delete_disposition(descriptor):
             return 'directory-not-empty-or-unavailable'
         return None
     except (OSError, ValueError):
@@ -330,8 +310,6 @@ def remove_owned_empty_directory(path, expected_identity, *, validate_namespace=
     finally:
         if descriptor is not None:
             os.close(descriptor)
-        if native is not None:
-            api.CloseHandle(native)
 
 
 def rename_no_replace(source, target):
@@ -431,56 +409,24 @@ def rename_owned_directory_no_replace(source, target, expected_identity, *, befo
         return
 
     import ctypes
-    from ctypes import wintypes
-    import msvcrt
-    api = ctypes.WinDLL('kernel32', use_last_error=True)
-    api.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
-        ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
-    api.CreateFileW.restype = wintypes.HANDLE
-    api.CloseHandle.argtypes = [wintypes.HANDLE]
-    api.CloseHandle.restype = wintypes.BOOL
-    api.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int,
-                                               ctypes.c_void_p, wintypes.DWORD]
-    api.SetFileInformationByHandle.restype = wintypes.BOOL
     # READ|DELETE, share READ only; open directories and reparse points themselves.
-    native = api.CreateFileW(str(source), 0x80010000, 1, None, 3, 0x02200000, None)
-    if native == ctypes.c_void_p(-1).value:
-        error = ctypes.WinError(ctypes.get_last_error())
-        raise ResourceTransactionError('resource-directory-source-unavailable') from error
-    descriptor = None
     try:
-        descriptor = msvcrt.open_osfhandle(int(native), os.O_RDONLY | os.O_BINARY)
-        native = None  # The CRT descriptor now owns the directory handle.
+        descriptor = win32_open_handle_fd(source, flags=0x02200000)
+    except OSError as error:
+        raise ResourceTransactionError('resource-directory-source-unavailable') from error
+    try:
         check_source(os.fstat(descriptor))
         before_move()
         recheck_paths()
         check_source(os.fstat(descriptor))
-
-        class RenameInfo(ctypes.Structure):
-            _fields_ = [('ReplaceIfExists', ctypes.c_ubyte),
-                        ('RootDirectory', wintypes.HANDLE),
-                        ('FileNameLength', wintypes.DWORD),
-                        ('FileName', wintypes.WCHAR * 1)]
-
-        name = str(target).encode('utf-16-le')
-        size = max(ctypes.sizeof(RenameInfo), RenameInfo.FileName.offset + len(name) + 2)
-        buffer = ctypes.create_string_buffer(size)
-        rename = RenameInfo.from_buffer(buffer)
-        rename.ReplaceIfExists = 0
-        rename.RootDirectory = None
-        rename.FileNameLength = len(name)
-        ctypes.memmove(ctypes.addressof(buffer) + RenameInfo.FileName.offset, name, len(name))
-        if not api.SetFileInformationByHandle(msvcrt.get_osfhandle(descriptor), 3, buffer, size):
+        if not win32_rename_handle(descriptor, target):
             error = ctypes.WinError(ctypes.get_last_error())
             if getattr(error, 'winerror', None) in {80, 183}:
                 raise FileExistsError(errno.EEXIST, 'resource-directory-target-exists', str(target)) from error
             raise ResourceTransactionError('resource-directory-rename-failed') from error
         check_target()
     finally:
-        if descriptor is not None:
-            os.close(descriptor)
-        if native is not None:
-            api.CloseHandle(native)
+        os.close(descriptor)
 
 
 def hardlinks_unsupported(error):

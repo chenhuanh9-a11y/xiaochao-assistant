@@ -38,13 +38,10 @@ class Installation:
         self._load()
 
     def _safe(self):
-        import stat
-        for path in (self.path, *self.path.parents):
-            if path.exists() or path.is_symlink():
-                info = path.lstat()
-                if (stat.S_ISLNK(info.st_mode) or info.st_nlink > 1 and path.is_file()
-                        or getattr(info, 'st_file_attributes', 0) & 0x400):
-                    raise ValueError('identity-path-linked')
+        from local_path_safety import reject_links
+        def fail(_item):
+            raise ValueError('identity-path-linked')
+        reject_links(self.path, on_link=fail, reject_hardlink=fail)
 
     def _load(self):
         try:
