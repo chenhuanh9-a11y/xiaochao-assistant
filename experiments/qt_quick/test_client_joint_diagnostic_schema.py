@@ -32,7 +32,8 @@ class JointDiagnosticSchemaTests(unittest.TestCase):
         report['lastDiagnostics'].update(username='PrivatePlayer', path='C:/PrivatePlayer',
             strategy='PrivatePlayer', selectedRouteCurrentFrameResidual=dict(verified=False, secret='PrivatePlayer'))
         target = SimpleNamespace(_closed=False, _closing=False, _diagnostics=None,
-            _notified=set(), runtime=SimpleNamespace(snapshot=lambda: {}),
+            _notified=set(), runtime=SimpleNamespace(snapshot=lambda: {},
+                _private_diagnostic_fields=lambda: (), failure_event_is_current=lambda event: True),
             traceReported=SimpleNamespace(emit=self.service.recordTrace),
             errorReported=SimpleNamespace(emit=self.service.record),
             notificationRequested=SimpleNamespace(emit=lambda *args: None))

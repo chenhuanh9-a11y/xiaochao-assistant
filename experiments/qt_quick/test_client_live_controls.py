@@ -193,6 +193,7 @@ class CoordinatorLiveTests(unittest.TestCase):
         self.f.input.shutdown=Mock();self.f.capture=SimpleNamespace(disable=Mock())
         self.c.capture=self.f.capture
         self.f.settings.setValue=Mock(side_effect=self.set_value)
+        self.f.settings.setGameContext=Mock(side_effect=lambda s, m: self.f.settings.setValue('gameSeason', s) and self.f.settings.setValue('gameMode', m))
         self.f.settings.saveFields=Mock(return_value=True)
         self.c._bound='';self.c._binding_identity=None
         self.c._catalog=Mock(return_value=[])
@@ -303,9 +304,11 @@ class CoordinatorLiveTests(unittest.TestCase):
         urls=[]
         for token,floor,color in [('a','1',(255,0,0,255)),('b','2',(0,255,0,255))]:
             pixels=np.zeros((4,4,4),np.uint8);pixels[:]=color
-            public=dict(token=token,liveAuthorization=True,mode='nightmare',roundId=1,mapId='current-map',floor=floor,profileId='current-author')
+            public=dict(token=token,liveAuthorization=True,referenceAuthorized=True,mode='nightmare',roundId=1,mapId='current-map',floor=floor,profileId='current-author')
             self.f.session.snapshot.update(roundActive=True,alignedVisible=False,render=public)
-            self.f.runtime.render_payload.return_value=dict(public,pixels=pixels,originX=0,originY=0,clientWidth=4,clientHeight=4)
+            payload=dict(public,pixels=pixels,originX=0,originY=0,clientWidth=4,clientHeight=4)
+            self.f.runtime.render_payload.return_value=payload
+            self.f.runtime.reference_payload.return_value=payload
             self.c._session_changed();urls.append(self.c.referenceData['imageUrl'])
             self.assertEqual(self.c.referenceData['floor'],floor)
             self.assertEqual(self.c.referenceData['mapId'],'current-map')
@@ -369,9 +372,10 @@ class CoordinatorLiveTests(unittest.TestCase):
             try:
                 for token,floor,color in [('red','1',(255,0,0,255)),('green','2',(0,255,0,255))]:
                     pixels=np.zeros((4,4,4),np.uint8);pixels[:]=color
-                    payload=dict(token=token,liveAuthorization=True,mode='nightmare',roundId=1,mapId='map',floor=floor,profileId='author',pixels=pixels,originX=0,originY=0,clientWidth=4,clientHeight=4)
+                    payload=dict(token=token,liveAuthorization=True,referenceAuthorized=True,mode='nightmare',roundId=1,mapId='map',floor=floor,profileId='author',pixels=pixels,originX=0,originY=0,clientWidth=4,clientHeight=4)
                     self.f.session.snapshot.update(roundActive=True,alignedVisible=False,render={k:v for k,v in payload.items() if k!='pixels'})
                     self.f.runtime.render_payload.return_value=payload
+                    self.f.runtime.reference_payload.return_value=payload
                     self.c._session_changed();QTest.qWait(30)
                     self.assertEqual(view.grabWindow().pixelColor(16,16).getRgb(),color)
             finally:view.close()

@@ -1383,9 +1383,7 @@ class LiveRuntime:
                 except MemoryError:
                     raise
                 except Exception as error:
-                    from client_providers import DisplayResourceChanged
-                    if (getattr(error, 'resource_failure', False) is True
-                            or isinstance(error, DisplayResourceChanged)):
+                    if self._is_resource_error(error):
                         raise
                     last_material_reason = type(error).__name__ + ":" + str(error)
                     continue
@@ -2351,7 +2349,6 @@ class LiveRuntime:
                 return self._receipt("probe_map_after_drag", payload, success=False, reason="cancelled-or-stale", stale=True)
             observation, floor, floor_read = self._observe(engine, frame)
         except Exception as error:
-            from client_providers import DisplayResourceChanged
             with self._lock:
                 if obsolete() or render_owner != self._refresh_render_owner():
                     self._retire_refresh_owner(render_owner)
@@ -2360,14 +2357,10 @@ class LiveRuntime:
                 # Consume a current failure under the ownership lock. Handing
                 # it to the generic dispatcher would open a window where a new
                 # drag owns these pixels before the old error revokes them.
-                if (getattr(error, 'resource_failure', False) is True
-                        or isinstance(error, DisplayResourceChanged)
-                        or not self._retained_material_current(render_owner)):
-                    self.invalidate("runtime-error", source=f'execute:probe_map_after_drag:{type(error).__name__}')
-                return self._receipt("probe_map_after_drag", payload, success=False,
-                    reason=f"{type(error).__name__}:{error}", error=True, stale=False,
-                    unavailable=bool(getattr(error, "unavailable", False)),
-                    **self._error_fields(error, "probe_map_after_drag"))
+                self._invalidate_on_runtime_error(
+                    error, render_owner, f'execute:probe_map_after_drag:{type(error).__name__}')
+                return self._error_receipt(
+                    "probe_map_after_drag", payload, error, stale=False, include_unavailable=True)
         detected = self._map_observed(engine, observation, floor_read)
         with self._lock:
             current_scope = self._sibling_scope()
@@ -4165,20 +4158,16 @@ class LiveRuntime:
                         else "candidate-pose-unavailable")
                 return self._capture_and_solve("capture_now", payload, cancelled, expected_epoch=epoch)
             except Exception as error:
-                from client_providers import DisplayResourceChanged
                 with self._lock:
                     if obsolete():
                         return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True,
                             errorType=type(error).__name__)
                     if self._capture_pending_owner is owner:
-                        if (getattr(error, 'resource_failure', False) is True
-                                or isinstance(error, DisplayResourceChanged)):
+                        if self._is_resource_error(error):
                             self.invalidate("resources-unavailable", source=f'{action}:{type(error).__name__}')
                         else:
                             self._retire_material_owner(self._refresh_render_owner(), "candidate-floor-probe-failed")
-                    return self._receipt(action, payload, success=False,
-                        reason=f"{type(error).__name__}:{error}", error=True,
-                        **self._error_fields(error, action))
+                    return self._error_receipt(action, payload, error)
             finally:
                 with self._lock:
                     if self._capture_pending_owner is owner:
@@ -4227,6 +4216,29 @@ class LiveRuntime:
         except Exception as error:
             error.error_phase = "capture"
             raise
+
+    @staticmethod
+    def _is_resource_error(error):
+        from client_providers import DisplayResourceChanged
+        return getattr(error, "resource_failure", False) is True or isinstance(error, DisplayResourceChanged)
+
+    def _invalidate_on_runtime_error(self, error, owner, source, *, use_resource_reason=False):
+        if self._is_resource_error(error) or not self._retained_material_current(owner):
+            reason = ("resources-unavailable"
+                      if use_resource_reason and getattr(error, "resource_failure", False) is True
+                      else "runtime-error")
+            self.invalidate(reason, source=source)
+
+    def _error_receipt(self, action, payload, error, *, stale=None, include_unavailable=False):
+        extra = {}
+        if stale is not None:
+            extra["stale"] = stale
+        if include_unavailable:
+            extra["unavailable"] = bool(getattr(error, "unavailable", False))
+        return self._receipt(
+            action, payload, success=False, reason=f"{type(error).__name__}:{error}",
+            error=True, **extra, **self._error_fields(error, action),
+        )
 
     def _error_fields(self, error, action):
         fields = dict(traceback="".join(traceback.format_exception(
@@ -4698,20 +4710,15 @@ class LiveRuntime:
                     return self._capture_and_solve(action, payload, cancelled, expected_epoch=capture_request_epoch)
             return self._receipt(action, payload, success=False, reason="unsupported-action", unavailable=True)
         except Exception as error:
-            from client_providers import DisplayResourceChanged
             with self._lock:
                 # The work lock does not own a newer input's lifetime. An old
                 # acquisition error may report failure, never revoke its successor.
                 stale_owner = action in ("map", "capture_now", "prepare_manual_alignment", "fit_manual_frame", "observe_manual_floor") and capture_request_epoch != self._epoch
-                if not stale_owner and (getattr(error, 'resource_failure', False) is True
-                        or isinstance(error, DisplayResourceChanged)
-                        or not self._retained_material_current(self._refresh_render_owner())):
-                    self.invalidate("resources-unavailable" if getattr(error,'resource_failure',False) is True
-                        else "runtime-error", source=f'execute:{action}:{type(error).__name__}')
-            return self._receipt(action, payload, success=False, reason=f"{type(error).__name__}:{error}", error=True,
-                    stale=stale_owner,
-                    unavailable=bool(getattr(error, "unavailable", False)),
-                    **self._error_fields(error, action))
+                if not stale_owner:
+                    self._invalidate_on_runtime_error(
+                        error, self._refresh_render_owner(), f'execute:{action}:{type(error).__name__}',
+                        use_resource_reason=True)
+            return self._error_receipt(action, payload, error, stale=stale_owner, include_unavailable=True)
 
     def _get_engine(self, mode, season="s0", *, require_live=True):
         season = normalize_season(season)
@@ -4981,19 +4988,15 @@ class LiveRuntime:
         except Exception as error:
             # A recovery may already have published before its worker finishes.
             # A later drag owns that row's new revision, even with the same token.
-            from client_providers import DisplayResourceChanged
             with self._lock:
                 published_owner = payload.get("_recoveryRenderOwner")
                 if (self._cancelled(cancelled) or payload.get("_recoveryResultScope", expected) != self._map_recovery_scope()
                         or published_owner is not None and published_owner != self._refresh_render_owner()):
                     self._retire_refresh_owner(payload.get("_recoveryRenderOwner"))
                     return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
-                if (getattr(error, 'resource_failure', False) is True
-                        or isinstance(error, DisplayResourceChanged)
-                        or not self._retained_material_current(self._refresh_render_owner())):
-                    self.invalidate("runtime-error", source=f'map-recovery:{action}:{type(error).__name__}')
-            return self._receipt(action, payload, success=False, reason=f"{type(error).__name__}:{error}",
-                error=True, **self._error_fields(error, action))
+                self._invalidate_on_runtime_error(
+                    error, self._refresh_render_owner(), f'map-recovery:{action}:{type(error).__name__}')
+            return self._error_receipt(action, payload, error)
         finally:
             with self._lock:
                 self._capture_pending = False
@@ -5077,7 +5080,6 @@ class LiveRuntime:
             # after the UI has already published a newer transient transform
             # (often with the same render token). It cannot invalidate that
             # current owner. Ordinary failures also preserve completed material.
-            from client_providers import DisplayResourceChanged
             with self._lock:
                 published_owner = payload.get("_refreshRenderOwner", owner)
                 current_owner = self._refresh_render_owner()
@@ -5088,13 +5090,8 @@ class LiveRuntime:
                     self._retire_refresh_owner(published_owner)
                     return self._receipt("refresh_map", payload, success=False,
                         reason="cancelled-or-stale", stale=True)
-                if (getattr(error, 'resource_failure', False) is True
-                        or isinstance(error, DisplayResourceChanged)
-                        or not self._retained_material_current(current_owner)):
-                    self.invalidate("runtime-error", source=f'refresh-map:{type(error).__name__}')
-            return self._receipt("refresh_map", payload, success=False,
-                                 reason=f"{type(error).__name__}:{error}", error=True,
-                    **self._error_fields(error, "refresh_map"))
+                self._invalidate_on_runtime_error(error, current_owner, f'refresh-map:{type(error).__name__}')
+            return self._error_receipt("refresh_map", payload, error)
         finally:
             if owns_capture:
                 with self._lock:

@@ -36,6 +36,8 @@ class SyntheticPeripheral(QObject):
     changed = Signal()
     resourcesChanged = Signal()
     actionTriggered = Signal(str)
+    mapInputRequested = Signal(object)
+    gamePointerEvent = Signal(object)
 
 
 class S1AuthorSettingsChainTests(unittest.TestCase):
@@ -107,12 +109,17 @@ class S1AuthorSettingsChainTests(unittest.TestCase):
         resources.busy, resources.pendingKind = False, ""
         native_input.enabled = True
         native_input.snapshot = {}
-        for name in ("configureSettings", "enable", "disable", "setTextEntryActive", "setEditingBindings"):
+        for name in ("configureSettings", "enable", "disable", "setTextEntryActive", "setEditingBindings",
+                     "enableManagement", "observeMapState", "recoverListening", "resetMapInput",
+                     "resumeGameBinding", "shutdown", "suspendGameBinding",
+                     "setOrderedMapInputEnabled", "setGamePointerContextProvider"):
             setattr(native_input, name, Mock(return_value=True))
         backend.refresh = Mock()
+        backend.invalidateResources = backend.refresh
         self.windows = SimpleNamespace(hide=Mock(), show=Mock(), setClickThrough=Mock(),
-                                       snapshot={}, _windows={})
-        self.images = SimpleNamespace(clear=Mock(), publish=Mock(side_effect=lambda key, pixels, **kw:
+                                       shutdown=Mock(), snapshot={}, _windows={})
+        self.images = SimpleNamespace(clear=Mock(), clear_aligned=Mock(), clear_reference=Mock(),
+                                      finish_staging=Mock(), publish=Mock(side_effect=lambda key, pixels, **kw:
                                                                "image://synthetic/" + key))
         native_windows = SimpleNamespace(foreground_window=Mock(return_value=123))
         with patch("client_input.NativeWindowAPI", return_value=native_windows):

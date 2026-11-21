@@ -23,6 +23,9 @@ class Service(QObject):
     actionTriggered = Signal(str)
     overlayRequested = Signal()
     shortcutRecordingChanged = Signal(bool)
+    controlsVisibilitySaveFailed = Signal(str)
+    contextFinished = Signal(object)
+    siblingRegistryValidated = Signal(object)
     mapInputRequested = Signal(object)
     gamePointerEvent = Signal(object)
 
@@ -54,7 +57,12 @@ class CoordinatorTests(unittest.TestCase):
             sheetVisibilityEnabled=True, referenceSheetVisible=True, orbVisible=True)
         self.settings.values = deepcopy(self.settings.persistedValues)
         self.settings.busy = False
+        self.settings.shortcutRecording = False
+        self.settings.pendingWrites = False
+        self.settings.setModeChangeGuard = Mock()
+        self.settings.setGameContext = Mock(return_value=True)
         self.session.busy = False
+        self.session.currentSeason = "s0"
         self.session.snapshot = dict(roundActive=True, mapOpen=True, resourceLocked=False,
             availableCommands=["refresh_map"], alignedVisible=False)
         self.session.message = "fake context deferred"
@@ -62,27 +70,50 @@ class CoordinatorTests(unittest.TestCase):
         self.session.refreshRuntime = Mock()
         self.session.dispatch = Mock()
         self.session.dispatchWithPayload = Mock()
+        self.session.dispatchMaintenance = Mock()
         self.session.cancelPending = Mock()
         self.resources.busy = False
         self.resources.pendingKind = ""
         self.input.enabled = True
+        self.input.snapshot = {}
         self.input.configureSettings = Mock(side_effect=self._configure_input)
         self.input.enable = Mock(side_effect=self._enable_input)
         self.input.disable = Mock()
+        self.input.enableManagement = Mock()
+        self.input.observeMapState = Mock()
+        self.input.recoverListening = Mock()
+        self.input.resumeGameBinding = Mock()
+        self.input.suspendGameBinding = Mock()
+        self.input.shutdown = Mock()
         self.input.setTextEntryActive = Mock()
         self.input.setEditingBindings = Mock()
         self.input.setOrderedMapInputEnabled = Mock()
         self.input.resetMapInput = Mock()
         self.input.setGamePointerContextProvider = Mock()
         self.backend.refresh = Mock()
+        self.backend.invalidateResources = self.backend.refresh
         self.windows = SimpleNamespace(hide=Mock(), show=Mock(), setClickThrough=Mock(),
-                                       snapshot={}, _windows={})
-        self.images = SimpleNamespace(clear=Mock())
+                                       shutdown=Mock(), snapshot={}, _windows={})
+        self.images = SimpleNamespace(clear=Mock(), clear_aligned=Mock(),
+                                      clear_reference=Mock(), finish_staging=Mock())
         self.runtime_state = dict(mode="nightmare", profileId="profile-one")
-        self.runtime = SimpleNamespace(configure_settings=Mock(), invalidate=Mock(),
+        self.runtime = SimpleNamespace(
+            configure_settings=Mock(), invalidate=Mock(),
             snapshot=Mock(side_effect=lambda: dict(self.runtime_state)),
-            render_payload=Mock(return_value=None), set_event_callback=Mock())
-        self.runtime.game_floor_click_context = Mock(return_value=None)
+            render_payload=Mock(return_value=None), reference_payload=Mock(return_value=None),
+            pending_sibling_payload=Mock(return_value=None), set_event_callback=Mock(),
+            acknowledge_render_material=Mock(return_value=dict(success=False)),
+            acknowledge_sibling=Mock(return_value=dict(success=False, sourceRetained=True)),
+            cancel_map_open_recovery=Mock(), observe_game_drag=Mock(return_value=dict(success=False)),
+            map_input_observation_is_current=Mock(return_value=False),
+            failure_event_is_current=Mock(side_effect=lambda event: all(
+                key not in self.runtime.snapshot() or key not in event or self.runtime.snapshot()[key] == event[key]
+                for key in ("season", "mode", "profileId", "roundId", "cycleId", "openingId", "resourceIdentity"))),
+            private_experiment_event_is_current=Mock(return_value=False),
+            _private_diagnostic_fields=Mock(return_value=()),
+            stop_private_evidence=Mock(), private_evidence_busy=False,
+            _diagnostics=None, game_floor_click_context=Mock(return_value=None),
+        )
         self.native = SimpleNamespace(foreground_window=Mock(return_value=123))
         with patch("client_input.NativeWindowAPI", return_value=self.native):
             self.coordinator = ClientCoordinator(backend=self.backend, settings=self.settings,
@@ -792,7 +823,8 @@ class CoordinatorTests(unittest.TestCase):
         self.assertIsNone(self.coordinator._last_render_token)
         self.windows.hide.assert_any_call("aligned")
         self.windows.hide.assert_any_call("reference")
-        self.images.clear.assert_called_once_with()
+        self.images.clear_aligned.assert_called_once_with()
+        self.images.clear_reference.assert_called_once_with()
         self.runtime.invalidate.assert_called_once_with("resources-changed")
         self.session.refreshRuntime.assert_called_once_with()
         self.backend.refresh.assert_called_once_with()
