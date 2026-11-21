@@ -224,29 +224,31 @@ def _details(error, stage):
     return code, "\n".join(rows) + "\n"
 
 
-def _candidate_directories():
+def _candidate_locations():
     base = (Path(sys.executable).absolute().parent if getattr(sys, "frozen", False)
             else Path(__file__).resolve().parents[1])
-    yield base / "work"
+    yield base / "work", "安装目录下的 work 文件夹"
     local = os.environ.get("LOCALAPPDATA")
     if local and Path(local).is_absolute():
-        yield Path(local) / "Xingtu/diagnostics"
+        yield Path(local) / "Xingtu/diagnostics", "%LOCALAPPDATA%/Xingtu/diagnostics"
     try:
-        yield Path(tempfile.gettempdir()) / "Xingtu/diagnostics"
+        yield Path(tempfile.gettempdir()) / "Xingtu/diagnostics", "%TEMP%/Xingtu/diagnostics"
     except OSError:
         pass
 
 
+def _candidate_directories():
+    for directory, _label in _candidate_locations():
+        yield directory
+
+
 def _no_links(path):
-    for item in (path, *path.parents):
-        try:
-            info = item.lstat()
-        except FileNotFoundError:
-            continue
-        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
-            raise OSError("Diagnostic path cannot use links")
-        if item == path and getattr(info, "st_nlink", 1) > 1 and stat.S_ISREG(info.st_mode):
-            raise OSError("Diagnostic file cannot use hard links")
+    from local_path_safety import reject_links
+    def on_link(_item):
+        raise OSError("Diagnostic path cannot use links")
+    def on_hardlink(_item):
+        raise OSError("Diagnostic file cannot use hard links")
+    reject_links(path, on_link=on_link, reject_hardlink=on_hardlink)
 
 
 def _persist(report):
@@ -281,17 +283,7 @@ def _show_native_error(message):
 def _record_location(path):
     """Locate the report without printing an account-specific absolute path."""
     path = Path(path)
-    base = (Path(sys.executable).absolute().parent if getattr(sys, "frozen", False)
-            else Path(__file__).resolve().parents[1])
-    locations = [(base / "work", "安装目录下的 work 文件夹")]
-    local = os.environ.get("LOCALAPPDATA")
-    if local and Path(local).is_absolute():
-        locations.append((Path(local) / "Xingtu/diagnostics", "%LOCALAPPDATA%/Xingtu/diagnostics"))
-    try:
-        locations.append((Path(tempfile.gettempdir()) / "Xingtu/diagnostics", "%TEMP%/Xingtu/diagnostics"))
-    except OSError:
-        pass
-    label = next((label for directory, label in locations if path.parent == directory), None)
+    label = next((label for directory, label in _candidate_locations() if path.parent == directory), None)
     return ("详细记录已保存：" + (label + "中的 " if label else "") + LOG_NAME
             + "。反馈时请附上此文件。")
 

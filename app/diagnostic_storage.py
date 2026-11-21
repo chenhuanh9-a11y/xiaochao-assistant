@@ -45,13 +45,12 @@ class DiagnosticStorageError(OSError):pass
 
 
 def _safe(path):
-    for p in (path,*path.parents):
-        try:s=p.lstat()
-        except FileNotFoundError:continue
-        if stat.S_ISLNK(s.st_mode) or getattr(s,'st_file_attributes',0)&0x400:
-            raise DiagnosticStorageError('diagnostic-storage-linked')
-        if p==path and stat.S_ISREG(s.st_mode) and s.st_nlink!=1:
-            raise DiagnosticStorageError('diagnostic-storage-hardlinked')
+    from local_path_safety import reject_links
+    def on_link(_item):
+        raise DiagnosticStorageError('diagnostic-storage-linked')
+    def on_hardlink(_item):
+        raise DiagnosticStorageError('diagnostic-storage-hardlinked')
+    reject_links(path, on_link=on_link, reject_hardlink=on_hardlink)
 
 
 _local=threading.local()
@@ -59,18 +58,15 @@ _root_guards={}
 
 
 def _windows_open(path, flags, directory=False):
-    import ctypes, msvcrt
-    from ctypes import wintypes
-    kernel=ctypes.WinDLL('kernel32',use_last_error=True)
-    create=kernel.CreateFileW
-    create.argtypes=[wintypes.LPCWSTR,wintypes.DWORD,wintypes.DWORD,ctypes.c_void_p,wintypes.DWORD,wintypes.DWORD,wintypes.HANDLE]
-    create.restype=wintypes.HANDLE
+    from local_path_safety import win32_open_handle_fd
     access=0x80000000 | (0x40000000 if flags & os.O_RDWR else 0)
     # Deny rename/delete and concurrent writers while a handle is validated/used.
-    handle=create(str(path),access,3 if directory else 1,None,1 if flags & os.O_EXCL else 3,
-                  0x00200000 | (0x02000000 if directory else 0),None)
-    if handle==wintypes.HANDLE(-1).value:raise ctypes.WinError(ctypes.get_last_error())
-    fd=msvcrt.open_osfhandle(handle,(flags & os.O_RDWR) | os.O_BINARY)
+    fd=win32_open_handle_fd(
+        path, access=access, share=3 if directory else 1,
+        creation=1 if flags & os.O_EXCL else 3,
+        flags=0x00200000 | (0x02000000 if directory else 0),
+        osf_flags=(flags & os.O_RDWR) | os.O_BINARY,
+    )
     st=os.fstat(fd)
     if getattr(st,'st_file_attributes',0)&0x400:
         os.close(fd);raise DiagnosticStorageError('diagnostic-storage-linked')

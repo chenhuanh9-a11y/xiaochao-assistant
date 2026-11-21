@@ -73,14 +73,7 @@ def _valid_identity(value):
     return value
 
 
-def _directory_sync(path):
-    if os.name == "nt":
-        return  # Python cannot portably flush a Windows directory handle.
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+from local_path_safety import directory_sync as _directory_sync, win32_open_handle_fd, win32_rename_handle
 
 
 def _write_new(path, data):
@@ -194,50 +187,22 @@ def _move_owned(source, destination, row, identity, *, linkless=False, before_mo
         if not linkless and not adapter._rollback_published(source, tuple(identity), row["sha256"]):
             _reject("upgrade-owned-target-could-not-be-moved")
     else:
-        from ctypes import wintypes
-        import msvcrt
-        api = ctypes.WinDLL("kernel32", use_last_error=True)
-        api.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
-            ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
-        api.CreateFileW.restype = wintypes.HANDLE
-        api.CloseHandle.argtypes = [wintypes.HANDLE]
-        api.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int,
-                                                   ctypes.c_void_p, wintypes.DWORD]
-        api.SetFileInformationByHandle.restype = wintypes.BOOL
-        native = api.CreateFileW(str(source), 0x80010000, 1, None, 3, 0x200000, None)
-        if native == ctypes.c_void_p(-1).value:
-            raise OSError(ctypes.get_last_error(), "upgrade-owned-target-not-exclusively-readable")
         try:
-            fd = msvcrt.open_osfhandle(int(native), os.O_RDONLY | os.O_BINARY)
-            native = None
-            with os.fdopen(fd, "rb") as handle:
-                info = os.fstat(handle.fileno())
-                if (not stat.S_ISREG(info.st_mode) or info.st_size != row["bytes"]
-                        or _identity(info) != identity
-                        or getattr(info, "st_file_attributes", 0) & 0x400
-                        or hashlib.file_digest(handle, "sha256").hexdigest() != row["sha256"]):
-                    _reject("upgrade-owned-target-changed-before-backup")
-                if before_move is not None:
-                    before_move()
-                class RenameInfo(ctypes.Structure):
-                    _fields_ = [("ReplaceIfExists", ctypes.c_ubyte),
-                                ("RootDirectory", wintypes.HANDLE),
-                                ("FileNameLength", wintypes.DWORD),
-                                ("FileName", wintypes.WCHAR * 1)]
-                name = str(destination.absolute()).encode("utf-16-le")
-                size = max(ctypes.sizeof(RenameInfo), RenameInfo.FileName.offset + len(name) + 2)
-                buffer = ctypes.create_string_buffer(size)
-                rename = RenameInfo.from_buffer(buffer)
-                rename.ReplaceIfExists = 0
-                rename.RootDirectory = None
-                rename.FileNameLength = len(name)
-                ctypes.memmove(ctypes.addressof(buffer) + RenameInfo.FileName.offset, name, len(name))
-                if not api.SetFileInformationByHandle(msvcrt.get_osfhandle(handle.fileno()),
-                                                      3, buffer, size):
-                    raise OSError(ctypes.get_last_error(), "upgrade-owned-target-rename-failed")
-        finally:
-            if native is not None:
-                api.CloseHandle(native)
+            fd = win32_open_handle_fd(source)
+        except OSError as error:
+            raise OSError(getattr(error, "winerror", error.errno),
+                          "upgrade-owned-target-not-exclusively-readable") from error
+        with os.fdopen(fd, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_size != row["bytes"]
+                    or _identity(info) != identity
+                    or getattr(info, "st_file_attributes", 0) & 0x400
+                    or hashlib.file_digest(handle, "sha256").hexdigest() != row["sha256"]):
+                _reject("upgrade-owned-target-changed-before-backup")
+            if before_move is not None:
+                before_move()
+            if not win32_rename_handle(handle.fileno(), destination.absolute()):
+                raise OSError(ctypes.get_last_error(), "upgrade-owned-target-rename-failed")
     _directory_sync(source.parent)
     _directory_sync(destination.parent)
 

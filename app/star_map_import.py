@@ -17,7 +17,8 @@ import unicodedata
 import zipfile
 from packaged_product_identity import CLOSED_EXE_NAMES
 from generic_author_package import is_generic_profile
-from local_path_safety import is_link_or_reparse
+from local_path_safety import (is_link_or_reparse, reject_links, unique_json_pairs,
+                               win32_open_handle_fd, win32_set_delete_disposition)
 from resource_transaction import (ResourceTransactionError, resource_read_lock,
                                   resource_write_lock, assert_resources_ready,
                                   preflight_hardlinks, preflight_resource_publication)
@@ -327,13 +328,9 @@ def _allowed(package_id: str, path: str) -> bool:
 
 def _no_links(path: Path) -> None:
     # Check lexical ancestors too: resolving first would conceal junctions.
-    for item in (path, *path.parents):
-        try:
-            linked = is_link_or_reparse(item)
-        except FileNotFoundError:
-            continue
-        if linked:
-            raise ImportRejected(f"linked-target: {item}")
+    def on_link(item):
+        raise ImportRejected(f"linked-target: {item}")
+    reject_links(path, on_link=on_link)
 
 
 def _target(root: Path, relative: str) -> Path:
@@ -350,15 +347,10 @@ def _sha(path: Path) -> str:
 
 
 def _json(data: bytes) -> dict:
-    def unique(items):
-        result = {}
-        for key, value in items:
-            if key in result:
-                raise ImportRejected("duplicate-json-key")
-            result[key] = value
-        return result
+    def duplicate(_key):
+        raise ImportRejected("duplicate-json-key")
     try:
-        result = json.loads(data.decode("utf-8-sig"), object_pairs_hook=unique)
+        result = json.loads(data.decode("utf-8-sig"), object_pairs_hook=unique_json_pairs(duplicate))
     except (ValueError, UnicodeError) as error:
         raise ImportRejected("invalid-json") from error
     if not isinstance(result, dict):
@@ -766,28 +758,12 @@ def _rollback_published(path, identity, digest):
     deleting another writer's data. The POSIX fallback has a path-unlink race and
     does not offer the Windows concurrent-deletion guarantee.
     """
-    native_handle = None
-    api = None
     try:
         _no_links(path)
         if os.name == "nt":
-            from ctypes import wintypes
-            import msvcrt
-            api = ctypes.WinDLL("kernel32", use_last_error=True)
-            api.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
-                ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
-            api.CreateFileW.restype = wintypes.HANDLE
-            api.CloseHandle.argtypes = [wintypes.HANDLE]
-            api.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int,
-                ctypes.c_void_p, wintypes.DWORD]
             # READ|DELETE, share READ only, open reparse point itself. No writer
             # or rename can race the same-handle checks and disposition below.
-            native_handle = api.CreateFileW(str(path), 0x80010000, 1, None, 3, 0x200000, None)
-            if native_handle == ctypes.c_void_p(-1).value:
-                native_handle = None
-                return False
-            fd = msvcrt.open_osfhandle(int(native_handle), os.O_RDONLY | os.O_BINARY)
-            native_handle = None  # CRT fd now owns and closes this handle.
+            fd = win32_open_handle_fd(path)
         else:
             fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         with os.fdopen(fd, "rb") as current:
@@ -797,10 +773,7 @@ def _rollback_published(path, identity, digest):
             if hashlib.file_digest(current, "sha256").hexdigest() != digest:
                 return False
             if os.name == "nt":
-                # FILE_DISPOSITION_INFO contains one BOOLEAN, not a Win32 BOOL.
-                disposition = ctypes.c_ubyte(1)
-                if not api.SetFileInformationByHandle(msvcrt.get_osfhandle(current.fileno()),
-                        4, ctypes.byref(disposition), ctypes.sizeof(disposition)):
+                if not win32_set_delete_disposition(current.fileno()):
                     return False
             else:
                 latest = path.lstat()
@@ -810,9 +783,6 @@ def _rollback_published(path, identity, digest):
         return True
     except OSError:
         return False
-    finally:
-        if native_handle is not None:
-            api.CloseHandle(native_handle)
 
 
 @contextmanager

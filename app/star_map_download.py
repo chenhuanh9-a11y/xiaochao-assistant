@@ -20,6 +20,7 @@ import threading
 import time
 from urllib import error, parse, request
 
+from local_path_safety import unique_json_pairs, win32_open_handle_fd, win32_rename_handle
 from star_map_import import ImportRejected, _no_links, _rollback_published
 
 MAX_INDEX_BYTES = 256 * 1024
@@ -48,25 +49,12 @@ def _locked_file(path, *, writable=False, movable=False, expected_identity=None)
     """
     if os.name != "nt":
         raise DownloadError("windows-locked-publication-required")
-    import ctypes
-    from ctypes import wintypes
-    import msvcrt
-    api = ctypes.WinDLL("kernel32", use_last_error=True)
-    api.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
-        ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
-    api.CreateFileW.restype = wintypes.HANDLE
-    api.CloseHandle.argtypes = [wintypes.HANDLE]
     _no_links(path)
     access = (0xC0000000 if writable else 0x80000000) | (0x10000 if movable else 0)
-    handle = api.CreateFileW(str(path), access,
-                            1, None, 3, 0x200000, None)  # share READ only
-    if handle == ctypes.c_void_p(-1).value:
-        raise ctypes.WinError(ctypes.get_last_error())
-    try:
-        fd = msvcrt.open_osfhandle(int(handle), (os.O_RDWR if writable else os.O_RDONLY) | os.O_BINARY)
-    except Exception:
-        api.CloseHandle(handle)
-        raise
+    fd = win32_open_handle_fd(
+        path, access=access, share=1, flags=0x200000,
+        osf_flags=(os.O_RDWR if writable else os.O_RDONLY) | os.O_BINARY,
+    )
     with os.fdopen(fd, "r+b" if writable else "rb") as current:
         info = os.fstat(current.fileno())
         if not stat.S_ISREG(info.st_mode) or expected_identity is not None and (info.st_dev, info.st_ino) != expected_identity:
@@ -77,25 +65,8 @@ def _locked_file(path, *, writable=False, movable=False, expected_identity=None)
 def _rename_locked_file(stream, destination):
     """Rename the verified Windows object without releasing its write/delete lock."""
     import ctypes
-    from ctypes import wintypes
-    import msvcrt
-    class RenameInfo(ctypes.Structure):
-        _fields_ = [('ReplaceIfExists', ctypes.c_ubyte), ('RootDirectory', wintypes.HANDLE),
-                    ('FileNameLength', wintypes.DWORD), ('FileName', wintypes.WCHAR * 1)]
     _no_links(destination)
-    name = str(destination).encode('utf-16-le')
-    buffer = ctypes.create_string_buffer(max(ctypes.sizeof(RenameInfo), RenameInfo.FileName.offset + len(name) + 2))
-    info = RenameInfo.from_buffer(buffer)
-    info.ReplaceIfExists = 0
-    info.RootDirectory = None
-    info.FileNameLength = len(name)
-    ctypes.memmove(ctypes.addressof(buffer) + RenameInfo.FileName.offset, name, len(name))
-    api = ctypes.WinDLL('kernel32', use_last_error=True)
-    api.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int,
-                                              ctypes.c_void_p, wintypes.DWORD]
-    api.SetFileInformationByHandle.restype = wintypes.BOOL
-    handle = wintypes.HANDLE(msvcrt.get_osfhandle(stream.fileno()))
-    if not api.SetFileInformationByHandle(handle, 3, buffer, len(buffer)):  # FileRenameInfo
+    if not win32_rename_handle(stream.fileno(), destination):
         raise ctypes.WinError(ctypes.get_last_error())
 
 
@@ -249,15 +220,10 @@ class MapPackageDownloadService:
 
     @staticmethod
     def _json(data):
-        def unique(items):
-            result = {}
-            for key, value in items:
-                if key in result:
-                    raise DownloadError("duplicate-index-key")
-                result[key] = value
-            return result
+        def duplicate(_key):
+            raise DownloadError("duplicate-index-key")
         try:
-            return json.loads(data.decode("utf-8-sig"), object_pairs_hook=unique)
+            return json.loads(data.decode("utf-8-sig"), object_pairs_hook=unique_json_pairs(duplicate))
         except (UnicodeError, ValueError) as problem:
             raise DownloadError("invalid-index-json") from problem
 

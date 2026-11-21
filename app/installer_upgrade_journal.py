@@ -192,15 +192,10 @@ def _digest(data):
 
 
 def _parse(data):
-    def unique(pairs):
-        result = {}
-        for key, value in pairs:
-            if key in result:
-                _fail('duplicate-json-key')
-            result[key] = value
-        return result
+    from local_path_safety import unique_json_pairs
     try:
-        value = json.loads(data.decode('utf-8'), object_pairs_hook=unique,
+        value = json.loads(data.decode('utf-8'),
+                           object_pairs_hook=unique_json_pairs(lambda _: _fail('duplicate-json-key')),
                            parse_constant=lambda _: _fail('invalid-json-value'))
         # The writer uses this representation; alternate/trailing encodings
         # are not a new authority for an immutable record.
@@ -212,32 +207,14 @@ def _parse(data):
 
 
 def _read(path):
+    from resource_snapshot_io import read_stable_file
     _safe(path)
     if not stat.S_ISREG(path.lstat().st_mode):
         _fail('invalid-metadata-file')
-    flags = (os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
-             | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_BINARY', 0))
-    fd = os.open(path, flags)
-    with os.fdopen(fd, 'rb') as handle:
-        before = os.fstat(handle.fileno())
-        if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_METADATA_BYTES:
-            _fail('invalid-metadata-file')
-        data = handle.read(MAX_METADATA_BYTES + 1)
-        after = os.fstat(handle.fileno())
-        stable = lambda s: (_identity(s), s.st_size, s.st_mtime_ns, s.st_ctime_ns)
-        _safe(path)
-        # CPython 3.13 Windows stat().st_ctime is birthtime but fstat()
-        # reports ChangeTime. Compare two HANDLE observations, not mixed APIs.
-        current_fd = os.open(path, flags)
-        try:
-            current = os.fstat(current_fd)
-        finally:
-            os.close(current_fd)
-        _safe(path)
-        if (len(data) != before.st_size or stable(before) != stable(after)
-                or not stat.S_ISREG(current.st_mode) or stable(current) != stable(after)):
-            _fail('object-changed-during-read')
-    return data, dict(identity=_identity(before), bytes=len(data), sha256=_digest(data))
+    def reject(code):
+        _fail('object-changed-during-read' if code == 'metadata-changed' else code)
+    data, row = read_stable_file(path, MAX_METADATA_BYTES, no_links=_safe, reject=reject, identity=_identity)
+    return data, dict(identity=row['identity'], bytes=row['bytes'], sha256=row['sha256'])
 
 
 def _stamp(value):
@@ -250,13 +227,10 @@ def _stamp(value):
 
 
 def _directory_sync(path):
-    if os.name == 'nt':
-        return  # No portable Python directory FlushFileBuffers contract.
-    fd = os.open(_safe(path), os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    from local_path_safety import directory_sync
+    if os.name != 'nt':
+        _safe(path)
+    directory_sync(path)
 
 
 def _mkdir(path, *, exclusive=False):
@@ -510,25 +484,13 @@ def read_status(root, *, owner_sid):
 
 def _remove_owned_marker(path, expected):
     """Windows checks and deletes through one write/rename-denying handle."""
+    from local_path_safety import win32_open_handle_fd, win32_set_delete_disposition
     _safe(path)
-    native = None
     if os.name == 'nt':
-        from ctypes import wintypes as wt
-        import msvcrt
-        native = ctypes.WinDLL('kernel32', use_last_error=True)
-        native.CreateFileW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.DWORD, wt.LPVOID, wt.DWORD, wt.DWORD, wt.HANDLE]
-        native.CreateFileW.restype = wt.HANDLE
-        native.CloseHandle.argtypes = [wt.HANDLE]
-        native.SetFileInformationByHandle.argtypes = [wt.HANDLE, ctypes.c_int, wt.LPVOID, wt.DWORD]
-        native.SetFileInformationByHandle.restype = wt.BOOL
-        handle = native.CreateFileW(str(path), 0x80010000, 1, None, 3, 0x200000, None)
-        if handle in (None, ctypes.c_void_p(-1).value):
-            _fail('pending-open-denied')
         try:
-            fd = msvcrt.open_osfhandle(int(handle), os.O_RDONLY | os.O_BINARY)
-        except BaseException:
-            native.CloseHandle(handle)
-            raise
+            fd = win32_open_handle_fd(path)
+        except OSError:
+            _fail('pending-open-denied')
     else:
         fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
     with os.fdopen(fd, 'rb') as stream:
@@ -537,10 +499,8 @@ def _remove_owned_marker(path, expected):
                 or info.st_size != expected['bytes']
                 or _digest(stream.read(MAX_METADATA_BYTES + 1)) != expected['sha256']):
             _fail('pending-identity-changed')
-        if native is not None:
-            disposition = ctypes.c_ubyte(1)
-            if not native.SetFileInformationByHandle(msvcrt.get_osfhandle(stream.fileno()),
-                                                     4, ctypes.byref(disposition), 1):
+        if os.name == 'nt':
+            if not win32_set_delete_disposition(stream.fileno()):
                 _fail('pending-remove-denied')
         else:
             # Cooperative lease required. POSIX has no portable same-handle
