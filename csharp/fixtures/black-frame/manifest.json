@@ -1,0 +1,12 @@
+{
+  "format": "xingtu-recorded-frame-v1",
+  "id": "black-frame",
+  "synthetic": true,
+  "note": "Synthetic geometry for the phase-1 grid slice. Not a game capture.",
+  "edgeWidth": 8,
+  "edgeHeight": 8,
+  "preparedWidth": 8,
+  "preparedHeight": 8,
+  "scale": 1.0,
+  "prior": null
+}
