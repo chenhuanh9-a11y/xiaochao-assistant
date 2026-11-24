@@ -256,7 +256,7 @@ class ClientCoordinator(QObject):
         self._native_windows = NativeWindowAPI()
         self._closed = False
         self._text_entry = False
-        self._shortcut_recording = bool(getattr(settings, "shortcutRecording", False))
+        self._shortcut_recording = bool(settings.shortcutRecording)
         self._requested_action = ""
         self._map_input_sequence = 0
         self._last_manual_floor_observation_at = float("-inf")
@@ -287,40 +287,23 @@ class ClientCoordinator(QObject):
         self._startup_timer = QTimer(self)
         self._startup_timer.setSingleShot(True)
         self._startup_timer.timeout.connect(self.startLiveServices)
-        guard = getattr(settings, "setModeChangeGuard", None)
-        if callable(guard):
-            guard(lambda: not self._game_context_locked())
+        settings.setModeChangeGuard(lambda: not self._game_context_locked())
         settings.changed.connect(self._draft_changed)
         settings.saved.connect(self._settings_saved)
-        controls_failure = getattr(settings, "controlsVisibilitySaveFailed", None)
-        if controls_failure is not None:
-            controls_failure.connect(self._controls_save_failed)
-        recording_signal = getattr(settings, "shortcutRecordingChanged", None)
-        if recording_signal is not None:
-            recording_signal.connect(self._set_shortcut_recording)
+        settings.controlsVisibilitySaveFailed.connect(self._controls_save_failed)
+        settings.shortcutRecordingChanged.connect(self._set_shortcut_recording)
         session.changed.connect(self._session_changed)
-        context_finished = getattr(session, "contextFinished", None)
-        if context_finished is not None:
-            context_finished.connect(self._context_finished)
+        session.contextFinished.connect(self._context_finished)
         session.actionRequested.connect(self._action_requested)
-        registry_validated = getattr(session, 'siblingRegistryValidated', None)
-        if registry_validated is not None:
-            registry_validated.connect(self._sibling_registry_validated)
+        session.siblingRegistryValidated.connect(self._sibling_registry_validated)
         resources.resourcesChanged.connect(self._resources_changed)
         resources.changed.connect(self._resource_readiness_changed)
         native_input.actionTriggered.connect(self._native_action)
-        map_signal = getattr(native_input, "mapInputRequested", None)
-        ordered_setter = getattr(native_input, "setOrderedMapInputEnabled", None)
-        self._ordered_map_input = map_signal is not None and callable(ordered_setter)
-        if self._ordered_map_input:
-            map_signal.connect(self._map_input_requested)
-            ordered_setter(True)
-        pointer_signal = getattr(native_input, "gamePointerEvent" if self._ordered_map_input else "gamePointerPressed", None)
-        pointer_provider = getattr(runtime, "game_floor_click_context", None)
-        pointer_setter = getattr(native_input, "setGamePointerContextProvider", None)
-        if pointer_signal is not None and callable(pointer_provider) and callable(pointer_setter):
-            pointer_setter(pointer_provider)
-            pointer_signal.connect(self._game_pointer_event if self._ordered_map_input else self._game_pointer_pressed)
+        self._ordered_map_input = True
+        native_input.mapInputRequested.connect(self._map_input_requested)
+        native_input.setOrderedMapInputEnabled(True)
+        native_input.setGamePointerContextProvider(runtime.game_floor_click_context)
+        native_input.gamePointerEvent.connect(self._game_pointer_event)
         native_input.changed.connect(self.changed)
         native_input.changed.connect(self._input_changed)
         self._foreground_timer = QTimer(self)
@@ -335,9 +318,7 @@ class ClientCoordinator(QObject):
         self._tracking_timer.timeout.connect(self._track_map)
         self._tracking_timer.start()
         self.runtimeEvent.connect(self._on_runtime_event, Qt.QueuedConnection)
-        callback = getattr(self.runtime, "set_event_callback", None)
-        if callback:
-            callback(self.runtimeEvent.emit)
+        self.runtime.set_event_callback(self.runtimeEvent.emit)
         if self._automatic_live:
             self._startup_timer.start(0)
 
@@ -400,8 +381,7 @@ class ClientCoordinator(QObject):
                 or details.get("sourceMatchesPayload") is not True
                 or details.get("validPayload") is not True or not data.get("liveAuthorization")):
             return
-        getter = getattr(self.runtime, "render_payload", None)
-        current = getter(token) if callable(getter) else None
+        current = self.runtime.render_payload(token)
         if not current or current.get("token") != token or not current.get("liveAuthorization"):
             return
         geometry = details.get("geometry", ())
@@ -412,9 +392,8 @@ class ClientCoordinator(QObject):
         if len(geometry) != 4 or any(not isinstance(a, (int, float)) or not math.isfinite(a)
                                     or abs(a-b) > 1 for a,b in zip(geometry, expected)):
             return
-        acknowledge = getattr(self.runtime, "acknowledge_render_material", None)
-        if self._last_material_ack != token and callable(acknowledge):
-            acknowledge(token)
+        if self._last_material_ack != token:
+            self.runtime.acknowledge_render_material(token)
             self._last_material_ack = token
         if current.get("provisional") or current.get("previewOnly"):
             return
@@ -435,24 +414,18 @@ class ClientCoordinator(QObject):
         self._pending_aligned = {}
         self._material_timer.stop()
         if pending:
-            acknowledge = getattr(self.runtime, "acknowledge_sibling", None)
-            result = None
-            if callable(acknowledge):
-                result = acknowledge(pending["token"], False, reason=reason)
-            finish = getattr(self.images, "finish_staging", None)
-            if callable(finish):
-                finish(pending["token"], False)
+            result = self.runtime.acknowledge_sibling(pending["token"], False, reason=reason)
+            self.images.finish_staging(pending["token"], False)
             self._trace("sibling-material-rejected", payload=pending, reason=reason)
             if reason == "target-material-timeout":
                 self._report_display_failure(pending, reason, reason)
-                if isinstance(result, dict) and not result.get("sourceRetained"):
+                if not result.get("sourceRetained"):
                     self._present_runtime_state(self.runtime.snapshot(), trigger="sibling-source-expired")
             self.changed.emit()
 
     def _prepare_sibling_material(self, event):
         token = event.get("token")
-        getter = getattr(self.runtime, "pending_sibling_payload", None)
-        payload = getter(token) if token and callable(getter) else None
+        payload = self.runtime.pending_sibling_payload(token) if token else None
         if not payload or not payload.get("liveAuthorization"):
             self._trace("drop", payload=event, reason="pending-sibling-not-current-live")
             return
@@ -475,7 +448,7 @@ class ClientCoordinator(QObject):
             self._trace("sibling-material-rejected", payload=payload, reason="target-material-invalid",
                         diag=dict(error=str(error)))
             self._report_display_failure(payload, "target-material-invalid", _presentation_error_details(error))
-            if isinstance(result, dict) and not result.get("sourceRetained"):
+            if not result.get("sourceRetained"):
                 self._present_runtime_state(self.runtime.snapshot(), trigger="sibling-source-expired")
             return
         self._pending_aligned = public
@@ -488,13 +461,11 @@ class ClientCoordinator(QObject):
         pending = self._pending_aligned
         if self._closed or self._closing or not pending or pending.get("token") != token:
             return
-        acknowledge = getattr(self.runtime, "acknowledge_sibling", None)
-        if not callable(acknowledge):
-            return
         self._material_timer.stop()
-        result = acknowledge(token, bool(accepted), reason="target-material-ready" if accepted else "target-material-rejected")
+        result = self.runtime.acknowledge_sibling(
+            token, bool(accepted), reason="target-material-ready" if accepted else "target-material-rejected")
         self._pending_aligned = {}
-        committed = bool(accepted and isinstance(result, dict) and result.get("success"))
+        committed = bool(accepted and result.get("success"))
         if committed:
             self._accepted_material = pending
             self._present_runtime_state(self.runtime.snapshot(), trigger="sibling-material-accepted")
@@ -502,14 +473,12 @@ class ClientCoordinator(QObject):
                 self.session.refreshRuntime()
         else:
             self._trace("sibling-material-rejected", payload=pending,
-                        reason=(result or {}).get("reason", "target-material-rejected"))
+                        reason=result.get("reason", "target-material-rejected"))
             if not accepted:
                 self._report_display_failure(pending, "target-material-rejected", "Target Image rejected the route material")
-            if isinstance(result, dict) and not result.get("sourceRetained"):
+            if not result.get("sourceRetained"):
                 self._present_runtime_state(self.runtime.snapshot(), trigger="sibling-source-expired")
-        finish = getattr(self.images, "finish_staging", None)
-        if callable(finish):
-            finish(token, committed)
+        self.images.finish_staging(token, committed)
         self.changed.emit()
 
     @Slot(str, dict)
@@ -525,28 +494,23 @@ class ClientCoordinator(QObject):
         pending = self._pending_aligned
         if self._closed or self._closing or not pending or pending.get('token') != token:
             return
-        acknowledge = getattr(self.runtime, 'acknowledge_sibling', None)
-        if not callable(acknowledge):
-            return
         self._material_timer.stop()
-        result = acknowledge(token, bool(accepted), reason=reason)
+        result = self.runtime.acknowledge_sibling(token, bool(accepted), reason=reason)
         self._pending_aligned = {}
-        committed = bool(accepted and isinstance(result, dict) and result.get("success"))
+        committed = bool(accepted and result.get("success"))
         if committed:
             self._accepted_material = pending
             self._present_runtime_state(self.runtime.snapshot(), trigger="sibling-material-accepted")
         else:
             self._trace("sibling-material-rejected", payload=pending,
-                        reason=(result or {}).get("reason", "target-material-rejected"))
+                        reason=result.get("reason", "target-material-rejected"))
             if not accepted and reason == 'target-material-rejected':
                 self._report_display_failure(pending, "target-material-rejected", "Target Image rejected the route material")
-            if isinstance(result, dict) and not result.get("sourceRetained"):
+            if not result.get("sourceRetained"):
                 self._present_runtime_state(self.runtime.snapshot(), trigger="sibling-source-expired")
         if not self.session.busy:
             self.session.refreshRuntime()
-        finish = getattr(self.images, "finish_staging", None)
-        if callable(finish):
-            finish(token, committed)
+        self.images.finish_staging(token, committed)
         self.changed.emit()
 
     def _manual_floor_observation_ready(self, state):
@@ -651,9 +615,7 @@ class ClientCoordinator(QObject):
 
     @Slot(object)
     def _cancel_session_frame(self, reason):
-        cancel = getattr(self.session, "cancelPending", None)
-        if callable(cancel):
-            cancel(reason)
+        self.session.cancelPending(reason)
 
     def _clear_focus_return_plan(self):
         self._waiting_foreground = False
@@ -661,16 +623,12 @@ class ClientCoordinator(QObject):
         self._focus_loss_map_sequence = None
 
     def _reset_map_input(self, reason, *, open_intent=False):
-        cancel_recovery = getattr(self.runtime, "cancel_map_open_recovery", None)
-        if callable(cancel_recovery):
-            cancel_recovery(reason)
+        self.runtime.cancel_map_open_recovery(reason)
         if reason != "foreground-lost":
             # Only the first focus loss preserves a same-round return plan.
             self._clear_focus_return_plan()
         self._cancel_pointer_drag(reason)
-        reset = getattr(self.input, "resetMapInput", None)
-        if callable(reset):
-            reset(bool(open_intent))
+        self.input.resetMapInput(bool(open_intent))
 
     def _close_map_from_input(self, payload):
         # Close is an urgent lifetime boundary, not an idempotent queued job.
@@ -688,11 +646,7 @@ class ClientCoordinator(QObject):
         self._cancel_session_frame("map-closed")
         self._map_was_open = False
         self.session.refreshRuntime()
-        enqueue = getattr(self.session, "dispatchWithPayload", None)
-        if callable(enqueue):
-            enqueue("close_map", dict(payload, openIntent=False))
-        else:
-            self.session.dispatch("close_map")  # Legacy injected fixture seam.
+        self.session.dispatchWithPayload("close_map", dict(payload, openIntent=False))
 
     def _map_round_ready(self, *, opening=True):
         state = self.session.snapshot
@@ -753,9 +707,7 @@ class ClientCoordinator(QObject):
             pass  # Optional diagnostic delivery cannot swallow the accepted action.
         if not self._map_round_ready(opening=opening):
             return
-        cancel_recovery = getattr(self.runtime, "cancel_map_open_recovery", None)
-        if callable(cancel_recovery):
-            cancel_recovery("new-map-input")
+        self.runtime.cancel_map_open_recovery("new-map-input")
         if self._diagnostics is not None:
             self._diagnostics.record("map-input", source=event.get("source", "map-key"),
                 inputAt=created, sequence=sequence, openIntent=opening)
@@ -793,12 +745,10 @@ class ClientCoordinator(QObject):
         drag, self._pointer_drag = self._pointer_drag, None
         if drag is None:
             return
-        observe = getattr(self.runtime, "observe_game_drag", None)
-        if callable(observe):
-            try:
-                observe(dict(phase="cancel", gestureId=drag["gestureId"], context=drag["context"], reason=reason))
-            except (OSError, ValueError, TypeError, KeyError) as error:
-                self._trace("drag-cancel-rejected", reason=reason, diag=dict(error=str(error)))
+        try:
+            self.runtime.observe_game_drag(dict(phase="cancel", gestureId=drag["gestureId"], context=drag["context"], reason=reason))
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            self._trace("drag-cancel-rejected", reason=reason, diag=dict(error=str(error)))
 
     @Slot(object)
     def _game_pointer_event(self, event):
@@ -837,16 +787,12 @@ class ClientCoordinator(QObject):
                         pointerSequence=sequence, inputCreatedAt=event.get("createdAt"),
                         inputSource="mouse-close-control"))
                     return
-                observe = getattr(self.runtime, "observe_game_drag", None)
-                if not callable(observe):
-                    self._trace("drag-unavailable", reason="runtime-transient-api-unavailable")
-                    return
                 from client_map_input import DragMotionAccumulator
                 motion = DragMotionAccumulator((event["x"], event["y"]), context["clientBounds"],
                     context.get("dragBoundaryNormalized"))
-                result = observe(dict(phase="down", gestureId=gesture, context=context,
+                result = self.runtime.observe_game_drag(dict(phase="down", gestureId=gesture, context=context,
                     pointerSequence=sequence, createdAt=event.get("createdAt"), delta=[0., 0.], totalDelta=[0., 0.]))
-                if isinstance(result, dict) and result.get("success"):
+                if result.get("success"):
                     self._pointer_drag = dict(gestureId=gesture, context=deepcopy(context), motion=motion, moved=False)
                 return
             drag = self._pointer_drag
@@ -860,14 +806,10 @@ class ClientCoordinator(QObject):
             if any(motion["delta"]) and not drag["moved"]:
                 self._cancel_session_frame("mouse-drag-motion")
                 drag["moved"] = True
-            observe = getattr(self.runtime, "observe_game_drag", None)
-            if not callable(observe):
-                self._cancel_pointer_drag("runtime-transient-api-unavailable")
-                return
-            result = observe(dict(phase=phase, gestureId=gesture, context=drag["context"],
+            result = self.runtime.observe_game_drag(dict(phase=phase, gestureId=gesture, context=drag["context"],
                 pointerSequence=sequence, createdAt=event.get("createdAt"),
                 delta=motion["delta"], totalDelta=motion["totalDelta"]))
-            if not isinstance(result, dict) or not result.get("success"):
+            if not result.get("success"):
                 self._cancel_pointer_drag("runtime-drag-rejected")
                 return
             if phase == "up":
@@ -1137,9 +1079,7 @@ class ClientCoordinator(QObject):
                 # Consume an old focus-return plan so polling cannot enqueue a
                 # duplicate recapture after this explicit request completes.
                 if self._waiting_foreground and self._focus_loss_map_sequence == self._map_input_sequence:
-                    reset = getattr(self.input, "resetMapInput", None)
-                    if callable(reset):
-                        reset(bool(self._map_was_open))
+                    self.input.resetMapInput(bool(self._map_was_open))
                 self._clear_focus_return_plan()
                 if force_catalogue and action == "capture_now" and self._native_candidate_preview_ready(current):
                     self.session.dispatchWithPayload(action, {"forceCatalogue": True})
@@ -1156,9 +1096,7 @@ class ClientCoordinator(QObject):
             return
         self._automatic_live = True
         if self._input_enable_allowed() and self.input.configureSettings(self.settings.persistedValues):
-            enable = getattr(self.input, "enableManagement", None)
-            if callable(enable):
-                enable()
+            self.input.enableManagement()
         self._discovery_timer.start()
         self._discover_game()
 
@@ -1181,11 +1119,7 @@ class ClientCoordinator(QObject):
         self._reference = {}
         self.windows.hide("reference")
         if had_reference:
-            clear = getattr(self.images, "clear_reference", None)
-            if callable(clear):
-                clear()
-            elif not self._aligned:
-                self.images.clear()
+            self.images.clear_reference()
 
     def _drop_binding(self, reason):
         self._binding_suspended = False
@@ -1206,9 +1140,7 @@ class ClientCoordinator(QObject):
         if not self._bound or self._binding_suspended:
             return
         self._binding_suspended = True
-        suspend = getattr(self.input, "suspendGameBinding", None)
-        if callable(suspend):
-            suspend()
+        self.input.suspendGameBinding()
         self.capture.disable()
         self._cancel_pointer_drag("game-binding-unavailable")
         self._revoke_runtime("capture-context-changed")
@@ -1248,9 +1180,7 @@ class ClientCoordinator(QObject):
                 "foregroundReturn": True, "bindingResume": True})
             return
         self._binding_suspended = False
-        resume = getattr(self.input, "resumeGameBinding", None)
-        if callable(resume):
-            resume()
+        self.input.resumeGameBinding()
         self._binding_resume_pending = False
         self.session.refreshRuntime()
         self._trace("binding-resumed", reason="same-window-identity")
@@ -1260,9 +1190,7 @@ class ClientCoordinator(QObject):
             return
         if self._automatic_live and not self._input_enable_allowed():
             return
-        recover = getattr(self.input, "recoverListening", None)
-        if callable(recover):
-            recover()
+        self.input.recoverListening()
         try:
             rows = list(self._catalog())
         except Exception as error:
@@ -1488,10 +1416,7 @@ class ClientCoordinator(QObject):
             return
         self._clear_reference()
         self._revoke_runtime("game-context-preference-changed")
-        set_context = getattr(self.settings, 'setGameContext', None)
-        accepted = (set_context(season, mode) if callable(set_context) else
-                    self.settings.setValue('gameSeason', season) and self.settings.setValue('gameMode', mode))
-        if accepted:
+        if self.settings.setGameContext(season, mode):
             self.settings.saveFields(["gameSeason", "gameMode"])
 
     @Slot(str, str, str)
@@ -1514,7 +1439,7 @@ class ClientCoordinator(QObject):
         if self.settings.busy or self.resources.busy:
             return
         values = self.settings.values
-        season = getattr(self.session, "currentSeason", "s0")
+        season = self.session.currentSeason
         choices = dict(values.get("contextRouteProfiles", {}))
         choices[context_key(self.session.currentMode, season)] = profile
         fields = ["contextRouteProfiles"]
@@ -1625,11 +1550,7 @@ class ClientCoordinator(QObject):
 
     @Slot()
     def showReference(self):
-        getter = getattr(self.runtime, "reference_payload", None)
-        if callable(getter):
-            self._sync_reference_payload(getter())
-        else:
-            self._show_reference_current()
+        self._sync_reference_payload(self.runtime.reference_payload())
         if not self._reference:
             self._message = "请先识别并确认本局地图和楼层，再显示定点地图"
             self.changed.emit()
@@ -1756,9 +1677,7 @@ class ClientCoordinator(QObject):
         self.windows.setClickThrough("reference", self._reference_clickthrough)
         if self._reference.get("previewOnly"):
             self._reference = {}
-            clear = getattr(self.images, "clear_reference", None)
-            if callable(clear):
-                clear()
+            self.images.clear_reference()
             self.windows.hide("reference")
         self.changed.emit()
 
@@ -1811,12 +1730,9 @@ class ClientCoordinator(QObject):
                 self._binding_signature = signature
                 if was_enabled and self._input_enable_allowed():
                     self.input.enable()
-                enable_management = getattr(self.input, "enableManagement", None)
-                if self._automatic_live and callable(enable_management) and self._input_enable_allowed():
-                    enable_management()
-        configure = getattr(self.runtime, "configure_settings", None)
-        if configure:
-            configure(values)
+                if self._automatic_live and self._input_enable_allowed():
+                    self.input.enableManagement()
+        self.runtime.configure_settings(values)
         mode, profile, season = self._settings_context(values)
         if numbers_changed and str(profile).startswith("custom:"):
             self.cancelReferenceEdit()
@@ -1888,11 +1804,9 @@ class ClientCoordinator(QObject):
         self._reset_map_input("resources-changed")
         self._invalidate_display()
         self._clear_reference()
-        invalidate = getattr(self.runtime, "invalidate", None)
-        if invalidate:
-            invalidate("resources-changed")
+        self.runtime.invalidate("resources-changed")
         self.session.refreshRuntime()
-        getattr(self.backend, 'invalidateResources', self.backend.refresh)()
+        self.backend.invalidateResources()
         self.changed.emit()
 
     def _invalidate_display(self, reason="display-invalidated"):
@@ -1902,16 +1816,10 @@ class ClientCoordinator(QObject):
         self._aligned = {}
         self._last_render_token = None
         self.windows.hide("aligned")
-        clear = getattr(self.images, "clear_aligned", None)
-        if callable(clear):
-            clear()
-        elif not self._reference:
-            self.images.clear()
+        self.images.clear_aligned()
 
     def _revoke_runtime(self, reason):
-        invalidate = getattr(self.runtime, "invalidate", None)
-        if invalidate:
-            invalidate(reason)
+        self.runtime.invalidate(reason)
         self._invalidate_display(reason)
 
     def _withdraw_expired_source(self, reason):
@@ -1922,8 +1830,7 @@ class ClientCoordinator(QObject):
         update. Explicit map/floor/resource/end invalidation still cancels both.
         """
         token = self._pending_aligned.get("token")
-        getter = getattr(self.runtime, "pending_sibling_payload", None)
-        current = getter(token) if token and callable(getter) else None
+        current = self.runtime.pending_sibling_payload(token) if token else None
         if current and current.get("token") == token and current.get("liveAuthorization"):
             self._trace("clear", payload=self._aligned, reason=reason,
                         window=dict(name="aligned", visible=False))
@@ -1969,16 +1876,14 @@ class ClientCoordinator(QObject):
                 self._map_resource_notified.clear()
         receipt = state.get("lastReceipt", {})
         observation = receipt.get("mapInputObservation")
-        current = getattr(self.runtime, "map_input_observation_is_current", None)
-        observe = getattr(self.input, "observeMapState", None)
-        if (isinstance(observation, dict) and callable(current) and callable(observe)
-                and current(observation)):
+        if (isinstance(observation, dict)
+                and self.runtime.map_input_observation_is_current(observation)):
             # A bounded return can observe only transition/black frames. That
             # current unknown observation releases the input pause, preserving
             # physical intent; it grants neither close nor display authority.
             reconciled = (observation["inputSequence"] == self._map_input_sequence
                 if observation["mapOpen"] is None else
-                observe(observation["mapOpen"], observation["inputSequence"]))
+                self.input.observeMapState(observation["mapOpen"], observation["inputSequence"]))
             if reconciled and self._binding_suspended and self._binding_resume_pending:
                 self._binding_suspended = self._binding_resume_pending = False
                 self.input.resumeGameBinding()
@@ -2005,16 +1910,13 @@ class ClientCoordinator(QObject):
         its new frameId into Session's transaction state here would stale that
         very command, so presentation consumes immutable payloads separately.
         """
-        reference_getter = getattr(self.runtime, "reference_payload", None)
-        if callable(reference_getter):
-            self._sync_reference_payload(reference_getter())
+        self._sync_reference_payload(self.runtime.reference_payload())
         render = state.get("render") or {}
         token = render.get("token") or state.get("renderToken")
-        get_payload = getattr(self.runtime, "render_payload", None)
         if not token or not render.get("liveAuthorization"):
             # A pending identity review may retain a separately verified frame.
             # The runtime getter, not the old view, decides if it is still valid.
-            retained = get_payload(self._last_render_token) if get_payload and self._last_render_token else None
+            retained = self.runtime.render_payload(self._last_render_token) if self._last_render_token else None
             if retained and retained.get("liveAuthorization"):
                 token, render = retained["token"], retained
                 self._trace("retain-current", payload=retained, reason="current-grant-during-review")
@@ -2023,61 +1925,58 @@ class ClientCoordinator(QObject):
                 self._withdraw_expired_source("runtime-grant-unavailable")
                 self.changed.emit(); return
         if token == self._last_render_token:
-            if not callable(reference_getter):
-                self.showReference()
-            current = get_payload(token) if get_payload else None
+            current = self.runtime.render_payload(token)
             if not current or not current.get("liveAuthorization"):
                 self._withdraw_expired_source("current-grant-lost")
                 self.changed.emit()
                 return
-            if current and current.get("liveAuthorization"):
-                scope = ("epoch", "season", "mode", "profileId", "mapId", "floor", "roundId", "cycleId",
-                         "captureGeneration", "displayGeneration", "variantId",
-                         "resourceIdentity", "routeWidth", "routeHeight", "clientWidth", "clientHeight")
-                if any(current.get(key) != self._aligned.get(key) for key in scope):
-                    self._invalidate_display("render-transform-scope-changed")
-                    self.changed.emit()
-                    return
-                changed = False
-                # A verified unchanged-pose refresh retains the material token,
-                # but renews frame authority. Consume that current grant before
-                # a subsequent pointer transform; never reload its pixels.
-                frame_metadata = {key: current.get(key) for key in
-                                  ("authorizationId", "frameId", "generation", "observedFloor", "floorSource")}
-                if any(self._aligned.get(key) != value for key, value in frame_metadata.items()):
-                    self._aligned.update(frame_metadata)
-                    changed = True
-                revision = current.get("transformRevision", 0)
-                if (type(revision) is int and revision > self._aligned.get("transformRevision", 0)):
-                    # The runtime owns this current-frame transient transform.
-                    # Keep material/URL and capture-to-DIP projection unchanged.
-                    for key in ("matrix", "transformRevision", "transient", "transientOffset", "persistentPoseUpdated"):
-                        if key in current:
-                            self._aligned[key] = deepcopy(current[key])
-                    self._trace("publish-transform", payload=self._aligned, reason=trigger)
-                    changed = True
-                metadata = {key: current.get(key) for key in
-                            ("identityPhase", "identityLocked", "provisional", "groupId", "durableMapId")}
-                if any(self._aligned.get(key) != value for key, value in metadata.items()):
-                    self._aligned.update(metadata)
-                    self._trace("publish-metadata", payload=self._aligned, reason=trigger)
-                    changed = True
-                if changed:
-                    self.changed.emit()
-                self._notify_first_valid_output(self._aligned)
+            scope = ("epoch", "season", "mode", "profileId", "mapId", "floor", "roundId", "cycleId",
+                     "captureGeneration", "displayGeneration", "variantId",
+                     "resourceIdentity", "routeWidth", "routeHeight", "clientWidth", "clientHeight")
+            if any(current.get(key) != self._aligned.get(key) for key in scope):
+                self._invalidate_display("render-transform-scope-changed")
+                self.changed.emit()
+                return
+            changed = False
+            # A verified unchanged-pose refresh retains the material token,
+            # but renews frame authority. Consume that current grant before
+            # a subsequent pointer transform; never reload its pixels.
+            frame_metadata = {key: current.get(key) for key in
+                              ("authorizationId", "frameId", "generation", "observedFloor", "floorSource")}
+            if any(self._aligned.get(key) != value for key, value in frame_metadata.items()):
+                self._aligned.update(frame_metadata)
+                changed = True
+            revision = current.get("transformRevision", 0)
+            if (type(revision) is int and revision > self._aligned.get("transformRevision", 0)):
+                # The runtime owns this current-frame transient transform.
+                # Keep material/URL and capture-to-DIP projection unchanged.
+                for key in ("matrix", "transformRevision", "transient", "transientOffset", "persistentPoseUpdated"):
+                    if key in current:
+                        self._aligned[key] = deepcopy(current[key])
+                self._trace("publish-transform", payload=self._aligned, reason=trigger)
+                changed = True
+            metadata = {key: current.get(key) for key in
+                        ("identityPhase", "identityLocked", "provisional", "groupId", "durableMapId")}
+            if any(self._aligned.get(key) != value for key, value in metadata.items()):
+                self._aligned.update(metadata)
+                self._trace("publish-metadata", payload=self._aligned, reason=trigger)
+                changed = True
+            if changed:
+                self.changed.emit()
+            self._notify_first_valid_output(self._aligned)
             if not self.settings.values.get("sheetVisibilityEnabled", True):
                 self.windows.hide("aligned")
                 self._trace("hide", payload=self._aligned, reason="preference-disabled",
                             window=dict(name="aligned", visible=False))
-            elif current and current.get("liveAuthorization"):
+            else:
                 self.windows.show("aligned")
             return
-        payload = get_payload(token) if get_payload else None
+        payload = self.runtime.render_payload(token)
         if not payload or not payload.get("liveAuthorization"):
             # A cancelled worker's Session view can name the older token after
             # a newer refresh/drag has already reached the consumer. Validate
             # that displayed owner directly before withdrawing its pixels.
-            retained = get_payload(self._last_render_token) if get_payload and self._last_render_token else None
+            retained = self.runtime.render_payload(self._last_render_token) if self._last_render_token else None
             if retained and retained.get("liveAuthorization"):
                 self._present_runtime_state(dict(render=retained), trigger=trigger)
                 return
@@ -2110,10 +2009,6 @@ class ClientCoordinator(QObject):
         self._trace("publish", payload=public, reason=trigger,
                     window=dict(name="aligned", visible=bool(self.settings.values.get("sheetVisibilityEnabled", True)),
                                 opacity=self.settings.values.get("sheetOpacity")))
-        if not callable(reference_getter):
-            # Compatibility for explicitly injected older runtime fixtures only;
-            # the production runtime has independent reference authorization.
-            self._sync_reference_payload(dict(payload, referenceAuthorized=True))
         self._notify_first_valid_output(public)
         self.changed.emit()
         if self.settings.values.get("sheetVisibilityEnabled", True):
@@ -2146,7 +2041,7 @@ class ClientCoordinator(QObject):
     def _input_changed(self):
         if self._closed or self._closing:
             return
-        state = getattr(self.input, "snapshot", {})
+        state = self.input.snapshot
         pointer_error = state.get("floorClickObserverError")
         pointer_key = ("floor-click-observer", pointer_error)
         if pointer_error and pointer_key not in self._notified:
@@ -2258,14 +2153,7 @@ class ClientCoordinator(QObject):
         return all(key not in current or value == current[key] for key, value in result.items())
 
     def _failure_event_is_current(self, event):
-        check = getattr(self.runtime, "failure_event_is_current", None)
-        if callable(check):
-            return bool(check(event))
-        state = self.runtime.snapshot()
-        # Compatibility only for older injected runtime fixtures. Production
-        # owns the opening's terminal lifetime, including a close before solve.
-        return all(key not in state or key not in event or state[key] == event[key]
-                   for key in ("season", "mode", "profileId", "roundId", "cycleId", "openingId", "resourceIdentity"))
+        return bool(self.runtime.failure_event_is_current(event))
 
     def _native_action(self, action):
         if self._closing or self._closed:
@@ -2351,8 +2239,7 @@ class ClientCoordinator(QObject):
         if self._reference.get("s1CandidateReference") and self._edit is None:
             # Historical private evidence can withdraw a candidate without a
             # new capture/session completion. Recheck the static owner too.
-            getter = getattr(self.runtime, "reference_payload", None)
-            if callable(getter) and getter() is None:
+            if self.runtime.reference_payload() is None:
                 self._clear_reference()
                 self.changed.emit()
         if self._edit is not None:
@@ -2384,9 +2271,7 @@ class ClientCoordinator(QObject):
                     self._revoke_runtime("foreground-lost")
                     self._focus_loss_map_sequence = self._map_input_sequence
                     self._reset_map_input("foreground-lost")
-                    cancel = getattr(self.session, "cancelPending", None)
-                    if callable(cancel):
-                        cancel("foreground-lost")
+                    self.session.cancelPending("foreground-lost")
                 if not self._reference_focus_allowed():
                     self.windows.hide("reference")
                     self._trace("hide", payload=self._reference, reason="game-not-foreground",
@@ -2404,9 +2289,7 @@ class ClientCoordinator(QObject):
                 if self._focus_loss_map_sequence == self._map_input_sequence:
                     # Restore intent only at this synchronous return boundary,
                     # never from a later snapshot/receipt after another press.
-                    reset = getattr(self.input, "resetMapInput", None)
-                    if callable(reset):
-                        reset(bool(self._map_was_open))
+                    self.input.resetMapInput(bool(self._map_was_open))
                 self._focus_loss_map_sequence = None
                 if self._map_was_open:
                     self._map_was_open = False
@@ -2418,8 +2301,7 @@ class ClientCoordinator(QObject):
             elif self._aligned:
                 if self.session.busy:
                     return
-                getter = getattr(self.runtime, "render_payload", None)
-                if getter is None or getter(self._last_render_token) is None:
+                if self.runtime.render_payload(self._last_render_token) is None:
                     self._revoke_runtime("capture-context-changed")
                     self._message = "窗口或显示环境已变化，请重新连接游戏窗口"
                     self.session.refreshRuntime()
@@ -2450,8 +2332,7 @@ class ClientCoordinator(QObject):
 
     def _private_experiment_notice(self, name, event):
         """Report only a current runtime experimental transition, never a grant."""
-        current = getattr(self.runtime, "private_experiment_event_is_current", None)
-        if not callable(current) or not current(event):
+        if not self.runtime.private_experiment_event_is_current(event):
             return
         state = self.runtime.snapshot()
         if (self._pending_context or not state.get("roundActive")
@@ -2494,9 +2375,7 @@ class ClientCoordinator(QObject):
             self.notificationRequested.emit("结构矛盾，恢复识别",
                 "新结构与锁定地图矛盾，已解除锁定并恢复候选识别，下次开图继续核对。", "info")
         # Informational only. Never refresh Session or mutate/cancel its worker.
-        getter = getattr(self.runtime, "reference_payload", None)
-        if callable(getter):
-            self._sync_reference_payload(getter())
+        self._sync_reference_payload(self.runtime.reference_payload())
         self.changed.emit()
 
     @Slot(object)
@@ -2542,7 +2421,7 @@ class ClientCoordinator(QObject):
         self._trace(name, payload=payload, reason=event.get("reason", ""),
                     role="runtime", status=event.get("status"),
                     diag={key: event.get(key) for key in ("poseResult", "poseAttempt", "groupMemberIds", "invalidationOrigin",
-                        *getattr(self.runtime, "_private_diagnostic_fields", lambda: ())()) if key in event},
+                        *self.runtime._private_diagnostic_fields()) if key in event},
                     **({'fitReport': event['fitReport']} if 'fitReport' in event else {}),
                     **({'mapAttempt': event['mapAttempt']} if 'mapAttempt' in event else {}),
                     **decision)
@@ -2576,9 +2455,8 @@ class ClientCoordinator(QObject):
         elif name in {"private-experimental-locked", "private-experimental-unlocked"}:
             self._private_experiment_notice(name, event)
         elif name == "s1-candidate-pool-changed":
-            current = getattr(self.runtime, "private_experiment_event_is_current", None)
             state = self.runtime.snapshot()
-            if (not self._pending_context and callable(current) and current(event)
+            if (not self._pending_context and self.runtime.private_experiment_event_is_current(event)
                     and state.get("s1FormalRoundLock") and not state.get("identityLocked")):
                 self._message = "正在核对地图 · 剩余 " + str(state.get("s1RemainingCandidateCount", 0)) + " 个候选"
                 self.changed.emit()
@@ -2590,14 +2468,10 @@ class ClientCoordinator(QObject):
                 return
             self._prepare_sibling_material(event)
         elif name == "render-material-accepted":
-            enqueue = getattr(self.session, "dispatchMaintenance", None)
-            if callable(enqueue):
-                enqueue("remember_render_material", {"renderToken": event.get("token")})
+            self.session.dispatchMaintenance("remember_render_material", {"renderToken": event.get("token")})
         elif name in {"sibling-rolled-back", "sibling-committed"}:
             if self._pending_aligned and event.get("token") == self._pending_aligned.get("token"):
-                finish = getattr(self.images, "finish_staging", None)
-                if callable(finish):
-                    finish(event["token"], name == "sibling-committed")
+                self.images.finish_staging(event["token"], name == "sibling-committed")
                 self._pending_aligned = {}
                 self._material_timer.stop()
                 self.changed.emit()
@@ -2615,9 +2489,7 @@ class ClientCoordinator(QObject):
                 # Read the current owner, never replay a queued event's sheet.
                 # A normal close retains it; switching/failed work clears it
                 # before that worker can block or complete.
-                getter = getattr(self.runtime, "reference_payload", None)
-                if callable(getter):
-                    self._sync_reference_payload(getter())
+                self._sync_reference_payload(self.runtime.reference_payload())
             # Runtime may close after preparation/probe failure without a key
             # edge. Reconcile only that exact input and still-current lifetime;
             # a queued old close must never flip a newer open back to closed.
@@ -2631,8 +2503,7 @@ class ClientCoordinator(QObject):
                         and all(key in event and event[key] == state.get(key) for key in fields)
                         and str(state.get("capture", {}).get("hwnd", "")) == str(self._bound)):
                     self._reset_map_input("runtime-map-closed")
-            getter = getattr(self.runtime, "render_payload", None)
-            if getter is None or not self._last_render_token or getter(self._last_render_token) is None:
+            if not self._last_render_token or self.runtime.render_payload(self._last_render_token) is None:
                 self._withdraw_expired_source(event.get("reason") or "render-revoked")
                 self.changed.emit()
         elif name == "aligned-visibility-changed":
@@ -2731,15 +2602,9 @@ class ClientCoordinator(QObject):
         self._foreground_timer.stop()
         self._tracking_timer.stop()
         self._context_timer.stop()
-        stop_evidence = getattr(self.runtime, "stop_private_evidence", None)
-        if callable(stop_evidence):
-            stop_evidence()
-        shutdown_input = getattr(self.input, "shutdown", None)
+        self.runtime.stop_private_evidence()
         self._material_timer.stop()
-        if callable(shutdown_input):
-            shutdown_input()
-        else:
-            self.input.disable()  # Explicitly injected pre-hook fixture adapter.
+        self.input.shutdown()
         self.capture.disable()
         self._revoke_runtime("client-close-requested")
         self.session.stop()
@@ -2762,15 +2627,14 @@ class ClientCoordinator(QObject):
         if self._close_ready or self._closed:
             return
         pools = dict(session=self.session._pool.activeThreadCount(),
-                     resources=self.resources.pool.activeThreadCount(), settings=self.settings.pool.activeThreadCount())
-        evidence_busy = bool(getattr(self.runtime, "private_evidence_busy", False))
-        pools["privateEvidence"] = int(evidence_busy)
+                     resources=self.resources.pool.activeThreadCount(), settings=self.settings.pool.activeThreadCount(),
+                     privateEvidence=int(bool(self.runtime.private_evidence_busy)))
         for index, writer in enumerate(self.close_writers):
             pool = getattr(writer, "pool", getattr(writer, "_pool", None))
             if pool is not None:
                 pools[type(writer).__name__ + str(index)] = pool.activeThreadCount()
-        hook_running = bool(getattr(self.input, "snapshot", {}).get("hookRunning", False))
-        writes = (bool(getattr(self.settings, "pendingWrites", False))
+        hook_running = bool(self.input.snapshot.get("hookRunning", False))
+        writes = (bool(self.settings.pendingWrites)
                   or any(bool(getattr(writer, "pendingWrites", False)) for writer in self.close_writers))
         wait_state = (tuple(pools.values()), hook_running, writes)
         if wait_state != self._last_close_wait:
@@ -2784,9 +2648,7 @@ class ClientCoordinator(QObject):
         self.changed.emit()
         # Close vetoes belong to normal window interaction, not a completed
         # application shutdown. Hide all owned surfaces before requesting quit.
-        shutdown_windows = getattr(self.windows, "shutdown", None)
-        if callable(shutdown_windows):
-            shutdown_windows()
+        self.windows.shutdown()
         self.lifecycleEvent.emit(dict(stage="close-ready", closing=True, closeReady=True, hookRunning=False))
         self.quitRequested.emit()
 
@@ -2798,9 +2660,7 @@ class ClientCoordinator(QObject):
         self._foreground_timer.stop()
         self._context_timer.stop()
         self._tracking_timer.stop()
-        callback = getattr(self.runtime, "set_event_callback", None)
-        if callback:
-            callback(None)
+        self.runtime.set_event_callback(None)
         self.input.shutdown()
         self.capture.shutdown()
         self._game_focus.shutdown()

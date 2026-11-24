@@ -201,7 +201,7 @@ class PayloadPruneTests(unittest.TestCase):
         self.assertTrue(all(unused_staged_relative(path) is None for path in kept), kept)
         self.assertTrue(all(unused_staged_relative(path) for path in dropped), dropped)
 
-    def test_unreferenced_bindings_drop_opengl_pyd_but_keep_linked_dll_and_widgets(self):
+    def test_retains_shiboken_imports_but_removes_unused_bindings(self):
         files = [
             "PySide6/QtQuick.pyd",
             "PySide6/Qt6Quick.dll",
@@ -211,6 +211,8 @@ class PayloadPruneTests(unittest.TestCase):
             "PySide6/QtTest.pyd",
             "PySide6/Qt6Widgets.dll",
             "PySide6/QtWidgets.pyd",
+            "PySide6/QtSvg.pyd",
+            "PySide6/Qt6Svg.dll",
             "PySide6/plugins/platforms/qwindows.dll",
             "numpy.libs/libopenblas.dll",
             "csharp-grid/coreclr.dll",
@@ -224,12 +226,14 @@ class PayloadPruneTests(unittest.TestCase):
             "PySide6/QtTest.pyd": ["Qt6Widgets.dll", "Qt6Core.dll"],
             "PySide6/Qt6Widgets.dll": ["Qt6Core.dll"],
             "PySide6/QtWidgets.pyd": ["Qt6Widgets.dll"],
+            "PySide6/QtSvg.pyd": ["Qt6Svg.dll"],
+            "PySide6/Qt6Svg.dll": ["Qt6Core.dll"],
             "PySide6/plugins/platforms/qwindows.dll": ["Qt6Core.dll"],
             "numpy.libs/libopenblas.dll": [],
             "csharp-grid/coreclr.dll": [],
         }
         removed = set(unreferenced_qt_binaries(files, lambda rel: imports[rel]))
-        self.assertEqual(removed, {"PySide6/QtOpenGL.pyd", "PySide6/QtWidgets.pyd"})
+        self.assertEqual(removed, {"PySide6/QtSvg.pyd", "PySide6/Qt6Svg.dll"})
 
     def test_quick_controls_style_is_basic_before_qml(self):
         os.environ.pop("QT_QUICK_CONTROLS_STYLE", None)

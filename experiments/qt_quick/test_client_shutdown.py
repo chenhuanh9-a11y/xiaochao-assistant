@@ -89,7 +89,7 @@ def scenario(mode, destination):
     elapsed = time.monotonic() - started
     release.set(); pool.waitForDone(1000)
     result = dict(code=code, events=events, elapsed=elapsed, closeReady=coordinator.closeReady,
-        beats=len(beats), inputStopped=fixture.input.disable.called,
+        beats=len(beats), inputStopped=fixture.input.shutdown.called,
         captureStopped=coordinator.capture.disable.called,
         writerFinished=Path(destination).exists(), activeWorkers=pool.activeThreadCount(), exitChoiceClicked=bool(chosen))
     if tutorial is not None:
