@@ -643,6 +643,8 @@ def main():
     if args.offline_resource_root is not None and not args.self_check:
         parser.error("--offline-resource-root requires --self-check")
     if args.self_check:
+        from PySide6.QtTest import QTest
+        from client_coordinator import ClientCoordinator, LiveImages
         from client_engine import EngineAdapter
         from s0_floor_templates import _bank
         floor_vectors, floor_labels = _bank()

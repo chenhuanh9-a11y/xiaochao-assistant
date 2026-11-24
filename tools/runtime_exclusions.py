@@ -18,6 +18,10 @@ RUNTIME_SEED_NAMES = frozenset("""
 qtcore.pyd qtgui.pyd qtqml.pyd qtquick.pyd qtquickcontrols2.pyd qtnetwork.pyd qttest.pyd
 qt6core.dll
 """.split())
+_SHIBOKEN_BINDING_IMPORTS = {
+    "qtquick.pyd": ("qtopengl.pyd",),
+    "qttest.pyd": ("qtwidgets.pyd",),
+}
 
 
 def excluded_binary(destination: str) -> bool:
@@ -118,6 +122,7 @@ def unreferenced_qt_binaries(relative_paths, imports_of) -> list[str]:
     """Qt bindings no remaining seeded binary imports.
 
     ``imports_of(relative)`` returns imported DLL names for one staged binary.
+    Shiboken imports other Python bindings at runtime, outside the DLL table.
     Plugins and QML binaries stay seeds because Qt loads them by directory, not
     by a link import. Non-PySide6 binaries are seeds too, so numpy, OpenCV,
     Python and the grid are never selected.
@@ -141,9 +146,10 @@ def unreferenced_qt_binaries(relative_paths, imports_of) -> list[str]:
         if rel in seen:
             continue
         seen.add(rel)
-        if not PurePosixPath(rel).name.casefold().endswith((".dll", ".pyd")):
+        name = PurePosixPath(rel).name.casefold()
+        if not name.endswith((".dll", ".pyd")):
             continue
-        for dep in imports_of(rel):
+        for dep in (*imports_of(rel), *_SHIBOKEN_BINDING_IMPORTS.get(name, ())):
             for cand in by_name.get(str(dep).casefold(), []):
                 if cand not in seen:
                     stack.append(cand)
