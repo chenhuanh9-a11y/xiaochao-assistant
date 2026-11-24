@@ -329,6 +329,26 @@ class CommonCoordinateFilter:
         return np.asarray(result['matrixEntranceRendererToClient'], float) @ xz_to_renderer @ entrance_xz
 
     @staticmethod
+    def _has_wall_contradiction(bad, spread):
+        """Accept either a 2D differing wall cluster or a continuous 1D straight wall."""
+        if len(bad) < 12 or np.max(spread) < 24:
+            return False
+        if np.min(spread) >= 12:
+            return True
+        pts = np.rint(bad).astype(int)
+        x0, y0 = pts.min(axis=0)
+        x1, y1 = pts.max(axis=0)
+        local = np.zeros((int(y1 - y0) + 5, int(x1 - x0) + 5), dtype=np.uint8)
+        local[pts[:, 1] - y0 + 2, pts[:, 0] - x0 + 2] = 1
+        bridged = cv2.dilate(local, np.ones((7, 7), np.uint8))
+        count, labels = cv2.connectedComponents(bridged, connectivity=8)
+        for cid in range(1, count):
+            ys, xs = np.nonzero((labels == cid) & (local > 0))
+            if len(xs) >= 10 and max(int(xs.max() - xs.min()), int(ys.max() - ys.min())) >= 24:
+                return True
+        return False
+
+    @staticmethod
     def _intersect_anchor(domain, anchor, origin):
         """Keep one shared feasible domain satisfying the independent gate."""
         hyp, matrix, evidence = domain
@@ -370,6 +390,7 @@ class CommonCoordinateFilter:
         except (KeyError,TypeError,ValueError,OSError) as e:return result('coordinate-resources-unavailable',detail=str(e))
         if data is None or cancelled():return result('coordinate-work-obsolete')
         from single_map_structure import current_part
+        from structure_observation import observed_wall_fragment_edges
         from fast_structure_alignment import sample_edges
         solutions=[]
         for ctx in contexts:
@@ -405,11 +426,24 @@ class CommonCoordinateFilter:
         hyp=np.unique(np.concatenate([solution[1] for solution in solutions]),axis=0)
         if len(hyp)>120000:return result('current-common-coordinate-budget-exhausted')
         evidence=dict(evidence,validatedCommonDomains=len(solutions))
-        edge=current_part(frame,ctx,'observed').copy()
+        edge=observed_wall_fragment_edges(frame,ctx).copy()
         if anchor is not None:
             x,y=map(lambda v:int(round(v)),anchor['center']);edge[max(0,y-20):y+21,max(0,x-20):x+21]=False
-        points=sample_edges(edge,500)
-        if len(points)<40:return result('current-structure-insufficient')
+        diff_mask=data.get('difference')
+        diff_points=np.empty((0,2),dtype=float)
+        if diff_mask is not None and diff_mask.size:
+            diff_client=cv2.warpAffine(diff_mask.astype(np.uint8),matrix[:2],(frame.shape[1],frame.shape[0]),flags=cv2.INTER_NEAREST)>0
+            diff_edge=edge&diff_client
+            if np.any(diff_edge):
+                diff_points=sample_edges(diff_edge,250)
+        global_points=sample_edges(edge,500)
+        if len(diff_points):
+            combined=np.vstack([diff_points,global_points])
+            _,uniq=np.unique(np.rint(combined).astype(int),axis=0,return_index=True)
+            points=combined[np.sort(uniq)]
+        else:
+            points=global_points
+        if len(points)<30:return result('current-structure-insufficient')
         checks=[];contradicted=[];h,w=data['shape']
         for mid,field in zip(data['ids'],data['fields']):
             minimum=np.full(len(points),np.inf)
@@ -421,7 +455,7 @@ class CommonCoordinateFilter:
                 minimum=np.minimum(minimum,distances.min(0))
             bad=points[minimum>8.]  # >6px plus 2px parameter/raster cushion
             spread=np.ptp(bad,axis=0) if len(bad) else np.zeros(2)
-            explicit=bool(len(bad)>=12 and np.min(spread)>=12 and np.max(spread)>=24)
+            explicit=self._has_wall_contradiction(bad,spread)
             if explicit:contradicted.append(mid)
             checks.append(dict(mapId=mid,unavoidableMissCount=int(len(bad)),sampleCount=len(points),unavoidableSpanPx=spread.tolist(),explicitContradiction=explicit))
         if cancelled():return result('coordinate-work-obsolete')

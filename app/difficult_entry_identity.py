@@ -180,10 +180,10 @@ class MapEntryGeometryIdentity:
                     poseAmbiguous=len(hypotheses)>1 and hypotheses[1]['chainCount']>=best['chainCount']-1,
                     sourceProduct=item['sourceProduct']))
         rows.sort(key=lambda r:-r['score'])
-        # Verify only the small, competitive set. Budget/incomplete competition
+        # Verify the competitive set within budget. Budget/incomplete competition
         # never grants identity. Entry-family repetition remains ambiguous.
-        competitive=[r for r in rows if r['score']>=max(10,rows[0]['score']*.65)] if rows else []
-        if complete and 0<len(competitive)<=3:
+        competitive=[r for r in rows if r['score']>=max(8,rows[0]['score']*.65)] if rows else []
+        if complete and 0<len(competitive)<=6:
             for row in competitive:
                 if time.perf_counter()-started>budget:complete=False;break
                 try:
@@ -194,10 +194,9 @@ class MapEntryGeometryIdentity:
         winner=accepted[0] if complete and len(accepted)==1 else None
         for row in rows:
             row['poseVerified']=bool(row is winner and not row['poseAmbiguous']
-                and row['hypothesis']['neighborChains']>=6 and row['score']>=10
-                and (row['hypothesis']['mainChains']>=3 or (
-                    row['hypothesis']['neighborChains']>=8
-                    and min(row['hypothesis']['neighborExtentGrid'])>=4)))
+                and ((row['hypothesis']['mainChains']>=3 and row['hypothesis']['neighborChains']>=4 and row['score']>=8)
+                     or (row['hypothesis']['neighborChains']>=8
+                         and min(row['hypothesis']['neighborExtentGrid'])>=4 and row['score']>=10)))
             row['identityVerified']=row['poseVerified'] and map_id is None
         if winner is not None:rows.sort(key=lambda r:(not r['identityVerified'],-r['score']))
         return rows,dict(reason=('entry-known-identity-pose-verified' if map_id is not None and any(r['poseVerified'] for r in rows)

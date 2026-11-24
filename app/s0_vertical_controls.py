@@ -96,8 +96,8 @@ def bind_control_geometry(read, mode, frame_size, *, map_open):
         gaps = [b[1]-a[1] for a,b in zip(points, points[1:])]
         if min(gaps) <= 0 or max(gaps) > min(gaps)*1.2:
             raise ValueError("invalid spacing")
-        half_y = min(h*.4, min(gaps)*.4)
-        rows = [dict(floor=floor, rect=[cx-w*.4, cy-half_y, cx+w*.4, cy+half_y])
+        half_y = min(h*.48, min(gaps)*.45)
+        rows = [dict(floor=floor, rect=[max(0., cx-w*.48), max(0., cy-half_y), min(1., cx+w*.48), min(1., cy+half_y)])
                 for floor,(cx,cy) in zip(order,points)]
         out.update(layout=LAYOUT, controlGeometryVerified=True,
                    controlFrameSize=list(size), controlRects=rows)

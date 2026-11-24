@@ -145,9 +145,12 @@ class PrivateCoordinateObserver:
             return stopped()
         contexts = []
         bounds = (0, 0, frame.shape[1], frame.shape[0])
-        # All islands are generated without any candidate map. The common
-        # comparator accepts only islands with >=6 matching common chains,
-        # rejects incompatible coordinate solutions, and never unions HUD edges.
+        # All islands are generated without any candidate map. On floor -1 with
+        # a located entrance gate, allow smaller entrance islands (>=2 chains)
+        # that contain the gate anchor so _entrance_union_domain can prune early;
+        # anchorless common-chain matching still requires >=6 chains internally.
+        gate_located = anchor.status == "located" and str(floor) == "-1"
+        gate_center = tuple(anchor.center_px) if gate_located else None
         def extract():
             components = visible_map_components(frame, observation_bounds=bounds)
             if len(components) <= 32:
@@ -155,8 +158,16 @@ class PrivateCoordinateObserver:
                     if cancelled():
                         break
                     context = current_geometry(frame, observation_bounds=bounds, visible_override=visible)
-                    if context is not None and len(observed_corner_chains(frame, context)) >= 6:
+                    if context is None:
+                        continue
+                    chain_count = len(observed_corner_chains(frame, context))
+                    if chain_count >= 6:
                         contexts.append(context)
+                    elif gate_located and chain_count >= 2:
+                        ys, xs = np.nonzero(visible)
+                        if (len(xs) and xs.min() - 80 <= gate_center[0] <= xs.max() + 80
+                                and ys.min() - 80 <= gate_center[1] <= ys.max() + 80):
+                            contexts.append(context)
         run_stage("extract", extract)
         if cancelled():
             return stopped()

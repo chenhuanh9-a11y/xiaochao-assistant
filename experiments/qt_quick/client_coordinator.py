@@ -263,6 +263,7 @@ class ClientCoordinator(QObject):
         self._map_resource_notified = set()
         self._focus_loss_map_sequence = None
         self._pointer_drag = None
+        self._pointer_floor_gesture = None
         self._pointer_sequence = 0
         self._waiting_foreground = False
         self._map_was_open = False
@@ -742,6 +743,7 @@ class ClientCoordinator(QObject):
         return {key: value for key, value in context.items() if key != "createdAt"}
 
     def _cancel_pointer_drag(self, reason):
+        self._pointer_floor_gesture = None
         drag, self._pointer_drag = self._pointer_drag, None
         if drag is None:
             return
@@ -750,12 +752,35 @@ class ClientCoordinator(QObject):
         except (OSError, ValueError, TypeError, KeyError) as error:
             self._trace("drag-cancel-rejected", reason=reason, diag=dict(error=str(error)))
 
+    def _floor_click_refresh_action(self):
+        def pick(state):
+            if self._native_candidate_preview_ready(state):
+                return "observe_candidate_floor"
+            if state.get("season") == "s1" and self._manual_floor_observation_ready(state):
+                return "observe_manual_floor"
+            return "refresh_map"
+        state = self.session.snapshot
+        preferred = pick(state)
+        if preferred not in state.get("availableCommands", ()):
+            self.session.refreshRuntime()
+            state = self.session.snapshot
+            preferred = pick(state)
+        return preferred if preferred in state.get("availableCommands", ()) else None
+
+    def _dispatch_floor_click_refresh(self, event):
+        action = self._floor_click_refresh_action()
+        if action is not None:
+            self.session.dispatchWithPayload(action, dict(
+                floorClickSequence=event.get("sequence"), floorClickCreatedAt=event.get("createdAt")))
+
     @Slot(object)
     def _game_pointer_event(self, event):
         if self._closing or self._closed or not isinstance(event, dict):
             return
         phase, gesture = event.get("phase"), event.get("gestureId")
         if phase == "cancel":
+            if self._pointer_floor_gesture and gesture == self._pointer_floor_gesture.get("gestureId"):
+                self._pointer_floor_gesture = None
             if self._pointer_drag and gesture == self._pointer_drag["gestureId"]:
                 self._cancel_pointer_drag(event.get("reason", "pointer-cancelled"))
             return
@@ -774,10 +799,16 @@ class ClientCoordinator(QObject):
             if phase == "down":
                 self._cancel_pointer_drag("new-pointer-press")
                 floor = self._game_pointer_pressed(event)
-                if not isinstance(floor, dict) or floor.get("success"):
+                if not isinstance(floor, dict):
+                    return
+                if floor.get("success"):
+                    self._pointer_floor_gesture = dict(gestureId=gesture, sequence=sequence,
+                        createdAt=event.get("createdAt"))
                     return
                 if floor.get("reason") != "floor-click-not-a-control":
                     return  # Expired/native-geometry-rejected input cannot become X/drag.
+                if floor.get("floorColumnHit") is True:
+                    return  # Clicks between floor buttons must not start a map drag.
                 # observe_game_floor_click just validated this press. Runtime
                 # rechecks the complete scope under its lock for drag updates;
                 # a nonblocking metadata read returning None is not cancellation.
@@ -794,6 +825,12 @@ class ClientCoordinator(QObject):
                     pointerSequence=sequence, createdAt=event.get("createdAt"), delta=[0., 0.], totalDelta=[0., 0.]))
                 if result.get("success"):
                     self._pointer_drag = dict(gestureId=gesture, context=deepcopy(context), motion=motion, moved=False)
+                return
+            if self._pointer_floor_gesture is not None and gesture == self._pointer_floor_gesture.get("gestureId"):
+                if phase == "up":
+                    self._pointer_floor_gesture = None
+                    if getattr(self.runtime, "has_pending_floor_intent", lambda: False)():
+                        self._dispatch_floor_click_refresh(event)
                 return
             drag = self._pointer_drag
             if drag is None or gesture != drag["gestureId"]:
@@ -830,7 +867,8 @@ class ClientCoordinator(QObject):
         if (self._closed or self._closing or not isinstance(event, dict) or not self._bound
                 or event.get("hwnd") != int(self._bound) or self.resources.busy
                 or self.resources.pendingKind or self.session.snapshot.get("resourceLocked")
-                or self._pending_context or not self.session.snapshot.get("roundActive")):
+                or self._pending_context
+                or not (self.session.snapshot.get("roundActive") or self.runtime.snapshot().get("roundActive"))):
             return
         try:
             if self._native_windows.foreground_window() != int(self._bound):
@@ -850,8 +888,7 @@ class ClientCoordinator(QObject):
         self._trace("floor-click-intent", state=self.runtime.snapshot(), reason=result.get("reason", ""),
                     diag=dict(clickedFloor=result.get("clickedFloorId"), expiresAt=result.get("expiresAt")))
         if result.get("captureRequired"):
-            self.session.dispatchWithPayload("refresh_map", dict(
-                floorClickSequence=event.get("sequence"), floorClickCreatedAt=event.get("createdAt")))
+            self._dispatch_floor_click_refresh(event)
         return result
 
     def _action_requested(self, action, payload):
@@ -2458,8 +2495,21 @@ class ClientCoordinator(QObject):
             state = self.runtime.snapshot()
             if (not self._pending_context and self.runtime.private_experiment_event_is_current(event)
                     and state.get("s1FormalRoundLock") and not state.get("identityLocked")):
-                self._message = "正在核对地图 · 剩余 " + str(state.get("s1RemainingCandidateCount", 0)) + " 个候选"
+                remaining = int(state.get("s1RemainingCandidateCount", 0))
+                self._message = "正在核对地图 · 剩余 " + str(remaining) + " 个候选"
                 self.changed.emit()
+                if (remaining == 1 and state.get("mapOpen") and self._bound
+                        and not self.session.busy and self._pointer_drag is None
+                        and not self.resources.busy and not self.resources.pendingKind
+                        and not state.get("resourceLocked")
+                        and self._native_candidate_preview_ready(state)
+                        and "observe_candidate_floor" in state.get("availableCommands", ())):
+                    try:
+                        if self._native_windows.foreground_window() == int(self._bound):
+                            self._last_manual_floor_observation_at = time.monotonic()
+                            self.session.dispatch("observe_candidate_floor")
+                    except OSError:
+                        pass
         elif name == "private-pool-observed":
             return  # Runtime/trace diagnostics only; no notification or refresh.
         elif name == "sibling-material-pending":
@@ -2527,7 +2577,8 @@ class ClientCoordinator(QObject):
                     or "observe_candidate_floor" not in state.get("availableCommands", ())):
                 return
             now = time.monotonic()
-            if now - self._last_manual_floor_observation_at < .5:
+            interval = .15 if (state.get("floorRequired") or getattr(self.runtime, "has_pending_floor_intent", lambda: False)()) else .5
+            if now - self._last_manual_floor_observation_at < interval:
                 return
             try:
                 if self._native_windows.foreground_window() == int(self._bound):
@@ -2554,7 +2605,8 @@ class ClientCoordinator(QObject):
                 if not recovery.get("due"):
                     return
             now = time.monotonic()
-            if now - self._last_manual_floor_observation_at < .5:
+            interval = .15 if (state.get("floorRequired") or getattr(self.runtime, "has_pending_floor_intent", lambda: False)()) else .5
+            if now - self._last_manual_floor_observation_at < interval:
                 return
             try:
                 if self._native_windows.foreground_window() == int(self._bound):

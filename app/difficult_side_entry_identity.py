@@ -711,7 +711,7 @@ class MapLocalEntryIdentity:
         # current-frame and per-pose; caller-owned loaders retain their policy.
         route_cache = {}
         active = optional_door if optional_door is not None else competitors
-        for row in active if complete and len(active) <= 3 else []:
+        for row in active if complete and len(active) <= 6 else []:
             if time.perf_counter() >= deadline:
                 verification_complete = False
                 break
@@ -727,7 +727,7 @@ class MapLocalEntryIdentity:
                 for row in rows:row.pop('sideDoorConstraint', None)
                 active = competitors
                 optional_door = None
-                for row in active if complete and len(active) <= 3 else []:
+                for row in active if complete and len(active) <= 6 else []:
                     if time.perf_counter() >= deadline:
                         verification_complete = False
                         break
@@ -744,14 +744,14 @@ class MapLocalEntryIdentity:
                 reason = ('current-side-door-geometry' if contradicted else
                           'side-search-incomplete-unverified' if not complete else
                           'side-outside-score-band-unverified' if id(row) not in competitor_ids else
-                          'side-competition-limit-unverified' if len(competitors) > 3 else
+                          'side-competition-limit-unverified' if len(competitors) > 6 else
                           'side-verification-budget-incomplete')
                 row['verification'] = dict(success=False, evaluated=False, reason=reason)
             row['competitionComplete'] = complete
             row['poseAmbiguous'] = sum(r['mapId'] == row['mapId'] and r['floor'] == row['floor'] for r in competitors) > 1
         return rows, dict(reason='side-local-candidates' if complete else 'side-budget-incomplete', complete=complete,
                           queryTurns=len(q), competitiveHypotheses=len(competitors), seedCorrespondences=seed_count,
-                          verificationComplete=verification_complete and len(active) <= 3,
+                          verificationComplete=verification_complete and len(active) <= 6,
                           identityAmbiguous=len({(r['mapId'], r['floor']) for r in competitors}) != 1,
                           elapsedMs=(time.perf_counter()-started)*1000, **search_counts)
 

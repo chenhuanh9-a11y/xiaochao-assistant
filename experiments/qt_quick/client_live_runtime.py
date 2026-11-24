@@ -25,7 +25,8 @@ from season_context import normalize_season, context_key
 from client_engine import (EngineAdapter, clone_similarity_state, stage_similarity_rank, automatic_identity_candidates, registered_logical_family, ranked_entrance_kind, similarity_evidence_summary, initial_group_display_member, is_registered_identity_group,
                            INITIAL_IDENTITY_BUDGET_SECONDS)
 from floor_observation_policy import (MANUAL_FLOOR_HOLD_SECONDS,
-                                      read_floor_evidence, decide_floor_transition, game_floor_control_hit)
+                                      read_floor_evidence, decide_floor_transition,
+                                      game_floor_control_hit, cursor_in_floor_column)
 from client_manual_map import manual_map_thumbnail_source
 from g_cycle_observation import (emit as _test_evidence, copy_input as _test_input_copy,
                                  observing as _test_evidence_active)
@@ -2404,6 +2405,13 @@ class LiveRuntime:
         return self._receipt("probe_map_after_drag", payload, success=True, reason="post-drag-observation-current",
                              poseCommits=0, persistentPoseUpdated=False, fitAttempted=False)
 
+    def has_pending_floor_intent(self):
+        with self._lock:
+            intent = self._game_floor_intent
+            return bool(isinstance(intent, dict) and intent.get("awaitingObservation")
+                and intent.get("cycleId") == self._cycle
+                and self._monotonic() <= float(intent.get("expiresAt", 0.0)))
+
     def observe_game_floor_click(self, screen_x, screen_y, context):
         """UI ordered click intent; fresh highlighted pixels still own floor."""
         if not isinstance(context, dict):
@@ -2453,6 +2461,8 @@ class LiveRuntime:
             if clicked is None:
                 from map_close_control import map_close_control_hit
                 return dict(success=False, reason="floor-click-not-a-control",
+                    floorColumnHit=cursor_in_floor_column(
+                        (screen_x, screen_y), current["clientBounds"], observation["floor_read"]),
                     closeControlHit=map_close_control_hit(observation["frame"],
                         (screen_x, screen_y), current["clientBounds"]))
             first_epoch = span[0] if own_click_epoch else self._epoch
@@ -4152,11 +4162,24 @@ class LiveRuntime:
                     if floor is None:
                         self._retire_material_owner(self._refresh_render_owner(), "candidate-floor-unavailable")
                         return self._receipt(action, payload, success=False, reason="candidate-floor-unavailable")
-                    if str(floor) == self._floor and self._render is not None:
+                    intent = self._game_floor_intent
+                    if (isinstance(intent, dict) and intent.get("awaitingObservation")
+                            and intent.get("cycleId") == self._cycle
+                            and self._monotonic() <= float(intent.get("expiresAt", 0.0))):
+                        if read.get("selectedFloor") != intent.get("floor"):
+                            return self._receipt(action, payload, success=False, reason="floor-policy-deferred")
+                    pool = self._s1_private_pool
+                    singleton_confirm_needed = bool(
+                        self._native_s1_final_round_lock and pool is not None
+                        and not pool.locked_id and len(pool.remaining) == 1
+                        and self._render is not None and self._render.get("mapId") == pool.remaining[0])
+                    if str(floor) == self._floor and self._render is not None and not singleton_confirm_needed:
                         return self._receipt(action, payload, success=True, reason="candidate-floor-current", unchanged=True)
                     self._revoke_render("candidate-floor-changed" if str(floor) != self._floor
+                        else "candidate-singleton-confirm" if singleton_confirm_needed
                         else "candidate-pose-unavailable")
-                return self._capture_and_solve("capture_now", payload, cancelled, expected_epoch=epoch)
+                return self._capture_and_solve("capture_now", payload, cancelled,
+                    prepared=(captured, observation, floor, capture_generation, read), expected_epoch=epoch)
             except Exception as error:
                 with self._lock:
                     if obsolete():
@@ -5384,6 +5407,18 @@ class LiveRuntime:
                         self._publish_game_pointer_context_locked()
                         return self._receipt(action, payload, success=False,
                             reason="s1-current-floor-unavailable")
+                    intent = self._game_floor_intent
+                    if (action == "observe_manual_floor"
+                            and isinstance(intent, dict) and intent.get("awaitingObservation")
+                            and intent.get("cycleId") == self._cycle
+                            and self._monotonic() <= float(intent.get("expiresAt", 0.0))):
+                        if raw != intent.get("floor"):
+                            return self._receipt(action, payload, success=False, reason="floor-policy-deferred")
+                        self._game_floor_intent = None
+                        self._floor_click_epoch_span = None
+                    elif isinstance(intent, dict):
+                        self._game_floor_intent = None
+                        self._floor_click_epoch_span = None
                     self._floor_required = False
                     if floor != old_floor:
                         self._revoke_render("s1-observed-floor-changed")
@@ -6327,16 +6362,17 @@ class LiveRuntime:
         started = time.monotonic()
         settings = dict(self._settings, gameSeason=self._season)
         if self._manual_alignment and self._s1_floor_observer_available(engine):
-            from s1_floor_observation import detect_s1_floor
+            from s1_floor_observation import detect_s1_floor, bind_s1_control_geometry
             read = detect_s1_floor(frame, season=self._season, mode=self._mode,
                 controls=getattr(engine, 'qt_controls_profile', None))
-            read = dict(read, rawSelectedFloor=read.get("selectedFloor"),
-                        controlGeometryVerified=False, floorSource="current-frame")
+            read = dict(read, rawSelectedFloor=read.get("selectedFloor"), floorSource="current-frame")
             if read.get("automaticFloorEligible") is not True:
                 read["selectedFloor"] = None
+            opened = read.get("mapOpen")
+            read = bind_s1_control_geometry(read, self._mode, (frame.shape[1], frame.shape[0]),
+                map_open=opened is True)
             contract = self._floor_contract()
             floor = contract.floor_id_for(read.get("selectedFloor")) if contract else None
-            opened = read.get("mapOpen")
             observation = dict(read.get("mapObservation") or {}, detected=opened is True,
                 mapOpen=opened, floor=floor, layoutFamily="s1-vertical")
             self._remember_control_observation(frame, engine.pack.mode, observation, read)
@@ -6344,7 +6380,7 @@ class LiveRuntime:
                 floorRead=read, elapsedMs=(time.monotonic()-started)*1000)
             return observation, floor, read
         if self._season == "s1" and self._s1_candidate_available(engine=engine):
-            from s1_floor_observation import detect_s1_floor
+            from s1_floor_observation import detect_s1_floor, bind_s1_control_geometry
             floor_read = detect_s1_floor(frame, season=self._season, mode=engine.pack.mode,
                 controls=getattr(engine, 'qt_controls_profile', None))
             selected = floor_read.get("selectedFloor")
@@ -6353,9 +6389,10 @@ class LiveRuntime:
                     or floor_read.get("automaticFloorEligible") is not True
                     or floor_read.get("mapOpen") is not True):
                 floor_read = dict(floor_read, selectedFloor=None, reason="s1-floor-current-evidence-unvalidated")
-            floor_read.update(controlAxis="vertical", controlGeometryVerified=False,
-                              floorSource="current-frame-structure-candidate")
             opened = floor_read.get("mapOpen") is True
+            floor_read = bind_s1_control_geometry(floor_read, engine.pack.mode,
+                (frame.shape[1], frame.shape[0]), map_open=opened)
+            floor_read["floorSource"] = "current-frame-structure-candidate"
             contract = self._floor_contract()
             floor = contract.floor_id_for(floor_read.get("selectedFloor")) if contract else None
             result = dict(floor_read.get("mapObservation") or {}, detected=opened, mapOpen=opened,

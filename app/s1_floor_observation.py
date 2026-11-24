@@ -415,6 +415,75 @@ def _joint_signed_column(gray, width, height):
     return accepted[0] if accepted else None
 
 
+def _finite_number(value):
+    return type(value) in (int, float) and np.isfinite(value)
+
+
+def bind_s1_control_geometry(read, mode, frame_size, *, map_open):
+    """Attach verified normalized click rects for a complete current S1 column.
+
+    Leaves ``detect_s1_floor`` pure (no click authority on raw pixel replay)
+    and mirrors S0's ``bind_control_geometry`` contract for ``LiveRuntime``.
+    """
+    out = dict(read) if isinstance(read, dict) else {}
+    for key in ("controlRects", "controlFrameSize"):
+        out.pop(key, None)
+    out.update(season="s1", mode=mode, mapOpen=map_open is True,
+               controlAxis="vertical", controlGeometryVerified=False)
+    contract = floor_contract(mode, season="s1")
+    try:
+        if (map_open is not True or contract is None or contract.observed_values != ORDER
+                or out.get("observedFloorValidated") is not True
+                or out.get("automaticFloorEligible") is not True):
+            raise ValueError("unverified s1 floor observation")
+        selected = out.get("selectedFloor")
+        if type(selected) is not int or selected not in ORDER:
+            raise ValueError("invalid selected floor")
+        points = out["centerPoints"]
+        evidence = out["labelEvidence"]
+        width, height = frame_size
+        if (not (_finite_number(width) and _finite_number(height))
+                or width < 100 or height < 100
+                or len(points) != len(ORDER) or len(evidence) != len(ORDER)):
+            raise ValueError("invalid frame or points")
+        for floor, point, glyph in zip(ORDER, points, evidence):
+            if (len(point) != 2 or not all(_finite_number(v) and 0 < v < 1 for v in point)
+                    or not isinstance(glyph, dict)
+                    or type(glyph.get("floor")) is not int or glyph["floor"] != floor
+                    or glyph.get("negative") is not True):
+                raise ValueError("invalid s1 label")
+        xs = [float(p[0]) for p in points]
+        ys = [float(p[1]) for p in points]
+        gaps = [b - a for a, b in zip(ys, ys[1:])]
+        if max(xs) - min(xs) > 0.015 or min(gaps) <= 0 or max(gaps) > min(gaps) * 1.25:
+            raise ValueError("invalid s1 column spacing")
+        local_scale = out.get("controlLocalScale")
+        local_scale = float(local_scale) if _finite_number(local_scale) and local_scale > 0 else float(width)
+        half_x = min(0.022 * local_scale / float(width), 0.045)
+        half_y = min(0.020 * local_scale / float(height), min(gaps) * 0.45)
+        if not (half_x > 0 and half_y > 0):
+            raise ValueError("degenerate s1 hit rect")
+        rows = []
+        for floor, (cx, cy) in zip(ORDER, points):
+            x0, y0 = max(0.0, float(cx) - half_x), max(0.0, float(cy) - half_y)
+            x1, y1 = min(1.0, float(cx) + half_x), min(1.0, float(cy) + half_y)
+            if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
+                raise ValueError("out-of-bounds s1 hit rect")
+            rows.append(dict(floor=floor, rect=[x0, y0, x1, y1]))
+        for upper, lower in zip(rows, rows[1:]):
+            if upper["rect"][3] >= lower["rect"][1]:
+                raise ValueError("overlapping s1 hit rects")
+        out.update(layout="localized-floor-contract", controlGeometryVerified=True,
+                   controlFrameSize=[int(round(width)), int(round(height))],
+                   controlRects=rows)
+        return out
+    except (KeyError, TypeError, ValueError, IndexError):
+        out.pop("controlRects", None)
+        out.pop("controlFrameSize", None)
+        out["controlGeometryVerified"] = False
+        return out
+
+
 def detect_s1_floor(frame, *, season, mode, frame_id=None, expected_frame_id=None, frame_current=True, controls=None):
     from imported_original_controls import require_original_controls
     require_original_controls(controls, season=season, mode=mode)

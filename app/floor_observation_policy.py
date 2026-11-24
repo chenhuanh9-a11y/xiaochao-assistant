@@ -118,8 +118,14 @@ def game_floor_control_hit(cursor, client_bounds, floor_read):
         width, height = right - left, bottom - top
         if min(width, height) < 100:
             return None
+        frame_size = floor_read.get("controlFrameSize")
+        if frame_size is not None:
+            if (not isinstance(frame_size, (list, tuple)) or len(frame_size) != 2
+                    or not all(type(v) in (int, float) and math.isfinite(v) for v in frame_size)
+                    or any(abs(a - b) > 1 for a, b in zip((width, height), frame_size))):
+                return None
         point = ((cursor[0] - left) / width, (cursor[1] - top) / height)
-        hits, centers = [], []
+        hits, centers, prev_end = [], [], None
         for definition, row in zip(contract.floors, rects):
             try:
                 x0, y0, x1, y1 = row["rect"]
@@ -129,10 +135,53 @@ def game_floor_control_hit(cursor, client_bounds, floor_read):
                     or not all(type(x) in (int, float) and math.isfinite(x) for x in (x0, y0, x1, y1))
                     or not (0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1)):
                 return None
-            centers.append((y0 + y1) / 2 if contract.control_axis == "vertical" else (x0 + x1) / 2)
+            start = y0 if contract.control_axis == "vertical" else x0
+            end = y1 if contract.control_axis == "vertical" else x1
+            if prev_end is not None and prev_end >= start:
+                return None
+            prev_end = end
+            centers.append((start + end) / 2)
             if x0 <= point[0] <= x1 and y0 <= point[1] <= y1:
                 hits.append(definition.observed_value)
         if any(a >= b for a, b in zip(centers, centers[1:])):
             return None
         return hits[0] if len(hits) == 1 else None
     return None
+
+
+def cursor_in_floor_column(cursor, client_bounds, floor_read):
+    """Return True when a press lands inside the localized floor column area.
+
+    Prevents edge/gap clicks between floor buttons from initiating a map drag.
+    """
+    if not isinstance(floor_read, dict):
+        return False
+    import math
+    try:
+        if (len(cursor) != 2 or len(client_bounds) != 4
+                or not all(type(v) in (int, float) and math.isfinite(v) for v in (*cursor, *client_bounds))):
+            return False
+        left, top, right, bottom = map(float, client_bounds)
+        width, height = right - left, bottom - top
+        if min(width, height) < 100:
+            return False
+        px, py = (cursor[0] - left) / width, (cursor[1] - top) / height
+        rects = floor_read.get("controlRects")
+        if isinstance(rects, (list, tuple)) and rects:
+            xs0, ys0, xs1, ys1 = [], [], [], []
+            for row in rects:
+                x0, y0, x1, y1 = row["rect"]
+                if not all(type(v) in (int, float) and math.isfinite(v) for v in (x0, y0, x1, y1)):
+                    return False
+                xs0.append(x0); ys0.append(y0); xs1.append(x1); ys1.append(y1)
+            pad = 0.004
+            return (min(xs0) - pad <= px <= max(xs1) + pad
+                    and min(ys0) - pad <= py <= max(ys1) + pad)
+        bounds = floor_read.get("controlBounds")
+        if (isinstance(bounds, (list, tuple)) and len(bounds) == 4
+                and all(type(v) in (int, float) and math.isfinite(v) for v in bounds)):
+            bx0, by0, bx1, by1 = bounds
+            return (bx0 / width <= px <= bx1 / width and by0 / height <= py <= by1 / height)
+    except (KeyError, TypeError, ValueError):
+        return False
+    return False

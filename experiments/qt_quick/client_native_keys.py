@@ -138,7 +138,10 @@ class PassThroughKeyboardSource(QObject):
         if not isinstance(context, dict):
             self.cancel_pointer("pointer-context-unavailable")
             return None
-        if phase == "down" and created_at < context.get("observationCreatedAt", 0):
+        # Allow 25ms slack for Windows GetTickCount64 (~15.6ms) timer quantization
+        # vs Python time.monotonic() so fresh clicks right after a frame finishes
+        # are not spuriously dropped as predating the current frame.
+        if phase == "down" and created_at + 0.025 < context.get("observationCreatedAt", 0):
             self.cancel_pointer("pointer-press-before-current-frame")
             return None
         context = dict(context, createdAt=created_at)
