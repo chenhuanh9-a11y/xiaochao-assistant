@@ -51,10 +51,11 @@ class CustomGalleryService(QObject):
     scopeChanged = Signal()
     confirmationRequested = Signal(str, str)
 
-    def __init__(self, sandbox, *, library=None, default_path=DEFAULT_GALLERY_FILE):
+    def __init__(self, sandbox, *, library=None, default_path=DEFAULT_GALLERY_FILE, resource_resolver=None):
         super().__init__()
         self._scope_id = "legacy-nightmare"
         self._scope_snapshots = {}
+        self._resource_resolver = resource_resolver
         self.paths = runtime_paths(sandbox)
         self.sandbox = self.paths.installation_root
         self.path = self.paths.custom_galleries_path
@@ -140,13 +141,23 @@ class CustomGalleryService(QObject):
             scope=SCOPES[self._scope_id] if self._scope_id != "legacy-nightmare" else None,
             legacy_path=(self.paths.settings_path.with_name("custom-routes.json") if self.paths.production
                          else self.sandbox / "qt-no-implicit-legacy-import.json"))
-        self.library = (CustomMapLibrary(self._library_root) if self._scope_id == "legacy-nightmare"
-                        else ScopedRouteLibrary(self._library_root, self._scope_id))
+        self.library = self._build_library_for_scope(self._scope_id, self._library_root)
         self._cache_map_metadata()
         self._digest = None if self._data_error else _file_digest(self.path)
         self._publish_committed()
         if self._scope_id == "legacy-nightmare":
             self._restore_scoped_snapshots()
+
+    def _build_library_for_scope(self, scope_id, root):
+        primary = (CustomMapLibrary(root) if scope_id == "legacy-nightmare"
+                   else ScopedRouteLibrary(root, scope_id))
+        if primary.available or self._resource_resolver is None or scope_id not in SCOPES:
+            return primary
+        from imported_structure_route_library import ImportedStructureRouteLibrary
+        imported = ImportedStructureRouteLibrary(
+            self._resource_resolver, SCOPES[scope_id], self.paths.work_root / "editor-structure-cache"
+        )
+        return imported if imported.available else primary
 
     def _restore_scoped_snapshots(self):
         """Restore saved game selections without requiring an editor-page visit."""
@@ -166,7 +177,7 @@ class CustomGalleryService(QObject):
                     raw = json.loads(path.read_text("utf-8-sig"))
                     if raw.get("schema") != GALLERY_SCHEMA or raw.get("routeCatalogId") != scope.id:
                         continue
-                library = ScopedRouteLibrary(root, scope.id)
+                library = self._build_library_for_scope(scope.id, root)
                 store = GalleryStore(path, path.parent / "no-bundled-default.json", scope=scope)
                 if store.load_error:
                     continue

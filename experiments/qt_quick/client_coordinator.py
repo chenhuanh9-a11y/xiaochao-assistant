@@ -1526,7 +1526,14 @@ class ClientCoordinator(QObject):
                  "暂用地图" if payload.get("provisional") else "定点地图")
         floor_label = (f"上次 {payload.get('floor')}层 · 当前楼层待核对"
             if payload.get("referenceFloorCurrent") is False else f"{payload.get('floor')}层")
-        self._reference["title"] = f"{label} · {payload.get('mapId')} · {floor_label}"
+        from map_display_names import format_map_display_name
+        display_map = format_map_display_name(
+            str(payload.get("mapId") or ""),
+            str(payload.get("mapName") or payload.get("mapId") or ""),
+            season=str(payload.get("season") or self._season or "s0"),
+            mode=str(payload.get("mode") or self._mode or ""),
+        )
+        self._reference["title"] = f"{label} · {display_map} · {floor_label}"
         self._trace("reference-publish", payload=self._reference)
         self._show_reference_current()
 

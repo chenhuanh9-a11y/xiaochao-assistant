@@ -133,6 +133,13 @@ class RoutePlazaService(QObject):
     previewState = Property("QVariantMap", lambda s: dict(s._preview), notify=previewChanged)
     routeModel = Property(QObject, lambda s: s.model, constant=True)
     submissionModel = Property(QObject, lambda s: s.submissions, constant=True)
+    @Slot()
+    def refreshAvailability(self):
+        if self._closed or self._closing:
+            return
+        self._refresh_rows()
+        self.changed.emit()
+
     @Slot(str)
     def selectScope(self, scope_id):
         if self._busy or self._editor_open or self._account_open or self._closed or self._closing:

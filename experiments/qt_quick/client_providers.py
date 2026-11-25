@@ -291,13 +291,65 @@ class SharedReferenceProvider:
             return reference
         return freeze_native_reference(reference, self)
 
+    def _rendered_neutral_display(self, reference, bundle, reader):
+        """Return bundled rendered map layer from neutralDisplay if present, else None."""
+        import cv2
+        import json
+        import numpy as np
+        neutral_rel = (getattr(bundle, 'interfaces', None) or {}).get('neutralDisplay')
+        if not neutral_rel:
+            return None
+        cache = getattr(self, '_neutral_display_index', None)
+        if cache is None:
+            cache = {}
+            try:
+                doc = reader.json(neutral_rel)
+                for row in doc.get('layers', ()):
+                    key = (str(row.get('mapId', '')), str(row.get('floor', '')))
+                    rel = row.get('resourcePath') or row.get('displayPath') or row.get('path')
+                    if key[0] and key[1] and rel:
+                        cache[key] = rel
+            except (OSError, ValueError, KeyError, AttributeError):
+                cache = {}
+            self._neutral_display_index = cache
+        rel = cache.get((str(reference.map_id), str(reference.floor)))
+        if not rel:
+            return None
+        try:
+            target = reader.view.path(rel)
+            raw = reader(target)
+            img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_UNCHANGED)
+            if img is None or img.ndim != 3 or img.shape[2] not in (3, 4):
+                return None
+            if img.shape[2] == 3:
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
+            pixels = np.ascontiguousarray(img)
+            pixels.setflags(write=False)
+            rh, rw = reference.clean_mask.shape[:2]
+            dh, dw = pixels.shape[:2]
+            matrix = np.diag([rw / float(max(dw, 1)), rh / float(max(dh, 1)), 1.0])
+            return dict(
+                pixels=pixels,
+                matrixDisplayToReference=matrix,
+                resourceIdentity=str(rel),
+                displayKind='shared-structure',
+                displayLabel='默认渲染地图',
+                referencePath=str(target),
+                routeProfileId='shared-structure',
+            )
+        except (OSError, ValueError, KeyError, AttributeError):
+            return None
+
     def native_display_layer(self, reference, *, variant_id):
         from shared_structure_display import structure_display_layer
         owners = self._operation_owners
         source = owners.bundle._values['fast_structure_source']
         reader = owners.bundle._values['reader']
         scope = (self._read_owner_state(), owners.read_state(), source._read_state(), reader._owner_state())
-        return self._display_materials.layer(reference, self, scope, variant_id, structure_display_layer)
+        def build(ref):
+            rendered = self._rendered_neutral_display(ref, owners.bundle, reader)
+            return rendered if rendered is not None else structure_display_layer(ref)
+        return self._display_materials.layer(reference, self, scope, variant_id, build)
 
     def _display_ram_state(self, engine, owners, source, reader):
         return (tuple(id(getattr(engine, name, None)) for name in (

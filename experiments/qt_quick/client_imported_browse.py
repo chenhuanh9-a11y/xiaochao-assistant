@@ -42,7 +42,8 @@ class ImportedBrowseAssets:
             if reference is None:
                 raise ValueError('imported-gallery-layer-unavailable')
             if profile in {'shared-structure', 's1-native-structure'}:
-                pixels = structure_display_layer(reference)['pixels']
+                rendered = self._source.rendered_pixels(map_id, floor)
+                pixels = rendered if rendered is not None else structure_display_layer(reference)['pixels']
             else:
                 view, row = self._authors[key]
                 try:
@@ -95,6 +96,43 @@ class _BrowseStructureSource:
     def __init__(self, view, reader, interfaces, pack, entries):
         self.view, self.reader, self.interfaces, self.pack = view, reader, interfaces, pack
         self.entries = entries
+        self._neutral_layers = None
+
+    def rendered_pixels(self, map_id, floor):
+        if self._neutral_layers is None:
+            layers = {}
+            neutral_rel = self.interfaces.get('neutralDisplay')
+            if neutral_rel:
+                try:
+                    ndoc = self.reader.json(neutral_rel)
+                    for row in ndoc.get('layers', ()):
+                        key = (str(row.get('mapId', '')), str(row.get('floor', '')))
+                        rel = row.get('resourcePath') or row.get('displayPath') or row.get('path')
+                        if key[0] and key[1] and rel:
+                            layers[key] = rel
+                except (OSError, ValueError, KeyError):
+                    layers = {}
+            self._neutral_layers = layers
+        rel = self._neutral_layers.get((str(map_id), str(floor)))
+        if not rel:
+            return None
+        try:
+            import cv2
+            import numpy as np
+            raw = self.reader(self.view.path(rel))
+            arr = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_UNCHANGED)
+            if arr is None or arr.dtype != np.uint8:
+                return None
+            if arr.ndim == 2:
+                arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGRA)
+            elif arr.ndim == 3 and arr.shape[2] == 3:
+                arr = cv2.cvtColor(arr, cv2.COLOR_BGR2BGRA)
+            if arr.ndim != 3 or arr.shape[2] != 4:
+                return None
+            arr.setflags(write=False)
+            return arr
+        except (OSError, ValueError, KeyError):
+            return None
 
     def reference(self, map_id, floor):
         self.reader.json(self.interfaces['typedIndex'])
@@ -169,7 +207,15 @@ def load_imported_browse_context(resolver, mode, *, season='s0', cancelled=lambd
             if ((season,mode) == ('s0','nightmare')
                     and any(row.get('resourceBase') != 'resource-root' for row in identity['maps'])):
                 raise ValueError('imported-gallery-base-external-path-unsupported')
-            items = tuple(BrowseMap(row['id'],row['name'],MappingProxyType({})) for row in identity['maps'])
+            from map_display_names import format_map_display_name
+            items = tuple(
+                BrowseMap(
+                    row['id'],
+                    format_map_display_name(row['id'], row['name'], season=season, mode=mode),
+                    MappingProxyType({}),
+                )
+                for row in identity['maps']
+            )
             pack = BrowsePack(mode,base_view.root,base_view.root,base_view.path(interfaces['identityPack']),
                 identity['packId'],identity.get('displayName','结构底图'),str(identity.get('defaultEntryFloor',floors[0])),
                 floors,items,MappingProxyType({item.id:item for item in items}),MappingProxyType({}),'structure-reference')

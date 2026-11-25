@@ -132,7 +132,7 @@ class QtClient:
         self.game_startup = GameStartupService(self.paths.installation_root,
             production=bool(self.paths.production and not probe_output))
         self.settings = SettingsService(self.sandbox)
-        self.custom_galleries = CustomGalleryService(self.sandbox)
+        self.custom_galleries = CustomGalleryService(self.sandbox, resource_resolver=self.resource_resolver)
         self.custom_display = CustomGalleryDisplay(self.custom_galleries)
         self.custom_display.set_point_numbers(self.settings.persistedValues.get("routePointNumbers", False))
         self.settings.saved.connect(lambda: self.custom_display.set_point_numbers(
@@ -176,6 +176,8 @@ class QtClient:
         self.settings.setAvailableContexts(self.resources.availableContexts)
         self.resources.availabilityChanged.connect(lambda:
             self.settings.setAvailableContexts(self.resources.availableContexts))
+        self.resources.availabilityChanged.connect(self.route_plaza.refreshAvailability)
+        self.resources.availabilityChanged.connect(self.custom_galleries.refresh)
         QTimer.singleShot(0, self.resources.listPackages)
         self.online_packages = OnlinePackagesService(self.sandbox, self.resources,
             index_url=None if probe_output else os.environ.get("STAR_MAP_PACKAGE_INDEX_URL"),

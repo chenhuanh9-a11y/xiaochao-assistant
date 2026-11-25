@@ -141,7 +141,11 @@ class CustomMapLibrary:
         return not self.error and bool(self._maps)
 
     def maps(self) -> list[tuple[str, str]]:
-        return [(map_id, self._maps[map_id]["name"]) for map_id in self._order]
+        from map_display_names import format_map_display_name
+        return [
+            (map_id, format_map_display_name(map_id, self._maps[map_id]["name"], season="s0", mode="nightmare"))
+            for map_id in self._order
+        ]
 
     def templates(self) -> dict[str, str]:
         """Map id -> legacy Android template id, independent of display art."""
@@ -161,7 +165,9 @@ class CustomMapLibrary:
         return str(map_id) in self._maps
 
     def name(self, map_id) -> str:
-        return self._maps.get(str(map_id), {}).get("name", str(map_id))
+        from map_display_names import format_map_display_name
+        raw = self._maps.get(str(map_id), {}).get("name", str(map_id))
+        return format_map_display_name(str(map_id), raw, season="s0", mode="nightmare")
 
     def _checked(self, relative: str, expected: str) -> Path:
         path = (self.root / relative).resolve()

@@ -95,13 +95,21 @@ class ScopedRouteLibrary:
         return path
 
     def maps(self):
-        return [(mid, row["name"]) for mid, row in self._templates.items()]
+        from map_display_names import format_map_display_name
+        return [
+            (mid, format_map_display_name(mid, row["name"], season=self.scope.season, mode=self.scope.runtime_mode))
+            for mid, row in self._templates.items()
+        ]
 
     def has(self, mid):
         return mid in self._templates
 
     def name(self, mid):
-        return self._templates.get(mid, {}).get("name", "")
+        raw = self._templates.get(mid, {}).get("name", "")
+        if not raw:
+            return ""
+        from map_display_names import format_map_display_name
+        return format_map_display_name(mid, raw, season=self.scope.season, mode=self.scope.runtime_mode)
 
     def templates(self):
         return {mid: row["id"] for mid, row in self._templates.items()}
