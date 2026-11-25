@@ -25,7 +25,8 @@ Window {
     readonly property var snapshot: session.snapshot
     property var groupChoices: []
     property string groupChoicesKey: ""
-    readonly property bool groupVisible: snapshot.season !== "s1" && !!snapshot.groupId && groupChoices.length > 1
+    readonly property bool streamingSeason: snapshot.usesCandidatePoolLock === true || snapshot.season !== "s0"
+    readonly property bool groupVisible: snapshot.supportsSimilarGroups !== false && !streamingSeason && !!snapshot.groupId && groupChoices.length > 1
         && (snapshot.identityPhase === "GROUP_LOCKED" || snapshot.identityPhase === "MEMBER_VERIFIED"
             || snapshot.identityPhase === "MANUAL_MEMBER_CONFIRMED")
         && snapshot.candidateEditMode !== true
@@ -44,19 +45,19 @@ Window {
     onVisibleChanged: { if (!visible) mapSelectionRequested = false }
     readonly property var activeModules: {
         const ordered = layout.order.slice()
-        if (mapSelectionRequested && snapshot.season !== "s1") {
+        if (mapSelectionRequested && !streamingSeason) {
             for (const key of ["manual_map", "recognition"])
                 if (ordered.indexOf(key) < 0) ordered.push(key)
         }
         return ordered.filter(function(key) {
             return (layout.enabled.indexOf(key) >= 0
                     || (mapSelectionRequested && (key === "manual_map" || key === "recognition")))
-                && (snapshot.season !== "s1" || (key !== "manual_map" && key !== "recognition"))
+                && (!streamingSeason || (key !== "manual_map" && key !== "recognition"))
         })
     }
     readonly property var privateIdentity: snapshot.privateExperiment || ({})
     readonly property string privateLockedMap: privateIdentity.privateLockMapId || ""
-    readonly property bool privateIdentityRetained: snapshot.season === "s1" && snapshot.roundActive === true
+    readonly property bool privateIdentityRetained: streamingSeason && snapshot.roundActive === true
         && privateIdentity.privateExperimentalLocked === true && privateLockedMap.length > 0
     readonly property bool privatePoseCurrent: snapshot.displayAuthorized === true
         && (snapshot.provisionalMapId || snapshot.mapId || "") === privateLockedMap
@@ -82,7 +83,7 @@ Window {
     }
     function chooseCandidate(index, row) {
         let payload = {index: index}
-        if (row && row.selectionSeason === "s1")
+        if (row && row.selectionSeason && row.selectionSeason !== "s0")
             payload.candidateMapId = row.mapId
         if (row && row.structureSupported === true) {
             payload.mapId = row.mapId
@@ -178,13 +179,18 @@ Window {
         settingsService.setValue("compactPosition", [Math.round(x), Math.round(y)])
         commit("compactPosition")
     }
+    function floorDisplayLabel(raw) {
+        var text = String(raw || "")
+        if (!text) return ""
+        if (/^-[1-9][0-9]*$/.test(text)) return "B" + Math.abs(Number(text))
+        if (/^[BF]/i.test(text)) return text.toUpperCase()
+        if (/^[1-9][0-9]*$/.test(text)) return "F" + text
+        return text
+    }
     function floorText() {
         if (snapshot.controlFloorText) return snapshot.controlFloorText
-        var floor = snapshot.observedFloor
-        if (snapshot.season === "s1")
-            return ["-1", "-2", "-3", "-4"].indexOf(String(floor)) >= 0
-                ? "观测楼层 B" + Math.abs(Number(floor)) : "楼层待核对"
-        return floor === "B1" ? "观测楼层 B1" : floor === "1" || floor === "2" ? "观测楼层 F" + floor : "楼层待核对"
+        var label = floorDisplayLabel(snapshot.observedFloor)
+        return label ? "观测楼层 " + label : "楼层待核对"
     }
     function visibilityText(value, yes, no, unknown) { return value === true ? yes : value === false ? no : unknown }
 
@@ -291,7 +297,7 @@ Window {
                         MenuItem { objectName: "controlHideControls"; text: "隐藏控件"; onTriggered: clientCoordinator.hideControls() }
                         MenuSeparator {}
                         MenuItem { text: "重新识别"; enabled: panel.available("capture_now"); onTriggered: {
-                            if (panel.snapshot.season === "s1") session.dispatchWithPayload("capture_now", {forceCatalogue: true})
+                            if (panel.streamingSeason) session.dispatchWithPayload("capture_now", {forceCatalogue: true})
                             else session.dispatch("capture_now")
                         } }
                     }
@@ -445,10 +451,10 @@ Window {
             spacing: 4
             ControlButton {
                 objectName: "controlPrepareManualAlignment"
-                visible: panel.snapshot.season === "s1" && !panel.snapshot.manualAlignmentSession
+                visible: panel.streamingSeason && !panel.snapshot.manualAlignmentSession
                 text: "准备手动贴合"; Layout.fillWidth: true
                 enabled: panel.available("prepare_manual_alignment")
-                hint: "人工选择地图；B1～B4 自动观察，B3/B4 为未实测的私测能力"
+                hint: "人工选择地图并自动观察当前楼层"
                 onClicked: session.dispatch("prepare_manual_alignment")
             }
             KeyHint {
@@ -488,12 +494,12 @@ Window {
             KeyHint { visible: !panel.available("reselect_map"); text: panel.snapshot.resourceLocked ? "等待资源操作完成" : "正在准备地图资源" }
             GridLayout {
                 visible: (panel.snapshot.availableFloors || []).length > 0
-                columns: panel.snapshot.season === "s1" ? 1 : 5
+                columns: panel.streamingSeason ? 1 : 5
                 Layout.fillWidth: true; rowSpacing: 4; columnSpacing: 4
                 ControlButton {
                     objectName: "controlManualFloor_auto"
-                    visible: panel.snapshot.season === "s1" && panel.snapshot.automaticFloorObservationAvailable === true
-                    text: "自动当前楼层（B1～B4）"; selected: !panel.snapshot.manualFloor
+                    visible: panel.streamingSeason && panel.snapshot.automaticFloorObservationAvailable === true
+                    text: "自动当前楼层"; selected: !panel.snapshot.manualFloor
                     enabled: panel.available("set_floor"); Layout.fillWidth: true
                     onClicked: session.dispatchWithPayload("set_floor", {floor: "auto"})
                 }
@@ -502,14 +508,14 @@ Window {
                     delegate: ControlButton {
                         required property string modelData
                         objectName: "controlManualFloor_" + modelData
-                        visible: !(panel.snapshot.season === "s1" && panel.snapshot.automaticFloorObservationAvailable === true)
-                        text: panel.snapshot.season === "s1" ? "人工回退 B" + Math.abs(Number(modelData)) + ((modelData === "-3" || modelData === "-4") ? "（实机待验）" : "") : modelData === "B1" ? "B1" : "F" + modelData
-                        selected: panel.snapshot.season === "s1" ? String(panel.snapshot.manualFloor || "") === modelData : String(panel.snapshot.manualFloor || panel.snapshot.floor) === modelData
+                        visible: !(panel.streamingSeason && panel.snapshot.automaticFloorObservationAvailable === true)
+                        text: panel.streamingSeason ? "人工回退 " + panel.floorDisplayLabel(modelData) : panel.floorDisplayLabel(modelData)
+                        selected: panel.streamingSeason ? String(panel.snapshot.manualFloor || "") === modelData : String(panel.snapshot.manualFloor || panel.snapshot.floor) === modelData
                         enabled: panel.available("set_floor"); implicitWidth: 50; Layout.fillWidth: true
                         onClicked: session.dispatchWithPayload("set_floor", {floor: modelData})
                     }
                 }
-                ControlButton { visible: !(panel.snapshot.season === "s1" && panel.snapshot.automaticFloorObservationAvailable === true); text: "切换"; implicitWidth: 54; enabled: panel.available("cycle_floor"); onClicked: session.dispatch("cycle_floor") }
+                ControlButton { visible: !(panel.streamingSeason && panel.snapshot.automaticFloorObservationAvailable === true); text: "切换"; implicitWidth: 54; enabled: panel.available("cycle_floor"); onClicked: session.dispatch("cycle_floor") }
             }
             ControlButton {
                 objectName: "controlFitManualFrame"

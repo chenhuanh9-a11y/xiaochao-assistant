@@ -114,7 +114,7 @@ def _build_original_engine(base_view, controls_view, paths, *, season, mode, req
             from imported_native_base import NativeBaseUnavailable
             raise NativeBaseUnavailable('original-declared-'+name.replace('.','-')+'-invalid')
     similarity = engine.native_similarity_index
-    if similarity.error:
+    if similarity.error and (season in ('s0', 's1') or any('similarity' in rel for rel in declared)):
         raise ImportedProviderUnavailable('original-similarity-unavailable', (similarity.error,))
     engine.qt_native_base, engine.qt_controls_profile = bundle, controls
     engine.qt_shared_provider, engine.qt_fast_structure_source = provider, bundle.fast_structure_source
@@ -226,43 +226,74 @@ def _build_original_engine(base_view, controls_view, paths, *, season, mode, req
         return run
     for name in ('rank', 'rank_established_group'):
         setattr(engine, name, owned(getattr(engine, name)))
-    if season == 's1':
+    if season != 's0':
         engine.qt_s1_index_resource_root = root
         attach_original_s1_scanner(engine, native, bundle)
+    else:
+        # Expose the same season-agnostic geometry fingerprint index on S0 too.
+        from generic_structure_index import GenericStructureIndex
+        s0_index = [None]
+        def s0_structure_shortlist(frame, floor, candidate_ids, *, context=None):
+            if s0_index[0] is None:
+                s0_index[0] = GenericStructureIndex.from_provider(
+                    tuple(sorted(pack.by_id)), pack.floors, provider,
+                    fast_source=getattr(bundle, 'fast_structure_source', None))
+            return s0_index[0].shortlist(frame, floor, candidate_ids, context=context)
+        engine.qt_generic_structure_shortlist = s0_structure_shortlist
     assert_reads_current()
     return engine
 
 
 def attach_original_s1_scanner(engine, native, bundle):
-    """The donor S1 closure, with only its private asset reads made explicit."""
+    """Season-agnostic structure scanner + geometry index + optional common-coordinate filter."""
     root = bundle.reader.root
+    season = getattr(engine, 'qt_season', bundle.season)
+    optional_room_enabled = (season == 's1'
+        or bundle.interfaces.get('optionalRoomProfile') == 's1-treasure-room-v1')
 
     from s1_structure_selection import StructureCatalog, StructureCandidateScanner
+    from generic_structure_index import GenericStructureIndex
     catalog = StructureCatalog.from_engine(engine)
+    coord_dir_rel = ('s1-private-assets' if season == 's1'
+                     else bundle.interfaces.get('coordinateAssetsDir'))
+    has_coord_assets = bool(coord_dir_rel)
     private_observer = None
-    def private_coordinate_prepare(frame, pool_ids, floor, *, cancelled, stage=None):
-        nonlocal private_observer
-        # Private calibration is declared by this base component.
-        from s1_private_experiment import PrivateCoordinateObserver
-        if private_observer is None:
-            private_observer = PrivateCoordinateObserver(engine, catalog, root / "s1-private-assets", read_resource=bundle.reader)
-        from season_optional_room import observation_scope
-        with observation_scope(frame, enabled=True, cancelled=cancelled):
-            return private_observer.prepare(frame, pool_ids, floor, cancelled=cancelled, stage=stage)
-    engine.qt_s1_private_coordinate_prepare = private_coordinate_prepare
-    pose_index = None
-    def pose_prior(source, floor, owner_scope):
-        nonlocal pose_index
-        # Private calibration is declared by this base component.
-        from s1_pose_prior import CoordinatePriorIndex
-        if pose_index is None:
-            pose_index = CoordinatePriorIndex(
-                root / "s1-private-assets" / "s1_entrance_coordinate_index.json",
-                expected_sha256="6fee640f5bc87d465459840626cfd5f88b52cdb9b888b58c1b03b46f1370cc19",
-                mode=catalog.mode, resource_key=catalog.resource_key,
-                provider=lambda mid, fl: engine.qt_shared_provider("shared-structure", mid, fl), read_resource=bundle.reader)
-        return pose_index.make_hint(source, target_floor=floor, current_owner_scope=owner_scope)
-    engine.qt_s1_pose_prior = pose_prior
+    if has_coord_assets:
+        def private_coordinate_prepare(frame, pool_ids, floor, *, cancelled, stage=None):
+            nonlocal private_observer
+            from s1_private_experiment import PrivateCoordinateObserver
+            if private_observer is None:
+                private_observer = PrivateCoordinateObserver(
+                    engine, catalog, root / coord_dir_rel, read_resource=bundle.reader)
+            from season_optional_room import observation_scope
+            with observation_scope(frame, enabled=optional_room_enabled, cancelled=cancelled):
+                return private_observer.prepare(frame, pool_ids, floor, cancelled=cancelled, stage=stage)
+        engine.qt_s1_private_coordinate_prepare = private_coordinate_prepare
+        pose_index = None
+        def pose_prior(source, floor, owner_scope):
+            nonlocal pose_index
+            from s1_pose_prior import CoordinatePriorIndex
+            if pose_index is None:
+                index_name = 's1_entrance_coordinate_index.json'
+                expected_sha = ('6fee640f5bc87d465459840626cfd5f88b52cdb9b888b58c1b03b46f1370cc19'
+                                if season == 's1' else None)
+                pose_index = CoordinatePriorIndex(
+                    root / coord_dir_rel / index_name,
+                    expected_sha256=expected_sha,
+                    mode=catalog.mode, resource_key=catalog.resource_key,
+                    provider=lambda mid, fl: engine.qt_shared_provider("shared-structure", mid, fl),
+                    read_resource=bundle.reader)
+            return pose_index.make_hint(source, target_floor=floor, current_owner_scope=owner_scope)
+        engine.qt_s1_pose_prior = pose_prior
+    generic_index = [None]
+    def _ensure_generic_index():
+        if generic_index[0] is None:
+            generic_index[0] = GenericStructureIndex.from_provider(
+                catalog.map_ids, catalog.floors, engine.qt_shared_provider,
+                fast_source=getattr(bundle, 'fast_structure_source', None))
+        return generic_index[0]
+    engine.qt_generic_structure_shortlist = lambda frame, floor, ids, *, context=None: (
+        _ensure_generic_index().shortlist(frame, floor, ids, context=context))
     def structure_scan(frame, *, floor, floor_source="operator-declared", cancelled=None, budget_seconds=None,
                        on_progress=None, candidate_order=None, preferred_map_id=None,
                        preferred_material_committed=None, private_coordinate_report=None, planned_map_ids=None,
@@ -271,17 +302,26 @@ def attach_original_s1_scanner(engine, native, bundle):
         from client_live_runtime import _AlignmentHost
         host = _AlignmentHost(engine, pose_priors=pose_priors,
             collect_fit_diagnostics=collect_fit_diagnostics)
-        fixed = private_coordinate_report is not None and private_coordinate_report.get("coordinateVerified") is True
+        fixed = (private_observer is not None and private_coordinate_report is not None
+                 and private_coordinate_report.get("coordinateVerified") is True)
         def fixed_fit(f, mid, fl, cancel, **kw):
             from season_optional_room import observation_scope
-            with observation_scope(f, enabled=True, cancelled=cancel):
+            with observation_scope(f, enabled=optional_room_enabled, cancelled=cancel):
                 return private_observer.fixed_fit(f, mid, fl, cancel, report=private_coordinate_report, **kw)
         fit = fixed_fit if fixed else host.fit
+        effective_order = candidate_order
+        if effective_order is None:
+            pool = tuple(planned_map_ids) if planned_map_ids is not None else catalog.map_ids
+            if len(pool) > 1:
+                try:
+                    effective_order = _ensure_generic_index().shortlist(frame, floor, pool)
+                except Exception:
+                    effective_order = candidate_order
         scanner = StructureCandidateScanner(catalog, fit,
             prepare_fit=None if fixed else host.prepare_structure_scan)
         report = scanner.scan(frame, floor=floor, floor_source=floor_source,
                             cancelled=cancelled, budget_seconds=budget_seconds,
-                            on_progress=on_progress, candidate_order=candidate_order,
+                            on_progress=on_progress, candidate_order=effective_order,
                             preferred_map_id=preferred_map_id,
                             preferred_material_committed=preferred_material_committed,
                             planned_map_ids=planned_map_ids, first_material_committed=first_material_committed)

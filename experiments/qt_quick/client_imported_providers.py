@@ -16,6 +16,7 @@ from client_providers import EngineFactories, ProviderResourceBinding, ProviderU
 # Capabilities are granted by completed program decoders, never package claims.
 SUPPORTED_CAPABILITIES = frozenset({'native-s0-nightmare-base-v1', 'native-s0-difficult-base-v1', 's0-signed-templates-v1',
     'native-s1-difficult-base-v1', 'native-s1-nightmare-base-v1', 's1-signed-column-geometry-v1',
+    'native-generic-base-v1', 'generic-signed-column-v1',
     'original-qt-resources-v1', 's0-controls-bank-identity-v1'})
 
 
@@ -36,12 +37,12 @@ def load_native_resources(base_view, controls_view, *, season='s0', mode='nightm
     from imported_native_context import ImportedResourceOwners
     from client_providers import SharedReferenceProvider
     bundle = decode_original_base(base_view, season=season, mode=mode)
-    controls = S1ControlsProfile(controls_view) if season == 's1' else S0ControlsProfile(controls_view)
+    controls = S0ControlsProfile(controls_view) if season == 's0' else S1ControlsProfile(controls_view)
     controls.source_qualification = require_original_controls(controls, season=season, mode=mode)
     context = controls.for_context(season, mode)
     if context is None or set(context.contract.floor_ids) != set(bundle.pack.floors):
         raise ImportedProviderUnavailable('controls-base-floors-mismatch', ('controls-base-floors-mismatch',))
-    native = OriginalNativeContext(base_view, bundle, controls) if season == 's1' or mode == 'difficult' else None
+    native = OriginalNativeContext(base_view, bundle, controls) if season != 's0' or mode == 'difficult' else None
     if native is not None:
         bundle.pack.display_context = native
     owners = ImportedResourceOwners(base_view, bundle, controls, native, bundle.legacy_references)
@@ -91,7 +92,8 @@ class ImportedEngineFactories(EngineFactories):
                 resource_revision=revision) from error
         if resources.gaps:
             raise ImportedProviderUnavailable(';'.join(resources.gaps), resources.gaps, resource_revision=revision)
-        if (season, mode) not in {('s0', 'nightmare'), ('s0', 'difficult'), ('s1', 'difficult'), ('s1', 'nightmare')}:
+        from season_context import is_valid_context_key
+        if not is_valid_context_key(f'{season}:{mode}'):
             raise ImportedProviderUnavailable('recognition-decoder-unavailable',
                 ('recognition-decoder-unavailable',), resource_revision=revision)
         return resources, revision

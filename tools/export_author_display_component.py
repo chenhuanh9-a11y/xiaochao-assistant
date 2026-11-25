@@ -89,8 +89,9 @@ def _context(base_view):
             or not isinstance(contexts, list) or len(contexts) != 1):
         _reject('base-component-invalid')
     context = contexts[0]
+    from season_context import is_valid_season_id
     if (not isinstance(context, dict) or set(context) != {'season', 'mode'}
-            or context.get('season') not in ('s0', 's1')
+            or not is_valid_season_id(context.get('season'))
             or context.get('mode') not in ('difficult', 'nightmare')):
         _reject('base-context-invalid')
     return context['season'], context['mode']

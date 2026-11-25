@@ -5,6 +5,7 @@ its own negative floor identities and separately validated runtime capabilities.
 Unregistered contexts have no detector or resource authority.
 """
 from dataclasses import dataclass
+import threading
 from types import MappingProxyType
 
 
@@ -53,13 +54,74 @@ _CONTRACTS = MappingProxyType({
         tuple(FloorDefinition(value, str(value)) for value in (-1, -2, -3, -4)), "vertical")
         for mode in ("difficulty2", "difficult", "nightmare")},
 })
+_DYNAMIC_LOCK = threading.RLock()
+_DYNAMIC_CONTRACTS = {}
+
+
+def register_floor_contract(season, mode, floors, *, control_axis="vertical"):
+    """Register a package-declared floor contract for a dynamic season (e.g. s2+)."""
+    from season_context import is_valid_season_id, MODES
+    if not is_valid_season_id(season) or mode not in MODES:
+        raise ValueError(f"Invalid floor contract context: {season}:{mode}")
+    if control_axis not in ("vertical", "horizontal"):
+        raise ValueError(f"Invalid control axis: {control_axis}")
+    if (season, mode) in _CONTRACTS:
+        return _CONTRACTS[(season, mode)]
+    defs = []
+    seen_values, seen_ids = set(), set()
+    for row in floors:
+        if isinstance(row, FloorDefinition):
+            item = row
+        elif isinstance(row, dict):
+            val, fid = row.get("observedValue"), row.get("floorId")
+            if type(val) is not int or not isinstance(fid, str) or not fid:
+                raise ValueError("Invalid floor definition")
+            item = FloorDefinition(val, fid)
+        else:
+            val, fid = row
+            if type(val) is not int or not isinstance(fid, str) or not fid:
+                raise ValueError("Invalid floor definition")
+            item = FloorDefinition(val, fid)
+        if item.observed_value in seen_values or item.floor_id in seen_ids:
+            raise ValueError("Duplicate floor definition")
+        seen_values.add(item.observed_value)
+        seen_ids.add(item.floor_id)
+        defs.append(item)
+    if not 1 <= len(defs) <= 12:
+        raise ValueError("Floor contract must contain 1..12 floors")
+    contract = FloorContract(season, mode, tuple(defs), control_axis)
+    with _DYNAMIC_LOCK:
+        _DYNAMIC_CONTRACTS[(season, mode)] = contract
+    return contract
+
+
+def clear_dynamic_floor_contracts():
+    with _DYNAMIC_LOCK:
+        _DYNAMIC_CONTRACTS.clear()
+
+
+def floor_display_label(floor_id):
+    text = str(floor_id or "")
+    if not text:
+        return ""
+    if text.startswith("-") and text[1:].isdigit():
+        return f"B{abs(int(text))}"
+    if text[0].upper() in ("B", "F"):
+        return text.upper()
+    if text.isdigit():
+        return f"F{text}"
+    return text
 
 
 def floor_contract(mode, *, season="s0"):
-    """Return only a reviewed context, without fallback across seasons/modes."""
+    """Return a built-in or package-registered contract without cross-season fallback."""
     if not isinstance(mode, str) or not isinstance(season, str):
         return None
-    return _CONTRACTS.get((season, mode))
+    builtin = _CONTRACTS.get((season, mode))
+    if builtin is not None:
+        return builtin
+    with _DYNAMIC_LOCK:
+        return _DYNAMIC_CONTRACTS.get((season, mode))
 
 
 # Compatibility exports for existing S0 callers. Never use these for a new

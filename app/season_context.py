@@ -5,6 +5,7 @@ whose independent resources still require provider validation. This registry
 never permits borrowing another context's assets or live detector evidence.
 """
 from dataclasses import dataclass
+import threading
 from types import MappingProxyType
 import re
 from season_catalog import SEASON_DEFINITIONS
@@ -12,7 +13,32 @@ from season_catalog import SEASON_DEFINITIONS
 MODES = ("nightmare", "difficult")
 RUNTIME_MODES = MODES
 KNOWN_MODES = (*MODES, "difficulty2")
+SEASON_ID_PATTERN = re.compile(r"s(?:0|[1-9][0-9]{0,3})\Z")
+MODE_LABELS = MappingProxyType({"nightmare": "噩梦", "difficult": "困难", "difficulty2": "普通"})
 RETIRED_MODE_MESSAGE = "S1 普通模式已退役，无法开始识别。历史设置和资源已保留，请选择困难或噩梦模式。"
+_DYNAMIC_LOCK = threading.RLock()
+_DYNAMIC_SEASONS = {}
+
+
+def is_valid_season_id(value):
+    return isinstance(value, str) and bool(SEASON_ID_PATTERN.fullmatch(value))
+
+
+def is_valid_context_key(value, *, include_retired=False):
+    if not isinstance(value, str) or ":" not in value:
+        return False
+    parts = value.split(":")
+    if len(parts) != 2:
+        return False
+    season, mode = parts
+    if not is_valid_season_id(season):
+        return False
+    allowed = known_modes_for_season(season) if include_retired else MODES
+    return mode in allowed
+
+
+def mode_label(mode):
+    return MODE_LABELS.get(mode, str(mode))
 
 
 def modes_for_season(season):
@@ -44,7 +70,7 @@ def validate_catalog(definitions):
             raise ValueError("Invalid season display name")
         resources = row["resources"]
         if (not isinstance(resources, dict) or set(resources) != set(known_modes_for_season(season))
-                or any(value not in ("legacy-s0", "native-s1", "unregistered", "retired") for value in resources.values())
+                or any(value not in ("legacy-s0", "native-s1", "native-package", "unregistered", "retired") for value in resources.values())
                 or any(value == "legacy-s0" and season != "s0" or value == "native-s1" and season != "s1"
                        for value in resources.values())):
             raise ValueError("Season catalog cannot grant unregistered resource capability")
@@ -60,27 +86,94 @@ CATALOG = validate_catalog(SEASON_DEFINITIONS)
 SEASONS = tuple(row["id"] for row in CATALOG)
 
 
+def register_season(season, *, name="", modes=None, resource_status="native-package"):
+    """Register a package-declared season (e.g. s2, s3) for runtime and UI."""
+    if not is_valid_season_id(season):
+        raise ValueError(f"Invalid season ID: {season}")
+    if not isinstance(name, str) or len(name) > 80 or any(ord(c) < 32 for c in name):
+        raise ValueError("Invalid season display name")
+    if resource_status not in ("native-package", "unregistered"):
+        raise ValueError(f"Unsupported dynamic season status: {resource_status}")
+    number = int(season[1:])
+    mode_list = tuple(MODES) if modes is None else tuple(modes)
+    if not mode_list or any(m not in MODES for m in mode_list):
+        raise ValueError("Invalid dynamic season modes")
+    with _DYNAMIC_LOCK:
+        if season in SEASONS:
+            return season_entry(season)
+        existing = _DYNAMIC_SEASONS.get(season)
+        clean_name = name.strip() or (existing["name"] if existing is not None else "")
+        resources = {m: resource_status for m in MODES}
+        if existing is not None:
+            merged = dict(existing["resources"])
+            for m in mode_list:
+                merged[m] = resource_status
+            resources = merged
+        entry = MappingProxyType(dict(id=season, number=number, name=clean_name,
+            resources=MappingProxyType(resources)))
+        _DYNAMIC_SEASONS[season] = entry
+        return entry
+
+
+def clear_dynamic_seasons():
+    with _DYNAMIC_LOCK:
+        _DYNAMIC_SEASONS.clear()
+
+
+def all_season_entries():
+    with _DYNAMIC_LOCK:
+        dynamic = tuple(_DYNAMIC_SEASONS[key] for key in sorted(_DYNAMIC_SEASONS, key=lambda s: int(s[1:])))
+    return CATALOG + dynamic
+
+
+def all_season_ids():
+    return tuple(row["id"] for row in all_season_entries())
+
+
+def all_context_keys():
+    return frozenset(f"{season}:{mode}" for season in all_season_ids() for mode in known_modes_for_season(season))
+
+
+def season_entry(season):
+    for row in CATALOG:
+        if row["id"] == season:
+            return row
+    with _DYNAMIC_LOCK:
+        return _DYNAMIC_SEASONS.get(season)
+
+
 def season_label(season):
     normalize_season(season)
-    row = next(row for row in CATALOG if row["id"] == season)
+    row = season_entry(season)
     return f"S{row['number']}" + (f" · {row['name']}" if row["name"] else "")
 
 
 def season_options():
     return [dict(id=row["id"], number=row["number"], name=row["name"], label=season_label(row["id"]),
-        capabilities={mode: dict(registered=row["resources"][mode] in ("legacy-s0", "native-s1"),
+        capabilities={mode: dict(registered=row["resources"][mode] in ("legacy-s0", "native-s1", "native-package"),
             status="resource-validation-required" if row["resources"][mode] != "unregistered" else "unregistered")
-            for mode in modes_for_season(row["id"])}) for row in CATALOG]
+            for mode in modes_for_season(row["id"])}) for row in all_season_entries()]
 
 
 def normalize_season(value="s0"):
     if value not in SEASONS:
-        raise ValueError(f"Unknown game season: {value}")
+        with _DYNAMIC_LOCK:
+            if value not in _DYNAMIC_SEASONS:
+                raise ValueError(f"Unknown game season: {value}")
     return value
 
 
 def context_key(mode, season="s0"):
     return SeasonContext(season=season, mode=mode).key
+
+
+def get_context(key):
+    if key in CONTEXTS:
+        return CONTEXTS[key]
+    if isinstance(key, str) and ":" in key:
+        season, mode = key.split(":", 1)
+        return SeasonContext(season=season, mode=mode)
+    raise ValueError(f"Unknown context key: {key}")
 
 
 @dataclass(frozen=True)
@@ -99,11 +192,12 @@ class SeasonContext:
 
     @property
     def label(self):
-        return f"{season_label(self.season)} " + {"nightmare": "噩梦", "difficult": "困难", "difficulty2": "普通"}[self.mode]
+        return f"{season_label(self.season)} " + mode_label(self.mode)
 
     @property
     def registered(self):
-        return next(row for row in CATALOG if row["id"] == self.season)["resources"][self.mode] in ("legacy-s0", "native-s1")
+        row = season_entry(self.season)
+        return row is not None and row["resources"].get(self.mode) in ("legacy-s0", "native-s1", "native-package")
 
 
 CONTEXTS = MappingProxyType({context_key(mode, season): SeasonContext(season, mode)

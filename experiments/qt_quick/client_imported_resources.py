@@ -56,10 +56,24 @@ def _failure(error):
     return result
 
 
+def _context_metadata(season, mode):
+    if (season, mode) in _ACTIVATION_CONTEXTS:
+        return dict(_ACTIVATION_CONTEXTS[(season, mode)])
+    from season_context import mode_label
+    mode_name = mode_label(mode)
+    return dict(
+        label=f'启用 {season.upper()} {mode_name}',
+        objectSuffix=f'-{season}-{mode}',
+        notice='',
+        activatedMessage=f'{season.upper()} {mode_name}基础结构与楼层控件已启用。',
+    )
+
+
 def _activation_refs(row, season, mode):
     from imported_resource_packages import ComponentRef
+    from season_context import is_valid_context_key
     context = f'{season}:{mode}'
-    if (season, mode) not in _ACTIVATION_CONTEXTS or row.get('status') == 'damaged':
+    if not is_valid_context_key(context) or row.get('status') == 'damaged':
         return None
     refs = []
     for role in ('recognition-base', 'controls-profile'):
@@ -73,16 +87,16 @@ def _activation_refs(row, season, mode):
 
 
 def _display_options(row):
+    from season_context import is_valid_context_key, mode_label
     options = []
     for component in row['components']:
         contexts = component['contexts']
         if component['type'] != 'display' or len(contexts) != 1:
             continue
-        context = tuple(contexts[0].split(':'))
-        if context not in _ACTIVATION_CONTEXTS:
+        if not is_valid_context_key(contexts[0]):
             continue
-        season, mode = context
-        name = f'{season.upper()} ' + ('困难' if mode == 'difficult' else '噩梦')
+        season, mode = contexts[0].split(':', 1)
+        name = f'{season.upper()} {mode_label(mode)}'
         options.append(dict(key=component['componentId'], label=f'启用 {name}作者显示',
                             context=contexts[0], available=row['status'] != 'damaged'))
     return options
@@ -141,11 +155,32 @@ class ImportedResourceService(QObject):
         self._legacy_resource_directory = ''
         self._resource_directory_exists = False
 
+    def _activation_options(self):
+        from season_context import is_valid_context_key
+        ordered = list(_ACTIVATION_CONTEXTS.keys())
+        seen = set(ordered)
+        extras = []
+        for row in self._rows:
+            for component in row.get('components', ()):
+                for key in component.get('contexts', ()):
+                    if is_valid_context_key(key):
+                        pair = tuple(key.split(':', 1))
+                        if pair not in seen:
+                            seen.add(pair)
+                            extras.append(pair)
+        for key in self._available_contexts:
+            if is_valid_context_key(key):
+                pair = tuple(key.split(':', 1))
+                if pair not in seen:
+                    seen.add(pair)
+                    extras.append(pair)
+        extras.sort(key=lambda item: (int(item[0][1:]), item[1]))
+        return [dict(context=f'{season}:{mode}', season=season, mode=mode, **_context_metadata(season, mode))
+                for season, mode in (*ordered, *extras)]
+
     packageModel = Property(QObject, lambda s: s.model, constant=True)
     packageRows = Property('QVariantList', lambda s: deepcopy(s._rows), notify=inventoryChanged)
-    activationOptions = Property('QVariantList', lambda s: [
-        dict(context=f'{season}:{mode}', season=season, mode=mode, **metadata)
-        for (season, mode), metadata in _ACTIVATION_CONTEXTS.items()], constant=True)
+    activationOptions = Property('QVariantList', lambda s: s._activation_options(), notify=inventoryChanged)
     busy = Property(bool, lambda s: s._busy, notify=changed)
     availableContexts = Property('QVariantList', lambda s: list(s._available_contexts), notify=availabilityChanged)
     inventoryLoaded = Property(bool, lambda s: s._inventory_loaded, notify=changed)
@@ -790,7 +825,7 @@ class ImportedResourceService(QObject):
                 name = f'{context[0].upper()} ' + ('困难' if context[1] == 'difficult' else '噩梦')
                 self._message = (f'{name}：此版本已经启用，资源选择未改变。' if duplicate
                                  else f'{name}作者显示组件已启用。' if display
-                                 else _ACTIVATION_CONTEXTS[context]['activatedMessage'])
+                                 else _context_metadata(*context)['activatedMessage'])
                 if len(contexts) > 1 and not display:
                     self._message = '基础结构与楼层控件已一并启用：' + '、'.join(
                         item[0].upper() + (' 困难' if item[1] == 'difficult' else ' 噩梦') for item in contexts)

@@ -140,7 +140,7 @@ class _PreparationHost:
         # current explicit floor before ending preparation; it never converts a
         # remembered floor into fresh display evidence during the fade.
         s1_manual = self.runtime._manual_alignment and self.runtime._s1_floor_observer_available(self.engine)
-        ready = (observation.get("mapOpen") is True if self.runtime._season == "s1"
+        ready = (observation.get("mapOpen") is True if self.runtime._is_package_season()
                  else verified_map_hotkey_frame(observation, floor_read))
         usable = ready and (floor is not None or s1_manual)
         before_deadline = time.perf_counter() < deadline_at
@@ -808,18 +808,25 @@ class LiveRuntime:
     def _context(self):
         return dict(season=self._season, contextKey=context_key(self._mode, self._season), mode=self._mode, profileId=self._profile, roundId=self._round, frameId=self._frame_id)
 
+    def _is_package_season(self, season=None):
+        return (self._season if season is None else season) != "s0"
+
     def _s1_candidate_available(self, report=None, engine=None):
         """Selected-context candidate purpose; never general live readiness."""
-        if self._season != "s1" or not (
+        if not self._is_package_season() or not (
                 self._evidence_kind == "recorded" or self._native_s1_candidate_preview):
             return False
         capability = ((report or {}).get("candidateObservation") or
             getattr(getattr(engine, "qt_native_context", None), "structure_candidate_capability", {}))
         if not isinstance(capability, dict) or capability.get("candidateReady") is not True:
             return False
-        return (not self._native_s1_candidate_preview or (
-            capability.get("contract") == "s1-recorded-structure-candidate-floor-v2"
-            and tuple(capability.get("observedFloors", ())) == (-1, -2, -3, -4)))
+        if not self._native_s1_candidate_preview:
+            return True
+        if capability.get("contract") != "s1-recorded-structure-candidate-floor-v2":
+            return False
+        contract = self._floor_contract()
+        expected = (-1, -2, -3, -4) if self._season == "s1" else (contract.observed_values if contract is not None else ())
+        return bool(expected) and tuple(capability.get("observedFloors", ())) == tuple(expected)
 
     def _candidate_preview_requested(self):
         return self._recorded_s1_provisional_display or self._native_s1_candidate_preview
@@ -829,13 +836,11 @@ class LiveRuntime:
 
     def _effective_map_selection_mode(self):
         # This legacy preference belongs to S0. Keep its stored value intact
-        # across season changes, but never strand S1 waiting for a hidden picker.
-        # Auto selection is not a capability grant: purpose/resource gates and
-        # the separate explicit manual-alignment session remain unchanged.
-        return "auto" if self._season == "s1" else self._settings.get("mapSelectionMode", "auto")
+        # across season changes, but never strand package seasons waiting for a hidden picker.
+        return "auto" if self._is_package_season() else self._settings.get("mapSelectionMode", "auto")
 
     def _s1_provisional_enabled(self):
-        return bool(self._candidate_preview_requested() and self._season == "s1"
+        return bool(self._candidate_preview_requested() and self._is_package_season()
             and not self._durable_map_id
             and not self._manual_alignment)
 
@@ -851,9 +856,13 @@ class LiveRuntime:
     def _s1_floor_observer_available(self, engine=None, *, report=None):
         """Separate selected-context floor capability, not live/identity readiness."""
         engine = self._engine if engine is None else engine
-        if (self._season != "s1" or engine is None or self._mode not in ("difficulty2", "difficult", "nightmare")
+        contract = self._floor_contract()
+        expected_ids = ("-1", "-2", "-3", "-4") if self._season == "s1" else (contract.floor_ids if contract is not None else ())
+        expected_vals = (-1, -2, -3, -4) if self._season == "s1" else (contract.observed_values if contract is not None else ())
+        if (not self._is_package_season() or engine is None or self._mode not in ("difficulty2", "difficult", "nightmare")
                 or getattr(engine.pack, "mode", None) != self._mode
-                or tuple(getattr(engine, "identity_floors", ())) != ("-1", "-2", "-3", "-4")):
+                or not expected_ids
+                or tuple(getattr(engine, "identity_floors", ())) != tuple(expected_ids)):
             return False
         if report is not None and "floorObservation" in report:
             if report.get("season") != self._season or report.get("mode") != self._mode:
@@ -864,7 +873,7 @@ class LiveRuntime:
         return (isinstance(capability, dict)
                 and capability.get("contract") == "s1-floor-only-manual-map-use"
                 and capability.get("manualMapObservation") is True
-                and tuple(capability.get("automaticFloors", ())) == (-1, -2, -3, -4))
+                and tuple(capability.get("automaticFloors", ())) == tuple(expected_vals))
 
     def _current_floor_source(self, *, observer_available=None):
         if self._manual_alignment and (self._s1_floor_observer_available()
@@ -1087,9 +1096,11 @@ class LiveRuntime:
         return dict(identityPhase="MEMBER_VERIFIED" if formal_lock else "CANDIDATE_DISPLAY" if provisional_id else phase, identitySource=self._identity_source,
             candidateFullImage=bool(provisional_id), candidateDisplayOnly=bool(provisional_id),
             identityLocked=bool(self._durable_map_id or formal_lock), durableMapId=self._durable_map_id or formal_lock,
-            s1RoundLockEnabled=bool(self._native_s1_round_lock and self._season == "s1" and not self._manual_alignment),
+            s1RoundLockEnabled=bool(self._native_s1_round_lock and self._is_package_season() and not self._manual_alignment),
             s1FormalRoundLock=bool(self._native_s1_final_round_lock
-                and self._season == "s1" and not self._manual_alignment),
+                and self._is_package_season() and not self._manual_alignment),
+            usesCandidatePoolLock=bool(self._is_package_season() and not self._manual_alignment),
+            supportsSimilarGroups=bool(not self._is_package_season()),
             s1RemainingCandidateCount=1 if formal_lock else len(pool.remaining) if pool is not None else 0,
             provisionalMapId=provisional_id or ((native.provisional_member_id or self._map_id) if grouped else ""),
             provisional=not bool(formal_lock) and (bool(provisional_id) or (grouped and not bool(self._durable_map_id))), groupLocked=grouped,
@@ -1111,7 +1122,7 @@ class LiveRuntime:
         # It never grants a current pose or pixels. Scoped pools and all their
         # resource/capture/material checks can still be discarded independently.
         return (self._s1_round_map_id if self._native_s1_final_round_lock
-            and self._season == "s1" and self._active and not self._manual_alignment else "")
+            and self._is_package_season() and self._active and not self._manual_alignment else "")
 
     def _identity_context(self):
         return (self._mode, self._cycle, str(self._floor), self._frame_generation, self._epoch)
@@ -1805,7 +1816,7 @@ class LiveRuntime:
             posePending=True, identityUnresolved=True, structureEvidence=evidence)
 
     def _rank_identity(self, engine, frame, floor, epoch, frame_id, cancelled, *, rediscover=False):
-        if self._season == "s1" and callable(getattr(engine, "qt_s1_structure_scan", None)):
+        if self._is_package_season() and callable(getattr(engine, "qt_s1_structure_scan", None)):
             return self._rank_s1_structure(engine, frame, floor, epoch, frame_id, cancelled)
         with self._lock:
             previous, prior = self._identity_native, self._identity_prior
@@ -2382,7 +2393,7 @@ class LiveRuntime:
             payload["_mapInputVisual"] = dict(open=True, epoch=epoch, sequence=input_sequence,
                 captured=captured, captureGeneration=capture_generation)
             self._observe_floor_policy(floor_read, obsolete=obsolete)
-            if (self._native_s1_candidate_preview and self._season == "s1"
+            if (self._native_s1_candidate_preview and self._is_package_season()
                     and not self._manual_alignment and floor is None):
                 self._observed_floor = ""
                 self._retire_material_owner(render_owner, "current-floor-unavailable")
@@ -2858,7 +2869,7 @@ class LiveRuntime:
                     session, ticket = self._s1_structure_session, self._s1_structure_ticket
                     observation = self._last_observation or {}
                     mid = payload.get("mapId")
-                    if (self._season != "s1" or self._map_id or not self._map_open or self._capture_pending
+                    if (not self._is_package_season() or self._map_id or not self._map_open or self._capture_pending
                             or session is None or ticket is None
                             or payload.get("structureFrameId") != self._frame_id
                             or payload.get("structureGeneration") != self._frame_generation
@@ -3087,7 +3098,7 @@ class LiveRuntime:
                     if self._manual_map_lock_enabled():
                         return self._receipt(action, payload, success=True, reason="manual-map-lock-awaiting-choice",
                             posePending=True, manualMapLockPending=True)
-                    if self._season == "s1":
+                    if self._is_package_season():
                         return self._s1_structure_pending_receipt(action, payload)
                     grouped = self._identity_fields()["groupLocked"]
                     self._terminal_failure_sample("similar-group-pending" if grouped else "identity-not-uniquely-verified",
@@ -3132,7 +3143,7 @@ class LiveRuntime:
             commands += ["end_round", "close_map", "toggle_sheet_visibility"]
             if ready:
                 commands.append("reselect_map")
-            manual_ready = bool(self._season == "s1" and saved_ready and guarded and self._capture is not None)
+            manual_ready = bool(self._is_package_season() and saved_ready and guarded and self._capture is not None)
             if manual_ready and not self._active and not self._round_preparing:
                 commands.append("prepare_manual_alignment")
             if self._manual_alignment and self._active:
@@ -3203,7 +3214,7 @@ class LiveRuntime:
                 recordedStreamingEnabled=bool(self._recorded_s1_streaming and self._s1_provisional_enabled()),
                 nativeCandidatePreviewAvailable=candidate_ready and self._native_s1_candidate_preview,
                 candidateStructureAvailable=candidate_ready,
-                candidateSupportedFloors=["-1", "-2", "-3", "-4"] if candidate_ready else [],
+                candidateSupportedFloors=list(self._floor_contract().floor_ids) if (candidate_ready and self._floor_contract() is not None) else (["-1", "-2", "-3", "-4"] if candidate_ready else []),
                 candidateUnvalidatedFloors=["-3", "-4"] if self._season == "s1" else [],
                 candidateProvisionalDisplayEnabled=self._s1_provisional_enabled(),
                 candidateStreamingEnabled=bool(self._candidate_streaming_requested() and self._s1_provisional_enabled()),
@@ -3227,9 +3238,9 @@ class LiveRuntime:
                 manualAlignmentSession=self._manual_alignment,
                 manualAlignmentAvailable=manual_ready,
                 automaticFloorObservationAvailable=bool(self._manual_alignment and floor_observer_available),
-                automaticFloorSupportedFloors=["-1", "-2", "-3", "-4"] if floor_observer_available else [],
+                automaticFloorSupportedFloors=list(self._floor_contract().floor_ids) if (floor_observer_available and self._floor_contract() is not None) else (["-1", "-2", "-3", "-4"] if floor_observer_available else []),
                 unvalidatedFloorPositions=["-3", "-4"] if self._season == "s1" else [],
-                automaticIdentityAvailable=False if self._season == "s1" else bool(ready),
+                automaticIdentityAvailable=False if self._is_package_season() else bool(ready),
                 targetFloor=self._floor, rawObservedFloor=self._s1_raw_floor,
                 floorObservationReason=self._s1_floor_reason,
                 mapObservationSource=("s1-current-frame" if self._manual_alignment and floor_observer_available
@@ -3256,7 +3267,7 @@ class LiveRuntime:
                 privateExperiment=(dict(self._s1_private_pool.snapshot(),
                     privateExperimental=self._native_s1_private_experiment,
                     privateResourceDigest=self._s1_private_pool.scope[4].resource_key) if self._s1_private_pool
-                    else dict(privateExperimental=bool(self._native_s1_private_experiment and self._season == "s1" and not self._manual_alignment),
+                    else dict(privateExperimental=bool(self._native_s1_private_experiment and self._is_package_season() and not self._manual_alignment),
                         privateExperimentalLocked=False, privateLockMapId="", privatePoolMapIds=[])),
                 message=self._message, core=self._core.snapshot(), evidenceKind=self._evidence_kind)
 
@@ -3379,7 +3390,7 @@ class LiveRuntime:
                     handle.invalidate()
                 self._stream_priority_handles.clear()
             self._provisional_display_map_id = ""
-            if self._candidate_preview_requested() and self._season == "s1":
+            if self._candidate_preview_requested() and self._is_package_season():
                 self._capture_pending = False
                 self._capture_pending_owner = None
             self._map_recovery = None
@@ -3421,7 +3432,7 @@ class LiveRuntime:
             if reason == "custom-gallery-changed":
                 self._reference_sheet = self._reference_capture_context = None
             self._epoch += 1
-            sequenced_s1_close = (self._candidate_preview_requested() and self._season == "s1"
+            sequenced_s1_close = (self._candidate_preview_requested() and self._is_package_season()
                 and reason == "map-closed" and type(input_sequence) is int
                 and input_sequence == self._last_map_input_sequence)
             if reason != "s1-provisional-open-intent" and not sequenced_s1_close:
@@ -3571,7 +3582,7 @@ class LiveRuntime:
                 self._s1_solver_policy_generation += 1
             if settings_changed:
                 self._settings_generation += 1
-                if (solver_changed and self._candidate_preview_requested() and self._season == "s1"
+                if (solver_changed and self._candidate_preview_requested() and self._is_package_season()
                         and not self._durable_map_id):
                     # Solver changes revoke identity evidence. Display-only saves
                     # retire stale presentation work through its own generation,
@@ -3915,7 +3926,7 @@ class LiveRuntime:
         pool = self._s1_private_pool
         historical_floor = bool(self._native_s1_final_round_lock
             and (self._floor_required or not self._observed_floor))
-        return bool(row.get("s1CandidateReference") and self._season == "s1"
+        return bool(row.get("s1CandidateReference") and self._is_package_season()
             and self._candidate_preview_requested() and not self._manual_alignment
             and self._active and not self._selection_pending
             and (historical_floor or not self._floor_required
@@ -4202,7 +4213,7 @@ class LiveRuntime:
         # A new acquisition never renews the retained material's evidence.
         with self._lock:
             if (not preserve_candidate and self._native_s1_candidate_preview
-                    and self._season == "s1" and not self._manual_alignment):
+                    and self._is_package_season() and not self._manual_alignment):
                 # A new candidate fit supersedes manual pixels, including after
                 # a failed probe withdrew them. No persistent pose is updated.
                 self._transient_drag = self._transient_cycle = None
@@ -4394,7 +4405,7 @@ class LiveRuntime:
     def _dispatch_with_ownership(self, action, payload=None, cancelled=None):
         # Capture the S1 operation kind before serial allocation/state waiting.
         # An intervening season change cannot turn an old switch into S0 work.
-        s1_candidate_arrival = (self._season == "s1"
+        s1_candidate_arrival = (self._is_package_season()
             and str(action) in ("next_candidate", "previous_candidate", "select_candidate"))
         # Allocation is one atomic next(), before any state-lock wait. The
         # birth tuple itself is read entirely under the state lock below.
@@ -4440,7 +4451,7 @@ class LiveRuntime:
             activation_request = (action in ("capture_now", "refresh_map", "recover_map_open",
                     "probe_map_after_drag", "fit_manual_frame", "observe_manual_floor",
                     "prepare_manual_alignment", "start_round", "observe_candidate_floor")
-                or s1_candidate_arrival or self._season == "s1"
+                or s1_candidate_arrival or self._is_package_season()
                     and action in ("next_candidate", "previous_candidate", "select_candidate")
                 or action == "map" and payload.get("openIntent") is not False
                 or action == "toggle_round" and not (self._active or self._round_preparing))
@@ -4514,7 +4525,7 @@ class LiveRuntime:
             if self._cancelled(cancelled):
                 return self._receipt(action, payload, success=False, reason="cancelled", cancelled=True)
             with self._lock:
-                candidate_operation = self._s1_provisional_enabled() or self._season == "s1"
+                candidate_operation = self._s1_provisional_enabled() or self._is_package_season()
                 candidate_owner_epoch = capture_request_epoch if candidate_operation else self._epoch
             try:
                 return self._manual_action(action, payload, cancelled,
@@ -4569,7 +4580,7 @@ class LiveRuntime:
                 # sequenced close is superseded only by a larger input sequence.
                 # S0 keeps
                 # its original strict birth-epoch admission semantics.
-                newer_s1_input = (self._candidate_preview_requested() and self._season == "s1"
+                newer_s1_input = (self._candidate_preview_requested() and self._is_package_season()
                     and type(sequence) is int and sequence > self._last_map_input_sequence)
                 if (self._cancelled(cancelled) or request_lifetime_generation != self._request_lifetime_generation
                         or request_settings_generation != self._settings_generation
@@ -4676,7 +4687,7 @@ class LiveRuntime:
         try:
             with self._work:
                 if action == "prepare_manual_alignment":
-                    if self._season != "s1":
+                    if not self._is_package_season():
                         return self._receipt(action, payload, success=False, reason="manual-session-not-required")
                     prepared = self._start(payload, cancelled, manual=True, expected_epoch=capture_request_epoch)
                     if not prepared["success"]:
@@ -4777,7 +4788,7 @@ class LiveRuntime:
             if manual:
                 from floor_contract import floor_contract
                 contract = floor_contract(mode, season=season)
-                if season != "s1" or contract is None or tuple(engine.identity_floors) != contract.floor_ids:
+                if not self._is_package_season(season) or contract is None or tuple(engine.identity_floors) != contract.floor_ids:
                     raise ValueError("manual-floor-resource-contract-mismatch")
         except Exception:
             with self._lock:
@@ -4793,7 +4804,7 @@ class LiveRuntime:
             if epoch != self._epoch or mode != self._mode or season != self._season:
                 return self._receipt("start_round", payload, success=False, reason="stale-context", stale=True)
             self._core.reset_round(reason="round-prepared")
-            if season == "s1":
+            if self._is_package_season(season):
                 from floor_contract import floor_contract
                 contract = floor_contract(mode, season=season)
                 if contract is None or tuple(engine.identity_floors) != contract.floor_ids:
@@ -5476,7 +5487,7 @@ class LiveRuntime:
             with self._lock:
                 if expected_epoch != self._epoch or self._cancelled(cancelled):
                     return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
-                if not (self._season == "s1" and self._manual_alignment and self._active
+                if not (self._is_package_season() and self._manual_alignment and self._active
                         and self._engine is not None and self._map_id and self._manual_floor):
                     return self._receipt(action, payload, success=False, reason="manual-map-floor-required")
                 self._begin_failure_opening(payload)
@@ -5509,7 +5520,7 @@ class LiveRuntime:
                     self._last_observation = dict(captured=captured, frame=frame, floor=None, digest=digest,
                         created_at=self._monotonic(), capture_generation=capture_generation, frame_id=frame_id,
                         cycle_id=cycle, generation=generation, observed_floor="",
-                        floor_read=dict(selectedFloor=None, season="s1", mode=self._mode,
+                        floor_read=dict(selectedFloor=None, season=self._season, mode=self._mode,
                             floorSource="unavailable", reason="manual-target-not-detector-evidence"))
                 return self._solve_observation(action, payload, cancelled, engine, group, epoch,
                     captured, frame, floor, digest, capture_generation, generation, frame_id, cycle, map_id)
@@ -5657,7 +5668,7 @@ class LiveRuntime:
                     error=error)
                 raise
             from session_state_machine import verified_map_hotkey_frame
-            opened = (observation.get("mapOpen") if self._season == "s1"
+            opened = (observation.get("mapOpen") if self._is_package_season()
                       else verified_map_hotkey_frame(observation, floor_read))
             self._capture_diagnostic(payload, "observation-result", "current-frame-observed", action=action,
                 observed=(observation, floor, floor_read, opened))
@@ -5859,7 +5870,7 @@ class LiveRuntime:
                 if self._manual_map_lock_enabled():
                     return self._receipt(action, payload, success=True, reason="manual-map-lock-awaiting-choice",
                         posePending=True, manualMapLockPending=True, observation=observation)
-                if self._season == "s1":
+                if self._is_package_season():
                     return self._s1_structure_pending_receipt(action, payload)
                 grouped = self._identity_fields()["groupLocked"]
                 self._terminal_failure_sample("similar-group-pending" if grouped else "identity-not-uniquely-verified",
@@ -5987,7 +5998,7 @@ class LiveRuntime:
         from types import SimpleNamespace
         from round_layer_group_commit import (commit_alignment_v2_round_pose,
             prime_round_layer_group_relations, map_anchor_focus_point)
-        if self._season == "s1":
+        if self._is_package_season():
             bounds = (component_override or {}).get("bounds")
             if (not isinstance(bounds, (tuple, list)) or len(bounds) != 4
                     or not (0 <= bounds[0] < bounds[2] <= frame.shape[1]
@@ -6000,13 +6011,13 @@ class LiveRuntime:
             _native_similarity_resources_ready=lambda: True,
             _open_cycle_transient_motion_active=lambda _map: False,
             _shared_structure_mode_enabled=lambda: True, _log=lambda *args, **kwargs: None)
-        if self._season == "s1":
+        if self._is_package_season():
             owner.round_floor_ids = tuple(engine.identity_floors)
         owner._active_round_layer_group = lambda mid, profile=None: (
             owner.round_layer_group if owner.round_layer_group is not None
             and owner.round_layer_group.map_id == mid
             else None)
-        owner._prime_round_layer_group_relations = (lambda mid, anchor: {}) if self._season == "s1" else (
+        owner._prime_round_layer_group_relations = (lambda mid, anchor: {}) if self._is_package_season() else (
             lambda mid, anchor: prime_round_layer_group_relations(owner, mid, anchor))
         context = captured.context
         signature = (tuple(context.full_client_size), tuple(context.client_screen_bounds), context.dpi)
@@ -6112,7 +6123,7 @@ class LiveRuntime:
             if not choice.get("success") or choice.get("frameKey") != digest:
                 return self._receipt(action, payload, success=False, reason="stale-structure-fit", stale=True)
             fit = choice["pose"]
-        elif self._season == "s1":
+        elif self._is_package_season():
             fit = host.fit(frame, map_id, floor, obsolete,
                 observation_bounds=(0, 0, frame.shape[1], frame.shape[0]))
         else:
@@ -6207,7 +6218,7 @@ class LiveRuntime:
             previous_group = copy.deepcopy(group) if group is not None else None
         target_group = self._stage_round_group_commit(engine, previous_group, map_id, floor, canonical,
             render_matrix, display, frame, captured, cycle, frame_generation, residual,
-            component_override=fit.get("observationComponent") if self._season == "s1" else None)
+            component_override=fit.get("observationComponent") if self._is_package_season() else None)
         if target_group is None:
             reason = "round-group-pose-commit-rejected"
             self._set_pose_phase("rejected", reason, map_id, floor, frame_id, frame_generation,
@@ -6362,15 +6373,15 @@ class LiveRuntime:
         started = time.monotonic()
         settings = dict(self._settings, gameSeason=self._season)
         if self._manual_alignment and self._s1_floor_observer_available(engine):
-            from s1_floor_observation import detect_s1_floor, bind_s1_control_geometry
-            read = detect_s1_floor(frame, season=self._season, mode=self._mode,
+            from s1_floor_observation import detect_signed_column_floor, bind_s1_control_geometry
+            read = detect_signed_column_floor(frame, season=self._season, mode=self._mode,
                 controls=getattr(engine, 'qt_controls_profile', None))
             read = dict(read, rawSelectedFloor=read.get("selectedFloor"), floorSource="current-frame")
             if read.get("automaticFloorEligible") is not True:
                 read["selectedFloor"] = None
             opened = read.get("mapOpen")
             read = bind_s1_control_geometry(read, self._mode, (frame.shape[1], frame.shape[0]),
-                map_open=opened is True)
+                map_open=opened is True, season=self._season)
             contract = self._floor_contract()
             floor = contract.floor_id_for(read.get("selectedFloor")) if contract else None
             observation = dict(read.get("mapObservation") or {}, detected=opened is True,
@@ -6379,21 +6390,22 @@ class LiveRuntime:
             self._recognition_diagnostic("map-floor-observation", read["reason"], observation=observation,
                 floorRead=read, elapsedMs=(time.monotonic()-started)*1000)
             return observation, floor, read
-        if self._season == "s1" and self._s1_candidate_available(engine=engine):
-            from s1_floor_observation import detect_s1_floor, bind_s1_control_geometry
-            floor_read = detect_s1_floor(frame, season=self._season, mode=engine.pack.mode,
+        if self._is_package_season() and self._s1_candidate_available(engine=engine):
+            from s1_floor_observation import detect_signed_column_floor, bind_s1_control_geometry
+            floor_read = detect_signed_column_floor(frame, season=self._season, mode=engine.pack.mode,
                 controls=getattr(engine, 'qt_controls_profile', None))
+            contract = self._floor_contract()
+            allowed_vals = contract.observed_values if contract is not None else (-1, -2, -3, -4)
             selected = floor_read.get("selectedFloor")
-            if selected is not None and (type(selected) is not int or selected not in (-1, -2, -3, -4)
+            if selected is not None and (type(selected) is not int or selected not in allowed_vals
                     or floor_read.get("observedFloorValidated") is not True
                     or floor_read.get("automaticFloorEligible") is not True
                     or floor_read.get("mapOpen") is not True):
                 floor_read = dict(floor_read, selectedFloor=None, reason="s1-floor-current-evidence-unvalidated")
             opened = floor_read.get("mapOpen") is True
             floor_read = bind_s1_control_geometry(floor_read, engine.pack.mode,
-                (frame.shape[1], frame.shape[0]), map_open=opened)
+                (frame.shape[1], frame.shape[0]), map_open=opened, season=self._season)
             floor_read["floorSource"] = "current-frame-structure-candidate"
-            contract = self._floor_contract()
             floor = contract.floor_id_for(floor_read.get("selectedFloor")) if contract else None
             result = dict(floor_read.get("mapObservation") or {}, detected=opened, mapOpen=opened,
                           floor=floor, layoutFamily="s1-vertical", controlAxis="vertical")
@@ -6403,9 +6415,9 @@ class LiveRuntime:
             self._recognition_diagnostic("map-floor-observation", floor_read["reason"],
                 observation=result, floorRead=floor_read, elapsedMs=(time.monotonic()-started)*1000)
             return result, floor, floor_read
-        if self._season == "s1":
+        if self._is_package_season():
             unavailable = dict(selectedFloor=None, reason="s1-floor-control-detector-unvalidated",
-                confidence=0., season="s1", mode=engine.pack.mode, controlAxis="vertical",
+                confidence=0., season=self._season, mode=engine.pack.mode, controlAxis="vertical",
                 controlGeometryVerified=False, floorSource="unavailable")
             return dict(detected=False, mapOpen=None, reason=unavailable["reason"]), None, unavailable
         from s0_vertical_controls import observe_s0_map

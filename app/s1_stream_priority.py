@@ -9,6 +9,15 @@ def candidate_order(engine, catalog, floor, snapshot, prior, policy, config, han
     natural = tuple(catalog.map_ids)
     details = dict(policy=policy, admissionSeconds=0., usedPriority=False)
     if policy == 'natural':
+        shortlist = getattr(engine, 'qt_generic_structure_shortlist', None)
+        if callable(shortlist) and len(natural) > 1 and snapshot is not None:
+            try:
+                ordered = tuple(shortlist(snapshot.pixels, floor, natural))
+                if len(ordered) == len(natural) and set(ordered) == set(natural):
+                    return ordered, dict(details, usedPriority=True, reason='generic-geometry-fingerprint',
+                        orderSeconds=time.monotonic()-started)
+            except Exception:
+                pass
         return natural, dict(details, reason='natural-catalogue', orderSeconds=time.monotonic()-started)
     if policy == 'history':
         hints = tuple(mid for mid in prior if mid in natural)
@@ -34,7 +43,7 @@ def candidate_order(engine, catalog, floor, snapshot, prior, policy, config, han
         candidates = tuple(Candidate(mid, mode_root / 'references/entries' / f'{mid}-{floor}-shared.npz') for mid in natural)
         handle = load_rebuilt(index_path=config['index_path'],
             expected_index_sha256=config['expected_index_sha256'], algorithm_file=algorithm,
-            source_root=source, resource_root=root, scope=Scope('s1', catalog.mode, floor), candidates=candidates)
+            source_root=source, resource_root=root, scope=Scope(catalog.season, catalog.mode, floor), candidates=candidates)
         handles[key] = handle
         details['admissionSeconds'] = time.monotonic()-before
     def extract(frame):

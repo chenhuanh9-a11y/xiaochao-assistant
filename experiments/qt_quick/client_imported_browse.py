@@ -338,8 +338,9 @@ def _browse_declarations(resolver,snapshot,resources,source,check,cancel,stopped
     assets = ImportedBrowseAssets(source, authors, layers, signature, check, retained.set, stopped)
     warnings = (('部分作者显示无法读取，已保留可用内容。',) if unavailable or
                 'display-unavailable' in resources.optional_gaps else ())
+    from floor_contract import floor_display_label
     floors = MappingProxyType({str(floor):MappingProxyType(dict(
-        label=f'B{abs(int(floor))}' if season == 's1' else floor_label(str(floor)))) for floor in pack.floors})
+        label=floor_display_label(str(floor)) if season != 's0' else floor_label(str(floor)))) for floor in pack.floors})
     return ImportedBrowseContext(mode, resolver.root, pack, None, None,
         tuple(profiles), MappingProxyType(stamps), warnings=warnings, season=season,
         floor_metadata=floors, assets=assets, package_keys=MappingProxyType(package_keys))

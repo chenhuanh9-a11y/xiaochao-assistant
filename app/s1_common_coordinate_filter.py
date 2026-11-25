@@ -14,9 +14,13 @@ class CommonCoordinateFilter:
         self.provider = provider  # provider(map_id, floor) -> typed reference
         self.index = (json.loads(Path(index).read_text('utf-8') if read_resource is None else read_resource(Path(index)))
                       if isinstance(index,(str,Path)) else index)
-        if self.index.get('schema')!='s1-common-entrance-coordinate-index-v1':raise ValueError('coordinate-index-schema')
+        if self.index.get('schema') not in ('s1-common-entrance-coordinate-index-v1', 'common-entrance-coordinate-index-v1'):
+            raise ValueError('coordinate-index-schema')
         self.mode,self.resource_key=mode,resource_key
         self.entries=self.index['maps'][mode]
+        self.supported_floors=frozenset(str(fl) for floors in self.entries.values() for fl in floors) or frozenset(('-1','-2','-3','-4'))
+        raw_entry = self.index.get('entryFloors')
+        self.entry_floors=frozenset(map(str, raw_entry)) if isinstance(raw_entry, (list, tuple)) and raw_entry else frozenset(('-1',))
         self._cache=OrderedDict()
         self._pool_pending=OrderedDict()
 
@@ -129,7 +133,7 @@ class CommonCoordinateFilter:
             return None
         if 'distance' not in job:
             job['distance'] = np.rint(np.minimum(cv2.distanceTransform(1-shared, cv2.DIST_L2, 3), 16383.75)*4).astype(np.uint16)
-        if floor == '-1':
+        if str(floor) in getattr(self, 'entry_floors', frozenset(('-1',))):
             while job['union_map'] < len(masks):
                 if cancelled():
                     return None
@@ -384,7 +388,8 @@ class CommonCoordinateFilter:
                         evaluatedMapIds=list(ids),contradictedMapIds=[],unknownMapIds=list(ids),
                         coordinateVerified=False,identityAuthorized=False,reason=reason,
                         elapsedMs=(time.perf_counter()-start)*1000,**kw)
-        if not ids or any(mid not in self.entries for mid in ids) or floor not in ('-1','-2','-3','-4'):return result('coordinate-scope-invalid')
+        supported_floors = getattr(self, 'supported_floors', frozenset(('-1', '-2', '-3', '-4')))
+        if not ids or any(mid not in self.entries for mid in ids) or str(floor) not in supported_floors:return result('coordinate-scope-invalid')
         if cancelled():return result('coordinate-work-obsolete')
         try:data=self._pool(ids,floor,cancelled)
         except (KeyError,TypeError,ValueError,OSError) as e:return result('coordinate-resources-unavailable',detail=str(e))
@@ -407,7 +412,7 @@ class CommonCoordinateFilter:
                 if len(hyp)>20000:continue
                 s=(lower+upper)/2;t=center+s*data['origin'];matrix=np.array([[s,0,t[0]],[0,s,t[1]],[0,0,1]])
                 domain=(hyp,matrix,dict(basis='entrance-plus-'+scale_basis,scaleRange=[lower,upper],anchorErrorPx=error))
-            if domain is None and anchor is not None and floor == '-1':
+            if domain is None and anchor is not None and str(floor) in getattr(self, 'entry_floors', frozenset(('-1',))):
                 domain = self._entrance_union_domain(frame,ctx,data,anchor,cancelled)
             domains = [domain] if domain is not None else self._domains_from_common(frame,ctx,data['prepared'],cancelled)
             for domain in domains:

@@ -202,7 +202,7 @@ def _context_plan(snapshot, resolver, base_ref, controls_ref, *, season, mode, c
     if not isinstance(base_ref, ComponentRef) or not isinstance(controls_ref, ComponentRef):
         raise catalog.ResourceCatalogError('resource-catalog-reference-invalid')
     context_key = f'{season}:{mode}'
-    if context_key not in catalog.CONTEXTS:
+    if not catalog.is_supported_context(context_key):
         raise catalog.ResourceCatalogError('native-base-context-unsupported')
 
     def operation_current():
@@ -286,7 +286,7 @@ def _context_plan(snapshot, resolver, base_ref, controls_ref, *, season, mode, c
 
 
 def validate_contexts(contexts):
-    if not isinstance(contexts, tuple) or not 1 <= len(contexts) <= 4:
+    if not isinstance(contexts, tuple) or not 1 <= len(contexts) <= 64:
         raise catalog.ResourceCatalogError('native-base-contexts-invalid')
     seen = set()
     normalized = []
@@ -295,7 +295,7 @@ def validate_contexts(contexts):
             raise catalog.ResourceCatalogError('native-base-contexts-invalid')
         season, mode, base_ref, controls_ref = context
         key = (season, mode)
-        if f'{season}:{mode}' not in catalog.CONTEXTS:
+        if not catalog.is_supported_context(f'{season}:{mode}'):
             raise catalog.ResourceCatalogError('native-base-context-unsupported')
         if key in seen:
             raise catalog.ResourceCatalogError('native-base-context-duplicate')

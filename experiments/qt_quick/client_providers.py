@@ -21,7 +21,9 @@ if APP not in sys.path:
     sys.path.insert(0, APP)
 
 
-from season_context import CONTEXTS, SEASONS, RUNTIME_MODES, modes_for_season, known_modes_for_season, is_retired_mode, context_key, normalize_season, SeasonContext
+from season_context import (CONTEXTS, SEASONS, RUNTIME_MODES, all_context_keys, all_season_ids,
+                            get_context, modes_for_season, known_modes_for_season, is_retired_mode,
+                            context_key, normalize_season, SeasonContext)
 
 
 @dataclass(frozen=True)
@@ -495,7 +497,7 @@ class EngineFactories(dict):
                  memory_root_provider=None, optional_displays=True, controls_profile=None):
         self.root = Path(resource_root).resolve()
         roots = dict(context_roots or {})
-        if not set(roots) <= set(CONTEXTS):
+        if not set(roots) <= set(all_context_keys()):
             raise ValueError("unknown explicit provider root context")
         self.context_roots = MappingProxyType({key: Path(value).resolve() for key, value in roots.items()})
         self.nightmare_interfaces = MappingProxyType(dict(nightmare_interfaces or {}))
@@ -505,7 +507,7 @@ class EngineFactories(dict):
         self.optional_displays = bool(optional_displays)
         self.controls_profile = controls_profile
         self._lock = threading.RLock()
-        self._build_locks = {key: threading.Lock() for key in CONTEXTS}
+        self._build_locks = {key: threading.Lock() for key in all_context_keys()}
         self._engines = {}
         self._custom_display = None
         self._base_display = None
@@ -513,17 +515,36 @@ class EngineFactories(dict):
         self._reports = self._initial_reports()
         super().__init__({mode: lambda mode=mode: self._get(mode) for mode in self.MODES})
 
+    @staticmethod
+    def _default_report(season, mode):
+        key = context_key(mode, season)
+        registered = get_context(key).registered
+        return dict(available=False, dataReady=False, rankReady=False,
+                    prepared=not registered, season=season, mode=mode, contextKey=key,
+                    reason="retired-mode" if is_retired_mode(mode, season) else
+                    "resource-validation-pending" if registered else f"season-resources-unavailable:{season}")
+
+    def _ensure_context_slot(self, season, mode):
+        key = context_key(mode, season)
+        with self._lock:
+            if key not in self._build_locks:
+                self._build_locks[key] = threading.Lock()
+            if key not in self._reports:
+                self._reports[key] = self._default_report(season, mode)
+            return key, self._build_locks[key]
+
     def _initial_reports(self):
-        return {context_key(mode, season): dict(available=False, dataReady=False, rankReady=False,
-                    prepared=not CONTEXTS[context_key(mode, season)].registered,
-                    season=season, mode=mode, contextKey=context_key(mode, season),
-                    reason="retired-mode" if is_retired_mode(mode, season) else "resource-validation-pending" if CONTEXTS[context_key(mode, season)].registered else f"season-resources-unavailable:{season}")
-                for season in SEASONS for mode in known_modes_for_season(season)}
+        return {context_key(mode, season): self._default_report(season, mode)
+                for season in all_season_ids() for mode in known_modes_for_season(season)}
 
     def capabilities(self, season="s0"):
         season = normalize_season(season)
         with self._lock:
-            return {mode: copy.deepcopy(self._reports[context_key(mode, season)]) for mode in known_modes_for_season(season)}
+            out = {}
+            for mode in known_modes_for_season(season):
+                key, _ = self._ensure_context_slot(season, mode)
+                out[mode] = copy.deepcopy(self._reports[key])
+            return out
 
     def context_capabilities(self):
         with self._lock:
@@ -637,18 +658,18 @@ class EngineFactories(dict):
 
     def _get(self, mode, season="s0"):
         season = normalize_season(season)
+        key, build_lock = self._ensure_context_slot(season, mode)
         try:
             binding = self._resource_binding(mode, season)
         except ProviderUnavailable as error:
             with self._lock:
                 if getattr(error, 'resource_revision', self._revision) == self._revision:
-                    key = context_key(mode, season)
                     self._reports[key].update(prepared=True, reason=str(error),
                         **self._unavailable_engine_fields('resource-context-unavailable'),
                         **self._resource_failure_fields(error))
             raise
         key = binding.context.key
-        with self._build_locks[key]:
+        with build_lock:
             with self._lock:
                 if binding.resource_revision is not None and binding.resource_revision != self._revision:
                     raise ProviderUnavailable('resource-context-superseded')

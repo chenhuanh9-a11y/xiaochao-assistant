@@ -19,6 +19,11 @@ CONTEXTS = frozenset(f'{season}:{mode}' for season in ('s0', 's1')
                      for mode in ('difficult', 'nightmare'))
 ROLES = {'recognitionBase': 'recognition-base', 'controls': 'controls-profile',
          'reviewedGroups': 'reviewed-group-registry'}
+
+
+def is_supported_context(key):
+    from season_context import is_valid_context_key
+    return is_valid_context_key(key)
 PENDING_CATALOG = 'transactions/pending-catalog.json'
 PENDING_REMOVAL = 'transactions/pending-removal.json'
 
@@ -83,7 +88,7 @@ def parse_catalog(value):
     except (ValueError, AttributeError):
         raise ResourceCatalogError('resource-catalog-generation-invalid') from None
     contexts, displays = value['contexts'], value['displays']
-    if (not isinstance(contexts, dict) or not set(contexts) <= CONTEXTS
+    if (not isinstance(contexts, dict) or not all(is_supported_context(key) for key in contexts)
             or not isinstance(displays, list)):
         raise ResourceCatalogError('resource-catalog-context-invalid')
     parsed = {}
@@ -196,7 +201,7 @@ class CatalogSnapshot:
 
     def resolve_context(self, season, mode):
         key = f'{season}:{mode}'
-        if key not in CONTEXTS:
+        if not is_supported_context(key):
             raise ResourceCatalogError('resource-context-unsupported')
         self.assert_current()
         row = self.contexts.get(key, {})

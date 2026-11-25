@@ -303,10 +303,13 @@ class EngineAdapter:
         context["season"] = normalize_season(context["season"])
         if context["season"] != self._context["season"] and "profileId" not in supplied:
             context["profileId"] = ""
+        from floor_contract import floor_contract
+        contract = floor_contract(context["mode"], season=context["season"])
+        allowed_floors = contract.floor_ids if contract is not None else (("-1", "-2", "-3", "-4") if context["season"] == "s1" else ("B1", "1", "2"))
         if context["season"] != self._context["season"] and "floor" not in supplied:
-            context["floor"] = "-1" if context["season"] == "s1" else "1"
+            context["floor"] = allowed_floors[0] if context["season"] != "s0" else "1"
         context["floor"] = str(context["floor"])
-        if context["floor"] not in (("-1", "-2", "-3", "-4") if context["season"] == "s1" else ("B1", "1", "2")):
+        if context["floor"] not in allowed_floors:
             raise ValueError("unsupported floor")
         return context
 

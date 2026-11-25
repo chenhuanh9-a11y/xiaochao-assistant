@@ -419,60 +419,69 @@ def _finite_number(value):
     return type(value) in (int, float) and np.isfinite(value)
 
 
-def bind_s1_control_geometry(read, mode, frame_size, *, map_open):
-    """Attach verified normalized click rects for a complete current S1 column.
+def bind_s1_control_geometry(read, mode, frame_size, *, map_open, season="s1"):
+    """Attach verified normalized click rects for a complete current vertical column.
 
     Leaves ``detect_s1_floor`` pure (no click authority on raw pixel replay)
     and mirrors S0's ``bind_control_geometry`` contract for ``LiveRuntime``.
+    Supports S1 (4 floors) and any package-declared S2+ vertical floor contract.
     """
     out = dict(read) if isinstance(read, dict) else {}
     for key in ("controlRects", "controlFrameSize"):
         out.pop(key, None)
-    out.update(season="s1", mode=mode, mapOpen=map_open is True,
+    out.update(season=season, mode=mode, mapOpen=map_open is True,
                controlAxis="vertical", controlGeometryVerified=False)
-    contract = floor_contract(mode, season="s1")
+    contract = floor_contract(mode, season=season)
     try:
-        if (map_open is not True or contract is None or contract.observed_values != ORDER
+        if (map_open is not True or contract is None
                 or out.get("observedFloorValidated") is not True
                 or out.get("automaticFloorEligible") is not True):
-            raise ValueError("unverified s1 floor observation")
+            raise ValueError("unverified floor observation")
+        order = tuple(out.get("observedOrder") or contract.observed_values)
+        if not order or set(order) != set(contract.observed_values):
+            raise ValueError("invalid floor order")
         selected = out.get("selectedFloor")
-        if type(selected) is not int or selected not in ORDER:
+        if type(selected) is not int or selected not in order:
             raise ValueError("invalid selected floor")
         points = out["centerPoints"]
         evidence = out["labelEvidence"]
         width, height = frame_size
         if (not (_finite_number(width) and _finite_number(height))
                 or width < 100 or height < 100
-                or len(points) != len(ORDER) or len(evidence) != len(ORDER)):
+                or len(points) != len(order) or len(evidence) != len(order)):
             raise ValueError("invalid frame or points")
-        for floor, point, glyph in zip(ORDER, points, evidence):
+        for floor, point, glyph in zip(order, points, evidence):
             if (len(point) != 2 or not all(_finite_number(v) and 0 < v < 1 for v in point)
                     or not isinstance(glyph, dict)
                     or type(glyph.get("floor")) is not int or glyph["floor"] != floor
-                    or glyph.get("negative") is not True):
-                raise ValueError("invalid s1 label")
+                    or (floor < 0 and glyph.get("negative") is not True)):
+                raise ValueError("invalid floor label")
         xs = [float(p[0]) for p in points]
         ys = [float(p[1]) for p in points]
         gaps = [b - a for a, b in zip(ys, ys[1:])]
-        if max(xs) - min(xs) > 0.015 or min(gaps) <= 0 or max(gaps) > min(gaps) * 1.25:
-            raise ValueError("invalid s1 column spacing")
+        if max(xs) - min(xs) > 0.015:
+            raise ValueError("invalid column alignment")
+        if gaps and (min(gaps) <= 0 or max(gaps) > min(gaps) * 1.25):
+            raise ValueError("invalid column spacing")
         local_scale = out.get("controlLocalScale")
         local_scale = float(local_scale) if _finite_number(local_scale) and local_scale > 0 else float(width)
         half_x = min(0.022 * local_scale / float(width), 0.045)
-        half_y = min(0.020 * local_scale / float(height), min(gaps) * 0.45)
+        default_half_y = 0.020 * local_scale / float(height)
+        half_y = min(default_half_y, min(gaps) * 0.45) if gaps else default_half_y
         if not (half_x > 0 and half_y > 0):
-            raise ValueError("degenerate s1 hit rect")
-        rows = []
-        for floor, (cx, cy) in zip(ORDER, points):
+            raise ValueError("degenerate hit rect")
+        rows_by_floor = {}
+        for floor, (cx, cy) in zip(order, points):
             x0, y0 = max(0.0, float(cx) - half_x), max(0.0, float(cy) - half_y)
             x1, y1 = min(1.0, float(cx) + half_x), min(1.0, float(cy) + half_y)
             if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
-                raise ValueError("out-of-bounds s1 hit rect")
-            rows.append(dict(floor=floor, rect=[x0, y0, x1, y1]))
+                raise ValueError("out-of-bounds hit rect")
+            rows_by_floor[floor] = dict(floor=floor, rect=[x0, y0, x1, y1])
+        # Emit controlRects in visual top-to-bottom order matching contract.floors.
+        rows = [rows_by_floor[definition.observed_value] for definition in contract.floors]
         for upper, lower in zip(rows, rows[1:]):
             if upper["rect"][3] >= lower["rect"][1]:
-                raise ValueError("overlapping s1 hit rects")
+                raise ValueError("overlapping hit rects")
         out.update(layout="localized-floor-contract", controlGeometryVerified=True,
                    controlFrameSize=[int(round(width)), int(round(height))],
                    controlRects=rows)
@@ -482,6 +491,95 @@ def bind_s1_control_geometry(read, mode, frame_size, *, map_open):
         out.pop("controlFrameSize", None)
         out["controlGeometryVerified"] = False
         return out
+
+
+def detect_signed_column_floor(frame, *, season, mode, frame_id=None, expected_frame_id=None,
+                               frame_current=True, controls=None):
+    """Season-agnostic signed-column detector driven by FloorContract & controls."""
+    if season == "s1":
+        kwargs = dict(season=season, mode=mode, controls=controls)
+        if frame_id is not None:
+            kwargs["frame_id"] = frame_id
+        if expected_frame_id is not None:
+            kwargs["expected_frame_id"] = expected_frame_id
+        if frame_current is not True:
+            kwargs["frame_current"] = frame_current
+        return detect_s1_floor(frame, **kwargs)
+    from imported_original_controls import require_original_controls
+    require_original_controls(controls, season=season, mode=mode)
+    contract = floor_contract(mode, season=season)
+    out = _result(season, mode, "s1-floor-context-unsupported")
+    if contract is None or not 1 <= len(contract.floors) <= 8:
+        return out
+    order = tuple(controls.for_context(season, mode).visual_order) if controls is not None and controls.for_context(season, mode) else contract.observed_values
+    out["observedOrder"] = list(order)
+    if frame_current is not True:
+        return dict(out, reason="s1-floor-stale-frame")
+    if (not isinstance(frame, np.ndarray) or frame.dtype != np.uint8
+            or frame.ndim != 3 or frame.shape[2] != 3):
+        return dict(out, reason="s1-floor-frame-type")
+    height, width = frame.shape[:2]
+    if width < 1000 or height < 600:
+        return dict(out, reason="s1-floor-frame-size")
+    map_observation = detect_map_interface(frame, floor_read={})
+    out.update(mapObservation=map_observation, mapOpen=map_observation.get("detected") is True)
+    if out["mapOpen"] is not True:
+        independent = observe_s1_map_ui_geometry(frame)
+        out["mapUiGeometry"] = independent
+        if independent.get("mapOpen") is True:
+            out["mapOpen"] = True
+            out["mapObservation"] = dict(map_observation, detected=True, mapOpen=True,
+                                         source="independent-map-ui-geometry")
+        else:
+            return dict(out, reason="s1-floor-map-not-open")
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    search_bounds = SEARCH_BOUNDS
+    if controls is not None:
+        rx, ry, rw, rh = controls.fixed_search_region
+        search_bounds = (rx, ry, rx + rw, ry + rh)
+    x0, y0, x1, y1 = (round(width * search_bounds[0]), round(height * search_bounds[1]),
+                      round(width * search_bounds[2]), round(height * search_bounds[3]))
+    roi = gray[y0:y1, x0:x1]
+    if not roi.size:
+        return dict(out, reason="s1-floor-empty-roi")
+    n = len(order)
+    labels = _labels(roi, width, (x0, y0))
+    if not n <= len(labels) <= max(16, n * 4):
+        return dict(out, reason="s1-floor-signed-labels-incomplete")
+    columns = []
+    for group in combinations(labels, n):
+        rows = sorted(group, key=lambda row: row["y"])
+        xs, ys = [row["x"] for row in rows], [row["y"] for row in rows]
+        gaps = [b - a for a, b in zip(ys, ys[1:])]
+        if max(xs) - min(xs) > width * .005:
+            continue
+        if gaps and (min(gaps) < width * .030 or max(gaps) > width * .065
+                     or max(gaps) - min(gaps) > width * .005):
+            continue
+        fills = [_fill(gray, row, width) for row in rows]
+        if (any(value is None or .20 < value < .65 for value in fills)
+                or sum(value >= .65 for value in fills if value is not None) != 1):
+            continue
+        columns.append((rows, fills))
+    if len(columns) != 1:
+        return dict(out, reason="s1-floor-column-ambiguous" if columns else "s1-floor-column-unverified")
+    rows, fills = columns[0]
+    selected = order[next(i for i, value in enumerate(fills) if value >= .65)]
+    points = [[row["centerX"] / width, row["y"] / height] for row in rows]
+    evidence = [dict(floor=floor, negative=floor < 0, digitAspect=row["glyphAspect"],
+                     polarity=row["polarity"], highlightFill=fill,
+                     signBounds=row["signBounds"], digitBounds=row["digitBounds"])
+                for floor, row, fill in zip(order, rows, fills)]
+    bounds = [max(0, round(min(row["centerX"] for row in rows) - .025 * width)),
+              max(0, round(rows[0]["y"] - .025 * width)),
+              min(width, round(max(row["centerX"] for row in rows) + .025 * width)),
+              min(height, round(rows[-1]["y"] + .025 * width))]
+    out.update(reason="s1-floor-observed", selectedFloor=selected,
+               observedFloorValidated=True, automaticFloorEligible=True,
+               centerPoints=points, centers=points, labelEvidence=evidence, controlBounds=bounds)
+    if controls is not None:
+        controls.assert_current()
+    return out
 
 
 def detect_s1_floor(frame, *, season, mode, frame_id=None, expected_frame_id=None, frame_current=True, controls=None):

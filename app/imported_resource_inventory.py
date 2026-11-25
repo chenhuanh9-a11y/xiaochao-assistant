@@ -15,7 +15,7 @@ import stat
 import resource_snapshot_io
 import star_map_import as files
 from author_resource_snapshots import _metadata
-from imported_resource_catalog import ResourceCatalogError, ResourceResolver
+from imported_resource_catalog import CONTEXTS, ResourceCatalogError, ResourceResolver
 from imported_resource_packages import ComponentRef, PackageView, MANIFEST_LIMIT
 
 
@@ -297,19 +297,21 @@ def _selected_contexts(snapshot, budget):
     selected = {}
     if snapshot is None:
         return selected
-    for season in ('s0', 's1'):
-        for mode in ('difficult', 'nightmare'):
-            budget.check()
-            context_key = f'{season}:{mode}'
-            context = snapshot.resolve_context(season, mode)
-            views = [context.base, context.controls, context.groups, *context.displays]
-            for view in views:
-                if view is None:
-                    continue
-                ref = view.component_ref
-                key = (ref.package_id, ref.resource_version, ref.manifest_sha256)
-                selected.setdefault(key, set()).add(context_key)
-            budget.check()
+    context_keys = sorted(set(CONTEXTS) | set(snapshot.contexts.keys()))
+    for context_key in context_keys:
+        if ':' not in context_key:
+            continue
+        season, mode = context_key.split(':', 1)
+        budget.check()
+        context = snapshot.resolve_context(season, mode)
+        views = [context.base, context.controls, context.groups, *context.displays]
+        for view in views:
+            if view is None:
+                continue
+            ref = view.component_ref
+            key = (ref.package_id, ref.resource_version, ref.manifest_sha256)
+            selected.setdefault(key, set()).add(context_key)
+        budget.check()
     return selected
 
 

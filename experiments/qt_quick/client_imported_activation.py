@@ -393,7 +393,7 @@ def activate_context(resolver, paths, base_ref, controls_ref, *, season='s0', mo
     None explicitly means the reviewed store had no catalog yet.
     The caller owns the Session idle lease. Data admission grants no live/rank.
     """
-    if (season, mode) not in _CONTEXTS:
+    if not catalog.is_supported_context(f'{season}:{mode}'):
         raise catalog.ResourceCatalogError('native-base-context-unsupported')
     if not isinstance(base_ref, ComponentRef) or not isinstance(controls_ref, ComponentRef):
         raise catalog.ResourceCatalogError('resource-catalog-reference-invalid')

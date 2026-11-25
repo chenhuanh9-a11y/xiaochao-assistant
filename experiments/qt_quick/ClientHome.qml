@@ -9,7 +9,7 @@ Item {
     id: page
     readonly property var privateExperiment: session.snapshot.privateExperiment || ({})
     readonly property string privateLockedMap: privateExperiment.privateLockMapId || ""
-    readonly property bool privateIdentityRetained: session.snapshot.season === "s1" && session.snapshot.roundActive === true
+    readonly property bool privateIdentityRetained: (session.snapshot.usesCandidatePoolLock === true || session.snapshot.season !== "s0") && session.snapshot.roundActive === true
         && session.snapshot.s1FormalRoundLock !== true
         && privateExperiment.privateExperimental === true && privateExperiment.privateExperimentalLocked === true
         && privateLockedMap.length > 0
@@ -20,9 +20,11 @@ Item {
     readonly property bool shortPage: height < 540
     function floorLabel(floor, label) {
         if (label) return label
-        if (session.appliedSeason === "s1" && /^-[1-4]$/.test(String(floor)))
-            return "B" + Math.abs(Number(floor))
-        return floor === "B1" ? "B1" : "F" + floor
+        var text = String(floor || "")
+        if (/^-[1-9][0-9]*$/.test(text)) return "B" + Math.abs(Number(text))
+        if (/^[BF]/i.test(text)) return text.toUpperCase()
+        if (/^[1-9][0-9]*$/.test(text)) return "F" + text
+        return text
     }
     function canRun(action) {
         return session.snapshot.commands && session.snapshot.commands[action]

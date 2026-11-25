@@ -20,7 +20,8 @@ from PySide6.QtGui import QGuiApplication, QKeyEvent
 from client_paths import RESOURCE_ROOT as ROOT, WORK_ROOT, runtime_paths
 if str(ROOT / "app") not in sys.path:
     sys.path.insert(0, str(ROOT / "app"))
-from season_context import CONTEXTS, MODES, KNOWN_MODES, context_key, normalize_season, selected_profile, season_options
+from season_context import (CONTEXTS, MODES, KNOWN_MODES, all_context_keys, is_valid_context_key,
+                            register_season, context_key, normalize_season, selected_profile, season_options)
 from client_control_layout import load_layout, preset_layout, validate_layout
 from floor_control_region import normalized_region
 from client_manual_map import MANUAL_MAP_PICKER_DEFAULT_HOTKEY, MANUAL_PICKER_ACTION, SELECTION_MODES
@@ -68,7 +69,7 @@ def _validate(key, value):
     elif key == "gameSeason":
         value = normalize_season(value)
     elif key == "contextRouteProfiles":
-        if not isinstance(value, dict) or not set(value) <= set(CONTEXTS):
+        if not isinstance(value, dict) or not set(value) <= set(all_context_keys()):
             raise ValueError("按赛季路线需要有效的 season:mode 配置表")
         for profile in value.values():
             _validate("routeProfileId", profile)
@@ -542,7 +543,12 @@ class SettingsService(QObject):
 
     def setAvailableContexts(self, contexts):
         contexts = frozenset(contexts)
-        if not contexts <= CONTEXTS.keys():
+        for key in contexts:
+            if not is_valid_context_key(key):
+                raise ValueError('Unknown imported resource context')
+            season, mode = key.split(':', 1)
+            register_season(season, modes=(mode,))
+        if not contexts <= set(all_context_keys()):
             raise ValueError('Unknown imported resource context')
         if contexts != self._available_contexts:
             self._available_contexts = contexts

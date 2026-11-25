@@ -12,7 +12,7 @@ Item {
     property string profilesSeason: ""
     property bool profilesBusy: false
     readonly property string draftSeason: preferences.gameSeason || "s0"
-    readonly property bool automaticMapSelection: draftSeason === "s1"
+    readonly property bool automaticMapSelection: draftSeason !== "s0"
     readonly property string draftContextKey: draftSeason + ":" + preferences.gameMode
     readonly property string draftProfile: (preferences.contextRouteProfiles || {})[draftContextKey]
         || (draftSeason === "s0" ? ((preferences.modeRouteProfiles || {})[preferences.gameMode] || preferences.routeProfileId || "") : "")
@@ -458,7 +458,7 @@ Item {
                 }
                 Note {
                     objectName: "settingsS1FloorObservation"; visible: root.automaticMapSelection
-                    text: "自动识别地图与楼层（B1～B4）"
+                    text: root.draftSeason === "s1" ? "自动识别地图与楼层（B1～B4）" : "自动识别地图与楼层（按结构包配置）"
                 }
                 RowLayout {
                     objectName: "settingsMapSelectionActions"

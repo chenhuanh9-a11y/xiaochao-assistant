@@ -28,23 +28,32 @@ class StructureCatalog:
     floors: tuple[str, ...]
 
     def __post_init__(self):
-        if (self.season != "s1" or self.mode not in ("difficulty2", "difficult", "nightmare")
+        from season_context import is_valid_season_id
+        if (not is_valid_season_id(self.season) or self.mode not in ("difficulty2", "difficult", "nightmare")
                 or not self.resource_key or not self.map_ids or len(set(self.map_ids)) != len(self.map_ids)
-                or self.floors != ("-1", "-2", "-3", "-4")):
+                or not self.floors or len(set(self.floors)) != len(self.floors)
+                or (self.season == "s1" and self.floors != ("-1", "-2", "-3", "-4"))):
             raise ValueError("s1-structure-catalog-invalid")
 
     @classmethod
     def from_engine(cls, engine):
-        from s1_native_resources import MODE_LAYOUTS
+        season = getattr(engine, "qt_season", None)
         mode = engine.pack.mode
-        if (getattr(engine, "qt_season", None) != "s1" or mode not in MODE_LAYOUTS
-                or set(engine.pack.by_id) != set(MODE_LAYOUTS[mode])):
+        if season == "s1":
+            from s1_native_resources import MODE_LAYOUTS
+            if mode not in MODE_LAYOUTS or set(engine.pack.by_id) != set(MODE_LAYOUTS[mode]):
+                raise ValueError("s1-structure-catalog-context-mismatch")
+        elif not isinstance(season, str) or not season or not engine.pack.by_id:
             raise ValueError("s1-structure-catalog-context-mismatch")
-        native = engine.qt_native_context
+        native = getattr(engine, "qt_native_context", None)
+        manifest = getattr(native, "manifest", None)
+        if manifest is None:
+            manifest = dict(season=season, mode=mode, maps=sorted(engine.pack.by_id),
+                            floors=list(engine.pack.floors))
         # Includes every product's content hash, not only mode or a filename.
-        payload = json.dumps(native.manifest, sort_keys=True, separators=(",", ":")).encode()
-        return cls("s1", mode, hashlib.sha256(payload).hexdigest(),
-                   tuple(sorted(engine.pack.by_id)), tuple(engine.pack.floors))
+        payload = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+        return cls(season, mode, hashlib.sha256(payload).hexdigest(),
+                   tuple(sorted(engine.pack.by_id)), tuple(map(str, engine.pack.floors)))
 
 
 def verified_pose(fit):

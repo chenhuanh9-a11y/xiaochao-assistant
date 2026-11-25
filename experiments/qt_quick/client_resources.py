@@ -471,7 +471,8 @@ class ResourceService(QObject):
     def importArchive(self, file_url, season="s0"):
         if not self._available() or self._recovery:
             return
-        if season not in {"s0", "s1"}:
+        from season_context import is_valid_season_id
+        if not is_valid_season_id(season):
             self._message = "这个赛季尚未支持作者图包导入"
             self.changed.emit()
             return

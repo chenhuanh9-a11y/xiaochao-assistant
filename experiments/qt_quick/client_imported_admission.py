@@ -1,7 +1,7 @@
 """Product import prerequisites, read under the existing resource write lock."""
 from imported_author_display import read_display_identity
 from imported_author_dependencies import matches_display_base
-from imported_resource_catalog import CONTEXTS, ResourceCatalogError
+from imported_resource_catalog import CONTEXTS, ResourceCatalogError, is_supported_context
 from imported_resource_reader import ComponentResourceReader
 import star_map_import as files
 
@@ -27,6 +27,13 @@ def _context_base(snapshot, season, mode, *, cancelled=None, validated=None):
                 from imported_original_base import SCHEMA
                 if entry.get('schema') != SCHEMA:
                     raise ResourceCatalogError('original-qt-base-required')
+                from season_context import SEASONS, register_season
+                if season not in SEASONS:
+                    season_name = entry.get('seasonName') or entry.get('seasonTitle') or ''
+                    if isinstance(season_name, str):
+                        register_season(season, name=season_name)
+                    else:
+                        register_season(season)
             for relative in view.inventory:
                 files._check_cancelled(cancelled)
                 if relative != entrypoint:
@@ -40,7 +47,7 @@ def available_base_contexts(snapshot, *, cancelled=None):
     """Worker-only projection of imported, active and readable B/C contexts."""
     available = []
     validated = set()
-    for key in sorted(CONTEXTS):
+    for key in sorted(set(CONTEXTS) | set(snapshot.contexts.keys())):
         files._check_cancelled(cancelled)
         season, mode = key.split(':')
         try:
@@ -72,7 +79,7 @@ def admit_import(views, resolver, *, cancelled=None):
         target = bases if kind == 'recognition-base' else controls
         for context in component['contexts']:
             key = context['season'] + ':' + context['mode']
-            if key not in CONTEXTS or key in target:
+            if not is_supported_context(key) or key in target:
                 raise ResourceCatalogError('resource-import-base-context-ambiguous')
             target[key] = view.component_ref
     if bases.keys() != controls.keys():

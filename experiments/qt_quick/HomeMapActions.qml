@@ -5,10 +5,11 @@ import QtQuick.Controls.Basic
 Flow {
     id: actions
     spacing: 8
-    readonly property bool manualActions: session.snapshot.season !== "s1"
+    readonly property bool streamingSeason: session.snapshot.usesCandidatePoolLock === true || session.snapshot.season !== "s0"
+    readonly property bool manualActions: !streamingSeason
         || session.snapshot.manualAlignmentSession === true
     readonly property var floors: !manualActions ? []
-        : session.snapshot.season === "s1" && session.snapshot.automaticFloorObservationAvailable === true
+        : streamingSeason && session.snapshot.automaticFloorObservationAvailable === true
         ? ["auto"] : session.snapshot.availableFloors || []
     function available(action) {
         var state = session.snapshot
@@ -17,8 +18,12 @@ Flow {
     }
     function floorText(floor) {
         if (floor === "auto") return "自动当前楼层"
-        if (session.snapshot.season === "s1") return "回退目标 B" + Math.abs(Number(floor))
-        return "目标楼层 " + (floor === "B1" ? "B1" : "F" + floor)
+        var text = String(floor || "")
+        var label = /^-[1-9][0-9]*$/.test(text) ? "B" + Math.abs(Number(text))
+            : /^[BF]/i.test(text) ? text.toUpperCase()
+            : /^[1-9][0-9]*$/.test(text) ? "F" + text : text
+        if (streamingSeason) return "回退目标 " + label
+        return "目标楼层 " + label
     }
     AppButton {
         objectName: "homeSelectMap"; text: "选择地图"

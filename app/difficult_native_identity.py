@@ -124,7 +124,7 @@ class NativeDifficultCandidateEngine(MapIdentityEngine):
             raise ValueError(';'.join(getattr(self, 'qt_rank_gaps', ()))
                              or 'recognition-rank-unavailable')
         structure_rank = getattr(self, 'qt_s1_structure_rank', None)
-        if getattr(self, 'qt_season', None) == 's1' and callable(structure_rank):
+        if getattr(self, 'qt_season', None) != 's0' and callable(structure_rank):
             # Caller supplies the floor. No icon/entrance or season inference.
             return structure_rank(frame, floor=str(floor), budget_seconds=budget_seconds)
         rows = super().rank(frame, floor=floor, limit=limit, budget_seconds=budget_seconds,

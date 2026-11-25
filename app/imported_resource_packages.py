@@ -36,6 +36,11 @@ COMPONENT_TYPES = frozenset({
 CONTEXTS = frozenset({
     's0:difficult', 's0:nightmare', 's1:difficult', 's1:nightmare',
 })
+
+
+def is_supported_context_key(key):
+    from season_context import is_valid_context_key
+    return is_valid_context_key(key)
 _SHA256 = re.compile(r'[a-f0-9]{64}\Z')
 _COMPONENT_FIELDS = frozenset({
     'componentId', 'type', 'schemaVersion', 'contexts', 'entrypoint', 'dependencies',
@@ -245,7 +250,7 @@ class PackageView:
                         or not isinstance(context['mode'], str)):
                     _reject('invalid-component-contexts')
                 key = f"{context['season']}:{context['mode']}"
-                if key not in CONTEXTS or key in context_keys:
+                if not is_supported_context_key(key) or key in context_keys:
                     _reject('invalid-component-contexts')
                 context_keys.append(key)
             try:

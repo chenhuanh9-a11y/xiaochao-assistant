@@ -168,7 +168,7 @@ class ClientInfoService(QObject):
         if context.error:
             return []
         profile = next((p for p in context.profiles if p.profile_id == profile_id), None)
-        if season == "s1":
+        if season != "s0":
             # The applied solver profile remains shared-structure. A native
             # display profile is presentation data, never a runtime selection.
             profile = profile or next(iter(context.profiles), None)
@@ -180,7 +180,7 @@ class ClientInfoService(QObject):
                 if cancelled():
                     from concurrent.futures import CancelledError
                     raise CancelledError()
-                floors = (tuple(next(iter(item.variants)).layers) if season == "s1" else
+                floors = (tuple(next(iter(item.variants)).layers) if season != "s0" else
                     tuple(dict.fromkeys((str(context.pack.default_entry_floor), *item.floors))))
                 chosen = next(((variant, floor, Path(variant.layers[floor]))
                     for floor in floors for variant in item.variants
@@ -200,7 +200,7 @@ class ClientInfoService(QObject):
                     structure=False, imageUrl=url.toString()))
                 if len(rows) == 3:
                     break
-        if rows or season == "s1":
+        if rows or season != "s0":
             return rows
         from map_resource_overview import structure_previews, load_structure_preview
         for asset in structure_previews(context.pack):

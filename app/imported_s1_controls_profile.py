@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import math
 from types import MappingProxyType
 
-from floor_contract import FloorContract, floor_contract
+from floor_contract import FloorContract, FloorDefinition, floor_contract, register_floor_contract
 from floor_control_region import normalized_region
 from imported_resource_packages import PackageView
 from imported_resource_reader import decode_resource_json
@@ -15,7 +15,11 @@ import star_map_import as files
 
 
 SCHEMA = 'xingtu-s1-controls-profile-v1'
+GENERIC_SCHEMA = 'xingtu-controls-profile-v1'
+SUPPORTED_SCHEMAS = frozenset((SCHEMA, GENERIC_SCHEMA))
 DETECTOR_ID = 's1-signed-column-geometry-v1'
+GENERIC_DETECTOR_ID = 'generic-signed-column-v1'
+SUPPORTED_DETECTORS = frozenset((DETECTOR_ID, GENERIC_DETECTOR_ID))
 SUPPORTED_CONTEXTS = frozenset(('s1:difficult', 's1:nightmare'))
 MAX_PROFILE_BYTES = 64 * 1024
 MAX_SHAPE_SIZES = 32
@@ -83,25 +87,32 @@ def _context(key, value):
     if not isinstance(value, dict) or set(value) != {'floors', 'visualOrder'}:
         _reject('context-fields-invalid')
     season, mode = key.split(':', 1)
-    contract = floor_contract(mode, season=season)
-    expected = {floor.observed_value: floor.floor_id for floor in contract.floors}
     floors = value['floors']
-    if not isinstance(floors, list) or len(floors) != len(expected):
+    if not isinstance(floors, list) or not 1 <= len(floors) <= 12:
         _reject('floors-invalid')
     actual = {}
+    ordered_defs = []
     for row in floors:
         if (not isinstance(row, dict) or set(row) != {'observedValue', 'floorId'}
                 or type(row['observedValue']) is not int or not isinstance(row['floorId'], str)
-                or row['observedValue'] in actual):
+                or not row['floorId'] or row['observedValue'] in actual):
             _reject('floor-invalid')
         actual[row['observedValue']] = row['floorId']
-    if actual != expected:
-        _reject('floor-contract-mismatch')
+        ordered_defs.append(FloorDefinition(row['observedValue'], row['floorId']))
+    contract = floor_contract(mode, season=season)
+    if season in ('s0', 's1'):
+        if contract is None:
+            _reject('floor-contract-mismatch')
+        expected = {floor.observed_value: floor.floor_id for floor in contract.floors}
+        if len(floors) != len(expected) or actual != expected:
+            _reject('floor-contract-mismatch')
+    else:
+        contract = register_floor_contract(season, mode, ordered_defs, control_axis='vertical')
     order = value['visualOrder']
-    # The first narrow digit is -1; the other three rows have wider glyphs.
-    # A package cannot relabel that reviewed visual grammar.
     if (not isinstance(order, list) or any(type(item) is not int for item in order)
-            or tuple(order) != contract.observed_values):
+            or len(order) != len(contract.floors)
+            or (season == 's1' and tuple(order) != contract.observed_values)
+            or set(order) != set(contract.observed_values)):
         _reject('visual-order-invalid')
     return ImportedS1ControlsContext(key, contract, tuple(order))
 
@@ -141,8 +152,9 @@ class S1ControlsProfile:
         if (component.get('type') != 'controls-profile' or component.get('schemaVersion') != 1
                 or component.get('dependencies')):
             _reject('component-unsupported')
+        from season_context import is_valid_context_key
         declared = component.get('contexts')
-        if not isinstance(declared, list) or not 1 <= len(declared) <= len(SUPPORTED_CONTEXTS):
+        if not isinstance(declared, list) or not 1 <= len(declared) <= 16:
             _reject('component-contexts-invalid')
         keys = set()
         for row in declared:
@@ -150,7 +162,7 @@ class S1ControlsProfile:
                     or not isinstance(row['season'], str) or not isinstance(row['mode'], str)):
                 _reject('component-contexts-invalid')
             key = row['season'] + ':' + row['mode']
-            if key not in SUPPORTED_CONTEXTS or key in keys:
+            if (row['season'] == 's0' or not is_valid_context_key(key) or key in keys):
                 _reject('component-context-unsupported')
             keys.add(key)
         path = component['entrypoint']
@@ -163,8 +175,11 @@ class S1ControlsProfile:
         value = decode_resource_json(raw)
         if not isinstance(value, dict) or set(value) != _FIELDS:
             _reject('profile-fields-invalid')
-        if value['schema'] != SCHEMA or value['detectorId'] != DETECTOR_ID:
+        if value['schema'] not in SUPPORTED_SCHEMAS or value['detectorId'] not in SUPPORTED_DETECTORS:
             _reject('detector-unsupported')
+        if any(k.startswith('s1:') for k in keys) and (value['schema'] != SCHEMA or value['detectorId'] != DETECTOR_ID):
+            _reject('detector-unsupported')
+        self.detector_id = value['detectorId']
         contexts = value['contexts']
         if not isinstance(contexts, dict) or set(contexts) != keys:
             _reject('contexts-component-mismatch')

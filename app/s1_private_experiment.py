@@ -109,13 +109,23 @@ class PrivateRoundPool:
 class PrivateCoordinateObserver:
     """Fresh-frame gate and common structure, immutable packaged resources."""
     def __init__(self, engine, catalog, asset_dir, *, read_resource=None):
+        from pathlib import Path
         from s1_gate_anchor import GateAnchorLocator
         from s1_common_coordinate_filter import CommonCoordinateFilter
         self.engine = engine
+        asset_dir = Path(asset_dir)
         self.locator = GateAnchorLocator(asset_dir=asset_dir, read_resource=read_resource)
+        index_path = asset_dir / "common_entrance_coordinate_index.json"
+        if read_resource is None and not index_path.exists():
+            index_path = asset_dir / "s1_entrance_coordinate_index.json"
+        elif read_resource is not None:
+            try:
+                read_resource(index_path)
+            except (OSError, ValueError):
+                index_path = asset_dir / "s1_entrance_coordinate_index.json"
         self.filter = CommonCoordinateFilter(
             lambda mid, floor: engine.qt_shared_provider("shared-structure", mid, floor),
-            asset_dir / "s1_entrance_coordinate_index.json",
+            index_path,
             mode=catalog.mode, resource_key=catalog.resource_key, read_resource=read_resource)
 
     def prepare(self, frame, pool_ids, floor, *, cancelled, stage=None):
@@ -149,7 +159,8 @@ class PrivateCoordinateObserver:
         # a located entrance gate, allow smaller entrance islands (>=2 chains)
         # that contain the gate anchor so _entrance_union_domain can prune early;
         # anchorless common-chain matching still requires >=6 chains internally.
-        gate_located = anchor.status == "located" and str(floor) == "-1"
+        entry_floors = getattr(self.filter, "entry_floors", frozenset(("-1",)))
+        gate_located = anchor.status == "located" and str(floor) in entry_floors
         gate_center = tuple(anchor.center_px) if gate_located else None
         def extract():
             components = visible_map_components(frame, observation_bounds=bounds)

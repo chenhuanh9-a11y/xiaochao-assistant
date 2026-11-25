@@ -286,8 +286,12 @@ class ClientImportedActivationTests(unittest.TestCase):
 
     def test_unknown_context_is_explicitly_unsupported(self):
         with self.assertRaises(ResourceCatalogError) as caught:
-            self.activate(season='s2', mode='difficult')
+            self.activate(season='invalid', mode='difficult')
         self.assertEqual(caught.exception.code, 'native-base-context-unsupported')
+        # A valid future season (s2) rejects mismatched s0 components cleanly.
+        with self.assertRaises(ResourceCatalogError) as mismatch:
+            self.activate(season='s2', mode='difficult')
+        self.assertEqual(mismatch.exception.code, 'resource-component-context-mismatch')
         self.assertFalse((self.root / 'catalog.json').exists())
 
     def test_idempotent_selection_rejects_catalog_change_during_validation(self):

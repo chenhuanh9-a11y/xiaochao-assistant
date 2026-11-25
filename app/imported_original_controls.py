@@ -34,10 +34,27 @@ def require_original_controls(controls, *, season, mode):
         raise OriginalControlsError('original-controls-floor-context-mismatch')
     if season == 's0':
         result = _require_s0_source_equivalent(controls)
-    else:
+    elif season == 's1':
         result = _require_s1_source_equivalent(controls, context)
+    else:
+        result = _require_generic_controls_valid(controls, context)
     controls.assert_current()
     return result
+
+
+def _require_generic_controls_valid(controls, context):
+    if not context.visual_order or set(context.visual_order) != set(context.contract.observed_values):
+        raise OriginalControlsError('original-controls-visual-order-mismatch')
+    if len(controls.fixed_search_region) != 4 or len(controls.expanded_search_region) != 4:
+        raise OriginalControlsError('original-controls-fixed-region-mismatch')
+    if controls.map_ui is None or not controls.map_ui.sizes:
+        raise OriginalControlsError('original-controls-map-ui-sizes-mismatch')
+    return dict(
+        detectorId=getattr(controls, 'detector_id', 'generic-signed-column-v1'),
+        floors=list(context.contract.floor_ids),
+        visualOrder=list(context.visual_order),
+        generic=True,
+    )
 
 
 def _require_s0_source_equivalent(controls):

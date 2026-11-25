@@ -21,7 +21,7 @@ from client_problem_messages import operation_problem
 from client_fit_reporting import RETRY_REASONS, reportable_opening_reason
 from client_input_diagnostics import InputDiagnostics, map_attempt
 from client_manual_map import MANUAL_PICKER_ACTION, normalize_selection_mode
-from season_context import SEASONS, season_label, normalize_season, context_key, selected_profile, CONTEXTS
+from season_context import SEASONS, season_label, normalize_season, context_key, selected_profile, CONTEXTS, get_context
 
 
 def _presentation_error_details(error):
@@ -514,9 +514,13 @@ class ClientCoordinator(QObject):
         self.images.finish_staging(token, committed)
         self.changed.emit()
 
+    @staticmethod
+    def _is_package_season(state):
+        return (state or {}).get("season", "s0") != "s0"
+
     def _manual_floor_observation_ready(self, state):
         """A narrow manual identity capability, never global live readiness."""
-        return bool(state.get("season") == "s1" and state.get("roundActive")
+        return bool(self._is_package_season(state) and state.get("roundActive")
                     and state.get("manualAlignmentSession") and state.get("mapId")
                     and state.get("automaticFloorObservationAvailable")
                     and not self._pending_context and not state.get("contextPending")
@@ -527,7 +531,7 @@ class ClientCoordinator(QObject):
 
     @staticmethod
     def _native_candidate_preview_ready(state):
-        return (state.get("season") == "s1"
+        return (state.get("season", "s0") != "s0"
                 and state.get("nativeCandidatePreviewAvailable") is True
                 and not state.get("manualAlignmentSession"))
 
@@ -541,7 +545,7 @@ class ClientCoordinator(QObject):
         from season_context import is_retired_mode, RETIRED_MODE_MESSAGE
         if is_retired_mode(mode, season):
             return ((season, mode, "retired-mode"), RETIRED_MODE_MESSAGE)
-        if not CONTEXTS[context_key(mode, season)].registered:
+        if not get_context(context_key(mode, season)).registered:
             return ((season, mode, "season-resources-unregistered"), f"{season_label(season)} 地图资源尚未登记，暂不能开始识别")
         if self.resources.busy or self.resources.pendingKind or state.get("resourceLocked"):
             return ((mode, "resource-operation"), "正在更新地图资源，请等待资源操作完成后再打开地图")
@@ -756,7 +760,7 @@ class ClientCoordinator(QObject):
         def pick(state):
             if self._native_candidate_preview_ready(state):
                 return "observe_candidate_floor"
-            if state.get("season") == "s1" and self._manual_floor_observation_ready(state):
+            if self._is_package_season(state) and self._manual_floor_observation_ready(state):
                 return "observe_manual_floor"
             return "refresh_map"
         state = self.session.snapshot
@@ -935,7 +939,7 @@ class ClientCoordinator(QObject):
         if self._closing or self._closed:
             return
         state = self.runtime.snapshot()
-        if state.get("season") == "s1" and not state.get("manualAlignmentSession"):
+        if self._is_package_season(state) and not state.get("manualAlignmentSession"):
             return
         if ((normalize_selection_mode(self.settings.persistedValues.get("mapSelectionMode")) == "manual"
                 or self.runtime.snapshot().get("manualAlignmentSession"))
@@ -955,8 +959,8 @@ class ClientCoordinator(QObject):
 
     @Slot(str)
     def setMapSelectionMode(self, mode):
-        # A stale S1 control must not overwrite the saved S0 preference.
-        if mode not in ("auto", "manual") or self.runtime.snapshot().get("season") == "s1":
+        # A stale package-season control must not overwrite the saved S0 preference.
+        if mode not in ("auto", "manual") or self._is_package_season(self.runtime.snapshot()):
             return
         if self.settings.setValue("mapSelectionMode", mode):
             self.settings.saveFields(["mapSelectionMode"])
@@ -974,14 +978,14 @@ class ClientCoordinator(QObject):
         # the advertised confirm_route command: that command stays tied to a
         # selected/floor-ready candidate for the existing confirm buttons.
         state = self.runtime.snapshot()
-        if state.get("season") == "s1" and not state.get("manualAlignmentSession"):
+        if self._is_package_season(state) and not state.get("manualAlignmentSession"):
             return False
         if not state.get("manualMapPickAvailable"):
             self._message = "请先开始本局并等待地图资源就绪，再选择本局地图"
             self.changed.emit()
             return False
         payload = {"mapId": str(map_id)}
-        if (state.get("season") == "s1" and state.get("manualAlignmentSession")
+        if (self._is_package_season(state) and state.get("manualAlignmentSession")
                 and state.get("automaticFloorObservationAvailable")):
             payload["inputObservationSequence"] = self._map_input_sequence
         self.session.dispatchWithPayload("confirm_route", payload)
@@ -1208,7 +1212,7 @@ class ClientCoordinator(QObject):
             # next bounded discovery tick; management keys remain available.
             self._binding_resume_pending = True
             manual_floor = self._manual_floor_observation_ready(state)
-            if (state.get("season") == "s1" and not manual_floor
+            if (self._is_package_season(state) and not manual_floor
                     and not self._native_candidate_preview_ready(state)):
                 self._binding_resume_pending = False
                 return
@@ -1514,8 +1518,8 @@ class ClientCoordinator(QObject):
                 mapId=payload.get("mapId"), floor=payload.get("floor"), profileId=payload.get("profileId"))
         for key in ("season", "mode", "identityPhase", "identityLocked", "provisional", "groupId", "durableMapId", "roundId", "cycleId", "frameId", "generation", "s1CandidateReference"):
             self._reference[key] = payload.get(key)
-        label = ("定点地图（已锁定）" if payload.get("season") == "s1" and payload.get("identityLocked") else
-                 "定点地图" if payload.get("season") == "s1" else
+        label = ("定点地图（已锁定）" if self._is_package_season(payload) and payload.get("identityLocked") else
+                 "定点地图" if self._is_package_season(payload) else
                  "暂用地图" if payload.get("provisional") else "定点地图")
         floor_label = (f"上次 {payload.get('floor')}层 · 当前楼层待核对"
             if payload.get("referenceFloorCurrent") is False else f"{payload.get('floor')}层")
@@ -2203,7 +2207,7 @@ class ClientCoordinator(QObject):
             return
         if action == MANUAL_PICKER_ACTION:
             state = self.runtime.snapshot()
-            if state.get("season") == "s1" and not state.get("manualAlignmentSession"):
+            if self._is_package_season(state) and not state.get("manualAlignmentSession"):
                 return
             if self._manual_map_picker is not None:
                 self._manual_map_picker.toggle(source="hotkey")
@@ -2317,7 +2321,7 @@ class ClientCoordinator(QObject):
                 if self.session.busy:
                     return
                 manual_floor = self._manual_floor_observation_ready(actual)
-                if (actual.get("season") == "s1" and self._map_was_open
+                if (self._is_package_season(actual) and self._map_was_open
                         and not manual_floor and not self._native_candidate_preview_ready(actual)):
                     return
                 self._waiting_foreground = False
@@ -2587,7 +2591,7 @@ class ClientCoordinator(QObject):
             except OSError:
                 self._revoke_runtime("foreground-query-failed")
             return
-        if state.get("season") == "s1" and not self._native_candidate_preview_ready(state):
+        if self._is_package_season(state) and not self._native_candidate_preview_ready(state):
             # Only an existing open cycle or its explicit bounded recovery is
             # eligible. Unknown canvas frames may preserve that cycle; this
             # timer cannot invent a new opening after close/end.

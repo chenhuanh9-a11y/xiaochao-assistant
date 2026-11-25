@@ -14,7 +14,7 @@ Item {
     property var packageActions: null
     property var packageStatusOwner: null
     readonly property bool packageOperationPending: !packageActions || packageActions.operationPending || packageActions.recoveryPending
-    readonly property bool supportsPackageImport: backend.season === "s0" || backend.season === "s1"
+    readonly property bool supportsPackageImport: /^s(?:0|[1-9][0-9]*)$/.test(backend.season)
     readonly property bool canImportPackage: supportsPackageImport && !packageOperationPending
     Component.onCompleted: { backend.setActive(contentActive); if (contentActive) { backend.clearGallerySearch(); backend.selectFirstLayer() } }
     onContentActiveChanged: { backend.setActive(contentActive); if (contentActive) { backend.clearGallerySearch(); backend.selectFirstLayer() } }

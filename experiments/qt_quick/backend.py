@@ -139,6 +139,7 @@ class Backend(QObject):
         self.refresh()
 
     season = Property(str, lambda s: s._season, notify=changed)
+    seasonOptions = Property("QVariantList", lambda s: s._season_options(), notify=changed)
     mode = Property(str, lambda s: s._mode, notify=changed)
     profiles = Property("QVariantList", lambda s: s._profiles, notify=changed)
     galleryProfileModel = Property(QObject, lambda s: s.gallery_profiles, constant=True)
@@ -164,6 +165,10 @@ class Backend(QObject):
     mapCount = Property(int, lambda s: len({row["mapId"] for row in s.model.rows if row["available"]}), notify=changed)
     previewModel = Property(QObject, lambda s: s.preview_model, constant=True)
     viewKey = Property(str, lambda s: f"{s._season}/{s._mode}/{s._profile}/{s._floor}/{s._query}", notify=changed)
+
+    def _season_options(self):
+        from season_context import season_options
+        return season_options()
 
     def _floor_options(self):
         if self.resource_resolver is not None:
@@ -257,7 +262,7 @@ class Backend(QObject):
                 from generic_author_package import is_generic_profile
                 self._set_profiles([{"id": p.profile_id, "name": p.name, "packageId": p.package_id or "",
                                    "packageKey": (getattr(context, 'package_keys', None) or {}).get(p.profile_id, ""),
-                                   "runtimeSelectable": season == "s0" or is_generic_profile(p.profile_id) or p.profile_id in {"s1-jiaye-handnotes", "s1-aichicu-routes", "s1-native-structure"},
+                                   "runtimeSelectable": season == "s0" or is_generic_profile(p.profile_id) or p.profile_id in {"s1-jiaye-handnotes", "s1-aichicu-routes", "s1-native-structure", "shared-structure"} or self.resource_resolver is not None,
                                    "runtimeProfileId": "shared-structure" if p.profile_id == "s1-native-structure" else p.profile_id,
                                    "available": p.available_layers,
                                    "availableMaps": p.available_maps, "mapCount": p.map_count,
@@ -270,8 +275,8 @@ class Backend(QObject):
                                          self._profiles[0]["id"] if self._profiles else "")
                 self._apply_rows()
                 self._message = ('\n'.join(context.warnings) if not self._profiles and context.warnings else
-                                f"S1 图库 · 已读取 {self.mapCount} 份图"
-                                 if season == "s1" else self._import_notice or f"已读取 {self.mapCount} 份图")
+                                f"{season.upper()} 图库 · 已读取 {self.mapCount} 份图"
+                                 if season != "s0" else self._import_notice or f"已读取 {self.mapCount} 份图")
                 if self.resource_resolver is not None and self._profiles:
                     notice = ('配准由作者提供，尚未复核。',) if any(p['userProvided'] for p in self._profiles) else ()
                     if context.warnings or notice:

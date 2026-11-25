@@ -117,7 +117,8 @@ def require_original_base(view, *, season, mode):
         raise NativeBaseUnavailable('original-qt-base-required')
     if (context.get('season'), context.get('mode')) != (season, mode):
         raise NativeBaseUnavailable('original-qt-base-context-mismatch')
-    if set(context) != {'schema', 'season', 'mode', 'originalManifest', 'runtimeInterfaces'}:
+    required_fields = {'schema', 'season', 'mode', 'originalManifest', 'runtimeInterfaces'}
+    if not (required_fields <= set(context) <= (required_fields | {'seasonName'})):
         raise NativeBaseUnavailable('original-qt-base-context-invalid')
     return reader, context
 
@@ -313,11 +314,14 @@ def decode_original_base(view, *, season='s0', mode='nightmare'):
     else:
         from difficult_native_identity import NativeDifficultPack
         pack = NativeDifficultPack(root, interfaces['identityPack'], expected_mode=mode,
-            expected_season=season if season == 's1' else None, read_resource=reader)
+            expected_season=season if season != 's0' else None, read_resource=reader)
         source = reader.json(interfaces['sourceManifest']) if season == 's0' else identity
         version_pack = SimpleNamespace(by_id={row['id']:row for row in source['maps']},
             floors=tuple(map(str, source['floors'])), identity_profiles=source['identityProfiles'],
             manifest_path=view.path(interfaces['sourceManifest'] if season == 's0' else interfaces['identityPack']))
+        if season not in ('s0', 's1'):
+            from season_context import register_season
+            register_season(season, name=str(context.get('seasonName') or original.get('seasonName') or ''), modes=(mode,))
     resources = SharedStructureResourceStore(view.path(interfaces['typedIndex']), root, read_resource=reader)
     if resources.error:
         raise NativeBaseUnavailable('original-qt-base-typed-index-unavailable')
@@ -356,11 +360,15 @@ def decode_original_base(view, *, season='s0', mode='nightmare'):
         actual.update((key[1],key[3]) for key in legacy.bindings)
     if actual != wanted:
         raise NativeBaseUnavailable('original-qt-base-layer-inventory-incomplete')
-    # Original controls and private coordinate data are independent resources.
+    # Original controls and optional coordinate data are independent resources.
     # Validate ownership now; the original observers still own all decisions.
     if season == 's1':
         for name in PRIVATE_FILES:
             reader(view.path('s1-private-assets/' + name))
+    elif season != 's0' and interfaces.get('coordinateAssetsDir'):
+        coord_dir = interfaces['coordinateAssetsDir']
+        for name in interfaces.get('coordinateAssetFiles', ()):
+            reader(view.path(f'{coord_dir}/{name}'))
     bundle = NativeBaseBundle(view, pack=pack, resources=resources, adapters=adapters,
         versions=MappingProxyType(versions), interfaces=MappingProxyType(interfaces), reader=reader,
         season=season, mode=mode, component_ref=view.component_ref,
@@ -383,8 +391,8 @@ class OriginalNativeContext(ImportedNativeContext):
         def reject(reason):
             raise NativeBaseUnavailable('original-qt-' + reason)
         super().__init__(view, bundle, controls, season=bundle.season,
-            modes=(bundle.mode,), controls_type=S1ControlsProfile if bundle.season == 's1'
-            else S0ControlsProfile, reject=reject)
+            modes=(bundle.mode,), controls_type=S0ControlsProfile if bundle.season == 's0'
+            else S1ControlsProfile, reject=reject)
         self._bridges = {}
         if (bundle.season,bundle.mode) == ('s0','difficult'):
             from difficult_native_context import DifficultNativeContext
@@ -407,22 +415,33 @@ class OriginalNativeContext(ImportedNativeContext):
     @property
     def floor_observation_capability(self):
         self.assert_current()
-        if self.season != 's1':
+        if self.season == 's0':
             return {}
         from s1_floor_observation import CAPABILITY, SOURCE_REPLAY_FLOORS, ORDER
+        if self.season == 's1':
+            return dict(contract=CAPABILITY, manualMapObservation=True,
+                automaticFloors=list(ORDER), contractFloors=list(ORDER),
+                sourceReplayFloors=list(SOURCE_REPLAY_FLOORS),
+                syntheticOnlyFloors=[floor for floor in ORDER if floor not in SOURCE_REPLAY_FLOORS],
+                evidence='private-test-four-floor-contract', liveValidated=False)
+        ctx = self.controls.for_context(self.season, self.mode)
+        observed = list(ctx.contract.observed_values) if ctx is not None else []
         return dict(contract=CAPABILITY, manualMapObservation=True,
-            automaticFloors=list(ORDER), contractFloors=list(ORDER),
-            sourceReplayFloors=list(SOURCE_REPLAY_FLOORS),
-            syntheticOnlyFloors=[floor for floor in ORDER if floor not in SOURCE_REPLAY_FLOORS],
-            evidence='private-test-four-floor-contract', liveValidated=False)
+            automaticFloors=observed, contractFloors=observed,
+            sourceReplayFloors=observed, syntheticOnlyFloors=[],
+            evidence='package-declared-floor-contract', liveValidated=False)
 
     @property
     def structure_candidate_capability(self):
         self.assert_current()
-        if self.season != 's1':
+        if self.season == 's0':
             return {}
         from s1_native_resources import S1_RECORDED_CANDIDATE_CAPABILITY
-        return dict(S1_RECORDED_CANDIDATE_CAPABILITY)
+        if self.season == 's1':
+            return dict(S1_RECORDED_CANDIDATE_CAPABILITY)
+        ctx = self.controls.for_context(self.season, self.mode)
+        observed = tuple(ctx.contract.observed_values) if ctx is not None else ()
+        return dict(S1_RECORDED_CANDIDATE_CAPABILITY, observedFloors=observed)
 
     def local(self, relative):
         self.assert_current()
