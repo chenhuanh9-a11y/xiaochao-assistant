@@ -8,13 +8,16 @@ from PySide6.QtGui import QGuiApplication
 
 from backend import ResourceRows
 from client_paths import runtime_paths
+from client_route_preview import PlazaThumbnailImages, load_preview, preview_frame
 from account_service import AccountError, AccountService, BLOCKED_CODES
 import route_plaza
 import route_submission
+from route_scopes import SCOPES
 
 
 class PlazaRows(ResourceRows):
-    fields = ("key", "title", "description", "author", "mapCount", "downloadCount", "updatedDate", "installed", "updateAvailable")
+    fields = ("key", "title", "description", "author", "scopeLabel", "mapCount", "downloadCount", "updatedDate",
+              "installed", "updateAvailable", "thumbnailUrl", "coverUrl")
 
 
 class SubmissionRows(ResourceRows):
@@ -50,12 +53,31 @@ class _Work(QRunnable):
 
 class RoutePlazaService(QObject):
     changed = Signal()
+    previewChanged = Signal()
+    downloadBlocked = Signal(str)
+    openCustomRequested = Signal()
 
-    def __init__(self, sandbox, galleries, *, account=None, listing=route_plaza.list_routes):
+    def __init__(self, sandbox, galleries, *, account=None, listing=route_plaza.list_routes, structure_available=None):
         super().__init__()
         self.account = account or AccountService(runtime_paths(sandbox).settings_path.parent)
         self.galleries = galleries
+        self.thumbnails = PlazaThumbnailImages(galleries)
+        self._thumbnail_generation = None
         self.listing = listing
+        self.structure_available = structure_available
+        self._scope_id = getattr(galleries, "scopeId", "legacy-nightmare")
+        self._sort = "latest"
+        self._public_season = self._public_mode = ""
+        self._preparing_scope = False
+        self._preview = {}
+        self._preview_document = self._preview_context = None
+        self._preview_epoch = 0
+        self._preview_cancel = threading.Event()
+        self._detail_version = ""
+        self._detail = {}
+        self._detail_request = None
+        if hasattr(galleries, "scopeChanged"):
+            galleries.scopeChanged.connect(self._scope_changed)
         self.model = PlazaRows()
         self.submissions = SubmissionRows()
         self.pool = QThreadPool(self)
@@ -85,10 +107,14 @@ class RoutePlazaService(QObject):
         self._pending_action = None
         self._progress = dict(stage="", sent=0, total=0)
         galleries.galleriesChanged.connect(self._refresh_rows)
+        galleries.changed.connect(self._gallery_changed)
 
     def _snapshot(self):
         warning = self.account.persistence_warning
-        return dict(busy=self._busy, operation=self._operation,
+        return dict(scopeId=self._scope_id, sort=self._sort, galleryBusy=self.galleries.busy,
+                    publicSeason=self._public_season, publicMode=self._public_mode,
+                    scopeOptions=[dict(id=x.id, name=x.label) for x in SCOPES.values()],
+                    busy=self._busy or self._preparing_scope, operation=self._operation,
                     message="\n".join(filter(None, (self._message, warning))), error=self._error,
                     username=self.account.username or "", persistent=self.account.persistent,
                     loaded=self._loaded, count=len(self._routes), downloading=self._download,
@@ -99,12 +125,258 @@ class RoutePlazaService(QObject):
                     mineLoaded=self._mine_loaded, editorOpen=self._editor_open,
                     editorGeneration=self._editor_generation, editorVersion=self._editor_version,
                     editorTitle=self._editor_title, editorDescription=self._editor_description,
+                    detailOpen=bool(self._detail_version), detail=dict(self._detail),
                     submissionLocked=self._submission is not None, progress=dict(self._progress),
                     submissionChoices=self.galleries.submissionChoices() if self._editor_open else [])
 
     snapshot = Property("QVariantMap", _snapshot, notify=changed)
+    previewState = Property("QVariantMap", lambda s: dict(s._preview), notify=previewChanged)
     routeModel = Property(QObject, lambda s: s.model, constant=True)
     submissionModel = Property(QObject, lambda s: s.submissions, constant=True)
+    @Slot(str)
+    def selectScope(self, scope_id):
+        if self._busy or self._editor_open or self._account_open or self._closed or self._closing:
+            return
+        if scope_id in SCOPES and hasattr(self.galleries, "selectScope"):
+            self.galleries.selectScope(scope_id)
+
+    @Slot(str)
+    def setSort(self, sort):
+        if sort in ("latest", "likes", "comments") and sort != self._sort and not self._busy:
+            self._sort = sort
+            self.search(self._query)
+
+    @Slot(str, str)
+    def setPublicFilter(self, season, mode):
+        if (self._closed or self._closing or self._busy or self._preparing_scope
+                or season not in {"", *(scope.season for scope in SCOPES.values())}
+                or mode not in ("", "hard", "nightmare")
+                or (season, mode) == (self._public_season, self._public_mode)):
+            return
+        self._public_season, self._public_mode = season, mode
+        self._refresh_rows()
+        self._note(self._list_message())
+
+    def _public_routes(self):
+        return (route for route in self._routes.values()
+                if (not self._public_season or route.scope.season == self._public_season)
+                and (not self._public_mode or route.mode == self._public_mode))
+
+    def _list_message(self):
+        count = len({route.version_id for route in self._public_routes()})
+        if count:
+            return f"找到 {count} 套路线。"
+        if self._query or self._public_season or self._public_mode:
+            return "没有符合条件的路线。"
+        return "广场里还没有路线。"
+
+    @Slot(str)
+    def openPreview(self, key):
+        route = self._routes.get(key)
+        if route is None or not self._active or self._busy or self._preparing_scope or self._closed or self._closing:
+            return
+        self.closePreview()
+        source = self.galleries.plazaSources().get((route.scope.id, route.work_id), {})
+        self._preview = dict(key=key, title=route.title, author=route.author, description=route.description,
+                             scope=route.scope.label, mapCount=route.map_count,
+                             local=source.get("versionId") == route.version_id, message="", error=False)
+        self.previewChanged.emit()
+
+    @Slot()
+    def closePreview(self):
+        if self._preview:
+            self._preview_cancel.set()
+            self._preview_epoch += 1
+            self._preview = {}
+            self._preview_document = self._preview_context = None
+            self.previewChanged.emit()
+
+    def _gallery_changed(self):
+        if self._preview_context is not None and not self.galleries.plazaPreviewCurrent(self._preview_context):
+            self._clear_preview_image("编辑资源已更新，请重新加载地图。")
+            self.previewChanged.emit()
+        if self._thumb_context() != self._thumbnail_generation:
+            self._refresh_rows()
+        self.changed.emit()
+
+    def _thumb_context(self):
+        read = getattr(self.galleries, "plazaPreviewGeneration", None)
+        return read() if read is not None and self._active and self._tab == "square" else None
+
+    def _clear_preview_image(self, message):
+        self._preview_document = self._preview_context = None
+        for key in ("image", "map", "floor", "maps", "floors", "notice"):
+            self._preview.pop(key, None)
+        self._preview.update(message=message, error=True)
+
+    @Slot(bool)
+    def loadPreview(self, point_numbers):
+        route = self._routes.get(self._preview.get("key"))
+        if route is None or self._busy:
+            return
+        root, context, local = self.galleries.plazaPreviewInput(route.scope.id, route.work_id, route.version_id)
+        if not self.galleries.plazaPreviewCurrent(context):
+            self._clear_preview_image("编辑资源正在更新，请稍后加载地图。")
+            self.previewChanged.emit()
+            return
+        if local is None and not self.account.username:
+            self.openAccount()
+            return
+        self._preview_cancel = cancel = threading.Event()
+
+        def work():
+            document = load_preview(self.account, route, root, local, cancel.is_set)
+            return document, None if cancel.is_set() else preview_frame(document, "", "", point_numbers)
+
+        self._start_preview(context, work)
+
+    @Slot(str, str, bool)
+    def selectPreview(self, map_id, floor, point_numbers):
+        document, context = self._preview_document, self._preview_context
+        if document is None or self._busy or not any(row["id"] == map_id for row in document[2]):
+            return
+        if (map_id, floor, point_numbers) != tuple(self._preview.get(key) for key in ("map", "floor", "numbers")):
+            self._start_preview(context, lambda: (document, preview_frame(document, map_id, floor, point_numbers)))
+
+    def _start_preview(self, context, function):
+        if self._closed or self._closing or self._preparing_scope:
+            return
+        self._preview_request = (self._preview_epoch, context, self.account.identity_context)
+        self._preview.update(message="", error=False)
+        self.previewChanged.emit()
+        self._run("preview", function)
+
+    def _complete_preview(self, result, error):
+        epoch, context, owner = self._preview_request
+        if self._active and self._preview and epoch == self._preview_epoch:
+            if not self.galleries.plazaPreviewCurrent(context):
+                self._clear_preview_image("编辑资源已更新，请重新加载地图。")
+            elif error:
+                self._preview.update(message=str(error), error=True)
+            elif owner == self.account.identity_context and result[1] is not None:
+                self._preview_document, frame = result
+                self._preview_context = context
+                self._preview.update(frame)
+            self.previewChanged.emit()
+        self.changed.emit()
+
+    def _scope_changed(self):
+        self._scope_id = self.galleries.scopeId
+        if self._editor_open:
+            self.closeSubmission()
+        self._refresh_rows()
+        self.changed.emit()
+
+    @Slot(str)
+    def openDetails(self, key):
+        if self._closed or self._closing or self._busy or key not in self._routes:
+            return
+        route = self._routes[key]
+        self._detail_version = key
+        self._detail = dict(title=route.title, description=route.description, author=route.author,
+                            versionId=route.version_id, comments=[], likeCount=route.like_count,
+                            commentCount=route.comment_count, liked=False, myCommentId="", nextOffset=None)
+        self._engage("GET", "/comments", public=True)
+
+    @Slot()
+    def closeDetails(self):
+        self._detail_version = ""
+        self._detail = {}
+        self.changed.emit()
+
+    def _engage(self, method, suffix, body=None, *, public=False, append=False, report=False):
+        if self._closed or self._closing or self._busy or self._detail_version not in self._routes:
+            return
+        if not public and not self.account.username:
+            self.openAccount()
+            return
+        from account_service import quoted
+        route = self._routes[self._detail_version]
+        owner = self.account.identity_context
+        self._detail_request = (route.key, route.work_id, owner, append, report)
+        path = "/v1/community/map-galleries/" + quoted(route.version_id) + suffix
+        def request():
+            if self.account.username:
+                return self.account.authorized(method, path, body)
+            return route_plaza.call(method, path, body)
+        self._run("engagement", request)
+
+    @Slot(bool)
+    def likeRoute(self, liked):
+        self._engage("PUT", "/like", dict(liked=bool(liked)))
+
+    @Slot(str)
+    def saveComment(self, text):
+        text = str(text).strip()
+        if not 2 <= len(text) <= 800:
+            self._note("评论需要 2–800 个字", True)
+            return
+        self._engage("PUT", "/comment", dict(body=text))
+
+    @Slot()
+    def deleteComment(self):
+        self._engage("DELETE", "/comment")
+
+    @Slot()
+    def moreComments(self):
+        offset = self._detail.get("nextOffset")
+        if type(offset) is int and 0 <= offset <= 100000:
+            self._engage("GET", "/comments?offset=" + str(offset), public=True, append=True)
+
+    @Slot(str, bool)
+    def likeComment(self, comment_id, liked):
+        if not any(c["id"] == comment_id for c in self._detail.get("comments", [])):
+            return
+        from account_service import quoted
+        self._engage("PUT", "/comments/" + quoted(comment_id) + "/like", dict(liked=bool(liked)))
+
+    @Slot(str, str, str)
+    def reportContent(self, comment_id, reason, details):
+        reason, details = str(reason).strip(), str(details).strip()
+        if not 1 <= len(reason) <= 32 or len(details) > 1000:
+            self._note("请填写举报原因（最多 32 字）和补充说明（最多 1000 字）", True)
+            return
+        from account_service import quoted
+        if comment_id and not any(c["id"] == comment_id for c in self._detail.get("comments", [])):
+            return
+        suffix = ("/comments/" + quoted(comment_id) if comment_id else "") + "/reports"
+        self._engage("POST", suffix, dict(reason=reason, details=details or None), report=True)
+
+    def _complete_engagement(self, result, error):
+        version, work, owner, append, report = self._detail_request
+        if version != self._detail_version:
+            return
+        if owner != self.account.identity_context:
+            self.closeDetails()
+            if error:
+                self._note(str(error), True)
+            return
+        if error:
+            self._note(str(error), True)
+            return
+        if report:
+            self._note("举报已提交")
+            return
+        if not isinstance(result, dict) or result.get("work_id") != work or not isinstance(result.get("comments"), list):
+            self._note("作品讨论返回的内容无法识别", True)
+            return
+        rows = []
+        for row in result["comments"][:50]:
+            if not isinstance(row, dict) or not isinstance(row.get("id"), str):
+                continue
+            rows.append(dict(id=row["id"], author=str(row.get("author_username") or "匿名")[:40],
+                             body=str(row.get("body") or "")[:800],
+                             liked=row.get("liked_by_me") is True, likeCount=route_plaza._count(row.get("like_count")),
+                             mine=row["id"] == result.get("my_comment_id")))
+        previous = self._detail.get("comments", []) if append else []
+        rows = list({r["id"]: r for r in previous + rows}.values())[-200:]
+        following = result.get("next_offset")
+        self._detail.update(comments=rows, likeCount=route_plaza._count(result.get("like_count")),
+            commentCount=route_plaza._count(result.get("comment_count")), liked=result.get("liked_by_me") is True,
+            myCommentId=str(result.get("my_comment_id") or ""),
+            nextOffset=following if type(following) is int and 0 <= following <= 100000 else None)
+        self.changed.emit()
+
     def _visible_recovery_code(self):
         # Only expose an unacknowledged code belonging to the current account.
         code = self.account.pending_recovery_code
@@ -126,23 +398,38 @@ class RoutePlazaService(QObject):
             if not self._loaded and not self._busy:
                 self.search(self._query)
         else:
+            self.thumbnails.publish({})
+            self._thumbnail_generation = None
             self.closeAccount()
             self.closeSubmission()
+            self.closeDetails()
+            self.closePreview()
 
     def _refresh_rows(self):
         if not self._active or self._closed or self._closing:
             return
         self._sync_mine_rows()
         installed = self.galleries.plazaSources()
-        self.model.reconcile([dict(key=r.version_id, title=r.title, description=r.description, author=r.author,
-            mapCount=r.map_count, downloadCount=r.download_count, updatedDate=r.updated_date,
-            installed=installed.get(r.work_id, {}).get("versionId") == r.version_id,
-            updateAvailable=r.work_id in installed and installed[r.work_id]["versionId"] != r.version_id
-                and r.revision > installed[r.work_id].get("revision", 0))
-            for r in self._routes.values()])
+        self._thumbnail_generation = context = self._thumb_context()
+        requests = {(route.key, "local"): (route.scope.id, route.work_id, route.version_id, context, "")
+                    for route in self._routes.values() if context is not None
+                    and installed.get((route.scope.id, route.work_id), {}).get("versionId") == route.version_id}
+        if self._tab == "square":
+            requests.update({(route.key, "cover"): (route.scope.id, route.work_id, route.version_id, None, route.cover_url)
+                             for route in self._routes.values() if route.cover_url})
+        thumbnails = self.thumbnails.publish(requests)
+        rows = []
+        for route in self._public_routes():
+            local = installed.get((route.scope.id, route.work_id), {})
+            rows.append(dict(key=route.key, title=route.title, description=route.description, author=route.author,
+                scopeLabel=route.scope.label, mapCount=route.map_count, downloadCount=route.download_count,
+                updatedDate=route.updated_date, installed=local.get("versionId") == route.version_id,
+                updateAvailable=bool(local) and route.revision > local.get("revision", 0),
+                thumbnailUrl=thumbnails.get((route.key, "local"), ""), coverUrl=thumbnails.get((route.key, "cover"), "")))
+        self.model.reconcile(rows)
 
     def _run(self, operation, function):
-        if self._closed or self._closing or self._busy:
+        if self._closed or self._closing or self._busy or self._preparing_scope:
             return False
         self._busy, self._operation = True, operation
         self._generation += 1
@@ -160,7 +447,12 @@ class RoutePlazaService(QObject):
             return
         self._query = str(query).strip()[:80]
         value = self._query
-        if self._run("list", lambda: self.listing(value)):
+        sort = self._sort
+        def listing():
+            if self.listing is route_plaza.list_routes:
+                return self.listing(value, scope_id=None, sort=sort)
+            return self.listing(value)
+        if self._run("list", listing):
             self._note("正在加载路线广场…")
 
     @Slot(object, object)
@@ -174,6 +466,8 @@ class RoutePlazaService(QObject):
             route, context, cancel = self._download_request
             if cancel.is_set() or not self.galleries.plazaContextCurrent(context):
                 error = AccountError("已取消下载，未导入路线")
+            elif not self._check_structure(route):
+                error = AccountError("对应模式的结构包已不可用，未导入路线")
             if error:
                 self._download_complete(route, generation, None, error)
             elif not self.galleries.installPlaza(result, context, cancel.is_set,
@@ -184,6 +478,13 @@ class RoutePlazaService(QObject):
         operation, self._operation = self._operation, ""
         if self._closed or self._closing or generation != self._generation:
             return
+        if operation == "preview":
+            self._complete_preview(result, error)
+            return
+        if operation == "engagement":
+            self._complete_engagement(result, error)
+            self.changed.emit()
+            return
         if operation in ("mine", "submit", "withdraw", "review"):
             self._complete_submission(operation, result, error)
             return
@@ -192,10 +493,9 @@ class RoutePlazaService(QObject):
             if error:
                 self._note("路线广场加载失败：" + str(error), True)
             else:
-                self._routes = {r.version_id: r for r in result}
+                self._routes = {r.key: r for r in result}
                 self._refresh_rows()
-                self._note(f"找到 {len(self._routes)} 套路线。" if result else
-                           "没有找到匹配的路线。" if self._query else "广场里还没有路线。")
+                self._note(self._list_message())
         elif operation == "logout":
             self._clear_private()
             self._note("已退出登录。")
@@ -279,8 +579,8 @@ class RoutePlazaService(QObject):
         self._note("已登录，可以下载或投稿路线。")
         if self._mine_owner is not None and self._mine_owner != self.account.identity_context:
             self._clear_private()
-        if pending is not None and self._active and self._routes.get(pending.version_id) is pending:
-            self.downloadRoute(pending.version_id)
+        if pending is not None and self._active and self._routes.get(pending.key) is pending:
+            self.downloadRoute(pending.key)
         elif action and self._active:
             if action[0] == "editor" and action[1] == self._editor_generation and self._editor_open:
                 # Continue at the form; uploading still requires the user's Submit.
@@ -308,13 +608,16 @@ class RoutePlazaService(QObject):
         self._run("logout", self.account.logout)
 
     def _clear_private(self):
+        self.closeDetails()
         self._mine, self._mine_owner, self._mine_loaded = {}, None, False
         self._submission = self._submission_context = self._submission_owner = None
         if self._active:
             self.submissions.reconcile([])
 
     def _sync_mine_rows(self):
-        rows = self._mine.values() if self._mine_owner == self.account.identity_context else []
+        scope = SCOPES[self._scope_id]
+        rows = [r for r in self._mine.values() if r.get("scenario", "lady-of-misfortune") == scope.scenario
+                and (not r.get("packages") or any(p.get("mode") == scope.mode for p in r["packages"]))] if self._mine_owner == self.account.identity_context else []
         self.submissions.reconcile([dict(key=r["id"], title=r["title"], description=r.get("description", ""),
             revision=r["revision"], status=r["status"], statusLabel=route_submission.STATUSES[r["status"]],
             reason=r.get("rejection_reason") or "", updatedDate=str(r.get("updated_at", ""))[:10],
@@ -327,6 +630,8 @@ class RoutePlazaService(QObject):
             return
         self._tab = tab
         self._pending_action = None
+        self.closePreview()
+        self._refresh_rows()
         self.changed.emit()
         if tab == "mine" and not self._busy:
             self.loadMine()
@@ -389,7 +694,7 @@ class RoutePlazaService(QObject):
                 self._submission_owner = self.account.identity_context
                 self._editor_title, self._editor_description = title, description
                 self._submission = route_submission.Submission(gallery_id, None, title, description,
-                                                              version=self._editor_version or None)
+                                                              version=self._editor_version or None, scope_id=self._scope_id)
             elif (self._submission_owner != self.account.identity_context
                   or not self.galleries.submissionContextCurrent(self._submission_context)):
                 raise ValueError("账号、图库或资源已变化，请关闭投稿窗口后重新选择；已有草稿请到「我的投稿」确认")
@@ -486,15 +791,58 @@ class RoutePlazaService(QObject):
         self._note("我的投稿已刷新。" if operation == "mine" else "已撤回投稿。" if operation == "withdraw" else "已提交人工审核，可在「我的投稿」查看状态。")
 
     @Slot(str)
-    def downloadRoute(self, version_id):
-        if self._closed or self._closing or self._busy:
+    def downloadRoute(self, key):
+        if self._closed or self._closing or self._busy or self._preparing_scope:
             return
-        route = self._routes.get(version_id)
-        if route is None:
+        route = self._routes.get(key)
+        if route is None or not self._check_structure(route):
             return
         if not self.account.username:
             self.openAccount()
             self._pending_download = route
+            return
+        self._in_route_scope(route, self._download_in_scope)
+
+    def _check_structure(self, route):
+        scope = route.scope
+        if self.structure_available is None or self.structure_available(scope.season, scope.runtime_mode):
+            return True
+        message = f"请先在「地图资源」导入「{scope.label}」结构包，再下载这套路线。"
+        if self._active:
+            self.downloadBlocked.emit(message)
+        return False
+
+    @Slot(str)
+    def openInstalledRoute(self, key):
+        route = self._routes.get(key)
+        if route is not None and not (self._closed or self._closing or self._busy or self._preparing_scope):
+            self._in_route_scope(route, lambda _route: self.openCustomRequested.emit())
+
+    def _in_route_scope(self, route, action):
+        if route.scope.id == self._scope_id:
+            action(route)
+            return
+        owner = self.account.identity_context
+        dialog = self._dialog_generation
+
+        def ready(error):
+            self._preparing_scope = False
+            self.changed.emit()
+            if (self._closed or self._closing or not self._active or self._routes.get(route.key) is not route
+                    or owner != self.account.identity_context or dialog != self._dialog_generation):
+                return
+            if error:
+                self._note(f"无法打开 {route.scope.label} 图库：{error}", True)
+            else:
+                action(route)
+
+        self._preparing_scope = True
+        if not self.galleries.selectScope(route.scope.id, on_done=ready):
+            self._preparing_scope = False
+            self._note("自定义图库正忙，请完成当前操作后重试。", True)
+
+    def _download_in_scope(self, route):
+        if not self._check_structure(route):
             return
         context = self.galleries.plazaInstallContext()
         if context is None:
@@ -502,7 +850,7 @@ class RoutePlazaService(QObject):
             return
         self._cancel = cancel = threading.Event()
         self._download_request = (route, context, cancel)
-        self._download = version_id
+        self._download = route.key
         library, _generation = context
         self._run("download", lambda: route_plaza.prepare_install(self.account, library, route,
                                                                  cancelled=cancel.is_set))
@@ -550,10 +898,12 @@ class RoutePlazaService(QObject):
     def cancel(self):
         """Application close: drain accepted work without allowing another request."""
         self._closing = True
+        self.thumbnails.publish({})
         self.account.shutdown()
         self._cancel.set()
         self._generation += 1
         self.closeAccount()
+        self.closePreview()
 
     def shutdown(self):
         self.cancel()

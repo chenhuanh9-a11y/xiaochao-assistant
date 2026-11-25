@@ -521,6 +521,7 @@ class PlazaTests(unittest.TestCase):
 
     def test_qml_mouse_keyboard_login_search_and_navigation(self):
         engine = QQmlApplicationEngine()
+        engine.addImageProvider("plazaroute", self.service.thumbnails)
         router = Router()
         engine.rootContext().setContextProperty("routePlazaService", self.service)
         engine.rootContext().setContextProperty("clientCoordinator", router)
@@ -547,6 +548,33 @@ ClientAccount {}
                 QCoreApplication.sendEvent(window, QKeyEvent(QEvent.KeyRelease, ord(char.upper()), Qt.NoModifier, char))
         try:
             until(lambda: self.service.snapshot["loaded"] and not self.service.snapshot["busy"])
+            scope = item(window, "plazaRouteScope")
+            sort = item(window, "plazaSort")
+            self.assertFalse(scope.property("visible"))
+            self.assertTrue(sort.property("visible"))
+            self.assertTrue(item(window, "plazaSeasonFilter").property("visible"))
+            self.assertTrue(item(window, "plazaModeFilter").property("visible"))
+            until(lambda: item(window, "plazaPreview_ver-2") is not None)
+            inline = item(window, "plazaInlinePreview_ver-2")
+            self.assertFalse(inline.property("visible"))
+            self.assertTrue(inline.property("source").isEmpty())
+            click("plazaPreview_ver-2")
+            preview = item(window, "plazaPreviewDialog")
+            until(lambda: preview.property("opened"))
+            self.assertEqual(preview.property("title"), "噩梦速通")
+            self.assertTrue(item(window, "plazaLoadPreview").property("visible"))
+            QTest.keyClick(window, Qt.Key_Escape)
+            until(lambda: not preview.property("visible"))
+            self.service.structure_available = lambda *_: False
+            until(lambda: item(window, "plazaDownload_ver-2") is not None)
+            click("plazaDownload_ver-2")
+            dialog = item(window, "plazaStructureRequired")
+            until(lambda: dialog.property("opened"))
+            self.assertIn("灾厄之女 · 噩梦」结构包", dialog.property("message"))
+            self.assertFalse(self.service.snapshot["accountOpen"])
+            QTest.keyClick(window, Qt.Key_Escape)
+            until(lambda: not dialog.property("visible"))
+            self.service.structure_available = lambda season, mode: (season, mode) == ("s0", "nightmare")
             click("plazaLogin")
             until(lambda: item(window, "accountDialog").property("opened"))
             self.service.setAccountMode("注册")
@@ -571,6 +599,13 @@ ClientAccount {}
             self.assertEqual(item(window, "accountPassword").property("text"), "")
             until(lambda: not item(window, "accountDialog").property("visible"))
             QTest.qWait(200)
+            route_list = item(window, "plazaRouteList")
+            click("plazaMine")
+            until(lambda: scope.property("visible") and not self.service.snapshot["busy"])
+            self.assertFalse(sort.property("visible"))
+            click("plazaSquare")
+            self.assertFalse(scope.property("visible"))
+            self.assertIs(item(window, "plazaRouteList"), route_list)
             click("plazaSearch")
             type_text("sample")
             QTest.keyClick(window, Qt.Key_Return)
@@ -579,6 +614,10 @@ ClientAccount {}
             click("plazaDownload_ver-2")
             until(lambda: not self.service.snapshot["busy"] and not self.galleries.busy)
             self.assertTrue(self.service.model.rows[0]["installed"], self.service.snapshot)
+            requests = len(self.server.calls)
+            until(lambda: inline.property("visible"))
+            self.assertGreater(inline.property("paintedWidth"), 0)
+            self.assertEqual(len(self.server.calls), requests)
             click("plazaDownload_ver-2")
             self.assertEqual(router.pages[-1], "custom")
             self.assertEqual(warnings, [])
@@ -587,6 +626,230 @@ ClientAccount {}
             engine.deleteLater()
             QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
             APP.processEvents()
+
+    def test_guest_card_loads_batch_rendered_cover_without_route_download(self):
+        import hashlib
+        from PIL import Image
+        from render_plaza_covers import build_covers
+
+        work = dict(id="ver-2", work_id="work-1", status="approved", content_kind="nightmare-routes",
+                    modes=["nightmare"])
+        snapshot = dict(works=[work, dict(work, id="missing", work_id="work-missing")], packages=[dict(
+            version_id="ver-2", work_id="work-1", content_kind="nightmare-routes", archive="route.zip",
+            package=dict(mode="nightmare", package_id="pkg-1", revision=2,
+                         object_bytes=len(self.server.archive), manifest_bytes=self.server.manifest_bytes,
+                         sha256=hashlib.sha256(self.server.archive).hexdigest()))])
+        (self.root / "route.zip").write_bytes(self.server.archive)
+        folder = self.root / "covers"
+        result = build_covers(snapshot, self.root, folder, self.root / "maps", None)
+        self.assertEqual([(row["version_id"], row["floor"]) for row in result["rendered"]], [("ver-2", "1")])
+        self.assertEqual([row["version_id"] for row in result["missing"]], ["missing"])
+        self.server.cover_urls = result["cover_urls"]["ver-2"]
+        path = self.server.cover_urls["nightmare"]
+        self.server.cover_objects[path] = (folder / path.lstrip("/")).read_bytes()
+        with Image.open(folder / path.lstrip("/")) as cover:
+            self.assertTrue(any(r > 205 and g < 155 and 80 < b < 165 for r, g, b in cover.convert("RGB").getdata()))
+
+        engine = QQmlApplicationEngine()
+        engine.addImageProvider("plazaroute", self.service.thumbnails)
+        router = Router()
+        for key, value in (("routePlazaService", self.service), ("settingsService", self.settings),
+                           ("clientCoordinator", router)):
+            engine.rootContext().setContextProperty(key, value)
+        engine.loadData(b'''import QtQuick
+import QtQuick.Controls.Basic
+ApplicationWindow { visible: true; width: 1000; height: 720
+ClientRoutePlaza { anchors.fill: parent; anchors.margins: 24 }
+}''', QUrl.fromLocalFile(str(HERE / "plaza-cover-harness.qml")))
+        self.assertTrue(engine.rootObjects())
+        window = engine.rootObjects()[0]
+        try:
+            def public_cover_visible():
+                cover = item(window, "plazaPublicCover_ver-2")
+                return cover is not None and cover.property("visible")
+            until(public_cover_visible)
+            self.assertEqual(self.service.snapshot["username"], "")
+            self.assertFalse(self.galleries.path.exists())
+            self.assertIn(("GET", path, None), self.server.calls)
+            self.assertTrue(all(method == "GET" and auth is None and "/download" not in url
+                                for method, url, auth in self.server.calls), self.server.calls)
+            self.server.cover_urls = {"nightmare": "https://other.invalid" + path}
+            self.service.search("")
+            until(lambda: not self.service.snapshot["busy"] and not public_cover_visible())
+            self.assertEqual(self.service.model.rows[0]["coverUrl"], "")
+        finally:
+            window.close()
+            engine.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+            APP.processEvents()
+
+    def test_public_filters_preserve_scope_and_use_loaded_rows(self):
+        from dataclasses import replace
+
+        rows = route_plaza.list_routes()
+        route = rows[0]
+        self.service.listing = lambda _query: [route,
+            replace(route, scenario="phosphorescence", mode="hard", version_id="s1"),
+            replace(route, mode="hard")]
+        self.service.setActive(True)
+        until(lambda: not self.service.snapshot["busy"])
+        model = self.service.model
+        requests = len(self.server.calls)
+        self.assertEqual(len(model.rows), 3)
+        self.assertTrue(all(not row["thumbnailUrl"] for row in model.rows))
+        self.assertIn("2 套", self.service.snapshot["message"])
+        self.service.setPublicFilter("", "hard")
+        self.assertEqual([row["key"] for row in model.rows], ["s1:season-s1-hard", "ver-2:classic-hard"])
+        self.service.setPublicFilter("s1", "nightmare")
+        self.assertEqual(model.rows, [])
+        self.assertIn("没有符合条件", self.service.snapshot["message"])
+        self.service.setPublicFilter("s1", "hard")
+        self.assertEqual([row["scopeLabel"] for row in model.rows], ["磷光症 · 困难"])
+        self.service.setPublicFilter("", "")
+        self.assertEqual(len(model.rows), 3)
+        self.assertEqual(len(self.server.calls), requests)
+        self.assertEqual(self.galleries.scopeId, "legacy-nightmare")
+
+    def test_preview_renders_route_without_import_and_revokes_stale_results(self):
+        import base64
+        import io
+        from PIL import Image
+
+        self.load()
+        self.service.openPreview("ver-2")
+        self.assertEqual(self.service.previewState["mapCount"], 2)
+        self.assertNotIn("image", self.service.previewState)
+        self.sign_in()
+        self.service.loadPreview(False)
+        until(lambda: not self.service.snapshot["busy"])
+        state = self.service.previewState
+        self.assertFalse(state["error"], state.get("message"))
+        self.assertEqual(state["map"], "m")
+        self.assertEqual(state["floor"], "1")
+        with Image.open(io.BytesIO(base64.b64decode(state["image"].split(",", 1)[1]))) as image:
+            self.assertEqual(image.size, (120, 90))
+            self.assertIn((255, 107, 129, 255), list(image.getdata()))
+        self.service.selectPreview("m", "2", True)
+        until(lambda: not self.service.snapshot["busy"])
+        self.assertEqual(self.service.previewState["floor"], "2")
+        self.assertFalse(self.galleries.path.exists())
+        self.galleries.refresh()
+        self.assertNotIn("image", self.service.previewState)
+        until(lambda: not self.galleries.busy)
+
+        entered, release = threading.Event(), threading.Event()
+        original = route_plaza.fetch_archive
+
+        def hold(*args):
+            entered.set()
+            release.wait(5)
+            return original(*args)
+
+        with patch.object(route_plaza, "fetch_archive", side_effect=hold):
+            self.service.loadPreview(False)
+            try:
+                self.assertTrue(entered.wait(2))
+                self.service.closePreview()
+            finally:
+                release.set()
+            until(lambda: not self.service.snapshot["busy"])
+        self.assertEqual(self.service.previewState, {})
+        self.assertFalse(self.galleries.path.exists())
+
+        self.download()
+        self.service.logout()
+        until(lambda: not self.service.snapshot["busy"])
+        self.service.openPreview("ver-2")
+        self.assertTrue(self.service.previewState["local"])
+        requests = len(self.server.calls)
+        self.service.loadPreview(True)
+        until(lambda: not self.service.snapshot["busy"])
+        self.assertIn("image", self.service.previewState)
+        self.assertEqual(len(self.server.calls), requests)
+
+        thumbnail = self.service.model.rows[0]["thumbnailUrl"].rsplit("/", 1)[-1]
+        self.assertGreater(self.service.thumbnails.requestImage(thumbnail, None, None).width(), 1)
+        self.galleries.refresh()
+        self.assertEqual(self.service.model.rows[0]["thumbnailUrl"], "")
+        self.assertEqual(self.service.thumbnails.requestImage(thumbnail, None, None).width(), 1)
+        until(lambda: not self.galleries.busy)
+        self.assertNotEqual(self.service.model.rows[0]["thumbnailUrl"].rsplit("/", 1)[-1], thumbnail)
+        self.assertEqual(len(self.server.calls), requests)
+
+    def test_hard_download_uses_matching_structure_and_gallery_scope(self):
+        from hashlib import sha256
+        from uuid import UUID
+        from scoped_route_library import ScopedRouteLibrary
+        from test_scoped_routes import write_scoped_resources
+        import route_submission
+
+        resources = self.root / "_internal/assets/android-route-editor"
+        write_scoped_resources(resources)
+        library = ScopedRouteLibrary(resources, "classic-hard")
+        mid = library.maps()[0][0]
+        graph = library.graph(mid)
+        points = [graph.pick("1", 5, 5), graph.pick("1", 11, 11)]
+        maps = route_submission.prepare_maps(library, dict(id="local", maps={mid: dict(points=points)}))
+        version, work = str(UUID(int=10)), str(UUID(int=11))
+        record = dict(id=version, work_id=work, revision=1, content_kind="nightmare-routes", status="approved",
+                      scenario=library.scope.scenario, packages=[], modes=["hard"], hard_map_count=1)
+        package = route_submission.build_package(record, "local", maps, "困难测试路线", "alice", scope_id=library.scope.id)
+        server, calls = self.server, []
+        authorize = f"/v1/community/map-galleries/{version}/packages/hard/download"
+        original = server.httpd.RequestHandlerClass
+
+        class Handler(original):
+            def do_GET(self):
+                if self.path.startswith("/v1/community/map-galleries?"):
+                    return self._reply(200, [record])
+                if self.path == "/objects/hard.zip":
+                    calls.append(self.path)
+                    return self._reply(200, raw=package.archive, content="application/zip")
+                return super().do_GET()
+
+            def do_POST(self):
+                if self.path == authorize:
+                    calls.append(self.path)
+                    if not self._authorized():
+                        return self._reply(401, dict(detail="请先登录"))
+                    return self._reply(200, dict(version_id=version, work_id=work, content_kind="nightmare-routes",
+                        scenario=library.scope.scenario, download_url=server.url + "/objects/hard.zip", package=dict(
+                            package_id=package.payload["package_id"], revision=package.payload["package_revision"],
+                            mode="hard", manifest_bytes=package.payload["manifest_bytes"],
+                            object_bytes=len(package.archive), sha256=sha256(package.archive).hexdigest())))
+                return super().do_POST()
+
+        server.httpd.RequestHandlerClass = Handler
+        available = {("s0", "nightmare"), ("s1", "difficult")}
+        self.service.structure_available = lambda season, mode: (season, mode) in available
+        blocked = []
+        self.service.downloadBlocked.connect(blocked.append)
+        self.load()
+        row = self.service.model.rows[0]
+        self.assertIn("困难", row["scopeLabel"])
+        self.service.downloadRoute(row["key"])
+        self.assertEqual(len(blocked), 1)
+        self.assertIn("灾厄之女 · 困难", blocked[0])
+        self.assertEqual(calls, [])
+        self.assertFalse(self.service.snapshot["accountOpen"])
+        self.assertEqual(self.galleries.scopeId, "legacy-nightmare")
+
+        available.add(("s0", "difficult"))
+        self.service.downloadRoute(row["key"])
+        self.assertTrue(self.service.snapshot["accountOpen"])
+        self.service.submitAccount("alice", "", "", "", "secret1", "")
+        until(lambda: not self.service.snapshot["busy"] and not self.galleries.busy)
+        self.assertFalse(self.service.snapshot["error"], self.service.snapshot)
+        self.assertEqual(calls, [authorize, "/objects/hard.zip"])
+        self.assertEqual(self.galleries.scopeId, "classic-hard")
+        self.assertTrue(self.service.model.rows[0]["installed"])
+        downloaded = next(g for g in self.galleries.snapshot["galleries"] if g.get("source"))
+        path = self.root / "route-galleries/classic-hard/galleries.json"
+        self.assertTrue(path.exists())
+        self.assertTrue(downloaded["readonly"])
+        self.galleries.selectScope("legacy-nightmare")
+        until(lambda: not self.galleries.busy)
+        self.assertTrue(self.service.model.rows[0]["installed"])
 
 
 class NavigationDownloadTests(unittest.TestCase):
@@ -828,14 +1091,27 @@ def composition(*, submitting=False):
             # Real root wiring: the saved intent reaches display workers before
             # runtime presentation settings.
             assert not client.settings.persistedValues["routePointNumbers"]
-            click("routePointNumbersSwitch")
+            if submitting:
+                assert client.settings.setValue("routePointNumbers", True)
+                client.settings.saveFields(["routePointNumbers"])
+            else:
+                until(lambda: item(client.main, "plazaPreview_ver-2") is not None)
+                click("plazaPreview_ver-2")
+                until(lambda: item(client.main, "plazaPreviewDialog").property("opened"))
+                click("routePointNumbersSwitch")
             until(lambda: not client.settings.busy and client.settings.persistedValues["routePointNumbers"])
             assert client.custom_display._point_numbers
             assert client.runtime._settings["routePointNumbers"]
-            capture("qt-route-plaza.png")
-            click("routePointNumbersSwitch")
+            if submitting:
+                assert client.settings.setValue("routePointNumbers", False)
+                client.settings.saveFields(["routePointNumbers"])
+            else:
+                click("routePointNumbersSwitch")
+                QTest.keyClick(client.main, Qt.Key_Escape)
+                until(lambda: not item(client.main, "plazaPreviewDialog").property("visible"))
             until(lambda: not client.settings.busy and not client.settings.persistedValues["routePointNumbers"])
             assert not client.custom_display._point_numbers
+            capture("qt-route-plaza.png")
             client.main.resize(650, 470)
             QTest.qWait(250)
             capture("qt-route-plaza-small.png")
@@ -885,6 +1161,19 @@ def composition(*, submitting=False):
                 print(json.dumps(dict(closed=client._closed, qmlErrors=list(client.warnings),
                                       inputGuard=guarded, startupRequests=startup_requests)))
                 return
+            click("plazaDownload_ver-2")
+            structure_dialog = item(client.main, "plazaStructureRequired")
+            until(lambda: structure_dialog.property("opened"))
+            assert not any(call[1].endswith("/download") for call in server.calls)
+            QTest.keyClick(client.main, Qt.Key_Escape)
+            until(lambda: not structure_dialog.property("visible"))
+
+            from original_qt_resource_fixtures import OriginalS0NightmareSourceFixture
+            structure = OriginalS0NightmareSourceFixture(root / "structure-source", ids=["nightmare-01"])
+            structure.export()
+            client.resources.importArchive(QUrl.fromLocalFile(str(structure.output)).toString())
+            until(lambda: client.resources.contextAvailable("s0", "nightmare") and not client.resources.busy
+                  and not client.custom_galleries.busy, 10)
             original = route_plaza.fetch_archive
             def blocked(*args):
                 entered.set()

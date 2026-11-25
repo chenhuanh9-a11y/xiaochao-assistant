@@ -119,6 +119,7 @@ with tempfile.TemporaryDirectory(dir=RESOURCE_ROOT/'work') as folder:
     display=CustomGalleryDisplay(Mock())
     assert 's2' in display.eligibility('old','nightmare','s2')['reason']
     assert 'S2' in display.eligibility('old','nightmare','s2')['message']
+    assert not display.use_request('','nightmare','s2')['success']
     session.shutdown(); settings.shutdown(); reloaded.shutdown()
 print('S2 configured startup passed')
 '''

@@ -502,10 +502,10 @@ def render_game_layer(library: CustomMapLibrary, map_id, floor, points, *, point
 
 
 # Galleries --------------------------------------------------------------------
-def _clean_points(raw) -> list[dict]:
+def _clean_points(raw, *, floors=FLOORS, max_points=MAX_POINTS) -> list[dict]:
     points = []
     for point in raw if isinstance(raw, list) else ():
-        if not isinstance(point, dict) or point.get("floor") not in FLOORS:
+        if not isinstance(point, dict) or point.get("floor") not in floors:
             continue
         try:
             x, y = float(point["x"]), float(point["y"])
@@ -519,18 +519,23 @@ def _clean_points(raw) -> list[dict]:
         if point.get("start") is True:
             clean["start"] = True
         points.append(clean)
-    return points[:MAX_POINTS]
+    return points[:max_points]
 
 
-def _clean_gallery(raw) -> dict | None:
+def _clean_gallery(raw, *, scope=None) -> dict | None:
     if not isinstance(raw, dict) or not isinstance(raw.get("id"), str) or not raw["id"]:
         return None
     maps = {}
     for map_id, route in (raw.get("maps") or {}).items() if isinstance(raw.get("maps"), dict) else ():
-        points = _clean_points(route.get("points") if isinstance(route, dict) else None)
+        points = _clean_points(route.get("points") if isinstance(route, dict) else None,
+                               **(dict(floors=scope.floors, max_points=512 if scope.id == "classic-hard" else 128) if scope else {}))
         if points:
             maps[str(map_id)] = dict(points=points)
     gallery = dict(id=raw["id"], name=str(raw.get("name") or "未命名图库")[:24], maps=maps)
+    if scope is not None:
+        gallery.update(routeCatalogId=scope.id, scenario=scope.scenario, mode=scope.mode)
+    if isinstance(raw.get("originWorkId"), str) and raw["originWorkId"]:
+        gallery["originWorkId"] = raw["originWorkId"][:64]
     source = raw.get("source")
     if isinstance(source, dict) and isinstance(source.get("workId"), str) and isinstance(source.get("versionId"), str):
         gallery["source"] = {key: source[key] for key in PLAZA_SOURCE_KEYS if type(source.get(key)) in (str, int)}
@@ -540,14 +545,15 @@ def _clean_gallery(raw) -> dict | None:
 class GalleryStore:
     """A read-only default gallery plus the player's galleries in one JSON file."""
 
-    def __init__(self, path: Path, default_path: Path = DEFAULT_GALLERY_FILE, *, legacy_path: Path | None = None):
+    def __init__(self, path: Path, default_path: Path = DEFAULT_GALLERY_FILE, *, legacy_path: Path | None = None, scope=None):
+        self.scope = scope
         self.path = Path(path)
         self.revision = 0
         self._lock = threading.RLock()
         self.migration_error = ""
         self._legacy_migrations = []
         try:
-            default = _clean_gallery(json.loads(Path(default_path).read_text("utf-8")))
+            default = self._clean_gallery(json.loads(Path(default_path).read_text("utf-8")))
         except (OSError, ValueError):
             default = None
         self.default = default or dict(id=DEFAULT_GALLERY_ID, name="默认路线", maps={})
@@ -569,12 +575,13 @@ class GalleryStore:
         except ValueError:
             raw = None
             self._set_aside("图库文件已损坏")
-        if isinstance(raw, dict) and raw.get("schema") == GALLERY_SCHEMA:
+        if (isinstance(raw, dict) and raw.get("schema") == GALLERY_SCHEMA
+                and raw.get("routeCatalogId") == (self.scope.id if self.scope else None)):
             try:
                 migrations = raw.get("legacyRouteMigrations")
                 legacy = [value for value in (migrations if isinstance(migrations, list) else [])
                           if isinstance(value, str) and len(value) == 64]
-                galleries = [gallery for gallery in map(_clean_gallery, raw.get("galleries") or ())
+                galleries = [gallery for gallery in map(self._clean_gallery, raw.get("galleries") or ())
                              if gallery and gallery["id"] != DEFAULT_GALLERY_ID]
             except (TypeError, AttributeError):
                 self._set_aside("图库文件内容无效")
@@ -584,8 +591,14 @@ class GalleryStore:
         elif raw is not None:
             self._write_blocked = True
             self.load_error = "图库文件格式无法识别（可能来自更新的版本），本次不会改写它。"
+        if self.scope is not None:
+            self.default.update(routeCatalogId=self.scope.id, scenario=self.scope.scenario, mode=self.scope.mode)
+            return
         self._migrate_legacy(Path(legacy_path) if legacy_path is not None
                              else self.path.with_name("custom-routes.json"), migration_writable)
+
+    def _clean_gallery(self, raw):
+        return _clean_gallery(raw, scope=self.scope)
 
     def _migrate_legacy(self, source: Path, writable: bool) -> None:
         """Copy legacy native waypoints into per-floor galleries; never move/edit source.
@@ -671,6 +684,8 @@ class GalleryStore:
             return False
         payload = dict(schema=GALLERY_SCHEMA, galleries=self._galleries,
                        legacyRouteMigrations=self._legacy_migrations)
+        if self.scope is not None:
+            payload.update(routeCatalogId=self.scope.id, scenario=self.scope.scenario, mode=self.scope.mode)
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(".tmp")
@@ -715,7 +730,7 @@ class GalleryStore:
 
     def install_plaza(self, name, maps, source) -> str:
         """Replace a work's version atomically, retaining its active gallery id."""
-        gallery = _clean_gallery(dict(id=uuid.uuid4().hex[:12], name=name, maps=maps, source=source))
+        gallery = self._clean_gallery(dict(id=uuid.uuid4().hex[:12], name=name, maps=maps, source=source))
         if gallery is None or not gallery["maps"] or "source" not in gallery:
             raise ValueError("路线内容无效")
         with self._lock:
@@ -747,6 +762,12 @@ class GalleryStore:
             source = self._find(copy_from) if copy_from else None
             gallery = dict(id=uuid.uuid4().hex[:12], name=(str(name).strip() or "我的路线")[:24],
                            maps=json.loads(json.dumps(source["maps"])) if source else {})
+            if self.scope is not None:
+                gallery.update(routeCatalogId=self.scope.id, scenario=self.scope.scenario, mode=self.scope.mode)
+            if source:
+                origin = source.get("originWorkId") or source.get("source", {}).get("workId")
+                if origin:
+                    gallery["originWorkId"] = origin
             self._galleries.append(gallery)
             if not self._save():
                 self._galleries.pop()
@@ -783,7 +804,8 @@ class GalleryStore:
             gallery = self._find(gallery_id)
             if gallery is None or self.readonly(gallery_id):
                 return False
-            points = _clean_points(points)
+            points = _clean_points(points, **(dict(floors=self.scope.floors,
+                max_points=512 if self.scope.id == "classic-hard" else 128) if self.scope else {}))
             if points:
                 gallery["maps"][str(map_id)] = dict(points=points)
             else:
@@ -798,16 +820,32 @@ class GalleryStore:
                 raise KeyError(gallery_id)
             exported = json.loads(json.dumps(gallery))
             if not include_source:
+                if exported.get("source", {}).get("workId"):
+                    exported["originWorkId"] = exported["source"]["workId"]
                 exported.pop("source", None)
             return dict(schema=GALLERY_SCHEMA, **exported)
 
     def import_gallery(self, payload) -> str:
         if not isinstance(payload, dict) or payload.get("schema") != GALLERY_SCHEMA:
             raise ValueError("不是星图图库文件")
-        gallery = _clean_gallery(dict(payload, id=uuid.uuid4().hex[:12]))
+        if payload.get("routeCatalogId") != (self.scope.id if self.scope else None):
+            raise ValueError("图库不属于当前场景或难度")
+        if self.scope is not None:
+            if (payload.get("scenario"), payload.get("mode")) != (self.scope.scenario, self.scope.mode):
+                raise ValueError("图库场景或难度不一致")
+            if not isinstance(payload.get("maps"), dict):
+                raise ValueError("图库地图格式无效")
+            for row in payload["maps"].values():
+                points = row.get("points") if isinstance(row, dict) else None
+                if (not isinstance(points, list) or len(_clean_points(points, floors=self.scope.floors,
+                        max_points=512 if self.scope.id == "classic-hard" else 128)) != len(points)):
+                    raise ValueError("图库含有无效或超出当前范围的目标，未导入")
+        gallery = self._clean_gallery(dict(payload, id=uuid.uuid4().hex[:12]))
         if gallery is None:
             raise ValueError("图库内容无效")
-        gallery.pop("source", None)  # A local import is an editable personal copy.
+        source = gallery.pop("source", None)  # Editable personal copy, retaining its origin.
+        if source:
+            gallery["originWorkId"] = source["workId"]
         with self._lock:
             self._galleries.append(gallery)
             if not self._save():
