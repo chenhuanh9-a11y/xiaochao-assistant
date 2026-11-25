@@ -20,28 +20,60 @@ import numpy as np
 class UniversalStructureEliminator:
     """Candidate-pool eliminator using dual-sided wall & explored-interior checks."""
 
-    MAX_VOID_CACHE = 24
+    MAX_VOID_CACHE = 32
+    MAX_PREP_CACHE = 32
 
     def __init__(self, engine, catalog):
         self.engine = engine
         self.catalog = catalog
         self._void_cache = OrderedDict()
+        self._prep_cache = OrderedDict()
+
+    def _prepared(self, map_id, floor, ref):
+        """Compact per-eliminator cache avoiding 4-slot global cache thrashing."""
+        from fast_structure_alignment import load_prepared, prepare as prepare_fast
+
+        key = (self.catalog.resource_key, str(map_id), str(floor), tuple(ref.clean_mask.shape[:2]))
+        cached = self._prep_cache.get(key)
+        if cached is not None:
+            self._prep_cache.move_to_end(key)
+            return cached
+        fast_source = getattr(self.engine, "qt_fast_structure_source", None)
+        prepared = load_prepared(ref, source=fast_source)
+        if prepared is None:
+            prepared = prepare_fast(ref.clean_mask)
+        if prepared is not None:
+            self._prep_cache[key] = prepared
+            while len(self._prep_cache) > self.MAX_PREP_CACHE:
+                self._prep_cache.popitem(last=False)
+        return prepared
 
     def _void_field(self, map_id, floor, clean_mask):
+        """Half-resolution outside distance field (4x faster, <1px error, uint16-compact)."""
         key = (self.catalog.resource_key, str(map_id), str(floor), tuple(clean_mask.shape[:2]))
         cached = self._void_cache.get(key)
         if cached is not None:
             self._void_cache.move_to_end(key)
             return cached
         binary = (np.asarray(clean_mask) > 0).astype(np.uint8)
-        field = cv2.distanceTransform(1 - binary, cv2.DIST_L2, 3)
-        self._void_cache[key] = field
+        h, w = binary.shape[:2]
+        sh, sw = max(1, (h + 1) // 2), max(1, (w + 1) // 2)
+        if h >= 64 and w >= 64:
+            small = cv2.resize(binary, (sw, sh), interpolation=cv2.INTER_AREA)
+            small_bin = (small > 0).astype(np.uint8)
+            dist = cv2.distanceTransform(1 - small_bin, cv2.DIST_L2, 3) * 2.0
+            scale_xy = (sw / float(w), sh / float(h))
+        else:
+            dist = cv2.distanceTransform(1 - binary, cv2.DIST_L2, 3)
+            scale_xy = (1.0, 1.0)
+        entry = (dist.astype(np.float32), scale_xy)
+        self._void_cache[key] = entry
         while len(self._void_cache) > self.MAX_VOID_CACHE:
             self._void_cache.popitem(last=False)
-        return field
+        return entry
 
     @staticmethod
-    def _evaluate_pose(prepared, void_field, wall_points, interior_points, scale, translation):
+    def _evaluate_pose(prepared, void_entry, wall_points, interior_points, scale, translation):
         """Return (compatible, wall_bad_count, wall_span, interior_bad_count, kind)."""
         from s1_common_coordinate_filter import CommonCoordinateFilter
         from structure_observation import has_interior_contradiction
@@ -50,33 +82,35 @@ class UniversalStructureEliminator:
         tx, ty = float(translation[0]), float(translation[1])
         h, w = prepared.shape[:2]
 
-        # 1. Wall check: observed walls vs candidate edge distance field
+        # 1. Wall check: only spatially coherent unavoidable wall contradictions
+        # eliminate a map (no fragile global inlier_ratio cutoff that icons/fog break).
         wxy = np.rint((wall_points - np.array([tx, ty], dtype=np.float64)) / s).astype(int)
         wok = (wxy[:, 0] >= 0) & (wxy[:, 0] < w) & (wxy[:, 1] >= 0) & (wxy[:, 1] < h)
         wdist = np.full(len(wall_points), 10000.0, dtype=np.float64)
         if np.any(wok):
             wdist[wok] = (prepared.distance[wxy[wok, 1], wxy[wok, 0]].astype(np.float64) * 0.25) * s
-        wall_bad = wall_points[wdist > 8.0]
+        wall_bad = wall_points[wdist > 9.0]
         wall_span = np.ptp(wall_bad, axis=0) if len(wall_bad) else np.zeros(2)
-        inlier_ratio = float(np.mean(wdist <= 8.0)) if len(wdist) else 0.0
-        wall_contradicted = (
-            inlier_ratio < 0.72
-            or CommonCoordinateFilter._has_wall_contradiction(
-                wall_bad, wall_span, min_points=10, min_span=20, min_2d_span=10
-            )
+        wall_contradicted = CommonCoordinateFilter._has_wall_contradiction(
+            wall_bad, wall_span, min_points=14, min_span=26, min_2d_span=12
         )
 
-        # 2. Explored-interior check: confirmed walkable floor vs candidate non-walkable void/wall
+        # 2. Explored-interior check: high-clearance check so thin interior pillars,
+        # doors, or minor rendering thickness differences never falsely kill the true map.
         interior_bad = np.empty((0, 2), dtype=np.float64)
         interior_contradicted = False
-        if void_field is not None and len(interior_points) >= 10:
-            ixy = np.rint((interior_points - np.array([tx, ty], dtype=np.float64)) / s).astype(int)
-            iok = (ixy[:, 0] >= 0) & (ixy[:, 0] < w) & (ixy[:, 1] >= 0) & (ixy[:, 1] < h)
+        if void_entry is not None and len(interior_points) >= 16:
+            void_field, (sx, sy) = void_entry
+            vh, vw = void_field.shape[:2]
+            ixy_native = (interior_points - np.array([tx, ty], dtype=np.float64)) / s
+            ix = np.rint(ixy_native[:, 0] * sx).astype(int)
+            iy = np.rint(ixy_native[:, 1] * sy).astype(int)
+            iok = (ix >= 0) & (ix < vw) & (iy >= 0) & (iy < vh)
             vdist = np.full(len(interior_points), 10000.0, dtype=np.float64)
             if np.any(iok):
-                vdist[iok] = void_field[ixy[iok, 1], ixy[iok, 0]].astype(np.float64) * s
-            interior_bad = interior_points[vdist > 8.0]
-            interior_contradicted = has_interior_contradiction(interior_bad, min_points=10, min_span_px=14)
+                vdist[iok] = void_field[iy[iok], ix[iok]].astype(np.float64) * s
+            interior_bad = interior_points[vdist > 16.0]
+            interior_contradicted = has_interior_contradiction(interior_bad, min_points=16, min_span_px=28)
 
         compatible = (not wall_contradicted) and (not interior_contradicted)
         kind = (
@@ -88,7 +122,7 @@ class UniversalStructureEliminator:
         return compatible, int(len(wall_bad)), wall_span, int(len(interior_bad)), kind
 
     def _candidate_poses(self, frame, context, prepared, coarse, points, *, scale_hint, cancelled):
-        """Enumerate refined candidate poses across the full floor without rejecting ambiguous poses."""
+        """Enumerate top refined candidate poses across the full floor."""
         from fast_structure_alignment import _grid, _chain_seeds, _pitch, _distinct, refine, scores
 
         rows = []
@@ -110,32 +144,27 @@ class UniversalStructureEliminator:
                         rows.extend(_grid(coarse, prepared, est, None, cancelled))
         if cancelled():
             return []
-        retained = _distinct(rows, maximum=8)
+        retained = _distinct(rows, maximum=3)
         refined = []
         for _, scale, translation in retained:
             if cancelled():
                 return []
             refined.append(refine(points, prepared, scale, translation, lock_scale=False))
-        return _distinct(refined, minimum=10.0, maximum=8)
+        return _distinct(refined, minimum=10.0, maximum=3)
 
     def _evaluate_pool(self, frame, context, ids, floor, wall_points, interior_points,
                        coarse, points, *, scale_hint, cancelled):
-        from fast_structure_alignment import load_prepared, prepare as prepare_fast
-
         compatible, contradicted, checks = [], [], []
-        fast_source = getattr(self.engine, "qt_fast_structure_source", None)
         for mid in ids:
             if cancelled():
                 return None
             ref = self.engine.qt_shared_provider("shared-structure", mid, floor)
             if ref is None:
                 return None
-            prepared = load_prepared(ref, source=fast_source)
-            if prepared is None:
-                prepared = prepare_fast(ref.clean_mask)
+            prepared = self._prepared(mid, floor, ref)
             if prepared is None:
                 return None
-            void_field = self._void_field(mid, floor, ref.clean_mask)
+            void_entry = self._void_field(mid, floor, ref.clean_mask)
             poses = self._candidate_poses(
                 frame, context, prepared, coarse, points,
                 scale_hint=scale_hint, cancelled=cancelled,
@@ -146,7 +175,7 @@ class UniversalStructureEliminator:
             best_stats = (len(wall_points), np.zeros(2), len(interior_points), "wall")
             for _, s, t in poses:
                 ok, wb, wspan, ib, kind = self._evaluate_pose(
-                    prepared, void_field, wall_points, interior_points, s, t
+                    prepared, void_entry, wall_points, interior_points, s, t
                 )
                 if ok:
                     best_ok = True
@@ -229,9 +258,9 @@ class UniversalStructureEliminator:
                 return fail("current-structure-insufficient")
             edge = current_part(frame, ctx, "observed")
             wall_edges = observed_wall_fragment_edges(frame, ctx)
-            wall_points = sample_edges(wall_edges, 350)
-            interior_mask = explored_interior_mask(ctx.get("query"), ctx.get("observationBounds"), margin_px=7)
-            interior_points = sample_interior_points(interior_mask, limit=250)
+            wall_points = sample_edges(wall_edges, 300)
+            interior_mask = explored_interior_mask(ctx.get("query"), ctx.get("observationBounds"), margin_px=12)
+            interior_points = sample_interior_points(interior_mask, limit=200)
             obs_ms = (time.perf_counter() - obs_started) * 1000
             stage("extract", "finished", obs_ms)
             if len(wall_points) < 24:
@@ -239,7 +268,7 @@ class UniversalStructureEliminator:
             if cancelled():
                 return fail("coordinate-work-obsolete", observationMs=obs_ms)
 
-            points = sample_edges(edge, 300)
+            points = sample_edges(edge, 240)
             coarse = sample_edges(edge, 96)
             if len(coarse) < 20:
                 return fail("current-structure-insufficient", observationMs=obs_ms)
@@ -272,8 +301,6 @@ class UniversalStructureEliminator:
             stage("compare", "finished", cmp_ms)
 
             if not compatible:
-                # If the pool was already narrowed and now conflicts completely, trigger
-                # standard pool recovery; on a full pool, treat as unknown (never wipe).
                 if len(ids) < len(self.catalog.map_ids):
                     return fail(
                         "coordinate-or-catalogue-conflict",

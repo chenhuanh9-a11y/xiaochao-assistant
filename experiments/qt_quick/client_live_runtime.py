@@ -1766,12 +1766,24 @@ class LiveRuntime:
             with self._lock:
                 if self._stream_owner is owner:
                     self._stream_owner = None
+                immediate_scale = None
+                if (first_result is not None and self._render is not None
+                        and self._render.get("token") == first_result.get("renderToken")):
+                    cmat = self._render.get("canonicalMatrix")
+                    try:
+                        if cmat is not None:
+                            val = float(cmat[0][0])
+                            if 0.03 <= val <= 6.0:
+                                immediate_scale = val
+                    except (TypeError, ValueError, IndexError):
+                        immediate_scale = None
             # A valid captured frame remains historical evidence after an
             # ordinary close, even if first paint lost the race. No UI authority
             # follows it. Queue ordering is capture admission, not finish time.
             if private_enabled and not (pool.retain_locked_identity and pool.locked_id):
                 self._enqueue_private_observation(pool, engine, catalog, captured, frame, str(floor),
-                    digest, epoch, frame_id, round_id, cycle, payload, private_sequence)
+                    digest, epoch, frame_id, round_id, cycle, payload, private_sequence,
+                    initial_scale_hint=immediate_scale)
 
     @property
     def private_evidence_busy(self):
@@ -1817,7 +1829,8 @@ class LiveRuntime:
                 pass
 
     def _enqueue_private_observation(self, pool, engine, catalog, captured, frame, floor,
-                                     digest, epoch, frame_id, round_id, cycle, payload, sequence):
+                                     digest, epoch, frame_id, round_id, cycle, payload, sequence,
+                                     *, initial_scale_hint=None):
         import numpy as np
         # Immutable source pixels, at most one running plus one latest queued.
         owned_frame = np.frombuffer(frame.tobytes(order="C"), dtype=np.uint8).reshape(frame.shape)
@@ -1865,6 +1878,8 @@ class LiveRuntime:
                             scale_hint = float(self._s1_candidate_pose_hint.matrix[0][0])
                         except (TypeError, ValueError, IndexError):
                             scale_hint = None
+                    if scale_hint is None and initial_scale_hint is not None:
+                        scale_hint = initial_scale_hint
                 prepare_fn = engine.qt_s1_private_coordinate_prepare
                 if getattr(prepare_fn, "_accepts_scale_hint", False):
                     evidence = prepare_fn(owned_frame, before, floor,

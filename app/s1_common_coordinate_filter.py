@@ -472,15 +472,15 @@ class CommonCoordinateFilter:
         else:
             points=global_points
         interior_mask = explored_interior_mask(
-            ctx.get('query'), ctx.get('observationBounds'), margin_px=7, anchor=anchor)
+            ctx.get('query'), ctx.get('observationBounds'), margin_px=12, anchor=anchor)
         interior_points = sample_interior_points(
-            interior_mask, limit=250, priority_mask=diff_client, priority_limit=150)
+            interior_mask, limit=200, priority_mask=diff_client, priority_limit=120)
         if len(points)<24 and len(interior_points)<20:return result('current-structure-insufficient')
         projected = extent[None,:,:2]*hyp[:,None,0,None] + hyp[:,None,1:]
         pose_available = bool(np.max(np.linalg.norm(projected-(extent@matrix.T)[:,:2],axis=2)) <= 6.)
-        wall_tol = 7.0 if pose_available else 8.0
-        wall_min_pts = 10 if pose_available else 12
-        wall_min_span = 18 if pose_available else 24
+        wall_tol = 7.5 if pose_available else 8.0
+        wall_min_pts = 11 if pose_available else 12
+        wall_min_span = 20 if pose_available else 24
         checks=[];contradicted=[];h,w=data['shape']
         void_fields = data.get('voidFields') or [None] * len(data['ids'])
         for mid,field,void_field in zip(data['ids'],data['fields'],void_fields):
@@ -499,10 +499,10 @@ class CommonCoordinateFilter:
                 spread=np.ptp(bad,axis=0) if len(bad) else np.zeros(2)
                 wall_explicit=self._has_wall_contradiction(
                     bad, spread, min_points=wall_min_pts, min_span=wall_min_span,
-                    min_2d_span=10 if pose_available else 12)
+                    min_2d_span=12)
             interior_bad = np.empty((0, 2), dtype=float)
             interior_explicit = False
-            if void_field is not None and len(interior_points) >= 10:
+            if void_field is not None and len(interior_points) >= 16:
                 vmin = np.full(len(interior_points), np.inf)
                 for startidx in range(0, len(hyp), 512):
                     if cancelled():return result('coordinate-work-obsolete')
@@ -510,8 +510,8 @@ class CommonCoordinateFilter:
                     ok=(xy[:,:,0]>=0)&(xy[:,:,0]<w)&(xy[:,:,1]>=0)&(xy[:,:,1]<h)
                     vdist=void_field[np.clip(xy[:,:,1],0,h-1),np.clip(xy[:,:,0],0,w-1)]*batch[:,None,0];vdist[~ok]=10000
                     vmin=np.minimum(vmin,vdist.min(0))
-                interior_bad = interior_points[vmin > 8.0]
-                interior_explicit = has_interior_contradiction(interior_bad, min_points=10, min_span_px=14)
+                interior_bad = interior_points[vmin > 16.0]
+                interior_explicit = has_interior_contradiction(interior_bad, min_points=16, min_span_px=28)
             explicit = wall_explicit or interior_explicit
             if explicit:contradicted.append(mid)
             kind = ('wall+interior' if (wall_explicit and interior_explicit)
