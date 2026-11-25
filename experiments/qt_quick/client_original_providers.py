@@ -237,7 +237,7 @@ def _build_original_engine(base_view, controls_view, paths, *, season, mode, req
             if s0_index[0] is None:
                 s0_index[0] = GenericStructureIndex.from_provider(
                     tuple(sorted(pack.by_id)), pack.floors, provider,
-                    fast_source=getattr(bundle, 'fast_structure_source', None))
+                    fast_source=getattr(bundle, 'fast_structure_source', None), lazy=True)
             return s0_index[0].shortlist(frame, floor, candidate_ids, context=context)
         engine.qt_generic_structure_shortlist = s0_structure_shortlist
     assert_reads_current()
@@ -285,12 +285,28 @@ def attach_original_s1_scanner(engine, native, bundle):
                     read_resource=bundle.reader)
             return pose_index.make_hint(source, target_floor=floor, current_owner_scope=owner_scope)
         engine.qt_s1_pose_prior = pose_prior
+    else:
+        def same_floor_pose_prior(source, floor, owner_scope):
+            from s1_pose_prior import AcknowledgedPose, PosePrior, isotropic_matrix
+            if (type(source) is not AcknowledgedPose or source.material_acknowledged is not True
+                    or source.current_frame_geometry_verified is not True or not source.frame_id
+                    or str(source.floor) != str(floor)
+                    or source.owner_scope != owner_scope
+                    or source.mode != catalog.mode or source.resource_key != catalog.resource_key):
+                return None
+            matrix = isotropic_matrix(source.matrix)
+            if matrix is None:
+                return None
+            return PosePrior(catalog.mode, catalog.resource_key, '', source.map_id,
+                             str(source.floor), str(floor), source.frame_id,
+                             owner_scope, tuple(map(tuple, matrix)))
+        engine.qt_s1_pose_prior = same_floor_pose_prior
     generic_index = [None]
     def _ensure_generic_index():
         if generic_index[0] is None:
             generic_index[0] = GenericStructureIndex.from_provider(
                 catalog.map_ids, catalog.floors, engine.qt_shared_provider,
-                fast_source=getattr(bundle, 'fast_structure_source', None))
+                fast_source=getattr(bundle, 'fast_structure_source', None), lazy=True)
         return generic_index[0]
     engine.qt_generic_structure_shortlist = lambda frame, floor, ids, *, context=None: (
         _ensure_generic_index().shortlist(frame, floor, ids, context=context))
@@ -300,8 +316,10 @@ def attach_original_s1_scanner(engine, native, bundle):
                        first_material_committed=None, pose_priors=None, collect_fit_diagnostics=False):
         # Lazy import keeps provider construction free of live IO.
         from client_live_runtime import _AlignmentHost
-        host = _AlignmentHost(engine, pose_priors=pose_priors,
-            collect_fit_diagnostics=collect_fit_diagnostics)
+        host = _AlignmentHost(engine, settings=getattr(engine, '_qt_settings', None),
+            pose_priors=pose_priors,
+            collect_fit_diagnostics=collect_fit_diagnostics,
+            grid_runtime=getattr(engine, '_qt_grid_runtime', None))
         fixed = (private_observer is not None and private_coordinate_report is not None
                  and private_coordinate_report.get("coordinateVerified") is True)
         def fixed_fit(f, mid, fl, cancel, **kw):

@@ -331,7 +331,7 @@ def refine(points, prepared, scale, translation, *, lock_scale):
     return confidence, current_scale, current
 
 
-def propose(frame, reference, prepared, *, prior=None, cancelled=None, context=None, local_only=False):
+def propose(frame, reference, prepared, *, prior=None, cancelled=None, context=None, local_only=False, scale_hint=None):
     from single_map_structure import current_geometry, current_part
     started = time.perf_counter()
     if cancelled and cancelled():
@@ -370,6 +370,8 @@ def propose(frame, reference, prepared, *, prior=None, cancelled=None, context=N
             tt = np.asarray([r[1] for r in seeds], np.float32)
             result = scores(coarse, prepared, scales, tt)
             rows.extend((float(v), float(s), t) for v,s,t in zip(result,scales,tt))
+        if max((r[0] for r in rows), default=0.0) < .50 and scale_hint is not None and .03 <= float(scale_hint) <= 6.:
+            rows.extend(grid(float(scale_hint), None))
         if not rows:
             pitch = _pitch(edge)
             if pitch > 0 and prepared.pitch > 0:
@@ -444,11 +446,13 @@ def try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_seed
     Runtime must scope-check any acknowledged-material hint before this call.
     """
     attempted_local = False
+    scale_hint = None
     if pose_prior is not None:
         from s1_pose_prior import isotropic_matrix
         hint = isotropic_matrix(pose_prior)
         if hint is not None:
             attempted_local = True
+            scale_hint = float(hint[0, 0])
             began = time.perf_counter()
             preceding_fast = next((event for event in reversed(getattr(assistant, 'events', ()))
                                    if event.get('event') == 'experimental-fast-alignment'), None)
@@ -467,11 +471,13 @@ def try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_seed
                            fallback=result is None, **detail)
             if result is not None:
                 return result
-    return _try_alignment(assistant, frame, map_id, floor, cancelled=cancelled,
-                          entry_seed=entry_seed, context=context, _force_unseeded=attempted_local)
+    fallback_kwargs = dict(cancelled=cancelled, entry_seed=entry_seed, context=context, _force_unseeded=attempted_local)
+    if scale_hint is not None:
+        fallback_kwargs['_scale_hint'] = scale_hint
+    return _try_alignment(assistant, frame, map_id, floor, **fallback_kwargs)
 
 
-def _try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_seed=None, context=None, _external_prior=None, _force_unseeded=False):
+def _try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_seed=None, context=None, _external_prior=None, _force_unseeded=False, _scale_hint=None):
     """Full production proposal + existing residual consumers; no state writer."""
     if os.environ.get('IDENTITYV_FAST_ALIGNMENT', '1') == '0' or not assistant._shared_structure_mode_enabled():
         return None
@@ -501,8 +507,11 @@ def _try_alignment(assistant, frame, map_id, floor, *, cancelled=None, entry_see
                     prior = matrix
     if _external_prior is not None:
         prior = _external_prior
-    rows, context, diagnostics = propose(frame, reference, prepared, prior=prior, cancelled=cancelled, context=context,
-                                         local_only=_external_prior is not None)
+    propose_kwargs = dict(prior=prior, cancelled=cancelled, context=context,
+                          local_only=_external_prior is not None)
+    if _scale_hint is not None:
+        propose_kwargs['scale_hint'] = _scale_hint
+    rows, context, diagnostics = propose(frame, reference, prepared, **propose_kwargs)
     proposal_details = {}
     if rows:
         from single_map_structure import graph_point_geometry, partial_wall_geometry, projected_geometry, regional_validation

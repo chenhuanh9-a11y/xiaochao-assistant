@@ -11,7 +11,9 @@ candidate or granting identity/pose authority on its own.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+import io
 import math
+import threading
 import numpy as np
 
 
@@ -78,23 +80,64 @@ def _query_descriptors(frame, context):
     return _chain_descriptors(chains, rays)
 
 
+def _read_chains_rays_fast(fast_source, mid, fl):
+    """Read only lightweight chains/rays from precomputed -fast.npz without touching distance cache."""
+    entries = getattr(fast_source, "entries", None)
+    reader = getattr(fast_source, "reader", None)
+    view = getattr(fast_source, "view", None)
+    if isinstance(entries, dict) and callable(reader) and view is not None:
+        ref = entries.get(("shared-structure", mid, fl))
+        if ref is None:
+            for key, value in entries.items():
+                if isinstance(key, tuple) and len(key) >= 4 and key[1] == mid and str(key[3]) == fl:
+                    ref = value
+                    break
+        if ref is not None:
+            raw = reader(view.path(ref.path))
+            with np.load(io.BytesIO(raw), allow_pickle=False) as data:
+                if "chains" in data and "rays" in data:
+                    return np.asarray(data["chains"], dtype=np.float32), np.asarray(data["rays"], dtype=np.float32)
+    return None
+
+
+def _build_floor_bucket(maps):
+    postings = defaultdict(dict)
+    doc_freq = Counter()
+    map_ids = tuple(sorted(maps))
+    total = max(1, len(map_ids))
+    for mid, desc in maps.items():
+        for key, count in desc.items():
+            postings[key][mid] = count
+            doc_freq[key] += 1
+    idf = {key: math.log((total + 1.0) / (df + 0.5)) + 1.0 for key, df in doc_freq.items()}
+    return dict(map_ids=map_ids, postings=dict(postings), idf=idf)
+
+
 class GenericStructureIndex:
     """Automatic per-floor inverted index over any season's shared clean masks."""
 
-    def __init__(self, entries_by_floor):
+    def __init__(self, entries_by_floor, *, floor_loader=None):
         # entries_by_floor: {floor: {map_id: Counter(descriptor -> count)}}
-        self._by_floor = {}
-        for floor, maps in entries_by_floor.items():
-            postings = defaultdict(dict)
-            doc_freq = Counter()
-            map_ids = tuple(sorted(maps))
-            total = max(1, len(map_ids))
-            for mid, desc in maps.items():
-                for key, count in desc.items():
-                    postings[key][mid] = count
-                    doc_freq[key] += 1
-            idf = {key: math.log((total + 1.0) / (df + 0.5)) + 1.0 for key, df in doc_freq.items()}
-            self._by_floor[str(floor)] = dict(map_ids=map_ids, postings=dict(postings), idf=idf)
+        self._lock = threading.RLock()
+        self._by_floor = {str(floor): _build_floor_bucket(maps) for floor, maps in entries_by_floor.items()}
+        self._floor_loader = floor_loader
+        self._attempted_floors = set(self._by_floor)
+
+    def _ensure_floor(self, floor):
+        fl = str(floor)
+        bucket = self._by_floor.get(fl)
+        if bucket is not None or self._floor_loader is None:
+            return bucket
+        with self._lock:
+            bucket = self._by_floor.get(fl)
+            if bucket is not None or fl in self._attempted_floors:
+                return bucket
+            self._attempted_floors.add(fl)
+            maps = self._floor_loader(fl)
+            if maps:
+                bucket = _build_floor_bucket(maps)
+                self._by_floor[fl] = bucket
+            return bucket
 
     @classmethod
     def from_prepared(cls, prepared_by_floor):
@@ -109,45 +152,65 @@ class GenericStructureIndex:
             entries[str(floor)] = floor_map
         return cls(entries)
 
-    @classmethod
-    def from_provider(cls, map_ids, floors, provider, *, fast_source=None):
-        """Lazily extract prepared structures from fast_source or clean_mask provider."""
+    @staticmethod
+    def _load_floor_descriptors(map_ids, fl, provider, fast_source=None):
         from fast_structure_alignment import prepare
-        prepared_by_floor = {}
+        floor_map = {}
+        for mid in map_ids:
+            chains_rays = None
+            if fast_source is not None:
+                try:
+                    chains_rays = _read_chains_rays_fast(fast_source, mid, fl)
+                except Exception:
+                    chains_rays = None
+            if chains_rays is None and provider is not None:
+                try:
+                    ref = provider("shared-structure", mid, fl)
+                    if ref is not None:
+                        prepared = None
+                        if fast_source is not None and callable(getattr(fast_source, "read", None)):
+                            try:
+                                prepared = fast_source.read(ref)
+                            except Exception:
+                                prepared = None
+                        if prepared is None and getattr(ref, "clean_mask", None) is not None:
+                            prepared = prepare(ref.clean_mask)
+                        if prepared is not None:
+                            chains_rays = (prepared.chains, prepared.rays)
+                except Exception:
+                    chains_rays = None
+            if chains_rays is not None:
+                floor_map[str(mid)] = _chain_descriptors(chains_rays[0], chains_rays[1])
+        return floor_map
+
+    @classmethod
+    def from_provider(cls, map_ids, floors, provider, *, fast_source=None, lazy=False):
+        """Extract prepared structures from fast_source (.npz chains/rays) or clean_mask provider."""
+        ids = tuple(map_ids)
+        if lazy:
+            allowed = {str(f) for f in floors}
+            def load_floor(fl):
+                return cls._load_floor_descriptors(ids, fl, provider, fast_source=fast_source) if fl in allowed else {}
+            return cls({}, floor_loader=load_floor)
+        entries = {}
         for floor in floors:
             fl = str(floor)
-            floor_items = {}
-            for mid in map_ids:
-                prepared = None
-                if fast_source is not None:
-                    try:
-                        prepared = fast_source.load("shared-structure", mid, fl)
-                    except Exception:
-                        prepared = None
-                if prepared is None and provider is not None:
-                    try:
-                        ref = provider("shared-structure", mid, fl)
-                        if ref is not None and getattr(ref, "clean_mask", None) is not None:
-                            prepared = prepare(ref.clean_mask)
-                    except Exception:
-                        prepared = None
-                if prepared is not None:
-                    floor_items[str(mid)] = prepared
-            if floor_items:
-                prepared_by_floor[fl] = floor_items
-        return cls.from_prepared(prepared_by_floor)
+            floor_map = cls._load_floor_descriptors(ids, fl, provider, fast_source=fast_source)
+            if floor_map:
+                entries[fl] = floor_map
+        return cls(entries)
 
     def has_floor(self, floor):
-        return str(floor) in self._by_floor
+        return self._ensure_floor(floor) is not None
 
     def score_candidates(self, frame, floor, candidate_ids, *, context=None):
         """Score candidate maps in milliseconds using invariant corner constellations."""
-        bucket = self._by_floor.get(str(floor))
+        bucket = self._ensure_floor(floor)
         if bucket is None or not candidate_ids:
             return {}
         if context is None:
             from single_map_structure import current_geometry
-            context = current_geometry(frame)
+            context = current_geometry(frame, observation_bounds=(0, 0, frame.shape[1], frame.shape[0]))
         if context is None:
             return {}
         query = _query_descriptors(frame, context)

@@ -128,5 +128,65 @@ class S1PreLockToastTests(unittest.TestCase):
         self.assertTrue(all(n[2] == "info" for n in progress_notices))
 
 
+class AlignmentSpeedContractTests(unittest.TestCase):
+    def test_generic_index_lazy_reads_only_npz_chains_rays_for_requested_floor(self):
+        import io
+        from types import SimpleNamespace
+        from generic_structure_index import GenericStructureIndex
+
+        buf = io.BytesIO()
+        chains = np.array([[[0, 0], [10, 0], [10, 20]]], dtype=np.float32)
+        rays = np.array([[[-1, 0], [0, 1]]], dtype=np.float32)
+        np.savez_compressed(buf, chains=chains, rays=rays)
+        raw_npz = buf.getvalue()
+
+        read_paths = []
+        fast_source = SimpleNamespace(
+            entries={
+                ("shared-structure", "m1", "-1"): SimpleNamespace(path="m1-f1-fast.npz"),
+                ("shared-structure", "m1", "-2"): SimpleNamespace(path="m1-f2-fast.npz"),
+            },
+            view=SimpleNamespace(path=lambda rel: rel),
+            reader=lambda path: (read_paths.append(path) or raw_npz),
+        )
+        provider_calls = []
+        index = GenericStructureIndex.from_provider(
+            ("m1",), ("-1", "-2"),
+            lambda *a: provider_calls.append(a),
+            fast_source=fast_source,
+            lazy=True,
+        )
+        # Construction touches zero floors.
+        self.assertEqual(read_paths, [])
+        self.assertEqual(provider_calls, [])
+        # Querying floor -1 loads ONLY floor -1 from npz without touching clean_mask provider or floor -2.
+        self.assertTrue(index.has_floor("-1"))
+        self.assertEqual(read_paths, ["m1-f1-fast.npz"])
+        self.assertEqual(provider_calls, [])
+
+    def test_pose_prior_fallback_uses_scale_hint_when_chain_seeds_empty(self):
+        import fast_structure_alignment as fast
+        from types import SimpleNamespace
+
+        frame = np.zeros((40, 40, 3), dtype=np.uint8)
+        context = {"observed": np.ones((40, 40), dtype=np.uint8)}
+        prepared = SimpleNamespace(pitch=0.0, chains=np.empty((0, 3, 2), np.float32),
+                                   rays=np.empty((0, 2, 2), np.float32), shape=(40, 40))
+        grid_calls = []
+
+        def fake_grid(coarse, prep, scale, seed, cancelled):
+            grid_calls.append((scale, seed))
+            return []
+
+        with patch("single_map_structure.current_part", return_value=context["observed"]), \
+             patch.object(fast, "sample_edges", return_value=np.zeros((50, 2), np.float32)), \
+             patch.object(fast, "_chain_seeds", return_value=[]), \
+             patch.object(fast, "_grid", side_effect=fake_grid):
+            fast.propose(frame, None, prepared, prior=None, context=context, scale_hint=0.42)
+        self.assertEqual(len(grid_calls), 1)
+        self.assertAlmostEqual(grid_calls[0][0], 0.42, places=5)
+        self.assertIsNone(grid_calls[0][1])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1129,6 +1129,8 @@ class LiveRuntime:
 
     def _attach_identity_engine(self, engine):
         from client_providers import bind_identity_context
+        engine._qt_grid_runtime = self.grid_runtime
+        engine._qt_settings = self._settings
         def current(field):
             with self._lock:
                 return getattr(self, field) if engine is self._engine else None
@@ -1466,6 +1468,8 @@ class LiveRuntime:
                 # No catalogue ordering or identity competition after the round
                 # lock. Reuse the guarded fit/material pipeline for this ID only.
                 order, ordering = (pool.locked_id,), dict(reason="preferred-material-id-first")
+            elif private_enabled and not recovery_scan and len(pool.remaining) == 1:
+                order, ordering = tuple(pool.remaining), dict(reason="preferred-material-id-first")
             else:
                 order, ordering = candidate_order(engine, catalog, str(floor), snapshot, prior,
                     self._recorded_s1_scan_order, self._recorded_s1_priority_index, priority_handles)

@@ -897,8 +897,10 @@ class EngineFactories(dict):
                                first_material_committed=None, pose_priors=None, collect_fit_diagnostics=False):
                 # Lazy import keeps provider construction free of live IO.
                 from client_live_runtime import _AlignmentHost
-                host = _AlignmentHost(engine, pose_priors=pose_priors,
-                    collect_fit_diagnostics=collect_fit_diagnostics)
+                host = _AlignmentHost(engine, settings=getattr(engine, '_qt_settings', None),
+                    pose_priors=pose_priors,
+                    collect_fit_diagnostics=collect_fit_diagnostics,
+                    grid_runtime=getattr(engine, '_qt_grid_runtime', None))
                 fixed = private_coordinate_report is not None and private_coordinate_report.get("coordinateVerified") is True
                 fit = (lambda f, mid, fl, cancel, **kw: private_observer.fixed_fit(
                     f, mid, fl, cancel, report=private_coordinate_report, **kw)) if fixed else host.fit
