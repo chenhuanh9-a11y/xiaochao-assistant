@@ -1555,6 +1555,15 @@ class LiveRuntime:
                     structureScanComplete=report["scanComplete"], structureScanElapsedSeconds=report["elapsedSeconds"],
                     candidateReuse=report.get("candidateReuse", "none"), scanSkipped=report.get("scanSkipped", False))
             else:
+                with self._lock:
+                    if current() and self._failure_opening is not None and not self._failure_opening.get("closed"):
+                        self._fit_reporting.failure(
+                            self._fit_reporting_scope(floor=floor),
+                            last_material_reason,
+                            self._monotonic(),
+                            {"availability": "s1-structure-scan"},
+                        )
+                        self._failure_opening["lastReason"] = str(last_material_reason)
                 result = self._receipt(action, payload, success=False, reason=last_material_reason,
                     posePending=True, identityUnresolved=not bool(self._s1_round_locked_map()))
                 # Reuse this ticket's guarded capture and the existing bounded
@@ -4164,12 +4173,19 @@ class LiveRuntime:
                     if obsolete() or not self._capture_is_current(captured.context, capture_generation):
                         return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                 observation, floor, read = self._observe(engine, frame)
+                check_locked_drift = None
                 with self._lock:
                     if obsolete() or not self._capture_is_current(captured.context, capture_generation):
                         return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
                     if read.get("mapOpen") is False:
-                        self.invalidate("map-closed")
-                        return self._receipt(action, payload, success=False, reason="candidate-map-closed")
+                        from session_state_machine import map_probe_transition
+                        self._probe_misses, transition = map_probe_transition(self._map_open, self._probe_misses, False)
+                        if transition == "close":
+                            self.invalidate("map-closed")
+                            return self._receipt(action, payload, success=False, reason="candidate-map-closed")
+                        return self._receipt(action, payload, success=False, reason="map-not-observed",
+                            probeMisses=self._probe_misses)
+                    self._probe_misses = 0
                     if floor is None:
                         self._retire_material_owner(self._refresh_render_owner(), "candidate-floor-unavailable")
                         return self._receipt(action, payload, success=False, reason="candidate-floor-unavailable")
@@ -4185,10 +4201,43 @@ class LiveRuntime:
                         and not pool.locked_id and len(pool.remaining) == 1
                         and self._render is not None and self._render.get("mapId") == pool.remaining[0])
                     if str(floor) == self._floor and self._render is not None and not singleton_confirm_needed:
+                        locked_id = self._s1_round_locked_map()
+                        prev_obs = self._last_observation
+                        prev_frame = prev_obs.get("frame") if isinstance(prev_obs, dict) else None
+                        if (locked_id and not self._transient_cycle_current()
+                                and self._render.get("mapId") == locked_id
+                                and self._render.get("canonicalMatrix") is not None
+                                and prev_frame is not None and prev_frame.shape == frame.shape):
+                            check_locked_drift = (locked_id, self._render["canonicalMatrix"], prev_frame, self._group)
+                        else:
+                            return self._receipt(action, payload, success=True, reason="candidate-floor-current", unchanged=True)
+                    elif str(floor) != self._floor:
+                        self._revoke_render("candidate-floor-changed")
+                    elif self._render is None:
+                        self._revoke_render("candidate-pose-unavailable")
+                if check_locked_drift is not None:
+                    import numpy as np
+                    locked_id, canonical_raw, prev_frame, drift_group = check_locked_drift
+                    if np.array_equal(prev_frame, frame):
                         return self._receipt(action, payload, success=True, reason="candidate-floor-current", unchanged=True)
-                    self._revoke_render("candidate-floor-changed" if str(floor) != self._floor
-                        else "candidate-singleton-confirm" if singleton_confirm_needed
-                        else "candidate-pose-unavailable")
+                    drifted = False
+                    try:
+                        from alignment_observation import rendered_profile_residual_is_verified
+                        basis = engine.qt_adapters.matrix_profile_to_canonical("shared-structure", locked_id, floor)
+                        if basis is not None:
+                            host = _AlignmentHost(engine, drift_group, self._settings, grid_runtime=self.grid_runtime)
+                            source_matrix = np.asarray(canonical_raw, np.float64) @ np.asarray(basis, np.float64)
+                            residual, _ = host._canonical_geometry_current_frame_residual(
+                                frame, locked_id, floor, "shared-structure", source_matrix, None)
+                            if (residual.get("reason") != "shared-reference-unavailable"
+                                    and not rendered_profile_residual_is_verified(residual)):
+                                drifted = True
+                    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+                        drifted = False
+                    if obsolete():
+                        return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
+                    if not drifted:
+                        return self._receipt(action, payload, success=True, reason="candidate-floor-current", unchanged=True)
                 return self._capture_and_solve("capture_now", payload, cancelled,
                     prepared=(captured, observation, floor, capture_generation, read), expected_epoch=epoch)
             except Exception as error:

@@ -257,9 +257,13 @@ class SettingsService(QObject):
     def _season_options(self):
         rows = season_options()
         if self._available_contexts is not None:
+            filtered = []
             for row in rows:
                 for mode, capability in row['capabilities'].items():
                     capability['available'] = context_key(mode, row['id']) in self._available_contexts
+                if any(capability['available'] for capability in row['capabilities'].values()):
+                    filtered.append(row)
+            return filtered
         return rows
 
     seasonOptions = Property('QVariantList', _season_options, notify=seasonOptionsChanged)

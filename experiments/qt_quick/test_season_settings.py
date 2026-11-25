@@ -104,6 +104,7 @@ class SeasonPersistenceTests(SettingsTests):
         service = self.service()
         original = service.values
         service.setAvailableContexts([])
+        self.assertEqual(service.seasonOptions, [])
         self.assertFalse(service.setGameContext('s1', 'difficult'))
         self.assertFalse(service.setValue('gameMode', 'difficult'))
         self.assertEqual(service.values, original)
@@ -111,12 +112,13 @@ class SeasonPersistenceTests(SettingsTests):
         # The final pair must not visit an unavailable intermediate context.
         self.assertTrue(service.setGameContext('s1', 'difficult'))
         self.assertEqual((service.values['gameSeason'], service.values['gameMode']), ('s1', 'difficult'))
+        self.assertEqual([row['id'] for row in service.seasonOptions], ['s1'])
         flags = {row['id'] + ':' + mode: value['available']
                  for row in service.seasonOptions for mode, value in row['capabilities'].items()}
         self.assertTrue(flags['s1:difficult'])
         self.assertFalse(flags['s1:nightmare'])
         service.setAvailableContexts([])
-        self.assertFalse(next(row for row in service.seasonOptions if row['id'] == 's1')['capabilities']['difficult']['available'])
+        self.assertEqual(service.seasonOptions, [])
         self.assertEqual((service.values['gameSeason'], service.values['gameMode']), ('s1', 'difficult'))
 
 

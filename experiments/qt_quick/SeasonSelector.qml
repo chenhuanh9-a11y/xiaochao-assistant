@@ -15,7 +15,7 @@ Item {
     signal contextRequested(string season, string mode)
     // Keep confirmed season names readable in the narrow floating controls.
     readonly property real seasonMinimumWidth: {
-        var textWidth = seasonFontMetrics.advanceWidth("选择赛季")
+        var textWidth = Math.max(seasonFontMetrics.advanceWidth("选择赛季"), seasonFontMetrics.advanceWidth("未导入结构包"))
         for (var i = 0; i < seasons.length; i++)
             textWidth = Math.max(textWidth, seasonFontMetrics.advanceWidth(seasons[i].label))
         return Math.max(130, Math.ceil(textWidth) + seasonPicker.leftPadding + seasonPicker.rightPadding + 2)
@@ -112,7 +112,8 @@ Item {
             Layout.columnSpan: root.stacked ? root.columns : 1
             model: root.seasons; textRole: "label"; valueRole: "id"
             currentIndex: root.seasonIndex(root.season)
-            displayText: currentIndex < 0 ? "选择赛季" : currentText
+            displayText: root.seasons.length === 0 ? "未导入结构包" : (currentIndex < 0 ? "选择赛季" : currentText)
+            enabled: root.seasons.length > 0
             Accessible.name: "赛季"
             delegate: ItemDelegate {
                 required property var modelData
@@ -135,7 +136,7 @@ Item {
             objectName: root.nightmareObjectName
             text: "噩梦"; implicitWidth: 64; implicitHeight: 34
             enabled: root.contextAvailable(root.season, "nightmare")
-            selected: root.mode === "nightmare"
+            selected: root.seasons.length > 0 && root.mode === "nightmare"
             Accessible.name: text + (selected ? " · 已选" : "")
             onClicked: root.requestContext(root.season, "nightmare")
         }
@@ -143,7 +144,7 @@ Item {
             objectName: root.difficultObjectName
             text: "困难"; implicitWidth: 64; implicitHeight: 34
             enabled: root.contextAvailable(root.season, "difficult")
-            selected: root.mode === "difficult"
+            selected: root.seasons.length > 0 && root.mode === "difficult"
             Accessible.name: text + (selected ? " · 已选" : "")
             onClicked: root.requestContext(root.season, "difficult")
         }

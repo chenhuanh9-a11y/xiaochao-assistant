@@ -251,7 +251,7 @@ Item {
                                 }
                             }
                         }
-                        Label { visible: infoService.homePreviews.length === 0; text: !homeContextSelector.registeredContext(session.appliedSeason, session.appliedMode) ? homeContextSelector.seasonLabel(session.appliedSeason) + " 的地图还没备齐。" : "还没有可预览的地图。导入图包后，会显示在这里。"; color: "#567096"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                        Label { visible: infoService.homePreviews.length === 0; text: homeContextSelector.seasons.length === 0 ? "还没有导入结构包，请先前往“图库管理”导入结构包。" : !homeContextSelector.registeredContext(session.appliedSeason, session.appliedMode) ? homeContextSelector.seasonLabel(session.appliedSeason) + " 的地图还没备齐。" : "还没有可预览的地图。导入图包后，会显示在这里。"; color: "#567096"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                     }
                 }
             }

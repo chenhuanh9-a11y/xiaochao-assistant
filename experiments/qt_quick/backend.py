@@ -168,7 +168,16 @@ class Backend(QObject):
 
     def _season_options(self):
         from season_context import season_options
-        return season_options()
+        rows = season_options()
+        if callable(self._context_available):
+            filtered = []
+            for row in rows:
+                for mode, capability in row["capabilities"].items():
+                    capability["available"] = bool(self._context_available(row["id"], mode))
+                if any(capability["available"] for capability in row["capabilities"].values()):
+                    filtered.append(row)
+            return filtered
+        return rows
 
     def _floor_options(self):
         if self.resource_resolver is not None:

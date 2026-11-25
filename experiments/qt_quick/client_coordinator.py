@@ -2062,6 +2062,16 @@ class ClientCoordinator(QObject):
 
     def _notify_first_valid_output(self, public):
         if public.get("provisional") or public.get("identityPhase") in {"UNLOCKED", "GROUP_LOCKED"}:
+            if (public.get("candidateDisplayOnly") and public.get("s1FormalRoundLock")
+                    and not public.get("identityLocked")):
+                provisional_key = ("provisional-preview", public.get("roundId"), public.get("mapId"))
+                if provisional_key not in self._notified:
+                    self._notified.add(provisional_key)
+                    remaining = int(public.get("s1RemainingCandidateCount") or 0)
+                    detail = (f"暂按 {public.get('mapId')} 贴合（剩余 {remaining} 个候选，继续探索将自动确认）"
+                              if remaining > 1 else
+                              f"暂按 {public.get('mapId')} 贴合，正在确认唯一地图")
+                    self.notificationRequested.emit("暂用候选贴合", detail, "info")
             return
         success_key = ("success", public.get("roundId"), public.get("mapId"))
         if success_key not in self._notified:
@@ -2502,7 +2512,20 @@ class ClientCoordinator(QObject):
                 remaining = int(state.get("s1RemainingCandidateCount", 0))
                 self._message = "正在核对地图 · 剩余 " + str(remaining) + " 个候选"
                 self.changed.emit()
-                if (remaining == 1 and state.get("mapOpen") and self._bound
+                if remaining > 0:
+                    pool_notice_key = ("s1-pool-progress", state.get("roundId"),
+                                       event.get("privatePoolId"), remaining)
+                    if pool_notice_key not in self._notified:
+                        self._notified.add(pool_notice_key)
+                        if event.get("reason") == "s1-pool-created":
+                            detail = f"已开始核对结构（共 {remaining} 个候选），继续探索将自动确认"
+                        elif remaining == 1:
+                            detail = "已缩小至最后 1 个候选，正在最终核对当前画面"
+                        else:
+                            detail = f"已缩小范围 · 剩余 {remaining} 个候选地图"
+                        self.notificationRequested.emit("正在核对地图", detail, "info")
+                should_probe = remaining == 1 or (remaining > 1 and not state.get("displayAuthorized"))
+                if (should_probe and state.get("mapOpen") and self._bound
                         and not self.session.busy and self._pointer_drag is None
                         and not self.resources.busy and not self.resources.pendingKind
                         and not state.get("resourceLocked")
@@ -2581,7 +2604,8 @@ class ClientCoordinator(QObject):
                     or "observe_candidate_floor" not in state.get("availableCommands", ())):
                 return
             now = time.monotonic()
-            interval = .15 if (state.get("floorRequired") or getattr(self.runtime, "has_pending_floor_intent", lambda: False)()) else .5
+            interval = (.15 if (state.get("floorRequired") or getattr(self.runtime, "has_pending_floor_intent", lambda: False)())
+                        else .25 if not state.get("displayAuthorized") else .5)
             if now - self._last_manual_floor_observation_at < interval:
                 return
             try:
@@ -2609,7 +2633,8 @@ class ClientCoordinator(QObject):
                 if not recovery.get("due"):
                     return
             now = time.monotonic()
-            interval = .15 if (state.get("floorRequired") or getattr(self.runtime, "has_pending_floor_intent", lambda: False)()) else .5
+            interval = (.15 if (state.get("floorRequired") or getattr(self.runtime, "has_pending_floor_intent", lambda: False)())
+                        else .25 if not state.get("displayAuthorized") else .5)
             if now - self._last_manual_floor_observation_at < interval:
                 return
             try:
