@@ -158,7 +158,7 @@ class _PreparationHost:
 class _AlignmentHost:
     """Only explicit resource/pose inputs needed by the unchanged shared solvers."""
     def __init__(self, engine, group=None, settings=None, *, steady=None, pose_priors=None,
-                 collect_fit_diagnostics=False, grid_runtime=None):
+                 collect_fit_diagnostics=False, grid_runtime=None, s1_steady=None):
         self.engine, self.pack = engine, engine.pack
         self.author_coordinate_adapters = engine.qt_adapters
         self.group = group
@@ -166,6 +166,7 @@ class _AlignmentHost:
         self.settings = dict(settings or {})
         self.events = []
         self.steady = steady
+        self.s1_steady = s1_steady
         self.pose_priors = dict(pose_priors or {})
         self.collect_fit_diagnostics = collect_fit_diagnostics
         self.grid_runtime = grid_runtime
@@ -389,6 +390,12 @@ class _AlignmentHost:
                 if rejected is not None:
                     return rejected
             return fit
+        # Unified S0-grade steady fast path (idvb0059 VPSG3) before full-frame
+        # contour extraction. Rejections cleanly fall back to fast/initial fit.
+        if self.s1_steady is not None and bool(self.settings.get("idvb0059Enabled", True)):
+            steady_fit = self.s1_steady(self, frame, map_id, floor, cancelled)
+            if steady_fit is not None:
+                return steady_fit
         # Preserve the existing result whenever the largest island has usable
         # structure (including wall-only success). Only an unsupported failure
         # can trigger the wider search for map pixels behind brighter scenery.
@@ -903,6 +910,7 @@ class LiveRuntime:
         self._clear_s1_reference()
         self._s1_candidate_preference = None
         self._s1_candidate_pose_hint = None
+        self._s1_steady_scales = {}
         self._clear_private_pool()
         old_structure = self._s1_structure_session
         if old_structure is not None:
@@ -1016,6 +1024,23 @@ class LiveRuntime:
                     self._mode, session.catalog.resource_key, proposal["mapId"], str(proposal["floor"]),
                     proposal["candidateScope"], self._render["frameId"], tuple(map(tuple, matrix)), True, True)
                     if matrix is not None and verified_pose(proposal["fit"]) else None)
+                if self._s1_candidate_pose_hint is not None:
+                    # Keep steady-scale cache scoped only to the currently acknowledged map.
+                    mid = str(proposal["mapId"])
+                    for stale_key in [k for k in self._s1_steady_scales if k[0] != mid]:
+                        self._s1_steady_scales.pop(stale_key, None)
+                    steady_key = (mid, str(proposal["floor"]), tuple(proposal["frame"].shape[:2]),
+                                  self._steady_signature(proposal["captured"]))
+                    existing = self._s1_steady_scales.get(steady_key)
+                    prev_coverage = (existing.get("coverage")
+                                     if existing and existing.get("scope") == proposal["candidateScope"]
+                                     and existing.get("resource_key") == session.catalog.resource_key else None)
+                    self._s1_steady_scales[steady_key] = dict(
+                        scale=float(matrix[0, 0]),
+                        coverage=proposal["fit"].get("idvb0059Coverage", prev_coverage),
+                        scope=proposal["candidateScope"],
+                        resource_key=session.catalog.resource_key,
+                    )
             proposal["accepted"] = True
             candidate_only = proposal.get("candidateOnly", False)
         if candidate_only:
@@ -1246,6 +1271,7 @@ class LiveRuntime:
             preference_scope = self._s1_candidate_preference_scope(captured, catalog)
             if self._s1_candidate_preference is not None and self._s1_candidate_preference[0] != preference_scope:
                 self._s1_candidate_preference = None
+                self._s1_steady_scales.clear()
                 self._clear_private_pool()
             preferred = self._s1_candidate_preference[1] if self._s1_candidate_preference is not None else None
             prior_source = self._s1_candidate_pose_hint if (
@@ -1464,12 +1490,23 @@ class LiveRuntime:
                             prior_reason = "pose-prior-scope-rejected"
                 except (ValueError, TypeError, KeyError, OSError):
                     pass  # A missing/unbound hint leaves the original full fit.
+            allow_preferred_fast = (
+                not recovery_scan
+                and payload.get("forceCatalogue") is not True
+                and action not in ("reselect_map", "map_reselection")
+            )
             if private_enabled and pool.retain_locked_identity and pool.locked_id:
                 # No catalogue ordering or identity competition after the round
                 # lock. Reuse the guarded fit/material pipeline for this ID only.
                 order, ordering = (pool.locked_id,), dict(reason="preferred-material-id-first")
             elif private_enabled and not recovery_scan and len(pool.remaining) == 1:
                 order, ordering = tuple(pool.remaining), dict(reason="preferred-material-id-first")
+            elif preferred is not None and allow_preferred_fast:
+                # Decouple alignment from recognition: try the previously
+                # delivered map first without paying candidate_order latency.
+                order = (preferred,) + tuple(mid for mid in catalog.map_ids if mid != preferred)
+                ordering = dict(policy=self._recorded_s1_scan_order, usedPriority=False,
+                                reason="preferred-material-id-first")
             else:
                 order, ordering = candidate_order(engine, catalog, str(floor), snapshot, prior,
                     self._recorded_s1_scan_order, self._recorded_s1_priority_index, priority_handles)
@@ -1487,6 +1524,86 @@ class LiveRuntime:
                 candidateOrder=list(order), ordering=ordering, budgetSeconds=self._recorded_s1_scan_budget,
                 rawFrameDigest=digest, shapeSnapshotId=snapshot.sha256, frameShape=list(shape),
                 clientDimensions=list(dimensions))
+            steady_sig = self._steady_signature(captured)
+
+            def _s1_steady_probe(host, frame_in, map_id, floor_in, cancel_fn):
+                import math
+                import numpy as np
+                import idvb0059_runtime
+                if not idvb0059_runtime.enabled():
+                    return None
+                steady_key = (str(map_id), str(floor_in), tuple(frame_in.shape[:2]), steady_sig)
+                with self._lock:
+                    entry = self._s1_steady_scales.get(steady_key)
+                    if (entry is None or entry.get("scope") != preference_scope
+                            or entry.get("resource_key") != catalog.resource_key):
+                        return None
+                    scale_val = entry["scale"]
+                    coverage_val = copy.deepcopy(entry.get("coverage"))
+                reference = host._shared_structure_reference("shared-structure", map_id, floor_in)
+                if reference is None:
+                    return None
+                from idvb0059_steady import solve as steady_solve
+                from author_display_policy import shared_route_validation_spec
+                t0 = time.perf_counter()
+                res = steady_solve(frame_in, reference, scale_val, cancelled=cancel_fn,
+                                   coverage_state=coverage_val)
+                diagnostics = dict(res.get("diagnostics") or {})
+                host._log("idvb0059-steady", mapId=map_id, floor=str(floor_in),
+                          accepted=res.get("accepted"), reason=res.get("reason"),
+                          diagnostics=diagnostics)
+                if cancel_fn and cancel_fn():
+                    return dict(success=False, reason="structure-work-obsolete")
+                if not res.get("accepted"):
+                    return None
+                matrix = np.eye(3, dtype=np.float64)
+                matrix[:2] = res["matrixSourceToClient"]
+                if not np.isfinite(matrix).all():
+                    return None
+                spec = shared_route_validation_spec(host, "shared-structure", map_id, floor_in,
+                                                    matrix, reference.clean_mask)
+                if (spec is None or not spec.get("profileBridgeVerified")
+                        or not spec.get("coordinatePackId")
+                        or spec.get("basis") != "game-rendered-shared-structure"):
+                    return None
+                fh, fw = frame_in.shape[:2]
+                rh, rw = reference.clean_mask.shape[:2]
+                corners = np.array([[0, 0, 1], [rw, 0, 1], [0, rh, 1], [rw, rh, 1]], dtype=np.float64) @ matrix.T
+                x0 = max(0, min(fw - 1, int(math.floor(float(corners[:, 0].min())))))
+                y0 = max(0, min(fh - 1, int(math.floor(float(corners[:, 1].min())))))
+                x1 = max(x0 + 1, min(fw, int(math.ceil(float(corners[:, 0].max())))))
+                y1 = max(y0 + 1, min(fh, int(math.ceil(float(corners[:, 1].max())))))
+                obs_bounds = (x0, y0, x1, y1)
+                obs_comp = dict(bounds=obs_bounds, center=((x0 + x1) / 2.0, (y0 + y1) / 2.0),
+                                x=x0, y=y0, width=x1 - x0, height=y1 - y0, area=(x1 - x0) * (y1 - y0))
+                residual = dict(
+                    verified=True,
+                    validationBasis="shared-canonical-geometry-current-frame",
+                    validationSensorBasis="game-rendered-shared-structure",
+                    verificationMethod="idvb0059-vpsg3-current-frame",
+                    coordinatePackId=spec["coordinatePackId"],
+                    poseVerifiedAgainstCanonicalGeometry=True,
+                    profileRenderDerivedFromCanonical=True,
+                    poseVerifiedAgainstSharedStructure=True,
+                    poseVerifiedAgainstRenderedProfile=False,
+                    routeProfileIndependent=True,
+                    idvb0059=diagnostics,
+                )
+                return dict(
+                    success=True,
+                    reason="idvb0059-steady",
+                    strategy="idvb0059-steady",
+                    matrixSourceToClient=matrix,
+                    coordinateSpace="shared-structure-to-client",
+                    routeProfileId="shared-structure",
+                    selectedRouteCurrentFrameResidual=residual,
+                    observationBounds=obs_bounds,
+                    observationComponent=obs_comp,
+                    idvb0059Diagnostics=diagnostics,
+                    idvb0059Coverage=res.get("coverageState"),
+                    totalMs=(time.perf_counter() - t0) * 1000,
+                )
+
             def scan_current():
                 nonlocal scan_plan, scan_revision
                 with self._lock:
@@ -1517,10 +1634,14 @@ class LiveRuntime:
                         privatePoolRevision=pool.revision if private_enabled else None,
                         privateExperimentalLocked=bool(private_enabled and pool.locked_id),
                         privateRecoveryPending=recovery_scan)
-                report = engine.qt_s1_structure_scan(frame, floor=str(floor), floor_source="current-frame-verified",
-                    cancelled=obsolete, budget_seconds=self._recorded_s1_scan_budget,
-                    on_progress=publish, candidate_order=order, preferred_map_id=preferred,
-                    preferred_material_committed=preferred_material_committed, **options)
+                engine._qt_s1_steady = _s1_steady_probe if allow_preferred_fast else None
+                try:
+                    report = engine.qt_s1_structure_scan(frame, floor=str(floor), floor_source="current-frame-verified",
+                        cancelled=obsolete, budget_seconds=self._recorded_s1_scan_budget,
+                        on_progress=publish, candidate_order=order, preferred_map_id=preferred,
+                        preferred_material_committed=preferred_material_committed, **options)
+                finally:
+                    engine._qt_s1_steady = None
                 if _test_evidence_active() and type(report.get('fitEvidence')) is dict:
                     _test_evidence('fit-evidence', frame, dict(report['fitEvidence'],
                         priorBinding=prior_binding, priorReason=prior_reason))
@@ -1751,6 +1872,7 @@ class LiveRuntime:
                         if (row is not None and row.get("candidateDisplayOnly")
                                 and row.get("mapId") not in pool.remaining):
                             self._s1_candidate_preference = self._s1_candidate_pose_hint = None
+                            self._s1_steady_scales.clear()
                             self._revoke_render("s1-candidate-excluded")
                         self._notify("s1-candidate-pool-changed", reason=reason,
                             **pool.snapshot(), privateResourceDigest=catalog.resource_key)
@@ -1795,6 +1917,7 @@ class LiveRuntime:
         """
         self._clear_s1_reference()
         self._s1_candidate_preference = self._s1_candidate_pose_hint = None
+        self._s1_steady_scales.clear()
         self._remember_proposals = {token: proposal for token, proposal in self._remember_proposals.items()
             if not proposal.get("candidateOnly")}
         session, ticket = self._s1_structure_session, self._s1_structure_ticket
@@ -3601,6 +3724,7 @@ class LiveRuntime:
                     # retire stale presentation work through its own generation,
                     # without clearing the native round pool or pose proposals.
                     self._s1_candidate_pose_hint = None
+                    self._s1_steady_scales.clear()
                     self.invalidate("s1-candidate-settings-changed")
             if variant_changed or numbers_display_changed:
                 self._display_generation = self._display_generation + 1

@@ -364,14 +364,15 @@ def propose(frame, reference, prepared, *, prior=None, cancelled=None, context=N
         if (not rows or rows[0][0] < .50) and not local_only:
             rows.extend(grid(float(prior[0,0]), None))
     else:
-        seeds = _chain_seeds(frame, context, prepared, cancelled)
-        if seeds:
-            scales = np.asarray([r[0] for r in seeds], np.float32)
-            tt = np.asarray([r[1] for r in seeds], np.float32)
-            result = scores(coarse, prepared, scales, tt)
-            rows.extend((float(v), float(s), t) for v,s,t in zip(result,scales,tt))
-        if max((r[0] for r in rows), default=0.0) < .50 and scale_hint is not None and .03 <= float(scale_hint) <= 6.:
+        if scale_hint is not None and .03 <= float(scale_hint) <= 6.:
             rows.extend(grid(float(scale_hint), None))
+        if max((r[0] for r in rows), default=0.0) < .50:
+            seeds = _chain_seeds(frame, context, prepared, cancelled)
+            if seeds:
+                scales = np.asarray([r[0] for r in seeds], np.float32)
+                tt = np.asarray([r[1] for r in seeds], np.float32)
+                result = scores(coarse, prepared, scales, tt)
+                rows.extend((float(v), float(s), t) for v,s,t in zip(result,scales,tt))
         if not rows:
             pitch = _pitch(edge)
             if pitch > 0 and prepared.pitch > 0:

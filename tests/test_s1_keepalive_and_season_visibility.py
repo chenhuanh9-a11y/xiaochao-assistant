@@ -187,6 +187,124 @@ class AlignmentSpeedContractTests(unittest.TestCase):
         self.assertAlmostEqual(grid_calls[0][0], 0.42, places=5)
         self.assertIsNone(grid_calls[0][1])
 
+    def test_known_scale_grid_runs_before_chain_seeds_and_skips_chains_on_strong_hit(self):
+        import fast_structure_alignment as fast
+        from types import SimpleNamespace
+
+        frame = np.zeros((40, 40, 3), dtype=np.uint8)
+        context = {"observed": np.ones((40, 40), dtype=np.uint8)}
+        prepared = SimpleNamespace(pitch=0.0, chains=np.empty((0, 3, 2), np.float32),
+                                   rays=np.empty((0, 2, 2), np.float32), shape=(40, 40))
+
+        def strong_grid(coarse, prep, scale, seed, cancelled):
+            return [(0.75, scale, np.array([10.0, 20.0], dtype=np.float64))]
+
+        with patch("single_map_structure.current_part", return_value=context["observed"]), \
+             patch.object(fast, "sample_edges", return_value=np.zeros((50, 2), np.float32)), \
+             patch.object(fast, "_grid", side_effect=strong_grid), \
+             patch.object(fast, "refine", side_effect=lambda pts, prep, s, t, **kw: (0.75, s, t)), \
+             patch.object(fast, "_chain_seeds", side_effect=AssertionError("chains should be skipped")):
+            proposals, _, diag = fast.propose(frame, None, prepared, prior=None, context=context, scale_hint=0.55)
+        self.assertEqual(len(proposals), 1)
+        self.assertEqual(diag["reason"], "fast-proposal")
+        self.assertAlmostEqual(proposals[0][1], 0.55, places=4)
+
+    def test_alignment_host_runs_s1_steady_before_current_geometry_and_falls_back(self):
+        from types import SimpleNamespace
+        from client_live_runtime import _AlignmentHost
+
+        frame = np.zeros((64, 64, 3), dtype=np.uint8)
+        engine = SimpleNamespace(
+            pack=SimpleNamespace(mode="nightmare"),
+            qt_adapters=None,
+            qt_season="s1",
+            qt_shared_provider=lambda *a: None,
+        )
+        expected = dict(success=True, reason="idvb0059-steady", strategy="idvb0059-steady")
+
+        # 1) Steady hit skips current_geometry completely.
+        steady_calls = []
+        def steady_hit(host, f, mid, fl, cancel):
+            steady_calls.append((mid, fl))
+            return expected
+
+        host = _AlignmentHost(engine, settings={"idvb0059Enabled": True}, s1_steady=steady_hit)
+        with patch("single_map_structure.current_geometry", side_effect=AssertionError("must not extract geometry on steady hit")):
+            res = host._fit_owned(frame, "m1", "-1", None, observation_bounds=(0, 0, 64, 64))
+        self.assertIs(res, expected)
+        self.assertEqual(steady_calls, [("m1", "-1")])
+
+        # 2) Steady rejection cleanly falls back to current_geometry.
+        geom_called = []
+        host_miss = _AlignmentHost(engine, settings={"idvb0059Enabled": True},
+                                   s1_steady=lambda *a: None)
+        with patch("single_map_structure.current_geometry",
+                   side_effect=lambda *a, **kw: (geom_called.append(True) or None)), \
+             patch("nightmare_candidate.visible_map_components", return_value=[]):
+            res_miss = host_miss._fit_owned(frame, "m1", "-1", None, observation_bounds=(0, 0, 64, 64))
+        self.assertTrue(geom_called)
+        self.assertFalse(res_miss["success"])
+
+        # 3) Setting idvb0059Enabled=False bypasses s1_steady completely.
+        host_off = _AlignmentHost(engine, settings={"idvb0059Enabled": False},
+                                  s1_steady=lambda *a: (_ for _ in ()).throw(AssertionError("steady disabled")))
+        with patch("single_map_structure.current_geometry", return_value=None), \
+             patch("nightmare_candidate.visible_map_components", return_value=[]):
+            res_off = host_off._fit_owned(frame, "m1", "-1", None, observation_bounds=(0, 0, 64, 64))
+        self.assertFalse(res_off["success"])
+
+    def test_prelock_preferred_reopen_decouples_recognition_and_wires_steady_probe(self):
+        from s1_structure_selection import StructureCandidateScanner
+        harness = native.NativeCandidateContracts()
+        harness.setUp()
+        self.addCleanup(harness.doCleanups)
+
+        steady_seen = []
+        def run(frame, mid, floor, cancelled, **kwargs):
+            return copy.deepcopy(harness.fit)
+
+        def scan_stub(frame, **kwargs):
+            steady_seen.append(callable(getattr(harness.registry.engine, "_qt_s1_steady", None)))
+            return StructureCandidateScanner(harness.registry.catalog, run).scan(frame, **kwargs)
+
+        harness.registry.engine.qt_s1_structure_scan = scan_stub
+        harness.runtime.set_event_callback(
+            lambda row: harness.runtime.acknowledge_render_material(row["token"])
+            if row["event"] == "render-ready" else None
+        )
+        # First opening populates preference and steady scale cache.
+        first = harness.show()
+        self.assertTrue(first["token"])
+        self.assertTrue(harness.runtime._s1_steady_scales)
+        self.assertIsNone(getattr(harness.registry.engine, "_qt_s1_steady", None))
+
+        # Second opening (still unlocked) skips candidate_order and attaches _qt_s1_steady.
+        harness.runtime.dispatch("close_map")
+        harness.capture.frame[0, 0, 0] += 1
+        with patch("s1_stream_priority.candidate_order",
+                   side_effect=AssertionError("candidate_order must be skipped when preferred is set")):
+            reopened = harness.runtime.dispatch("capture_now")
+        self.assertTrue(reopened["success"], reopened)
+        self.assertEqual(steady_seen, [True, True])
+        self.assertIsNone(getattr(harness.registry.engine, "_qt_s1_steady", None))
+
+        # forceCatalogue=True disables steady probe and invokes candidate_order.
+        harness.runtime.dispatch("close_map")
+        harness.capture.frame[0, 0, 0] += 1
+        order_called = []
+        import s1_stream_priority as priority
+        orig_order = priority.candidate_order
+        with patch("s1_stream_priority.candidate_order",
+                   side_effect=lambda *a, **kw: (order_called.append(True) or orig_order(*a, **kw))):
+            forced = harness.runtime.dispatch("capture_now", {"forceCatalogue": True})
+        self.assertTrue(forced["success"], forced)
+        self.assertTrue(order_called)
+        self.assertEqual(steady_seen[-1], False)
+
+        # end_round clears _s1_steady_scales.
+        harness.runtime.dispatch("end_round")
+        self.assertEqual(harness.runtime._s1_steady_scales, {})
+
 
 if __name__ == "__main__":
     unittest.main()

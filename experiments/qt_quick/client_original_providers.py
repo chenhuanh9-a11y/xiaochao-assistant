@@ -319,7 +319,8 @@ def attach_original_s1_scanner(engine, native, bundle):
         host = _AlignmentHost(engine, settings=getattr(engine, '_qt_settings', None),
             pose_priors=pose_priors,
             collect_fit_diagnostics=collect_fit_diagnostics,
-            grid_runtime=getattr(engine, '_qt_grid_runtime', None))
+            grid_runtime=getattr(engine, '_qt_grid_runtime', None),
+            s1_steady=getattr(engine, '_qt_s1_steady', None))
         fixed = (private_observer is not None and private_coordinate_report is not None
                  and private_coordinate_report.get("coordinateVerified") is True)
         def fixed_fit(f, mid, fl, cancel, **kw):
