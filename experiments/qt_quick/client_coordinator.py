@@ -531,8 +531,7 @@ class ClientCoordinator(QObject):
 
     @staticmethod
     def _native_candidate_preview_ready(state):
-        return (state.get("season", "s0") != "s0"
-                and state.get("nativeCandidatePreviewAvailable") is True
+        return (state.get("nativeCandidatePreviewAvailable") is True
                 and not state.get("manualAlignmentSession"))
 
     def _map_resource_problem(self, state=None, *, allow_manual_floor=False):
@@ -1329,6 +1328,9 @@ class ClientCoordinator(QObject):
 
     @Slot()
     def startRound(self):
+        self._start_round(show_controls=True)
+
+    def _start_round(self, *, show_controls=True):
         if self.session.busy or self.settings.busy or self._pending_context:
             self._message = "请等待当前操作和模式设置完成"
             self.changed.emit(); return
@@ -1343,7 +1345,8 @@ class ClientCoordinator(QObject):
         # would erase map edges that have already passed through to the game.
         if self._bound and not self.input.enabled:
             self.setInputEnabled(True)
-        self._apply_controls_visibility(self.settings.values.get("qtControlsVisible", True))
+        if show_controls:
+            self._apply_controls_visibility(self.settings.values.get("qtControlsVisible", True))
         self.session.dispatch("start_round")
 
     @Slot(bool)
@@ -2235,7 +2238,7 @@ class ClientCoordinator(QObject):
                 return
             if command == "toggle_round":
                 if not (self.session.snapshot.get("roundActive") or self.session.snapshot.get("roundPreparing")):
-                    self.startRound()
+                    self._start_round(show_controls=False)
                     return
                 command = "end_round"
             # G's visual map settles on the producer's existing prepare loop,
@@ -2245,7 +2248,7 @@ class ClientCoordinator(QObject):
             elif command in {"capture_now", "close_map", "end_round", "toggle_round"}:
                 self._revoke_runtime("input-" + command)
             if command == "start_round":
-                self.startRound()
+                self._start_round(show_controls=False)
             else:
                 self.session.dispatch(command)
 

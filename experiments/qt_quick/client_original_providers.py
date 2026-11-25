@@ -228,18 +228,7 @@ def _build_original_engine(base_view, controls_view, paths, *, season, mode, req
         setattr(engine, name, owned(getattr(engine, name)))
     if season != 's0':
         engine.qt_s1_index_resource_root = root
-        attach_original_s1_scanner(engine, native, bundle)
-    else:
-        # Expose the same season-agnostic geometry fingerprint index on S0 too.
-        from generic_structure_index import GenericStructureIndex
-        s0_index = [None]
-        def s0_structure_shortlist(frame, floor, candidate_ids, *, context=None):
-            if s0_index[0] is None:
-                s0_index[0] = GenericStructureIndex.from_provider(
-                    tuple(sorted(pack.by_id)), pack.floors, provider,
-                    fast_source=getattr(bundle, 'fast_structure_source', None), lazy=True)
-            return s0_index[0].shortlist(frame, floor, candidate_ids, context=context)
-        engine.qt_generic_structure_shortlist = s0_structure_shortlist
+    attach_original_s1_scanner(engine, native, bundle)
     assert_reads_current()
     return engine
 
@@ -259,7 +248,7 @@ def attach_original_s1_scanner(engine, native, bundle):
     has_coord_assets = bool(coord_dir_rel)
     private_observer = None
     if has_coord_assets:
-        def private_coordinate_prepare(frame, pool_ids, floor, *, cancelled, stage=None):
+        def private_coordinate_prepare(frame, pool_ids, floor, *, cancelled, stage=None, scale_hint=None):
             nonlocal private_observer
             from s1_private_experiment import PrivateCoordinateObserver
             if private_observer is None:
@@ -267,7 +256,9 @@ def attach_original_s1_scanner(engine, native, bundle):
                     engine, catalog, root / coord_dir_rel, read_resource=bundle.reader)
             from season_optional_room import observation_scope
             with observation_scope(frame, enabled=optional_room_enabled, cancelled=cancelled):
-                return private_observer.prepare(frame, pool_ids, floor, cancelled=cancelled, stage=stage)
+                return private_observer.prepare(
+                    frame, pool_ids, floor, cancelled=cancelled, stage=stage, scale_hint=scale_hint)
+        private_coordinate_prepare._accepts_scale_hint = True
         engine.qt_s1_private_coordinate_prepare = private_coordinate_prepare
         pose_index = None
         def pose_prior(source, floor, owner_scope):
@@ -286,6 +277,16 @@ def attach_original_s1_scanner(engine, native, bundle):
             return pose_index.make_hint(source, target_floor=floor, current_owner_scope=owner_scope)
         engine.qt_s1_pose_prior = pose_prior
     else:
+        universal_eliminator = None
+        def universal_coordinate_prepare(frame, pool_ids, floor, *, cancelled, stage=None, scale_hint=None):
+            nonlocal universal_eliminator
+            from universal_structure_eliminator import UniversalStructureEliminator
+            if universal_eliminator is None:
+                universal_eliminator = UniversalStructureEliminator(engine, catalog)
+            return universal_eliminator.prepare(
+                frame, pool_ids, floor, cancelled=cancelled, stage=stage, scale_hint=scale_hint)
+        universal_coordinate_prepare._accepts_scale_hint = True
+        engine.qt_s1_private_coordinate_prepare = universal_coordinate_prepare
         def same_floor_pose_prior(source, floor, owner_scope):
             from s1_pose_prior import AcknowledgedPose, PosePrior, isotropic_matrix
             if (type(source) is not AcknowledgedPose or source.material_acknowledged is not True

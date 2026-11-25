@@ -182,6 +182,19 @@ class VisibilityCoordinatorTests(VisibilityHelpers, unittest.TestCase):
         self.s.changed.emit()
         self.assertTrue(self.f.windows.snapshot['controls']['visible'])
 
+    def test_hotkey_round_start_does_not_popup_controls_panel(self):
+        c=self.coordinator({KEY: True})
+        self.f.session.snapshot.update(roundActive=False, roundPreparing=False)
+        c._native_action('toggle-round')
+        self.f.session.dispatch.assert_called_with('start_round')
+        self.f.windows.show.assert_not_called()
+        self.assertFalse(self.f.windows.snapshot['controls']['visible'])
+        self.f.session.dispatch.reset_mock()
+        c._native_action('start-round')
+        self.f.session.dispatch.assert_called_with('start_round')
+        self.f.windows.show.assert_not_called()
+        self.assertFalse(self.f.windows.snapshot['controls']['visible'])
+
     def test_mouse_keyboard_use_same_intent_and_hide_silently(self):
         c=self.coordinator({'orbVisible': False,
             'actionHotkeys':['Ctrl+F12','F6','F7','F8','','','F11','','F10','ALT']})

@@ -47,7 +47,7 @@ class CommonCoordinateFilter:
                     self._pool_pending.popitem(last=False)
                 else:
                     self._cache.popitem(last=False)
-            job = dict(items=[], masks=[], edges=[], fields=[], keep=[], chain_index=0,
+            job = dict(items=[], masks=[], edges=[], fields=[], void_fields=[], keep=[], chain_index=0,
                        union_chains=[], union_rays=[], union_seen=set(), union_map=0,
                        union_node=0)
             self._pool_pending[pool_key] = job
@@ -81,7 +81,7 @@ class CommonCoordinateFilter:
             hi = np.max([item[2] + np.array(item[1].shape[::-1]) for item in items], axis=0)
             job['shape'] = tuple((hi - job['origin'])[::-1])
         lo, shape = job['origin'], job['shape']
-        masks, edges, fields = job['masks'], job['edges'], job['fields']
+        masks, edges, fields, void_fields = job['masks'], job['edges'], job['fields'], job['void_fields']
         for mid, mask, origin in items[len(fields):]:
             if cancelled():
                 return None
@@ -93,7 +93,8 @@ class CommonCoordinateFilter:
             canvas[y:y+h, x:x+w] = mask
             edge = cv2.morphologyEx(canvas, cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8))
             field = cv2.distanceTransform(1-edge, cv2.DIST_L2, 3)
-            masks.append(canvas); edges.append(edge); fields.append(field)
+            void_field = cv2.distanceTransform(1-canvas, cv2.DIST_L2, 3)
+            masks.append(canvas); edges.append(edge); fields.append(field); void_fields.append(void_field)
         if cancelled():
             return None
         if 'common' not in job:
@@ -161,7 +162,7 @@ class CommonCoordinateFilter:
             job['difference'] = cv2.dilate((job['union_mask'] != common).astype(np.uint8), np.ones((31, 31), np.uint8))
         data = dict(ids=tuple(ids), floor=floor, origin=lo, shape=shape,
                     prepared=PreparedStructure(job['distance'], prepared.chains[job['keep']], prepared.rays[job['keep']], prepared.pitch, prepared.shape),
-                    fields=fields, unionChains=np.asarray(job['union_chains']).reshape(-1, 3, 2),
+                    fields=fields, voidFields=void_fields, unionChains=np.asarray(job['union_chains']).reshape(-1, 3, 2),
                     unionRays=np.asarray(job['union_rays']).reshape(-1, 2, 2), difference=job['difference'])
         # Completed static data is safe to retain even if the owning frame has
         # just expired. It must not authorize that obsolete frame's result.
@@ -333,11 +334,11 @@ class CommonCoordinateFilter:
         return np.asarray(result['matrixEntranceRendererToClient'], float) @ xz_to_renderer @ entrance_xz
 
     @staticmethod
-    def _has_wall_contradiction(bad, spread):
+    def _has_wall_contradiction(bad, spread, *, min_points=12, min_span=24, min_2d_span=12):
         """Accept either a 2D differing wall cluster or a continuous 1D straight wall."""
-        if len(bad) < 12 or np.max(spread) < 24:
+        if len(bad) < min_points or np.max(spread) < min_span:
             return False
-        if np.min(spread) >= 12:
+        if np.min(spread) >= min_2d_span:
             return True
         pts = np.rint(bad).astype(int)
         x0, y0 = pts.min(axis=0)
@@ -346,9 +347,10 @@ class CommonCoordinateFilter:
         local[pts[:, 1] - y0 + 2, pts[:, 0] - x0 + 2] = 1
         bridged = cv2.dilate(local, np.ones((7, 7), np.uint8))
         count, labels = cv2.connectedComponents(bridged, connectivity=8)
+        cluster_min = max(8, min_points - 2)
         for cid in range(1, count):
             ys, xs = np.nonzero((labels == cid) & (local > 0))
-            if len(xs) >= 10 and max(int(xs.max() - xs.min()), int(ys.max() - ys.min())) >= 24:
+            if len(xs) >= cluster_min and max(int(xs.max() - xs.min()), int(ys.max() - ys.min())) >= min_span:
                 return True
         return False
 
@@ -375,13 +377,28 @@ class CommonCoordinateFilter:
         return hyp, matrix, evidence
 
     def evaluate(self, frame, contexts, pool_ids, floor, *, anchor=None, scale_range=None,
-                 scale_basis=None, cancelled=lambda:False):
+                 scale_basis=None, scale_hint=None, cancelled=lambda:False):
         """Return contradiction IDs, never infer a new round or silently reset.
         contexts: production current_geometry dictionaries, already current-frame.
         anchor: optional {'center':[x,y], 'uncertaintyPx':3}; supplies no zoom.
         scale_range: explicit current-frame, candidate-independent map scale bound.
+        scale_hint: optional round-acknowledged scale tried first with automatic
+            fallback to the full domain if zooming causes all candidates to conflict.
         scale_basis must describe its evidence; glyph raster alone is rejected.
         """
+        if (scale_range is None and scale_hint is not None and anchor is not None
+                and isinstance(scale_hint, (int, float)) and 0.03 <= float(scale_hint) <= 6.0):
+            s = float(scale_hint)
+            hinted = self.evaluate(
+                frame, contexts, pool_ids, floor, anchor=anchor,
+                scale_range=(max(0.03, s * 0.96), min(6.0, s * 1.04)),
+                scale_basis='round-acknowledged-scale-hint', scale_hint=None, cancelled=cancelled)
+            if hinted.get('coordinateVerified') is True:
+                return hinted
+            if hinted.get('reason') == 'coordinate-work-obsolete':
+                return hinted
+            # If hinted scale conflicted (e.g. player zoomed) or failed to resolve,
+            # fall through cleanly to the full un-hinted domain search.
         start=time.perf_counter();ids=tuple(sorted(set(pool_ids)))
         def result(reason,**kw):
             return dict(schemaVersion=1,mode=self.mode,resourceKey=self.resource_key,floor=floor,
@@ -395,7 +412,12 @@ class CommonCoordinateFilter:
         except (KeyError,TypeError,ValueError,OSError) as e:return result('coordinate-resources-unavailable',detail=str(e))
         if data is None or cancelled():return result('coordinate-work-obsolete')
         from single_map_structure import current_part
-        from structure_observation import observed_wall_fragment_edges
+        from structure_observation import (
+            observed_wall_fragment_edges,
+            explored_interior_mask,
+            sample_interior_points,
+            has_interior_contradiction,
+        )
         from fast_structure_alignment import sample_edges
         solutions=[]
         for ctx in contexts:
@@ -435,6 +457,7 @@ class CommonCoordinateFilter:
         if anchor is not None:
             x,y=map(lambda v:int(round(v)),anchor['center']);edge[max(0,y-20):y+21,max(0,x-20):x+21]=False
         diff_mask=data.get('difference')
+        diff_client=None
         diff_points=np.empty((0,2),dtype=float)
         if diff_mask is not None and diff_mask.size:
             diff_client=cv2.warpAffine(diff_mask.astype(np.uint8),matrix[:2],(frame.shape[1],frame.shape[0]),flags=cv2.INTER_NEAREST)>0
@@ -448,25 +471,58 @@ class CommonCoordinateFilter:
             points=combined[np.sort(uniq)]
         else:
             points=global_points
-        if len(points)<30:return result('current-structure-insufficient')
-        checks=[];contradicted=[];h,w=data['shape']
-        for mid,field in zip(data['ids'],data['fields']):
-            minimum=np.full(len(points),np.inf)
-            for startidx in range(0,len(hyp),512):
-                if cancelled():return result('coordinate-work-obsolete')
-                batch=hyp[startidx:startidx+512];xy=np.rint((points[None,:,:]-batch[:,None,1:])/batch[:,None,0,None]).astype(int)
-                ok=(xy[:,:,0]>=0)&(xy[:,:,0]<w)&(xy[:,:,1]>=0)&(xy[:,:,1]<h)
-                distances=field[np.clip(xy[:,:,1],0,h-1),np.clip(xy[:,:,0],0,w-1)]*batch[:,None,0];distances[~ok]=10000
-                minimum=np.minimum(minimum,distances.min(0))
-            bad=points[minimum>8.]  # >6px plus 2px parameter/raster cushion
-            spread=np.ptp(bad,axis=0) if len(bad) else np.zeros(2)
-            explicit=self._has_wall_contradiction(bad,spread)
-            if explicit:contradicted.append(mid)
-            checks.append(dict(mapId=mid,unavoidableMissCount=int(len(bad)),sampleCount=len(points),unavoidableSpanPx=spread.tolist(),explicitContradiction=explicit))
-        if cancelled():return result('coordinate-work-obsolete')
-        if len(contradicted)==len(ids):return result('coordinate-or-catalogue-conflict',candidateChecks=checks)
+        interior_mask = explored_interior_mask(
+            ctx.get('query'), ctx.get('observationBounds'), margin_px=7, anchor=anchor)
+        interior_points = sample_interior_points(
+            interior_mask, limit=250, priority_mask=diff_client, priority_limit=150)
+        if len(points)<24 and len(interior_points)<20:return result('current-structure-insufficient')
         projected = extent[None,:,:2]*hyp[:,None,0,None] + hyp[:,None,1:]
         pose_available = bool(np.max(np.linalg.norm(projected-(extent@matrix.T)[:,:2],axis=2)) <= 6.)
+        wall_tol = 7.0 if pose_available else 8.0
+        wall_min_pts = 10 if pose_available else 12
+        wall_min_span = 18 if pose_available else 24
+        checks=[];contradicted=[];h,w=data['shape']
+        void_fields = data.get('voidFields') or [None] * len(data['ids'])
+        for mid,field,void_field in zip(data['ids'],data['fields'],void_fields):
+            bad = np.empty((0, 2), dtype=float)
+            spread = np.zeros(2)
+            wall_explicit = False
+            if len(points) >= 12:
+                minimum=np.full(len(points),np.inf)
+                for startidx in range(0,len(hyp),512):
+                    if cancelled():return result('coordinate-work-obsolete')
+                    batch=hyp[startidx:startidx+512];xy=np.rint((points[None,:,:]-batch[:,None,1:])/batch[:,None,0,None]).astype(int)
+                    ok=(xy[:,:,0]>=0)&(xy[:,:,0]<w)&(xy[:,:,1]>=0)&(xy[:,:,1]<h)
+                    distances=field[np.clip(xy[:,:,1],0,h-1),np.clip(xy[:,:,0],0,w-1)]*batch[:,None,0];distances[~ok]=10000
+                    minimum=np.minimum(minimum,distances.min(0))
+                bad=points[minimum>wall_tol]
+                spread=np.ptp(bad,axis=0) if len(bad) else np.zeros(2)
+                wall_explicit=self._has_wall_contradiction(
+                    bad, spread, min_points=wall_min_pts, min_span=wall_min_span,
+                    min_2d_span=10 if pose_available else 12)
+            interior_bad = np.empty((0, 2), dtype=float)
+            interior_explicit = False
+            if void_field is not None and len(interior_points) >= 10:
+                vmin = np.full(len(interior_points), np.inf)
+                for startidx in range(0, len(hyp), 512):
+                    if cancelled():return result('coordinate-work-obsolete')
+                    batch=hyp[startidx:startidx+512];xy=np.rint((interior_points[None,:,:]-batch[:,None,1:])/batch[:,None,0,None]).astype(int)
+                    ok=(xy[:,:,0]>=0)&(xy[:,:,0]<w)&(xy[:,:,1]>=0)&(xy[:,:,1]<h)
+                    vdist=void_field[np.clip(xy[:,:,1],0,h-1),np.clip(xy[:,:,0],0,w-1)]*batch[:,None,0];vdist[~ok]=10000
+                    vmin=np.minimum(vmin,vdist.min(0))
+                interior_bad = interior_points[vmin > 8.0]
+                interior_explicit = has_interior_contradiction(interior_bad, min_points=10, min_span_px=14)
+            explicit = wall_explicit or interior_explicit
+            if explicit:contradicted.append(mid)
+            kind = ('wall+interior' if (wall_explicit and interior_explicit)
+                    else 'wall' if wall_explicit else 'interior' if interior_explicit else 'none')
+            checks.append(dict(
+                mapId=mid, unavoidableMissCount=int(len(bad)), sampleCount=len(points),
+                unavoidableSpanPx=spread.tolist(), interiorViolationCount=int(len(interior_bad)),
+                interiorSampleCount=len(interior_points), contradictionKind=kind,
+                explicitContradiction=explicit))
+        if cancelled():return result('coordinate-work-obsolete')
+        if len(contradicted)==len(ids):return result('coordinate-or-catalogue-conflict',candidateChecks=checks)
         shift=np.eye(3);shift[:2,2]=-data['origin'];common=matrix@shift
         return dict(schemaVersion=1,mode=self.mode,resourceKey=self.resource_key,floor=floor,evaluatedMapIds=list(ids),
                     contradictedMapIds=contradicted,unknownMapIds=[i for i in ids if i not in contradicted],coordinateVerified=True,poseAvailable=pose_available,

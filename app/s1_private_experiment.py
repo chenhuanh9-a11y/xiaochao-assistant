@@ -128,7 +128,7 @@ class PrivateCoordinateObserver:
             index_path,
             mode=catalog.mode, resource_key=catalog.resource_key, read_resource=read_resource)
 
-    def prepare(self, frame, pool_ids, floor, *, cancelled, stage=None):
+    def prepare(self, frame, pool_ids, floor, *, cancelled, stage=None, scale_hint=None):
         from nightmare_candidate import visible_map_components
         from single_map_structure import current_geometry, observed_corner_chains
         start = time.perf_counter()
@@ -192,7 +192,7 @@ class PrivateCoordinateObserver:
         if resources is None or cancelled():
             return stopped()
         report = run_stage("compare", lambda: self.filter.evaluate(
-            frame, contexts, pool_ids, str(floor), anchor=gate, cancelled=cancelled))
+            frame, contexts, pool_ids, str(floor), anchor=gate, scale_hint=scale_hint, cancelled=cancelled))
         if report is None or cancelled():
             return stopped()
         selected = report.get("selectedContextIndex")

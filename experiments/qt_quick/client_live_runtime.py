@@ -818,11 +818,27 @@ class LiveRuntime:
     def _is_package_season(self, season=None):
         return (self._season if season is None else season) != "s0"
 
+    def _uses_universal_structure_recognition(self, engine=None):
+        """True when the current season/engine uses the unified pool-elimination pipeline."""
+        if self._manual_alignment:
+            return False
+        if self._is_package_season():
+            return True
+        engine = self._engine if engine is None else engine
+        return (
+            engine is not None
+            and self._effective_map_selection_mode() == "auto"
+            and not self._manual_map_lock_enabled()
+            and callable(getattr(engine, "qt_s1_structure_scan", None))
+            and callable(getattr(engine, "qt_s1_private_coordinate_prepare", None))
+        )
+
     def _s1_candidate_available(self, report=None, engine=None):
         """Selected-context candidate purpose; never general live readiness."""
-        if not self._is_package_season() or not (
-                self._evidence_kind == "recorded" or self._native_s1_candidate_preview):
+        if not (self._evidence_kind == "recorded" or self._native_s1_candidate_preview):
             return False
+        if not self._is_package_season():
+            return bool(self._native_s1_candidate_preview and self._uses_universal_structure_recognition(engine=engine))
         capability = ((report or {}).get("candidateObservation") or
             getattr(getattr(engine, "qt_native_context", None), "structure_candidate_capability", {}))
         if not isinstance(capability, dict) or capability.get("candidateReady") is not True:
@@ -847,7 +863,7 @@ class LiveRuntime:
         return "auto" if self._is_package_season() else self._settings.get("mapSelectionMode", "auto")
 
     def _s1_provisional_enabled(self):
-        return bool(self._candidate_preview_requested() and self._is_package_season()
+        return bool(self._candidate_preview_requested() and self._uses_universal_structure_recognition()
             and not self._durable_map_id
             and not self._manual_alignment)
 
@@ -1118,14 +1134,15 @@ class LiveRuntime:
         provisional_id = self._provisional_display_map_id
         pool = self._s1_private_pool
         formal_lock = self._s1_round_locked_map()
+        universal_pool = self._uses_universal_structure_recognition()
         return dict(identityPhase="MEMBER_VERIFIED" if formal_lock else "CANDIDATE_DISPLAY" if provisional_id else phase, identitySource=self._identity_source,
             candidateFullImage=bool(provisional_id), candidateDisplayOnly=bool(provisional_id),
             identityLocked=bool(self._durable_map_id or formal_lock), durableMapId=self._durable_map_id or formal_lock,
-            s1RoundLockEnabled=bool(self._native_s1_round_lock and self._is_package_season() and not self._manual_alignment),
+            s1RoundLockEnabled=bool(self._native_s1_round_lock and universal_pool and not self._manual_alignment),
             s1FormalRoundLock=bool(self._native_s1_final_round_lock
-                and self._is_package_season() and not self._manual_alignment),
-            usesCandidatePoolLock=bool(self._is_package_season() and not self._manual_alignment),
-            supportsSimilarGroups=bool(not self._is_package_season()),
+                and universal_pool and not self._manual_alignment),
+            usesCandidatePoolLock=bool(universal_pool and not self._manual_alignment),
+            supportsSimilarGroups=bool(not universal_pool),
             s1RemainingCandidateCount=1 if formal_lock else len(pool.remaining) if pool is not None else 0,
             provisionalMapId=provisional_id or ((native.provisional_member_id or self._map_id) if grouped else ""),
             provisional=not bool(formal_lock) and (bool(provisional_id) or (grouped and not bool(self._durable_map_id))), groupLocked=grouped,
@@ -1147,7 +1164,7 @@ class LiveRuntime:
         # It never grants a current pose or pixels. Scoped pools and all their
         # resource/capture/material checks can still be discarded independently.
         return (self._s1_round_map_id if self._native_s1_final_round_lock
-            and self._is_package_season() and self._active and not self._manual_alignment else "")
+            and self._uses_universal_structure_recognition() and self._active and not self._manual_alignment else "")
 
     def _identity_context(self):
         return (self._mode, self._cycle, str(self._floor), self._frame_generation, self._epoch)
@@ -1831,8 +1848,30 @@ class LiveRuntime:
                         return
                     # Read remaining/revision at START, not queue admission.
                     before, revision = tuple(pool.remaining), pool.revision
-                evidence = engine.qt_s1_private_coordinate_prepare(owned_frame, before, floor,
-                    cancelled=cancelled, stage=stage)
+                    scale_hint = None
+                    steady_sig = self._steady_signature(captured)
+                    for key, entry in self._s1_steady_scales.items():
+                        if (key[1] == str(floor) and key[2] == tuple(owned_frame.shape[:2])
+                                and key[3] == steady_sig
+                                and entry.get("scope") == scope
+                                and entry.get("resource_key") == catalog.resource_key):
+                            scale_hint = entry.get("scale")
+                            break
+                    if (scale_hint is None and self._s1_candidate_pose_hint is not None
+                            and str(self._s1_candidate_pose_hint.floor) == str(floor)
+                            and self._s1_candidate_pose_hint.owner_scope == scope
+                            and self._s1_candidate_pose_hint.resource_key == catalog.resource_key):
+                        try:
+                            scale_hint = float(self._s1_candidate_pose_hint.matrix[0][0])
+                        except (TypeError, ValueError, IndexError):
+                            scale_hint = None
+                prepare_fn = engine.qt_s1_private_coordinate_prepare
+                if getattr(prepare_fn, "_accepts_scale_hint", False):
+                    evidence = prepare_fn(owned_frame, before, floor,
+                        cancelled=cancelled, stage=stage, scale_hint=scale_hint)
+                else:
+                    evidence = prepare_fn(owned_frame, before, floor,
+                        cancelled=cancelled, stage=stage)
                 with self._lock:
                     if not scope_current() or pool.revision != revision:
                         self._private_record(context, "private-evidence-discarded", reason="private-owner-or-revision-changed",
@@ -1952,7 +1991,7 @@ class LiveRuntime:
             posePending=True, identityUnresolved=True, structureEvidence=evidence)
 
     def _rank_identity(self, engine, frame, floor, epoch, frame_id, cancelled, *, rediscover=False):
-        if self._is_package_season() and callable(getattr(engine, "qt_s1_structure_scan", None)):
+        if self._uses_universal_structure_recognition(engine=engine) and callable(getattr(engine, "qt_s1_structure_scan", None)):
             return self._rank_s1_structure(engine, frame, floor, epoch, frame_id, cancelled)
         with self._lock:
             previous, prior = self._identity_native, self._identity_prior
@@ -3005,7 +3044,7 @@ class LiveRuntime:
                     session, ticket = self._s1_structure_session, self._s1_structure_ticket
                     observation = self._last_observation or {}
                     mid = payload.get("mapId")
-                    if (not self._is_package_season() or self._map_id or not self._map_open or self._capture_pending
+                    if (not self._uses_universal_structure_recognition() or self._map_id or not self._map_open or self._capture_pending
                             or session is None or ticket is None
                             or payload.get("structureFrameId") != self._frame_id
                             or payload.get("structureGeneration") != self._frame_generation
@@ -3718,7 +3757,7 @@ class LiveRuntime:
                 self._s1_solver_policy_generation += 1
             if settings_changed:
                 self._settings_generation += 1
-                if (solver_changed and self._candidate_preview_requested() and self._is_package_season()
+                if (solver_changed and self._candidate_preview_requested() and self._uses_universal_structure_recognition()
                         and not self._durable_map_id):
                     # Solver changes revoke identity evidence. Display-only saves
                     # retire stale presentation work through its own generation,
@@ -4063,7 +4102,7 @@ class LiveRuntime:
         pool = self._s1_private_pool
         historical_floor = bool(self._native_s1_final_round_lock
             and (self._floor_required or not self._observed_floor))
-        return bool(row.get("s1CandidateReference") and self._is_package_season()
+        return bool(row.get("s1CandidateReference") and self._uses_universal_structure_recognition()
             and self._candidate_preview_requested() and not self._manual_alignment
             and self._active and not self._selection_pending
             and (historical_floor or not self._floor_required
@@ -4305,8 +4344,10 @@ class LiveRuntime:
                 with self._lock:
                     if obsolete() or not self._capture_is_current(captured.context, capture_generation):
                         return self._receipt(action, payload, success=False, reason="cancelled-or-stale", stale=True)
-                    if read.get("mapOpen") is False:
-                        from session_state_machine import map_probe_transition
+                    from session_state_machine import map_probe_transition, verified_map_hotkey_frame
+                    probe_closed = (read.get("mapOpen") is False if self._is_package_season()
+                                    else verified_map_hotkey_frame(observation, read) is False)
+                    if probe_closed:
                         self._probe_misses, transition = map_probe_transition(self._map_open, self._probe_misses, False)
                         if transition == "close":
                             self.invalidate("map-closed")
@@ -4390,7 +4431,7 @@ class LiveRuntime:
         # A new acquisition never renews the retained material's evidence.
         with self._lock:
             if (not preserve_candidate and self._native_s1_candidate_preview
-                    and self._is_package_season() and not self._manual_alignment):
+                    and self._uses_universal_structure_recognition() and not self._manual_alignment):
                 # A new candidate fit supersedes manual pixels, including after
                 # a failed probe withdrew them. No persistent pose is updated.
                 self._transient_drag = self._transient_cycle = None
@@ -4582,7 +4623,7 @@ class LiveRuntime:
     def _dispatch_with_ownership(self, action, payload=None, cancelled=None):
         # Capture the S1 operation kind before serial allocation/state waiting.
         # An intervening season change cannot turn an old switch into S0 work.
-        s1_candidate_arrival = (self._is_package_season()
+        s1_candidate_arrival = (self._uses_universal_structure_recognition()
             and str(action) in ("next_candidate", "previous_candidate", "select_candidate"))
         # Allocation is one atomic next(), before any state-lock wait. The
         # birth tuple itself is read entirely under the state lock below.
@@ -4628,7 +4669,7 @@ class LiveRuntime:
             activation_request = (action in ("capture_now", "refresh_map", "recover_map_open",
                     "probe_map_after_drag", "fit_manual_frame", "observe_manual_floor",
                     "prepare_manual_alignment", "start_round", "observe_candidate_floor")
-                or s1_candidate_arrival or self._is_package_season()
+                or s1_candidate_arrival or self._uses_universal_structure_recognition()
                     and action in ("next_candidate", "previous_candidate", "select_candidate")
                 or action == "map" and payload.get("openIntent") is not False
                 or action == "toggle_round" and not (self._active or self._round_preparing))
@@ -4757,7 +4798,7 @@ class LiveRuntime:
                 # sequenced close is superseded only by a larger input sequence.
                 # S0 keeps
                 # its original strict birth-epoch admission semantics.
-                newer_s1_input = (self._candidate_preview_requested() and self._is_package_season()
+                newer_s1_input = (self._candidate_preview_requested() and self._uses_universal_structure_recognition()
                     and type(sequence) is int and sequence > self._last_map_input_sequence)
                 if (self._cancelled(cancelled) or request_lifetime_generation != self._request_lifetime_generation
                         or request_settings_generation != self._settings_generation
@@ -5863,7 +5904,9 @@ class LiveRuntime:
             # Recheck floor against the exact immutable frame consumed by scan,
             # not a mutable transport buffer observed during preparation.
             observation, floor, floor_read = self._observe(engine, frame)
-            opened = observation.get("mapOpen")
+            from session_state_machine import verified_map_hotkey_frame
+            opened = (observation.get("mapOpen") if self._is_package_season()
+                      else verified_map_hotkey_frame(observation, floor_read))
         else:
             frame = _test_input_copy(frame)
             frame.setflags(write=False)
@@ -6030,7 +6073,7 @@ class LiveRuntime:
                 return self._receipt(action, payload, success=True,
                     reason="manual-map-selection-pending", posePending=True,
                     manualSelectionPending=True, observation=observation)
-            if engine.pack.mode == "difficult" and str(floor) == "2":
+            if not self._s1_provisional_enabled() and engine.pack.mode == "difficult" and str(floor) == "2":
                 return self._receipt(action, payload, success=False,
                     reason="difficult-f2-entry-recognition-disabled", posePending=True)
             if self._candidate_streaming_requested() and self._s1_provisional_enabled():
@@ -6175,7 +6218,8 @@ class LiveRuntime:
         from types import SimpleNamespace
         from round_layer_group_commit import (commit_alignment_v2_round_pose,
             prime_round_layer_group_relations, map_anchor_focus_point)
-        if self._is_package_season():
+        universal_mode = self._is_package_season() or self._uses_universal_structure_recognition(engine=engine)
+        if universal_mode:
             bounds = (component_override or {}).get("bounds")
             if (not isinstance(bounds, (tuple, list)) or len(bounds) != 4
                     or not (0 <= bounds[0] < bounds[2] <= frame.shape[1]
@@ -6188,13 +6232,13 @@ class LiveRuntime:
             _native_similarity_resources_ready=lambda: True,
             _open_cycle_transient_motion_active=lambda _map: False,
             _shared_structure_mode_enabled=lambda: True, _log=lambda *args, **kwargs: None)
-        if self._is_package_season():
+        if universal_mode:
             owner.round_floor_ids = tuple(engine.identity_floors)
         owner._active_round_layer_group = lambda mid, profile=None: (
             owner.round_layer_group if owner.round_layer_group is not None
             and owner.round_layer_group.map_id == mid
             else None)
-        owner._prime_round_layer_group_relations = (lambda mid, anchor: {}) if self._is_package_season() else (
+        owner._prime_round_layer_group_relations = (lambda mid, anchor: {}) if universal_mode else (
             lambda mid, anchor: prime_round_layer_group_relations(owner, mid, anchor))
         context = captured.context
         signature = (tuple(context.full_client_size), tuple(context.client_screen_bounds), context.dpi)
@@ -6395,7 +6439,7 @@ class LiveRuntime:
             previous_group = copy.deepcopy(group) if group is not None else None
         target_group = self._stage_round_group_commit(engine, previous_group, map_id, floor, canonical,
             render_matrix, display, frame, captured, cycle, frame_generation, residual,
-            component_override=fit.get("observationComponent") if self._is_package_season() else None)
+            component_override=fit.get("observationComponent") if (self._is_package_season() or provisional_operation) else None)
         if target_group is None:
             reason = "round-group-pose-commit-rejected"
             self._set_pose_phase("rejected", reason, map_id, floor, frame_id, frame_generation,
