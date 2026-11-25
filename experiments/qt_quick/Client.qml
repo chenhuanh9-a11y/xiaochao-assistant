@@ -47,7 +47,8 @@ ApplicationWindow {
             return {id: row.runtimeProfileId || row.id, name: row.name}
         })
         var custom = customGalleryService.snapshot
-        if (!routeChoices.busy && routeChoices.season === (custom.scenario === "phosphorescence" ? "s1" : "s0")
+        var customSeason = custom.season || (custom.scenario === "phosphorescence" ? "s1" : "s0")
+        if (!routeChoices.busy && routeChoices.season === customSeason
                 && routeChoices.mode === (custom.mode === "hard" ? "difficult" : "nightmare") && custom.available)
             for (var i = 0; i < custom.galleries.length; i++)
                 options.push({id: "custom:" + (custom.scopeId && custom.scopeId !== "legacy-nightmare" ? custom.scopeId + "~" : "") + custom.galleries[i].id, name: custom.galleries[i].name})
@@ -160,27 +161,12 @@ ApplicationWindow {
                     }
                 }
                 Item { Layout.fillHeight: true }
-                Rectangle {
+                Label {
                     visible: !root.compactRail
-                    Layout.fillWidth: true; implicitHeight: railStatus.implicitHeight + 20
-                    radius: 10; color: "#f3f7ff"
-                    ColumnLayout {
-                        id: railStatus; anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 10; spacing: 6
-                        RowLayout {
-                            Layout.fillWidth: true; spacing: 6
-                            Rectangle {
-                                Layout.alignment: Qt.AlignVCenter
-                                Layout.preferredWidth: 8; Layout.preferredHeight: 8; radius: 4
-                                color: clientCoordinator.boundWindow ? "#17775a" : "#b7791f"
-                            }
-                            Label {
-                                text: clientCoordinator.boundWindow ? "已连接" : "未连接"
-                                color: "#354f75"; font.pixelSize: 11; Layout.fillWidth: true
-                                elide: Text.ElideRight
-                            }
-                        }
-                        Label { text: infoService.facts.version; color: "#5b7294"; font.pixelSize: 10; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-                    }
+                    text: infoService.facts.version
+                    color: "#7b91b2"; font.pixelSize: 10
+                    Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#d5e2f5"; Layout.leftMargin: 4; Layout.rightMargin: 4 }
                 AppButton { id: exitNavigation; objectName: "nav_exit"; implicitWidth: 0; Layout.minimumWidth: 0

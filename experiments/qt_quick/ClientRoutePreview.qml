@@ -91,7 +91,7 @@ Dialog {
                     Layout.fillWidth: true
                     text: root.loading ? "正在读取路线和地图…"
                           : root.preview.local ? "使用本机已保存的路线。"
-                          : "加载地图需要登录，服务端可能计为一次下载。"
+                          : "登录后即可加载完整路线预览。"
                     horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; color: "#526785"
                 }
                 AppButton {

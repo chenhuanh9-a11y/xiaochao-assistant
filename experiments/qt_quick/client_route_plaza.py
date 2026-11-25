@@ -110,9 +110,12 @@ class RoutePlazaService(QObject):
         galleries.changed.connect(self._gallery_changed)
 
     def _snapshot(self):
+        from route_scopes import season_options, sync_dynamic_scopes_from_seasons
+        sync_dynamic_scopes_from_seasons()
         warning = self.account.persistence_warning
         return dict(scopeId=self._scope_id, sort=self._sort, galleryBusy=self.galleries.busy,
                     publicSeason=self._public_season, publicMode=self._public_mode,
+                    seasonOptions=season_options(),
                     scopeOptions=[dict(id=x.id, name=x.label) for x in SCOPES.values()],
                     busy=self._busy or self._preparing_scope, operation=self._operation,
                     message="\n".join(filter(None, (self._message, warning))), error=self._error,
@@ -232,7 +235,7 @@ class RoutePlazaService(QObject):
         self._preview_cancel = cancel = threading.Event()
 
         def work():
-            document = load_preview(self.account, route, root, local, cancel.is_set)
+            document = load_preview(self.account, route, root, local, cancel.is_set, galleries=self.galleries)
             return document, None if cancel.is_set() else preview_frame(document, "", "", point_numbers)
 
         self._start_preview(context, work)

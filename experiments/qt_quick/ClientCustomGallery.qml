@@ -185,7 +185,13 @@ Item {
                             }
                         }
                         Item { Layout.fillWidth: true }
-                        AppButton { text: root.state.newStart ? "取消新起点" : "新起点"; implicitWidth: 86; enabled: !root.state.readonly && !root.state.busy; onClicked: customGalleryService.toggleNewStart() }
+                        AppButton {
+                            text: root.state.newStart ? "取消新起点" : "新起点"; implicitWidth: 86
+                            enabled: !root.state.readonly && !root.state.busy
+                            ToolTip.visible: hovered; ToolTip.delay: 300
+                            ToolTip.text: "从下一个点开始另起一段独立路线（跨楼层画线时也可先点此按钮）"
+                            onClicked: customGalleryService.toggleNewStart()
+                        }
                     }
             Rectangle {
                 id: mapArea

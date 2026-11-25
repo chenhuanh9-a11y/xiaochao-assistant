@@ -413,15 +413,21 @@ def insertion_index(points, segments, graph: MapGraph, target) -> int:
     if target.get("kind") != "via" or len(points) < 2 or not segments:
         return len(points)
     best, insert = math.inf, len(points)
-    floor = graph.floors[target["floor"]]
+    floor = graph.floors.get(target["floor"]) if isinstance(graph.floors, dict) else None
     for segment in segments:
-        for node_floor, index in segment["cells"]:
-            if node_floor != target["floor"]:
-                continue
-            px, py = floor.points[index]
-            distance = (px - target["x"]) ** 2 + (py - target["y"]) ** 2
-            if distance < best:
-                best, insert = distance, segment["end"]
+        if "cells" in segment and floor is not None and hasattr(floor, "points"):
+            for node_floor, index in segment["cells"]:
+                if node_floor != target["floor"]:
+                    continue
+                px, py = floor.points[index]
+                distance = (px - target["x"]) ** 2 + (py - target["y"]) ** 2
+                if distance < best:
+                    best, insert = distance, segment["end"]
+        elif "points" in segment and str(segment.get("floor")) == str(target["floor"]):
+            for px, py in segment["points"]:
+                distance = (px - target["x"]) ** 2 + (py - target["y"]) ** 2
+                if distance < best:
+                    best, insert = distance, segment.get("end", len(points))
     return insert
 
 

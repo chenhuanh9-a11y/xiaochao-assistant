@@ -31,7 +31,7 @@ Popup {
             Label { text: "准备快捷键"; color: "#142b4b"; font.pixelSize: 22; font.bold: true }
             Note { text: "先核对地图键，再试用游戏控件。完成后即可开始使用，帮助页里有完整的使用教程。" }
             Label { text: onboardingService.step === 1 ? "1 / 2  游戏地图键" : "2 / 2  试用游戏控件"; color: "#183a73"; font.pixelSize: 16; font.bold: true }
-            Note { text: onboardingService.step === 1 ? "和游戏地图按键保持一致；点击修改后按键，再确认保存。" : "用当前快捷键显示一次，再隐藏一次。鼠标按钮也可兜底，来源会单独记录。" }
+            Note { text: onboardingService.step === 1 ? "和游戏地图按键保持一致；点击修改后按键，再确认保存。" : "用当前快捷键显示一次再隐藏一次，也可以直接点下面按钮试用。" }
             RowLayout {
                 Layout.fillWidth: true
                 Label { Layout.fillWidth: true; text: onboardingService.step === 1 ? (settingsService.persistedValues.hotkey || "未绑定") : (settingsService.persistedValues.actionHotkeys[0] || "未绑定"); font.pixelSize: 20; color: "#183a73" }
@@ -72,11 +72,11 @@ Popup {
             ColumnLayout {
                 visible: onboardingService.step === 2; Layout.fillWidth: true; spacing: 10
                 Note { text: onboardingService.trial.panelVisible ? "控件已显示" : "控件已隐藏" }
-                Note { text: "显示一次：" + (onboardingService.trial.shown ? "已完成（" + (onboardingService.trial.shownSource === "keyboard" ? "快捷键" : "鼠标兜底") + "）" : "未完成") }
-                Note { text: "隐藏一次：" + (onboardingService.trial.hidden ? "已完成（" + (onboardingService.trial.hiddenSource === "keyboard" ? "快捷键" : "鼠标兜底") + "）" : "未完成") }
+                Note { text: "显示一次：" + (onboardingService.trial.shown ? "已完成" : "未完成") }
+                Note { text: "隐藏一次：" + (onboardingService.trial.hidden ? "已完成" : "未完成") }
                 RowLayout {
-                    AppButton { text: "鼠标兜底显示"; enabled: onboardingService.trial.canShow; onClicked: onboardingService.tryControls(true) }
-                    AppButton { text: "鼠标兜底隐藏"; enabled: onboardingService.trial.canHide; onClicked: onboardingService.tryControls(false) }
+                    AppButton { text: "点击显示控件"; enabled: onboardingService.trial.canShow; onClicked: onboardingService.tryControls(true) }
+                    AppButton { text: "点击隐藏控件"; enabled: onboardingService.trial.canHide; onClicked: onboardingService.tryControls(false) }
                 }
             }
             Note { visible: text.length > 0; text: onboardingService.message; color: "#b8364a" }

@@ -161,37 +161,50 @@ class ImportedStructureRouteLibraryTests(unittest.TestCase):
 
             out_dir = cache / "mat"
             out_dir.mkdir(parents=True, exist_ok=True)
-            p1, sz1 = ImportedStructureRouteLibrary._materialize_display(
+            p1, sz1, m1 = ImportedStructureRouteLibrary._materialize_display(
                 _FakeView(), fake_reader, lambda *a, **k: None, out_dir, "107001", "-1",
-                display_rel="rendered/107001_-1.png", typed_row=None, mask_rel=None,
+                display_rel="rendered/107001_-1.png", typed_row=None, mask_rel="masks/107001_-2.png",
             )
-            p2, sz2 = ImportedStructureRouteLibrary._materialize_display(
+            p2, sz2, m2 = ImportedStructureRouteLibrary._materialize_display(
                 _FakeView(), fake_reader, lambda *a, **k: None, out_dir, "107001", "-2",
                 display_rel=None, typed_row=None, mask_rel="masks/107001_-2.png",
             )
             self.assertEqual(sz1, (60, 40))
             self.assertEqual(sz2, (60, 40))
-            self.assertTrue(p1.is_file() and p2.is_file())
+            self.assertTrue(p1.is_file() and p2.is_file() and m1.is_file() and m2.is_file())
 
-            # Populate library maps and verify draw / render_layer / package_maps / import_maps.
+            # Populate library maps and verify pick / walkable A* / insertion_index / render_layer / package_maps / import_maps.
             lib._maps = {
                 "107001": dict(
                     name="107001",
                     floors={
-                        "-1": dict(path=p1, size=sz1, mask_rel=None, display_rel="rendered/107001_-1.png"),
-                        "-2": dict(path=p2, size=sz2, mask_rel="masks/107001_-2.png", display_rel=None),
+                        "-1": dict(path=p1, size=sz1, mask_rel="masks/107001_-2.png", mask_cache=m1, display_rel="rendered/107001_-1.png"),
+                        "-2": dict(path=p2, size=sz2, mask_rel="masks/107001_-2.png", mask_cache=m2, display_rel=None),
                     },
                 )
             }
             lib.version = "pkg-s1:1.0:abcdef123456"
             lib.error = ""
             self.assertTrue(lib.available)
+            self.assertTrue(lib.manifest_digest())
             self.assertEqual(lib.maps(), [("107001", "107001")])
 
+            graph = lib.graph("107001")
+            picked = graph.pick("-1", 12.0, 15.0)
+            self.assertIsInstance(picked, dict)
+            self.assertEqual(picked["floor"], "-1")
+            self.assertEqual(picked["kind"], "via")
+
             pts = [
-                {"floor": "-1", "x": 10.0, "y": 15.0, "color": "#ff3b30", "newStart": False},
-                {"floor": "-1", "x": 40.0, "y": 25.0, "color": "#ff3b30", "newStart": False},
+                {"floor": "-1", "x": 12.0, "y": 15.0, "color": "#ff3b30", "start": False},
+                {"floor": "-1", "x": 45.0, "y": 25.0, "color": "#ff3b30", "start": False},
             ]
+            from custom_maps import insertion_index
+            segs = graph.plan(pts)
+            self.assertEqual(len(segs), 1)
+            idx = insertion_index(pts, segs, graph, graph.pick("-1", 28.0, 20.0))
+            self.assertEqual(idx, 1)
+
             ref = SimpleNamespace(
                 path=root / "ref.npz",
                 resource_root=root,
@@ -213,9 +226,38 @@ class ImportedStructureRouteLibraryTests(unittest.TestCase):
                 "mode": SCOPES["season-s1-nightmare"].mode,
                 "maps": packed,
             }
-            imported = lib.import_maps(manifest)
+            imported, report = lib.import_maps(manifest)
             self.assertIn("107001", imported)
             self.assertEqual(len(imported["107001"]["points"]), 2)
+            self.assertEqual(report["maps"], 1)
+
+    def test_walkable_astar_routes_around_wall_obstacle(self):
+        from imported_structure_route_library import _WalkableFloor
+        with tempfile.TemporaryDirectory() as tmp:
+            mask_path = Path(tmp) / "u_mask.png"
+            # U-shaped corridor: vertical wall in the middle (x=40..56, y=0..60), open at bottom (y=64..92).
+            mask = np.zeros((100, 100), dtype=np.uint8)
+            mask[8:92, 8:92] = 255
+            mask[8:64, 40:56] = 0
+            cv2.imwrite(str(mask_path), mask)
+            wf = _WalkableFloor((100, 100), mask_path)
+            path = wf.shortest_path((20.0, 20.0), (76.0, 20.0))
+            self.assertGreater(len(path), 2)
+            # Path must detour below the wall (max y > 62) instead of cutting straight through x=48, y=20.
+            self.assertGreater(max(y for _x, y in path), 62.0)
+
+    def test_dynamic_s2_scope_registration_and_season_options(self):
+        from route_scopes import SCOPES, ensure_season_scope, scope_for, season_options
+        scope = ensure_season_scope("s2", "nightmare", season_title="测试新赛季", floors=("-1", "-2", "-3", "-4"))
+        try:
+            self.assertEqual(scope.season, "s2")
+            self.assertEqual(scope.runtime_mode, "nightmare")
+            self.assertIn(scope.id, SCOPES)
+            self.assertEqual(scope_for(scope.scenario, scope.mode).id, scope.id)
+            opts = season_options()
+            self.assertTrue(any(row["id"] == "s2" and row["name"] == "测试新赛季" for row in opts))
+        finally:
+            SCOPES.pop(scope.id, None)
 
 
 class RoutePlazaRefreshAvailabilityTests(unittest.TestCase):

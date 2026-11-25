@@ -16,15 +16,18 @@ from route_plaza import fetch_public_cover, prepare_install
 from scoped_route_library import ScopedRouteLibrary
 
 
-def _preview_library(scope_id, root):
-    library = CustomMapLibrary(root) if scope_id == "legacy-nightmare" else ScopedRouteLibrary(root, scope_id)
+def _preview_library(scope_id, root, *, galleries=None):
+    if galleries is not None and hasattr(galleries, "_build_library_for_scope"):
+        library = galleries._build_library_for_scope(scope_id, root)
+    else:
+        library = CustomMapLibrary(root) if scope_id == "legacy-nightmare" else ScopedRouteLibrary(root, scope_id)
     if not library.available:
         raise AccountError(library.error or "缺少对应的路线编辑资源，无法绘制地图预览。")
     return library
 
 
-def load_preview(account, route, root, saved_maps, cancelled):
-    library = _preview_library(route.scope.id, root)
+def load_preview(account, route, root, saved_maps, cancelled, *, galleries=None):
+    library = _preview_library(route.scope.id, root, galleries=galleries)
     if saved_maps is None:
         _, saved_maps, _, report = prepare_install(account, library, route, cancelled=cancelled)
     else:
@@ -154,7 +157,7 @@ class PlazaThumbnailImages(QQuickImageProvider):
                 root, context, saved = self._galleries.plazaPreviewInput(scope_id, work_id, version_id)
                 if saved is None or generation != context:
                     return QImage()
-                document = _preview_document(_preview_library(scope_id, root), saved, {})
+                document = _preview_document(_preview_library(scope_id, root, galleries=self._galleries), saved, {})
                 pixels, _frame, _has_lines = _render_frame(document, "", "", False, 240)
             image = QImage(pixels.tobytes(), pixels.width, pixels.height, pixels.width * 4, QImage.Format_RGBA8888).copy()
         except (AccountError, Image.DecompressionBombError, OSError, ValueError, KeyError, IndexError, RuntimeError, TypeError):

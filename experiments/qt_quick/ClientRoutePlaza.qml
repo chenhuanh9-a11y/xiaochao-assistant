@@ -59,7 +59,6 @@ Item {
                 AppButton { objectName: "plazaLogin"; text: "登录"; visible: !root.state.username; enabled: !root.state.busy; onClicked: routePlazaService.openAccount() }
                 AppButton { objectName: "plazaRecovery"; text: "领取恢复码"; visible: !!root.state.recoveryPending; enabled: !root.state.busy; onClicked: routePlazaService.openAccount() }
                 AppButton { objectName: "plazaLogout"; text: "退出登录"; visible: !!root.state.username; enabled: !root.state.busy; onClicked: routePlazaService.logout() }
-                AppButton { text: "自定义图库"; onClicked: clientCoordinator.navigate("custom") }
                 AppButton { objectName: "plazaSubmit"; text: "投稿"; enabled: !root.state.busy; onClicked: routePlazaService.openSubmission("") }
             }
         }
@@ -79,7 +78,7 @@ Item {
                 ComboBox {
                     objectName: "plazaSeasonFilter"
                     Layout.minimumWidth: 104; Layout.preferredWidth: 104; Layout.maximumWidth: 104
-                    model: [{id:"",name:"全部赛季"},{id:"s0",name:"灾厄之女"},{id:"s1",name:"磷光症"}]
+                    model: root.state.seasonOptions || [{id:"",name:"全部赛季"},{id:"s0",name:"灾厄之女"},{id:"s1",name:"磷光症"}]
                     textRole: "name"; valueRole: "id"; Accessible.name: "按赛季筛选"
                     currentIndex: indexOfValue(root.state.publicSeason || "")
                     enabled: !root.state.busy
@@ -237,13 +236,13 @@ Item {
                             }
                             RowLayout {
                                 Layout.fillWidth: true; spacing: 6
-                                AppButton { objectName: "plazaDetails_" + card.key; text: "讨论"; Accessible.description: card.title; enabled: !root.state.busy; onClicked: routePlazaService.openDetails(card.key) }
+                                AppButton { objectName: "plazaDetails_" + card.key; text: "讨论"; Accessible.description: card.title; enabled: !root.state.busy || !!root.state.downloading; onClicked: routePlazaService.openDetails(card.key) }
                                 Item { Layout.fillWidth: true }
                                 AppButton {
                                     objectName: "plazaDownload_" + card.key
                                     text: root.state.downloading === card.key ? "下载中…" : card.installed ? "去使用 ›" : card.updateAvailable ? "更新路线" : "下载路线"
                                     Accessible.description: card.title
-                                    primary: !card.installed; enabled: !root.state.busy
+                                    primary: !card.installed; enabled: card.installed ? !root.state.galleryBusy : !root.state.busy
                                     onClicked: card.installed ? routePlazaService.openInstalledRoute(card.key) : routePlazaService.downloadRoute(card.key)
                                 }
                             }
@@ -284,7 +283,7 @@ Item {
                         RowLayout {
                             Layout.fillWidth: true
                             AppButton { objectName: "submissionEdit_" + submission.key; visible: submission.editable; text: "更新修订"; enabled: !root.state.busy; onClicked: routePlazaService.openSubmission(submission.key) }
-                            AppButton { objectName: "submissionReview_" + submission.key; visible: submission.canSubmit; text: "提交已有包审核"; primary: true; enabled: !root.state.busy; onClicked: routePlazaService.submitDraft(submission.key) }
+                            AppButton { objectName: "submissionReview_" + submission.key; visible: submission.canSubmit; text: "提交审核"; primary: true; enabled: !root.state.busy; onClicked: routePlazaService.submitDraft(submission.key) }
                             AppButton { objectName: "submissionWithdraw_" + submission.key; visible: submission.withdrawable; text: "撤回"; enabled: !root.state.busy; onClicked: routePlazaService.withdrawSubmission(submission.key) }
                         }
                     }

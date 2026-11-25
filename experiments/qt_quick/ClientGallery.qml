@@ -164,14 +164,12 @@ Item {
                                     Label { anchors.centerIn: parent; width: parent.width - 12; visible: !author.modelData.previewUrl; text: "安装后可预览作者图"; color: "#526785"; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; font.pixelSize: 11 }
                                 }
                                 Label { Layout.fillWidth: true; text: author.modelData.name; textFormat: Text.PlainText; color: "#183a73"; font.bold: true; elide: Text.ElideRight }
-                                Label { text: author.modelData.userProvided ? "作者配准 · 尚未复核" : author.modelData.availableMaps > 0 ? "本地已装" : "图包尚未安装"; color: "#526785"; font.pixelSize: 11 }
+                                Label { text: author.modelData.userProvided ? "作者路线" : author.modelData.availableMaps > 0 ? "本地已装" : "尚未安装"; color: "#526785"; font.pixelSize: 11 }
                                 Label { text: author.modelData.availableMaps + " / " + author.modelData.mapCount + " 份图"; color: "#526785"; font.pixelSize: 11 }
-                                Item { Layout.fillHeight: true }
-                                AppButton { objectName: "galleryViewAuthor_" + author.modelData.id; text: "查看图包"; onClicked: page.chooseAuthor(author.modelData.id) }
                             }
                             MouseArea {
                                 id: authorTap; objectName: "galleryAuthor_" + author.modelData.id
-                                anchors.fill: parent; anchors.bottomMargin: 48
+                                anchors.fill: parent
                                 activeFocusOnTab: true; cursorShape: Qt.PointingHandCursor
                                 onClicked: page.chooseAuthor(author.modelData.id)
                                 Keys.onReturnPressed: page.chooseAuthor(author.modelData.id)

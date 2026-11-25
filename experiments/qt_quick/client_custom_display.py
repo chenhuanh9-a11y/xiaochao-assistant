@@ -70,12 +70,14 @@ class CustomGalleryDisplay:
             return dict(allowed=False, message=f"图集不可用：{error}")
 
     def use_request(self, gallery_id, mode, season="s0", *, fallback_profile=None):
+        from route_scopes import sync_dynamic_scopes_from_seasons
+        sync_dynamic_scopes_from_seasons()
         normalize_season(season)
         if not any((s.season, s.runtime_mode) == (season, mode) for s in SCOPES.values()):
             return dict(success=False, applied=False, reason=f"season-resources-unavailable:{season}",
                         message=f"{season_label(season)} 自定义路线资源尚不可用")
         if fallback_profile is None:
-            fallback_profile = "shared-structure" if season == "s1" else "wang-qingxin"
+            fallback_profile = "wang-qingxin" if season == "s0" else "shared-structure"
         if not gallery_id:
             return dict(success=True, applied=False, galleryId="", profileId=fallback_profile,
                         message="正在恢复作者路线")
@@ -140,7 +142,11 @@ class CustomGalleryDisplay:
             # The production contract checks BOTH native shape and exact clean
             # mask digest before any custom image can become a display layer.
             library.validate_reference(map_id, str(floor), reference.clean_mask)
-            manifest_hash = hashlib.sha256((library.root / "manifest.json").read_bytes()).hexdigest()
+            manifest_hash = (
+                library.manifest_digest()
+                if hasattr(library, "manifest_digest")
+                else hashlib.sha256((library.root / "manifest.json").read_bytes()).hexdigest()
+            )
             route_hash = _route_hash(state["points"])
             with self._lock:
                 point_numbers, numbers_generation = self._point_numbers, self._numbers_generation
@@ -168,9 +174,14 @@ class CustomGalleryDisplay:
             # A gallery save can finish while image rendering is in progress.
             # Such output is discarded even before the root revokes its epoch.
             current = self.service.display_snapshot(gallery_id, str(map_id))
+            current_manifest_hash = (
+                library.manifest_digest()
+                if hasattr(library, "manifest_digest")
+                else hashlib.sha256((library.root / "manifest.json").read_bytes()).hexdigest()
+            )
             if (current is None or current["library"] is not library
                     or _route_hash(current["points"]) != route_hash
-                    or hashlib.sha256((library.root / "manifest.json").read_bytes()).hexdigest() != manifest_hash):
+                    or current_manifest_hash != manifest_hash):
                 raise ValueError("custom-gallery-changed-during-render")
             library.validate_reference(map_id, str(floor), reference.clean_mask)
             with self._lock:

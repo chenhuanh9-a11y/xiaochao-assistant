@@ -99,8 +99,10 @@ class CustomGalleryService(QObject):
         QTimer.singleShot(0, self.refresh)
 
     def _snapshot(self):
+        from route_scopes import sync_dynamic_scopes_from_seasons
+        sync_dynamic_scopes_from_seasons()
         scope = SCOPES[self._scope_id]
-        return dict(deepcopy(self._state), scopeId=scope.id, scenario=scope.scenario, mode=scope.mode,
+        return dict(deepcopy(self._state), scopeId=scope.id, season=scope.season, scenario=scope.scenario, mode=scope.mode,
                     scopeOptions=[dict(id=x.id, name=x.label) for x in SCOPES.values()], busy=self._busy, message=self._message,
                     pendingKind=self._pending["kind"] if self._pending else "",
                     color=self._color, colors=[dict(value=c, name=n) for c, n in COLORS],
@@ -194,11 +196,15 @@ class CustomGalleryService(QObject):
         for mid, name in self.library.maps():
             row = dict(id=mid, name=name, thumbnailUrl="", thumbnailError="")
             try:
-                if isinstance(self.library, ScopedRouteLibrary):
+                if hasattr(self.library, "map_floors"):
+                    floors = self.library.map_floors(mid)
+                    floor = floors[0]
+                elif isinstance(self.library, ScopedRouteLibrary):
                     floor = self.library.floor_ids[0]
                 else:
                     graph = self.library.graph(mid)
-                    floor = next(f for f in FLOORS if f in graph.floors)
+                    floor_candidates = getattr(self.library, "floor_ids", FLOORS)
+                    floor = next(f for f in floor_candidates if f in graph.floors)
                 asset = self.library.floor(mid, floor)
                 row["thumbnailUrl"] = QUrl.fromLocalFile(str(asset.image_path)).toString()
             except (OSError, ValueError, KeyError, TypeError, StopIteration) as error:

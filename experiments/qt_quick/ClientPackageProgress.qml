@@ -56,9 +56,9 @@ Rectangle {
         }
         Label {
             Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 12; color: "#354f75"
-            text: card.localActive ? (card.localStage === "install" ? "正在解压、校验并写入文件，完成后还会核对安装结果。" : (card.activeLocalService ? card.activeLocalService.message : card.onlineState.localMessage || ""))
-                : card.measured ? (card.bytes.receivedBytes / 1048576).toFixed(1) + " / " + (card.bytes.totalBytes / 1048576).toFixed(1) + " MiB · 仅为下载进度，尚未完成导入。"
-                : "这一步还算不出百分比，请稍等处理结果。"
+            text: card.localActive ? (card.localStage === "install" ? "正在解压并导入文件，请稍候…" : (card.activeLocalService ? card.activeLocalService.message : card.onlineState.localMessage || ""))
+                : card.measured ? (card.bytes.receivedBytes / 1048576).toFixed(1) + " / " + (card.bytes.totalBytes / 1048576).toFixed(1) + " MiB · 下载完成后自动导入"
+                : "正在处理，请稍候…"
         }
     }
 }

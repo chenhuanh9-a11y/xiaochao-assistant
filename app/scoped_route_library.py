@@ -22,7 +22,7 @@ from custom_maps import DEFAULT_COLOR, RouteError
 from route_scopes import SCOPES
 
 MODEL_FILE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "android_route_model.js"
-JS_FLOORS = {"B1": "minus-1", "1": "1", "2": "2", "-1": "b1", "-2": "b2", "-3": "b3"}
+JS_FLOORS = {"B1": "minus-1", "1": "1", "2": "2", "3": "3", "4": "4", "-1": "b1", "-2": "b2", "-3": "b3", "-4": "b4"}
 UI_FLOORS = {v: k for k, v in JS_FLOORS.items()}
 
 
@@ -128,7 +128,7 @@ class ScopedRouteLibrary:
 
     def display_registration(self, mid, floor):
         asset = self.floor(mid, floor)
-        if self.scope.season == "s1":
+        if self.scope.season != "s0":
             registration = asset.metadata.get("displayRegistration", {})
             matrix = registration.get("imageToNative")
             expected = registration.get("layerMaskSha256")

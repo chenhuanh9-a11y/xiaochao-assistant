@@ -19,7 +19,7 @@ ColumnLayout {
     RowLayout {
         visible: !!root.state.needsManualResume
         Label { text: "已暂停"; font.pixelSize: 14; color: "#b8364a"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-        Button { objectName: "chestResume"; text: "重新就绪"; onClicked: root.apply(true) }
+        AppButton { objectName: "chestResume"; text: "重新就绪"; onClicked: root.apply(true) }
     }
     GridLayout {
         columns: width < 420 ? 1 : 3; Layout.fillWidth: true; columnSpacing: 12

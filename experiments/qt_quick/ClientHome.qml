@@ -163,7 +163,7 @@ Item {
                             visible: !session.busy && !settingsService.busy && !!settingsService.persistedValues
                                      && (settingsService.persistedValues.gameSeason !== session.appliedSeason
                                          || settingsService.persistedValues.gameMode !== session.appliedMode)
-                            text: "默认赛季和难度已保存，本局仍显示已应用的环境。可重新选择默认项重试。"
+                            text: "已保存为默认赛季和难度，将在下一局生效。"
                         }
                         GridLayout {
                             objectName: "homeRoundStats"

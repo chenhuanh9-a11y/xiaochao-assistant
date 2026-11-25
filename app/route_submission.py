@@ -309,9 +309,11 @@ def build_package(draft, gallery_id, maps, title, author, *, upload_identity=Non
     if upload_identity is not None:
         package_id = identity(upload_identity[0])
         revision = _integer(upload_identity[1], 1, 2**31 - 1)
+    first_floor = str(scope.floors[0]) if scope.floors else "1"
+    entry_floor = "1" if scope.season == "s0" else (f"b{first_floor[1:]}" if first_floor.startswith("-") else first_floor.lower())
     manifest = dict(schemaVersion=scope.schema_version, contentKind=CONTENT_KIND, mode=scope.mode, workId=work,
                     packageId=package_id, revision=revision, title=title, author=author,
-                    minClientVersion="1.11.2", imageCount=0, maps=maps, routeEntryFloor="b1" if scope.season == "s1" else "1")
+                    minClientVersion="1.11.2", imageCount=0, maps=maps, routeEntryFloor=entry_floor)
     if scope.schema_version == 4:
         manifest.update(scenario=scope.scenario, routeCatalogId=scope.id, minClientVersion="1.11.12")
     if source_work_id:

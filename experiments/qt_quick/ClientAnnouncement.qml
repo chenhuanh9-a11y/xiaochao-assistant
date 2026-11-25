@@ -129,8 +129,8 @@ Item {
             }
             Flow {
                 Layout.fillWidth: true; spacing: 8
-                AppButton { objectName: "startupAnnouncementQuark"; text: "夸克网盘下载"; primary: true; visible: !!dialog.releaseData.updateAvailable && !!(dialog.releaseData.pages && dialog.releaseData.pages.quark); enabled: !infoService.checking; onClicked: { infoService.openAnnouncementDownload(dialog.releaseData.announcementId, "quark"); dialog.close() } }
-                AppButton { objectName: "startupAnnouncementUc"; text: "UC 网盘下载"; visible: !!dialog.releaseData.updateAvailable && !!(dialog.releaseData.pages && dialog.releaseData.pages.uc); enabled: !infoService.checking; onClicked: { infoService.openAnnouncementDownload(dialog.releaseData.announcementId, "uc"); dialog.close() } }
+                AppButton { objectName: "startupAnnouncementQuark"; text: "夸克网盘下载"; primary: true; visible: !!dialog.releaseData.updateAvailable && !!(dialog.releaseData.pages && dialog.releaseData.pages.quark); onClicked: { infoService.openAnnouncementDownload(dialog.releaseData.announcementId, "quark"); dialog.close() } }
+                AppButton { objectName: "startupAnnouncementUc"; text: "UC 网盘下载"; visible: !!dialog.releaseData.updateAvailable && !!(dialog.releaseData.pages && dialog.releaseData.pages.uc); onClicked: { infoService.openAnnouncementDownload(dialog.releaseData.announcementId, "uc"); dialog.close() } }
                 AppButton { objectName: "announcementRetry"; text: "重试"; visible: dialog.waitingForRelease && infoService.updatePhase === "error"; enabled: !infoService.checking; onClicked: infoService.openAnnouncement() }
                 AppButton { objectName: "startupUpdateLater"; text: dialog.waitingForRelease ? "关闭" : "知道了"; onClicked: dialog.close() }
             }

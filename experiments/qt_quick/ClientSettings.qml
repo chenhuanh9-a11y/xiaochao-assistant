@@ -272,7 +272,7 @@ Item {
                             ShortcutRow { actionIndex: -1; title: "游戏地图键" }
                             ShortcutRow { actionIndex: 0; title: "游戏控件" }
                             ShortcutRow { actionIndex: 8; title: "本局开始 / 结束" }
-                            ShortcutRow { actionIndex: 6; title: "小抄显影" }
+                            ShortcutRow { actionIndex: 6; title: "小抄显隐" }
                             Disclosure { objectName: "advancedShortcutsToggle"; text: root.advancedShortcuts ? "收起高级快捷键" : "高级快捷键"; expanded: root.advancedShortcuts; onClicked: root.advancedShortcuts = !root.advancedShortcuts }
                             ColumnLayout {
                                 visible: root.advancedShortcuts
@@ -352,12 +352,12 @@ Item {
                             Heading { text: "小抄显示"; Layout.topMargin: 0; Layout.bottomMargin: 16 }
                             RowLayout {
                                 Layout.fillWidth: true; Layout.minimumHeight: 54
-                                Label { text: "允许显影"; color: "#183a73"; font.family: "Microsoft YaHei UI"; font.pixelSize: 13; Layout.fillWidth: true }
+                                Label { text: "允许显隐"; color: "#183a73"; font.family: "Microsoft YaHei UI"; font.pixelSize: 13; Layout.fillWidth: true }
                                 Switch {
                                     id: visibilitySwitch
                                     objectName: "setting_sheetVisibilityEnabled"
                                     checked: root.preferences.sheetVisibilityEnabled
-                                    Accessible.name: "允许显影"
+                                    Accessible.name: "允许显隐"
                                     onToggled: settingsService.setValue("sheetVisibilityEnabled", checked)
                                     indicator: Rectangle {
                                         implicitWidth: 44; implicitHeight: 24
@@ -523,17 +523,19 @@ Item {
                             }
                         }
                     }
-                    Label { text: "全棺路线版本"; color: "#354f75"; font.pixelSize: 13 }
+                    readonly property bool coffinApplicable: root.preferences.gameMode === settingsService.coffinVariantContext.mode
+                        && root.draftSeason === (settingsService.coffinVariantContext.season || "s0")
+                        && root.draftProfile === settingsService.coffinVariantContext.profileId
+                        && settingsService.coffinVariantOptions.some(function(row) { return row.available })
+                    Label { visible: parent.coffinApplicable; text: "全棺路线版本"; color: "#354f75"; font.pixelSize: 13 }
                     ComboBox {
                         objectName: "setting_zhan10CoffinVariantId"
+                        visible: parent.coffinApplicable
                         Layout.fillWidth: true
                         model: settingsService.coffinVariantOptions; textRole: "name"; valueRole: "id"
                         currentIndex: { for (var i=0;i<settingsService.coffinVariantOptions.length;i++) if(settingsService.coffinVariantOptions[i].id===root.preferences.zhan10CoffinVariantId) return i; return -1 }
                         displayText: currentIndex < 0 ? "当前版本不可用（偏好保留）" : currentText
-                        enabled: !settingsService.busy && root.preferences.gameMode===settingsService.coffinVariantContext.mode
-                                 && root.draftSeason === (settingsService.coffinVariantContext.season || "s0")
-                                 && root.draftProfile===settingsService.coffinVariantContext.profileId
-                                 && settingsService.coffinVariantOptions.some(function(row) { return row.available })
+                        enabled: !settingsService.busy && parent.coffinApplicable
                         delegate: ItemDelegate {
                             required property var modelData
                             width: parent ? parent.width : implicitWidth
@@ -543,7 +545,7 @@ Item {
                         Accessible.name: "全棺路线版本"
                         onActivated: settingsService.selectCoffinVariant(currentValue)
                     }
-                    Note { text: settingsService.coffinVariantMessage; Layout.columnSpan: parent.columns }
+                    Note { visible: parent.coffinApplicable && !!settingsService.coffinVariantMessage; text: settingsService.coffinVariantMessage; Layout.columnSpan: parent.columns }
                 }
                     }
 
@@ -554,9 +556,9 @@ Item {
         Flow {
             Layout.fillWidth: true; spacing: 8
             AppButton { objectName: "settingsSave"; text: settingsService.busy ? "正在保存…" : "保存更改"; primary: true; enabled: settingsService.dirty && !settingsService.busy && !settingsService.shortcutRecording; onClicked: { forceActiveFocus(); settingsService.save() } }
-            AppButton { objectName: "settingsReload"; text: "重新读取"; enabled: !settingsService.busy; onClicked: settingsService.reload() }
-            AppButton { objectName: "settingsReset"; text: "撤销草稿"; enabled: settingsService.dirty && !settingsService.busy; onClicked: settingsService.resetDraft() }
-            AppButton { objectName: "settingsReplayOnboarding"; text: "重新查看快捷键引导"; enabled: !settingsService.busy; onClicked: onboardingService.open() }
+            AppButton { objectName: "settingsReset"; text: "放弃修改"; enabled: settingsService.dirty && !settingsService.busy; onClicked: settingsService.resetDraft() }
+            AppButton { objectName: "settingsReload"; visible: false; text: "重新读取"; enabled: !settingsService.busy; onClicked: settingsService.reload() }
+            AppButton { objectName: "settingsReplayOnboarding"; text: "快捷键引导"; onClicked: onboardingService.open() }
         }
     }
 }

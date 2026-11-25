@@ -459,7 +459,7 @@ Window {
             }
             KeyHint {
                 visible: panel.snapshot.manualAlignmentSession === true
-                text: "手动选图；自动观察当前 B1～B4。B3/B4 已有静态截图核验，实时贴合待测，识别不确定时停止贴合；默认目标不代表已观察。"
+                text: "手动选图后自动识别楼层，识别不确定时会暂停贴合。"
             }
             RowLayout {
                 Layout.fillWidth: true; spacing: 4
@@ -467,11 +467,7 @@ Window {
                     objectName: "controlMapSelectionAuto"
                     text: "自动识别"; selected: !panel.manualSelection
                     enabled: !settingsService.busy; Layout.fillWidth: true
-                    hint: panel.snapshot.candidateProvisionalDisplayEnabled === true
-                        ? "每次开图重新筛选，可信位姿自动显示未锁定候选整图"
-                        : panel.snapshot.candidateStructureAvailable === true
-                        ? "读取当前楼层并列出结构候选，地图身份仍需确认"
-                        : "打开地图后自动识别本局地图"
+                    hint: "打开地图后自动识别本局地图并实时贴合"
                     onClicked: clientCoordinator.setMapSelectionMode("auto")
                 }
                 ControlButton {
