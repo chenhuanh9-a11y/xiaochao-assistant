@@ -225,6 +225,25 @@ def _owned_s1_display_reference(engine, map_id, floor):
         return item[1], check_current
 
 
+def _with_landmarks(engine, map_id, floor, layer, reference):
+    """S1 room names/minecarts drawn over the final display pixels.
+
+    Display only: recognition, pose and route geometry never see these
+    pixels. Bound to the reference's own canvas and clean-mask digest; any
+    mismatch (or S0) returns the layer unchanged.
+    """
+    if getattr(engine, "qt_season", "s0") != "s1" or not isinstance(layer, dict):
+        return layer
+    try:
+        from map_landmarks import decorate_bgra
+        pixels = decorate_bgra(layer.get("pixels"), map_id, str(floor), getattr(reference, "clean_mask", None),
+            layer.get("matrixDisplayToReference"),
+            route=layer.get("displayKind") in ("custom-gallery", "author-route"))
+    except (OSError, ValueError, TypeError, KeyError, ImportError):
+        return layer
+    return layer if pixels is layer.get("pixels") else dict(layer, pixels=pixels)
+
+
 def _display_metadata(layer, preferred, *, author_status='none', fallback_reason=''):
     actual = 'shared-structure' if preferred.startswith('custom:') else layer['routeProfileId']
     return dict(layer, preferredProfileId=preferred, effectiveProfileId=actual,
@@ -266,7 +285,8 @@ def prepare_display_layer(engine, map_id, floor, preferred, *, variant_id="varia
     if preferred == 'shared-structure':
         provider = getattr(engine, 'qt_shared_provider', None)
         layer = _consume_owned_shared_display(engine, map_id, floor,
-            lambda reference: provider.native_display_layer(reference, variant_id=variant_id))
+            lambda reference: _with_landmarks(engine, map_id, floor,
+                provider.native_display_layer(reference, variant_id=variant_id), reference))
         if layer is not NotImplemented:
             return _display_metadata(layer, preferred)
     owned = _owned_s1_display_reference(engine, map_id, floor) if preferred == '' else NotImplemented
@@ -282,6 +302,7 @@ def prepare_display_layer(engine, map_id, floor, preferred, *, variant_id="varia
             native_wall_segments=_reference_decode_metadata(reference.native_wall_segments))
 
     def metadata(layer, *, author_status="none", fallback_reason=""):
+        layer = _with_landmarks(engine, map_id, floor, layer, reference)
         check_current()
         return _display_metadata(layer, preferred, author_status=author_status, fallback_reason=fallback_reason)
 

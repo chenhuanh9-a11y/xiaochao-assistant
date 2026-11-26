@@ -12,6 +12,47 @@ Item {
     readonly property bool editing: state.editing || false
     readonly property bool showPointNumbers: settingsService && settingsService.persistedValues.routePointNumbers || false
     onShowPointNumbersChanged: drawing.requestPaint()
+    // S1 room names / minecarts (display only, never saved into routes or exports).
+    readonly property bool showLandmarkRooms: !settingsService || settingsService.persistedValues.mapLandmarkRooms !== false
+    readonly property bool showLandmarkMinecarts: !settingsService || settingsService.persistedValues.mapLandmarkMinecarts !== false
+    readonly property bool landmarkScope: root.state.season === "s1"
+    onShowLandmarkRoomsChanged: drawing.requestPaint()
+    onShowLandmarkMinecartsChanged: drawing.requestPaint()
+    function drawLandmarks(ctx, scale) {
+        // Same as Android custom-map-landmarks.js draw(): constant on-screen size,
+        // white bold text with a dark outline, the yellow minecart icon.
+        var items=root.state.landmarks || [], w=root.state.imageWidth, h=root.state.imageHeight
+        if (!items.length || w <= 0 || h <= 0) return
+        var size=Math.max(10.5, Math.min(15, Math.max(w,h)*.0105*scale))/scale
+        ctx.save(); ctx.font="bold "+size+"px sans-serif"; ctx.textAlign="center"; ctx.textBaseline="middle"
+        for (var i=0; i<items.length; ++i) {
+            var item=items[i], cart=item.kind === "minecart"
+            if (cart ? !root.showLandmarkMinecarts : !root.showLandmarkRooms) continue
+            if (cart) {
+                var r=Math.max(9, Math.min(14, Math.max(w,h)*.012*scale))/scale
+                var cx=Math.max(r*1.25, Math.min(w-r*1.25, item.x)), cy=Math.max(r, Math.min(h-r*1.4, item.y))
+                ctx.strokeStyle="#263847"; ctx.fillStyle="#ffd36f"; ctx.lineWidth=1.5/scale; ctx.lineJoin="round"
+                ctx.beginPath(); ctx.moveTo(cx-r,cy-r*.4); ctx.lineTo(cx+r,cy-r*.4); ctx.lineTo(cx+r*.72,cy+r*.5); ctx.lineTo(cx-r*.72,cy+r*.5); ctx.closePath(); ctx.fill(); ctx.stroke()
+                ctx.fillStyle="#b7c9d5"
+                ctx.beginPath(); ctx.moveTo(cx-r*.85,cy-r*.45); ctx.lineTo(cx-r*.45,cy-r); ctx.lineTo(cx-r*.05,cy-r*.42); ctx.closePath(); ctx.fill(); ctx.stroke()
+                ctx.beginPath(); ctx.moveTo(cx-r*.15,cy-r*.42); ctx.lineTo(cx+r*.35,cy-r*1.05); ctx.lineTo(cx+r*.83,cy-r*.42); ctx.closePath(); ctx.fill(); ctx.stroke()
+                ctx.fillStyle="#263847"; ctx.beginPath(); ctx.arc(cx-r*.6,cy+r*.8,r*.23,0,Math.PI*2); ctx.fill()
+                ctx.beginPath(); ctx.arc(cx+r*.6,cy+r*.8,r*.23,0,Math.PI*2); ctx.fill()
+                ctx.beginPath(); ctx.moveTo(cx-r*1.15,cy+r*1.1); ctx.lineTo(cx+r*1.15,cy+r*1.1); ctx.stroke()
+            } else {
+                var lines=item.label.match(/.{1,6}/g) || [item.label], widest=0
+                for (var j=0; j<lines.length; ++j) widest=Math.max(widest, ctx.measureText(lines[j]).width)
+                var half=Math.min(w/2-1, widest/2+1/scale), edge=size*(lines.length+1)/2
+                var x=Math.max(half+1, Math.min(w-half-1, item.x)), y=Math.max(edge, Math.min(h-edge, item.y))
+                ctx.lineJoin="round"; ctx.strokeStyle="#203b51"; ctx.lineWidth=1.8/scale
+                for (var k=0; k<lines.length; ++k) {
+                    var ly=y+(k-(lines.length-1)/2)*size*1.05
+                    ctx.strokeText(lines[k], x, ly); ctx.fillStyle="#ffffff"; ctx.fillText(lines[k], x, ly)
+                }
+            }
+        }
+        ctx.restore()
+    }
     function selectedIndex(rows, id) {
         for (var i=0; i<rows.length; ++i) if (rows[i].id === id) return i
         return -1
@@ -70,6 +111,9 @@ Item {
             visible: root.editing; Layout.fillWidth: true
             RoutePointNumbersSwitch {}
             Label { text: "每层从 1 开始 · 重复选点合并显示"; color: "#526785"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+            Label { visible: root.landmarkScope; text: "地图标注"; color: "#354f75" }
+            MapLandmarkSwitch { visible: root.landmarkScope; settingKey: "mapLandmarkRooms"; text: "重点房间" }
+            MapLandmarkSwitch { visible: root.landmarkScope; settingKey: "mapLandmarkMinecarts"; text: "矿车位置" }
         }
         Label { visible: settingsService && (settingsService.loadFailed || settingsService.message.indexOf("失败") >= 0); text: settingsService ? settingsService.message : ""; color: "#b91c1c"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
         RowLayout {
@@ -231,6 +275,8 @@ Item {
                                     ctx.lineJoin="round"; ctx.lineCap="round"; ctx.stroke()
                                 }
                             }
+                            // Labels sit above route lines and below the numbered markers.
+                            root.drawLandmarks(ctx, scale)
                             if (!root.showPointNumbers) return
                             for (var k=0; k<root.state.markers.length; ++k) {
                                 var marker=root.state.markers[k]

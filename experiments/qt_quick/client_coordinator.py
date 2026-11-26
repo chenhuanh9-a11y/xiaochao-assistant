@@ -251,6 +251,7 @@ class ClientCoordinator(QObject):
         self._pending_context = None
         self._pending_display_refresh = False
         self._route_point_numbers = values.get("routePointNumbers", False)
+        self._map_landmarks = self._landmark_signature(values)
         self._binding_signature = (values.get("hotkey"), tuple(values.get("actionHotkeys", ())))
         from client_input import NativeWindowAPI
         self._native_windows = NativeWindowAPI()
@@ -1768,12 +1769,20 @@ class ClientCoordinator(QObject):
             self._apply_controls_visibility(False)
         self.changed.emit()
 
+    @staticmethod
+    def _landmark_signature(values):
+        """S1 room-name/minecart toggles; display only, like routePointNumbers."""
+        return (values.get("mapLandmarkRooms", True) is not False,
+                values.get("mapLandmarkMinecarts", True) is not False)
+
     def _settings_saved(self):
         if self._closing or self._closed:
             return
         values = self.settings.persistedValues
         numbers_changed = values.get("routePointNumbers", False) != self._route_point_numbers
         self._route_point_numbers = values.get("routePointNumbers", False)
+        landmarks_changed = self._landmark_signature(values) != self._map_landmarks
+        self._map_landmarks = self._landmark_signature(values)
         signature = (values.get("hotkey"), tuple(values.get("actionHotkeys", ())))
         if signature != self._binding_signature:
             was_enabled = self.input.enabled
@@ -1785,7 +1794,7 @@ class ClientCoordinator(QObject):
                     self.input.enableManagement()
         self.runtime.configure_settings(values)
         mode, profile, season = self._settings_context(values)
-        if numbers_changed and str(profile).startswith("custom:"):
+        if (numbers_changed and str(profile).startswith("custom:")) or (landmarks_changed and season == "s1"):
             self.cancelReferenceEdit()
             self._cancel_pending_material("route-point-numbers-changed")
             self._clear_reference()

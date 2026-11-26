@@ -137,6 +137,11 @@ class QtClient:
         self.custom_display.set_point_numbers(self.settings.persistedValues.get("routePointNumbers", False))
         self.settings.saved.connect(lambda: self.custom_display.set_point_numbers(
             self.settings.persistedValues.get("routePointNumbers", False)))
+        # S1 room names/minecarts: one saved preference for editor and in-game maps.
+        from map_landmarks import LandmarkPreferences, set_preferences as set_landmark_preferences
+        set_landmark_preferences(LandmarkPreferences.from_settings(self.settings.persistedValues))
+        self.settings.saved.connect(lambda: set_landmark_preferences(
+            LandmarkPreferences.from_settings(self.settings.persistedValues)))
         from client_capture_exclusion import QtCaptureExclusion
         self.capture_exclusion = QtCaptureExclusion(parent=app,
             is_closing=lambda: self._closed or bool(getattr(getattr(self, "coordinator", None), "closing", False)))
