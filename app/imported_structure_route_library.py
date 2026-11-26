@@ -577,7 +577,15 @@ class ImportedStructureRouteLibrary:
             return f"-{low[1:]}"
         return val
 
-    def _decode_imported_point(self, mid: str, pt: dict, *, default_color: str, grid_step: float) -> dict:
+    def _decode_imported_point(
+        self,
+        mid: str,
+        pt: dict,
+        *,
+        template_id: str = "",
+        default_color: str,
+        grid_step: float,
+    ) -> dict:
         if not isinstance(pt, dict):
             raise RouteError("路线点格式无效")
         fid = self._normalize_imported_floor(pt.get("floor", ""))
@@ -589,17 +597,28 @@ class ImportedStructureRouteLibrary:
         if "x" in pt and "y" in pt:
             x, y = float(pt["x"]), float(pt["y"])
         elif "cell" in pt:
+            from android_route_grid_index import lookup_android_grid
             cell = pt["cell"]
-            step = max(1.0, float(grid_step or 2.0))
+            grid = lookup_android_grid(template_id, mid, fid)
+            if grid is not None:
+                cols, step, nw, nh = grid
+                scale_x = float(w) / float(max(1, nw))
+                scale_y = float(h) / float(max(1, nh))
+            else:
+                step = max(1.0, float(grid_step or (2.0 if self.scope.id == "legacy-nightmare" else 4.0)))
+                nw, nh = w, h
+                cols = max(1, int(math.ceil(nw / step)))
+                scale_x, scale_y = 1.0, 1.0
             if isinstance(cell, (list, tuple)) and len(cell) == 2:
-                x = min(float(w - 1), float(cell[0]) * step + step * 0.5)
-                y = min(float(h - 1), float(cell[1]) * step + step * 0.5)
+                ax = min(float(nw - 1), float(cell[0]) * step + step * 0.5)
+                ay = min(float(nh - 1), float(cell[1]) * step + step * 0.5)
             elif isinstance(cell, int) and cell >= 0:
-                cols = max(1, int(math.ceil(w / step)))
-                x = min(float(w - 1), (cell % cols) * step + step * 0.5)
-                y = min(float(h - 1), (cell // cols) * step + step * 0.5)
+                ax = min(float(nw - 1), (cell % cols) * step + step * 0.5)
+                ay = min(float(nh - 1), (cell // cols) * step + step * 0.5)
             else:
                 raise RouteError("路线点网格坐标格式不支持")
+            x = min(float(w - 1), max(0.0, ax * scale_x))
+            y = min(float(h - 1), max(0.0, ay * scale_y))
         else:
             raise RouteError("路线点缺少坐标信息")
         return dict(
@@ -621,18 +640,28 @@ class ImportedStructureRouteLibrary:
             plan = entry.get("routePlan")
             if not isinstance(plan, dict):
                 raise RouteError("路线包缺少路线规划数据")
-            mid = str(plan.get("sourceMapId") or entry.get("mapEntryId") or plan.get("templateId") or "")
+            template_id = str(plan.get("templateId") or "")
+            mid = str(plan.get("sourceMapId") or entry.get("mapEntryId") or template_id or "")
             if not self.has(mid):
                 missing_maps += 1
                 continue
             if mid in maps:
                 raise RouteError("路线包地图重复")
             default_color = str(plan.get("lineColor") or DEFAULT_COLOR)
-            grid_step = float(plan.get("gridStep") or plan.get("step") or 2.0)
+            default_step = 2.0 if self.scope.id == "legacy-nightmare" else 4.0
+            grid_step = float(plan.get("gridStep") or plan.get("step") or default_step)
             pts = []
             for pt in plan.get("points") or ():
                 try:
-                    pts.append(self._decode_imported_point(mid, pt, default_color=default_color, grid_step=grid_step))
+                    pts.append(
+                        self._decode_imported_point(
+                            mid,
+                            pt,
+                            template_id=template_id,
+                            default_color=default_color,
+                            grid_step=grid_step,
+                        )
+                    )
                 except (RouteError, TypeError, ValueError, KeyError):
                     dropped_points += 1
             if pts:

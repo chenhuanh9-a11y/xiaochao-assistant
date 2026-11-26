@@ -115,6 +115,9 @@ def _build_shared_npz(
     world_floor: int,
     structure_version_key: str,
     source_version: str,
+    source_catalog_sha256: str,
+    renderer_metadata_sha256: str,
+    image_to_map_plane_xz: list,
 ) -> bytes:
     clean = np.ascontiguousarray((mask > 0).astype(np.uint8) * 255)
     h, w = clean.shape[:2]
@@ -140,6 +143,15 @@ def _build_shared_npz(
             "height": int(h),
             "shapeHW": [int(h), int(w)],
             "axes": "x-right,y-down",
+        },
+        "sourceGeometry": {
+            "nativeShapeHW": [int(h), int(w)],
+            "imageToMapPlaneXZ": image_to_map_plane_xz,
+            "sourceHeight": int(world_floor),
+            "gameFloor": int(floor),
+            "sourceCatalogSha256": source_catalog_sha256,
+            "rendererMetadataSha256": renderer_metadata_sha256,
+            "authorPixelsUsed": False,
         },
         "structureVersionKey": structure_version_key,
         "sourceVersion": source_version,
@@ -312,6 +324,13 @@ def build_mode_package(
     template_manifest = json.loads(template_manifest_bytes.decode("utf-8"))
     glyph_sha = template_manifest["template_sha256"]
 
+    delivery_manifest_path = delivery_root / "manifest.json"
+    source_catalog_sha256 = (
+        _sha256(delivery_manifest_path.read_bytes())
+        if delivery_manifest_path.is_file()
+        else _sha256(f"s1-delivery:{source_version}:{mode}".encode("utf-8"))
+    )
+
     for map_dir in map_dirs:
         mid = map_dir.name
         identity_profiles[mid] = "shared-structure"
@@ -325,16 +344,18 @@ def build_mode_package(
             ren_path = fdir / "rendered.png"
             with np.load(npz_path, allow_pickle=False) as z:
                 mask = np.ascontiguousarray((z["shared_mask"] > 0).astype(np.uint8) * 255)
-            geo = json.loads(geo_path.read_text(encoding="utf-8"))
+            geo_raw = geo_path.read_bytes()
+            geo = json.loads(geo_raw.decode("utf-8"))
+            geo_sha = _sha256(geo_raw)
             ren_bytes = ren_path.read_bytes() if ren_path.is_file() else None
             hasher.update(gfloor.encode("utf-8"))
             hasher.update(mask.tobytes())
-            floor_data[gfloor] = (wfloor, mask, geo, ren_bytes)
+            floor_data[gfloor] = (wfloor, mask, geo, ren_bytes, geo_sha)
 
         revised = revised_map_ids or set()
         inherited = (baseline_hashes or {}).get(mid)
         struct_sha = inherited if (inherited and mid not in revised) else hasher.hexdigest()
-        b1_wfloor, b1_mask, b1_geo, _ = floor_data["-1"]
+        b1_wfloor, b1_mask, b1_geo, _, _ = floor_data["-1"]
         ex, ey, plane_xz = _extract_entrance_xy(b1_geo, b1_mask)
         rx, ry = int(round(ex)), int(round(ey))
 
@@ -343,7 +364,7 @@ def build_mode_package(
         coord_index_map = {}
 
         for _bdir, gfloor, wfloor in FLOOR_DIR_TO_GAME:
-            _wf, mask, geo, ren_bytes = floor_data[gfloor]
+            _wf, mask, geo, ren_bytes, geo_sha = floor_data[gfloor]
             h, w = mask.shape[:2]
             svk = f"{mid}@{struct_sha}/{gfloor}"
             npz_rel = f"references/entries/{mid}-{gfloor}-shared.npz"
@@ -354,6 +375,9 @@ def build_mode_package(
                 world_floor=wfloor,
                 structure_version_key=svk,
                 source_version=source_version,
+                source_catalog_sha256=source_catalog_sha256,
+                renderer_metadata_sha256=geo_sha,
+                image_to_map_plane_xz=geo.get("imageToMapPlaneXZ") or [[1, 0, 0], [0, -1, int(h)], [0, 0, 1]],
             )
             base_files[npz_rel] = npz_bytes
             map_layers[gfloor] = npz_rel
@@ -445,6 +469,8 @@ def build_mode_package(
             coord_index_map[gfloor] = {
                 "imageToEntranceXZ": [[1, 0, -rx], [0, -1, ry], [0, 0, 1]],
                 "shapeHW": [int(h), int(w)],
+                "sourceCatalogSha256": source_catalog_sha256,
+                "sourceRendererMetadataSha256": geo_sha,
                 "entranceNativeB1": [rx, ry],
                 "entranceSourcePlaneXZ": plane_xz,
             }
@@ -764,6 +790,33 @@ def verify_package_end_to_end(
             with view.read_scope(), ctrl_view.read_scope():
                 engine = build_native_engine(view, ctrl_view, runtime_paths(sb), season="s1", mode=mode, require_rank=False)
                 assert engine is not None, "build_native_engine returned None"
+                # Prove background candidate eliminator builds full pool (union chains + void fields) across ALL maps!
+                from imported_resource_reader import ComponentResourceReader
+                from s1_common_coordinate_filter import CommonCoordinateFilter
+                from s1_pose_prior import CoordinatePriorIndex
+                from s1_structure_selection import StructureCatalog
+                vreader = ComponentResourceReader(view)
+                res_key = StructureCatalog.from_engine(engine).resource_key
+                idx_path = view.path("s1-private-assets/s1_entrance_coordinate_index.json")
+                coord_filter = CommonCoordinateFilter(
+                    lambda mid, fl: engine.qt_shared_provider("shared-structure", mid, fl),
+                    json.loads(vreader(idx_path).decode("utf-8")),
+                    mode=mode,
+                    resource_key=res_key,
+                    read_resource=vreader,
+                )
+                pool_data = coord_filter._pool(sorted(engine.pack.by_id), "-1", lambda: False)
+                assert pool_data is not None and len(pool_data["ids"]) == len(engine.pack.by_id), "Candidate eliminator pool failed"
+                assert len(pool_data["fields"]) == len(engine.pack.by_id) and bool(pool_data["difference"].any()), "Candidate eliminator difference mask empty"
+                prior_idx = CoordinatePriorIndex(
+                    idx_path,
+                    expected_sha256=None,
+                    mode=mode,
+                    resource_key=res_key,
+                    provider=lambda mid, fl: engine.qt_shared_provider("shared-structure", mid, fl),
+                    read_resource=vreader,
+                )
+                assert prior_idx._native_to_common(sample_map_ids[0], "-1") is not None
         with ctrl_view.read_scope():
             controls_profile = S1ControlsProfile(ctrl_view)
             controls_profile.for_context("s1", mode)
@@ -850,7 +903,7 @@ def main():
 
     change_doc = json.loads((args.delivery / "变更清单.json").read_text(encoding="utf-8"))
     source_version = str(change_doc["sourceVersion"])
-    res_version = f"{source_version}-{date.today().strftime('%Y%m%d')}.4"
+    res_version = f"{source_version}-{date.today().strftime('%Y%m%d')}.5"
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     results = []

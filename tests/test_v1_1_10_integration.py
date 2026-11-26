@@ -255,6 +255,60 @@ class ImportedStructureRouteLibraryTests(unittest.TestCase):
             self.assertEqual(android_imported["107001"]["points"][0]["floor"], "-1")
             self.assertEqual(android_report["droppedPoints"], 0)
 
+    def test_android_s1_cell_uses_exact_android_grid_scale(self):
+        from android_route_grid_index import lookup_android_grid
+        from imported_structure_route_library import ImportedStructureRouteLibrary
+
+        # Verify S1 template lookup returns step=4 and Android 0.8x dimensions (1056x1489 for 106001 B1)
+        grid = lookup_android_grid("season-s1-106001", "106001", "-1")
+        self.assertIsNotNone(grid)
+        cols, step, aw, ah = grid
+        self.assertEqual(step, 4)
+        self.assertEqual((aw, ah), (1056, 1489))
+        self.assertEqual(cols, 264)
+
+        # Pick Android center cell (cx=132, cy=186 -> ax=530, ay=746 on 1056x1489)
+        cell = 186 * cols + 132
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mask = np.full((1860, 1320), 255, dtype=np.uint8)
+            img = np.full((1860, 1320, 3), 240, dtype=np.uint8)
+            img_p = root / "b1.png"
+            mask_p = root / "b1_mask.png"
+            cv2.imwrite(str(img_p), img)
+            cv2.imwrite(str(mask_p), mask)
+
+            scope = SCOPES["season-s1-hard"]
+            lib = ImportedStructureRouteLibrary(None, scope, root / "cache")
+            lib._maps = {
+                "106001": dict(
+                    name="106001",
+                    floors={
+                        "-1": dict(path=img_p, size=(1320, 1860), mask_rel="b1_mask.png", mask_cache=mask_p, display_rel="b1.png"),
+                    },
+                )
+            }
+            imported, report = lib.import_maps({
+                "routeCatalogId": scope.id,
+                "scenario": scope.scenario,
+                "mode": scope.mode,
+                "maps": [
+                    {
+                        "mapEntryId": "106001",
+                        "templateId": "season-s1-106001",
+                        "routePlan": {
+                            "sourceMapId": "106001",
+                            "points": [{"cell": cell, "color": "#ff3b30", "floor": "b1", "kind": "room"}],
+                        },
+                    }
+                ],
+            })
+            self.assertEqual(report["droppedPoints"], 0)
+            pt = imported["106001"]["points"][0]
+            # Expected scaled position: (530 * 1320 / 1056, 746 * 1860 / 1489) ~= (662.5, 931.9)
+            self.assertAlmostEqual(pt["x"], 530.0 * 1320.0 / 1056.0, delta=1.5)
+            self.assertAlmostEqual(pt["y"], 746.0 * 1860.0 / 1489.0, delta=1.5)
+
     def test_xingtu_map_and_legacy_base_suffixes_both_accepted(self):
         from resource_package_types import BASE_SUFFIX, ROUTE_SUFFIX, PackageTypeError, validate_package_filename
         base_comps = [{"type": "recognition-base"}, {"type": "controls-profile"}]
