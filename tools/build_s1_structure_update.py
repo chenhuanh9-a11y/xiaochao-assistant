@@ -150,6 +150,69 @@ def _build_shared_npz(
     return buf.getvalue()
 
 
+def _extract_entry_outline_and_chains(mask: np.ndarray, center_xy: list[float]) -> tuple[list[list[float]], list[dict]]:
+    """Extract valid geometric polygon outline and 3-point corner chains around the entry."""
+    cx, cy = float(center_xy[0]), float(center_xy[1])
+    h, w = mask.shape[:2]
+    binary = ((mask > 0).astype(np.uint8)) * 255
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    best_poly = None
+    best_dist = float("inf")
+    for cnt in contours:
+        if len(cnt) < 3 or cv2.contourArea(cnt) < 400:
+            continue
+        approx = cv2.approxPolyDP(cnt, 4.0, True).reshape(-1, 2)
+        if len(approx) < 3:
+            continue
+        dists = np.linalg.norm(approx.astype(np.float64) - np.array([cx, cy]), axis=1)
+        dmin = float(dists.min())
+        if dmin < best_dist:
+            best_dist = dmin
+            best_poly = approx.astype(float)
+    if best_poly is None or len(best_poly) < 3:
+        best_poly = np.array(
+            [[cx - 30.0, cy - 30.0], [cx + 30.0, cy - 30.0], [cx + 30.0, cy + 30.0], [cx - 30.0, cy + 30.0]],
+            dtype=float,
+        )
+    # Cap outline to <= 128 vertices to stay well within preflight limits (256).
+    if len(best_poly) > 128:
+        idx = np.linspace(0, len(best_poly) - 1, 128, dtype=int)
+        best_poly = best_poly[idx]
+    n = len(best_poly)
+    outline = [[round(float(p[0]), 2), round(float(p[1]), 2)] for p in best_poly]
+    chains = []
+    for i in range(n):
+        p_prev = best_poly[(i - 1) % n]
+        p_cur = best_poly[i]
+        p_next = best_poly[(i + 1) % n]
+        v1 = p_prev - p_cur
+        v2 = p_next - p_cur
+        n1, n2 = float(np.linalg.norm(v1)), float(np.linalg.norm(v2))
+        if n1 < 1e-3 or n2 < 1e-3:
+            continue
+        u1 = (v1 / n1).tolist()
+        u2 = (v2 / n2).tolist()
+        chains.append({
+            "points": [
+                [round(float(p_prev[0]), 2), round(float(p_prev[1]), 2)],
+                [round(float(p_cur[0]), 2), round(float(p_cur[1]), 2)],
+                [round(float(p_next[0]), 2), round(float(p_next[1]), 2)],
+            ],
+            "rays": [[float(u1[0]), float(u1[1])], [float(u2[0]), float(u2[1])]],
+            "sourceNode": i,
+            "sourceNeighborNodes": [(i - 1) % n, i, (i + 1) % n],
+        })
+    if not chains:
+        outline = [[cx - 30.0, cy - 30.0], [cx + 30.0, cy - 30.0], [cx + 30.0, cy + 30.0], [cx - 30.0, cy + 30.0]]
+        chains = [{
+            "points": [outline[0], outline[1], outline[2]],
+            "rays": [[-1.0, 0.0], [0.0, 1.0]],
+            "sourceNode": 1,
+            "sourceNeighborNodes": [0, 1, 2],
+        }]
+    return outline, chains
+
+
 def _minimal_entry_record(
     map_id: str,
     floor: str,
@@ -163,7 +226,7 @@ def _minimal_entry_record(
 ) -> dict:
     h, w = mask.shape[:2]
     cx, cy = float(center_xy[0]), float(center_xy[1])
-    outline = [[cx - 30.0, cy - 30.0], [cx + 30.0, cy - 30.0], [cx + 30.0, cy + 30.0], [cx - 30.0, cy + 30.0]]
+    outline, chains = _extract_entry_outline_and_chains(mask, center_xy)
     return {
         "mapId": map_id,
         "floor": floor,
@@ -174,7 +237,7 @@ def _minimal_entry_record(
         "unit": 60.0,
         "region": [max(0, int(cx - 120)), max(0, int(cy - 120)), min(int(w), int(cx + 120)), min(int(h), int(cy + 120))],
         "neighbors": [],
-        "chains": [],
+        "chains": chains,
         "sourceProduct": resource_path,
         "structureResource": resource_path,
         "profileId": "shared-structure",
@@ -682,7 +745,8 @@ def verify_package_end_to_end(
         ctx = snapshot.resolve_context("s1", mode)
         assert ctx.base is not None, "Active base not resolved after install"
 
-        # 1. Strict production decode of ALL maps, floors, and S1 controls profile
+        # 1. Strict production decode of ALL maps, floors, entry chains, and S1 controls profile
+        from difficult_entry_identity import DifficultEntryIdentity
         assert ctx.controls is not None, "Active controls not resolved after install"
         ctrl_view = PackageView(resolver.root, ctx.controls.component_ref, assert_current=ctx.assert_current)
         with ctrl_view.read_scope():
@@ -695,6 +759,12 @@ def verify_package_end_to_end(
         with view.read_scope():
             bundle = decode_original_base(view, season="s1", mode=mode)
             assert len(bundle.pack.maps) > 0
+            # Verify entry index passes the exact DifficultEntryIdentity validator used by live runtime!
+            entry_idx = DifficultEntryIdentity(
+                view.path(bundle.interfaces["identityEntries"] + "/entries.json").parent,
+                read_resource=bundle.reader,
+            )
+            assert len(entry_idx.entries) == len(bundle.pack.maps)
             # Verify live overlay rendered display works on sample maps
             provider = type("_Dummy", (), {})()
             for mid in sample_map_ids:
@@ -705,15 +775,19 @@ def verify_package_end_to_end(
                 assert layer is not None and layer["displayLabel"] == "默认渲染地图"
 
             if old_route_archive is not None and old_route_archive.is_file():
+                from imported_author_dependencies import matches_display_base
                 saved_route = save_archive(old_route_archive, catalog_root)
                 route_ref = next(iter(saved_route.component_refs))
                 route_view = PackageView(resolver.root, route_ref, assert_current=ctx.assert_current)
                 with route_view.read_scope():
+                    # Verify planner-style matches_display_base(route_view, base_ref) without explicit compatible_ids!
+                    assert matches_display_base(route_view, view.component_ref), "matches_display_base failed via resource_root"
                     decoded_route = decode_author_display(route_view, bundle, bundle.resources.load)
                     old_route_summary = {
                         "profileId": decoded_route.profile_id,
                         "compatibleLayers": len(decoded_route.layers),
                         "skippedGaps": len(decoded_route.gaps),
+                        "plannerMatch": True,
                     }
                     assert len(decoded_route.layers) > 0, "Expected unchanged maps to remain compatible"
 
@@ -763,7 +837,7 @@ def main():
 
     change_doc = json.loads((args.delivery / "变更清单.json").read_text(encoding="utf-8"))
     source_version = str(change_doc["sourceVersion"])
-    res_version = f"{source_version}-{date.today().strftime('%Y%m%d')}.2"
+    res_version = f"{source_version}-{date.today().strftime('%Y%m%d')}.3"
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     results = []

@@ -30,8 +30,10 @@ def matches_display_base(view, base_ref, *, compatible_package_ids=()):
     if dependency.package_id == base_ref.package_id:
         return True
     allowed_ids = {str(x) for x in (compatible_package_ids or ()) if x}
-    if not allowed_ids and hasattr(view, 'root'):
-        allowed_ids.update(_declared_compatible_base_ids(view.root, base_ref))
+    if not allowed_ids:
+        resource_root = getattr(view, 'resource_root', None)
+        if resource_root is not None:
+            allowed_ids.update(_declared_compatible_base_ids(resource_root, base_ref))
     return dependency.package_id in allowed_ids
 
 
