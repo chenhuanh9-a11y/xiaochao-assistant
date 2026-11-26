@@ -1,4 +1,8 @@
-"""S1 map landmarks: important room names and minecart exits (display only).
+"""S1 map landmarks: important room names and minecart spots (display only).
+
+Minecart spots are the B1 minecart exit models plus the rooms named 「矿车」
+(B2/B3 evacuation points) and 「矿车中转站」 (B1/B2 transfer stations).  They
+all belong to the 矿车位置 switch, never to the 重点房间 switch.
 
 Ported from the Android client (``assets/custom-map-landmarks.js`` and
 ``SeasonMapLandmarks.kt``).  The bundled ``s1_map_landmarks.json`` is generated
@@ -32,6 +36,11 @@ CART_ORE = (183, 201, 213, 255)
 CART_LINE = (38, 56, 71, 255)
 TEXT_FILL = (255, 255, 255, 255)
 TEXT_OUTLINE = (32, 59, 81, 255)
+# Rooms drawn as minecarts (owned by the minecart switch) and their caption.
+CART_ROOMS = {"矿车": "矿车", "矿车中转站": "中转站"}
+# A minecart exit this close to a minecart room (fraction of the floor's long
+# side, about one icon width on screen) is the same spot: draw it once.
+CART_MERGE_RATIO = .06
 
 
 @dataclass(frozen=True)
@@ -156,11 +165,26 @@ def bound_entry(map_id, floor, binding, *, data=None) -> dict | None:
 
 
 def important_items(row, floor, *, data=None) -> list[dict]:
-    """Minecarts plus the floor's important rooms (Android ``IMPORTANT_ROOMS``)."""
+    """Minecart spots plus the floor's important rooms (Android ``IMPORTANT_ROOMS``).
+
+    Rooms named in ``CART_ROOMS`` come back as ``kind="minecart"`` with a
+    ``caption``; a minecart exit at the same spot as one of them is dropped.
+    """
     data = load_data() if data is None else data
     names = set((data or {}).get("importantRooms", {}).get(str(floor), ()))
-    return [dict(item) for item in row["items"]
-            if item["kind"] == "minecart" or (item["kind"] == "room" and item["label"] in names)]
+    cart_rooms = [item for item in row["items"] if item["kind"] == "room" and item["label"] in CART_ROOMS]
+    near = CART_MERGE_RATIO * max(row["width"], row["height"])
+    out = []
+    for item in row["items"]:
+        if item["kind"] == "minecart":
+            if any(np.hypot(item["x"] - room["x"], item["y"] - room["y"]) <= near for room in cart_rooms):
+                continue
+            out.append(dict(item))
+        elif item["kind"] == "room" and item["label"] in CART_ROOMS:
+            out.append(dict(item, kind="minecart", caption=CART_ROOMS[item["label"]]))
+        elif item["kind"] == "room" and item["label"] in names:
+            out.append(dict(item))
+    return out
 
 
 def select(items, prefs: LandmarkPreferences) -> list[dict]:
@@ -256,7 +280,8 @@ def draw(image, items, *, route=False) -> dict:
 
     Same proportions as Android ``SeasonMapLandmarks.draw``: text 3.5% and
     minecart radius 3% of the long side; with a route both shift upwards so
-    the route line underneath stays visible.
+    the route line underneath stays visible.  A minecart room's caption sits
+    just under its icon, in the room-name text size.
     """
     width, height = image.size
     count = dict(rooms=0, minecarts=0)
@@ -270,6 +295,8 @@ def draw(image, items, *, route=False) -> dict:
             x = min(max(float(item["x"]), r * 1.25), width - r * 1.25)
             y = min(max(float(item["y"]) - (r * 1.8 if route else 0), r * 1.1), height - r * 1.4)
             _draw_cart(image, x, y, r)
+            if item.get("caption"):
+                _draw_room(image, item["caption"], x, y + r * 1.1 + size * .75, size, width, height, False)
             count["minecarts"] += 1
         elif item["kind"] == "room":
             _draw_room(image, item["label"], float(item["x"]), float(item["y"]), size, width, height, route)
@@ -333,7 +360,7 @@ def decorate_bgra(pixels, map_id, floor, reference_mask, matrix_display_to_refer
 
 
 def editor_items(map_id, floor, binding) -> list[dict]:
-    """Important rooms and minecarts for the editor, in editor image pixels.
+    """Important rooms and minecart spots for the editor, in editor image pixels.
 
     ``binding["toImage"]`` maps native pixels to editor image pixels.  Toggles
     are applied by the editor itself so switching them only repaints.
@@ -345,5 +372,8 @@ def editor_items(map_id, floor, binding) -> list[dict]:
     out = []
     for item in important_items(row, floor):
         x, y, z = matrix @ np.array([item["x"], item["y"], 1.0])
-        out.append(dict(kind=item["kind"], label=item["label"], x=round(float(x / z), 2), y=round(float(y / z), 2)))
+        entry = dict(kind=item["kind"], label=item["label"], x=round(float(x / z), 2), y=round(float(y / z), 2))
+        if item.get("caption"):
+            entry["caption"] = item["caption"]
+        out.append(entry)
     return out

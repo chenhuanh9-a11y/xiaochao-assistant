@@ -99,6 +99,30 @@ class BundledDataTests(unittest.TestCase):
         # Same totals as Android (B1 none; B2/B3 by important room kinds).
         self.assertEqual(shown, {"-1": 0, "-2": 168, "-3": 264})
 
+    def test_minecart_spots_on_every_floor_follow_the_minecart_switch(self):
+        """B1 exits plus the 「矿车」 evacuation points and 「矿车中转站」 on B2/B3."""
+        spots = {"-1": {}, "-2": {}, "-3": {}}
+        cart_only, rooms_only = ml.LandmarkPreferences(False, True), ml.LandmarkPreferences(True, False)
+        for maps in self.data["modes"].values():
+            for mid, rows in maps.items():
+                for fid, row in rows.items():
+                    items = ml.important_items(row, fid, data=self.data)
+                    carts = [i for i in items if i["kind"] == "minecart"]
+                    for item in carts:
+                        key = item.get("caption", item["label"])
+                        spots[fid][key] = spots[fid].get(key, 0) + 1
+                    # No room switch decides a minecart spot, in either direction.
+                    self.assertEqual(ml.select(items, cart_only), carts)
+                    self.assertEqual(ml.select(items, ml.LandmarkPreferences(True, True)), items)
+                    self.assertFalse(any(i["kind"] == "minecart" for i in ml.select(items, rooms_only)))
+                    self.assertEqual(ml.select(items, ml.LandmarkPreferences(False, False)), [])
+                    self.assertFalse(any(i["label"] in ml.CART_ROOMS for i in items if i["kind"] == "room"))
+                    if fid in ("-2", "-3"):
+                        self.assertTrue(carts, (mid, fid))
+        self.assertEqual(spots, {"-1": {"矿车出口": 42, "中转站": 54},
+                                 "-2": {"矿车": 62, "中转站": 54},
+                                 "-3": {"矿车": 84}})
+
 
 @unittest.skipUnless(os.environ.get("XINGTU_ANDROID_LANDMARKS") and os.environ.get("XINGTU_S1_PACKAGES"),
                      "needs the Android landmark source and the S1 2.105 structure packages")
@@ -121,6 +145,15 @@ def synthetic_doc(mask, *, items=None, floor="-2", mid="106001"):
                         dict(id="r1", kind="room", label="水晶房", x=60.0, y=60.0),
                         dict(id="r2", kind="room", label="普通房间", x=140.0, y=60.0),
                         dict(id="c1", kind="minecart", label="矿车出口", x=140.0, y=140.0)])}}))
+
+
+CART_ROOM_ITEMS = [
+    dict(id="r1", kind="room", label="水晶房", x=60.0, y=60.0),
+    dict(id="e1", kind="room", label="矿车", x=140.0, y=140.0),
+    dict(id="t1", kind="room", label="矿车中转站", x=60.0, y=140.0),
+    # Same spot as the 矿车中转站 room: drawn once.
+    dict(id="c1", kind="minecart", label="矿车出口", x=64.0, y=136.0),
+]
 
 
 class SyntheticTests(unittest.TestCase):
@@ -160,6 +193,51 @@ class SyntheticTests(unittest.TestCase):
         self.assertEqual([i["kind"] for i in ml.select(items, ml.LandmarkPreferences(False, True))], ["minecart"])
         self.assertEqual([i["kind"] for i in ml.select(items, ml.LandmarkPreferences(True, False))], ["room"])
         self.assertEqual(ml.select(items, ml.LandmarkPreferences(False, False)), [])
+
+    def use_cart_rooms(self, floor="-2"):
+        doc = synthetic_doc(self.mask, items=CART_ROOM_ITEMS, floor=floor)
+        doc["importantRooms"] = {"-1": [], "-2": ["水晶房"], "-3": ["水晶房"]}
+        self.path.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+        ml._DATA_PATH = None
+
+    def test_minecart_rooms_are_minecarts_and_merge_with_exits(self):
+        for floor in ("-2", "-3"):
+            self.use_cart_rooms(floor)
+            items = ml.important_items(ml.floor_entry("106001", floor), floor)
+            self.assertEqual([(i["kind"], i["label"], i.get("caption")) for i in items], [
+                ("room", "水晶房", None), ("minecart", "矿车", "矿车"), ("minecart", "矿车中转站", "中转站")])
+        # An exit away from every minecart room stays.
+        row = dict(width=200, height=200, items=CART_ROOM_ITEMS[:3] + [
+            dict(id="c2", kind="minecart", label="矿车出口", x=100.0, y=30.0)])
+        self.assertEqual([i["label"] for i in ml.important_items(row, "-2") if i["kind"] == "minecart"],
+                         ["矿车", "矿车中转站", "矿车出口"])
+
+    def test_b2_b3_minecart_switch_draws_spots_room_switch_does_not(self):
+        for floor in ("-2", "-3"):
+            self.use_cart_rooms(floor)
+            carts = ml.decorate_bgra(self.pixels, "106001", floor, self.mask, prefs=ml.LandmarkPreferences(False, True))
+            diff, _ = self.changed(carts)
+            self.assertTrue(diff[125:150, 130:150].any(), floor)   # 矿车 evacuation point icon
+            self.assertTrue(diff[150:175, 125:155].any(), floor)   # its 「矿车」 caption below
+            self.assertTrue(diff[125:150, 50:70].any(), floor)     # 中转站 icon
+            self.assertFalse(diff[55:65, 50:70].any(), floor)      # 水晶房 hidden by the room switch
+            rgb = carts[120:160, 120:160, [2, 1, 0]].reshape(-1, 3)
+            self.assertTrue(np.any(np.all(np.abs(rgb.astype(int) - (255, 211, 111)) < 12, axis=1)))
+            both = ml.decorate_bgra(self.pixels, "106001", floor, self.mask, prefs=ml.LandmarkPreferences(True, True))
+            np.testing.assert_array_equal(self.changed(both)[0][100:, :], diff[100:, :])  # rooms switch: carts same
+            rooms = ml.decorate_bgra(self.pixels, "106001", floor, self.mask, prefs=ml.LandmarkPreferences(True, False))
+            self.assertFalse(self.changed(rooms)[0][100:, :].any(), floor)  # minecart switch off: none at all
+            self.assertTrue(self.changed(rooms)[0][55:65, 50:70].any(), floor)
+            off = ml.LandmarkPreferences(False, False)
+            self.assertIs(ml.decorate_bgra(self.pixels, "106001", floor, self.mask, prefs=off), self.pixels)
+
+    def test_editor_items_carry_minecart_captions(self):
+        self.use_cart_rooms("-3")
+        sha = ml.mask_sha256(self.mask)
+        items = ml.editor_items("106001", "-3", dict(width=200, height=200, maskSha256=sha))
+        self.assertEqual(items, [dict(kind="room", label="水晶房", x=60.0, y=60.0),
+                                 dict(kind="minecart", label="矿车", caption="矿车", x=140.0, y=140.0),
+                                 dict(kind="minecart", label="矿车中转站", caption="中转站", x=60.0, y=140.0)])
 
     def test_binding_requires_same_canvas_and_mask(self):
         sha = ml.mask_sha256(self.mask)

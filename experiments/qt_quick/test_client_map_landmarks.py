@@ -30,14 +30,22 @@ HERE = Path(__file__).parent
 MASK = np.ones((200, 200), np.uint8)
 
 
-def landmark_table(folder, map_id="synthetic-map", floor="1"):
+DEFAULT_ITEMS = [
+    dict(id="r1", kind="room", label="水晶房", x=60.0, y=60.0),
+    dict(id="r2", kind="room", label="普通房间", x=100.0, y=40.0),
+    dict(id="c1", kind="minecart", label="矿车出口", x=140.0, y=140.0)]
+# B2/B3 minecart spots are rooms named 矿车 / 矿车中转站 (minecart switch only).
+CART_ROOM_ITEMS = [
+    dict(id="r1", kind="room", label="水晶房", x=60.0, y=40.0),
+    dict(id="e1", kind="room", label="矿车", x=140.0, y=140.0),
+    dict(id="t1", kind="room", label="矿车中转站", x=60.0, y=140.0)]
+
+
+def landmark_table(folder, map_id="synthetic-map", floor="1", items=None):
     doc = dict(schema=ml.SCHEMA, sourceVersion="synthetic", importantRooms={floor: ["水晶房"]},
                modes=dict(difficult={map_id: {floor: dict(
                    width=200, height=200, maskSha256=ml.mask_sha256(MASK), androidLayerMaskSha256="a" * 64,
-                   structureVersionKey="", items=[
-                       dict(id="r1", kind="room", label="水晶房", x=60.0, y=60.0),
-                       dict(id="r2", kind="room", label="普通房间", x=100.0, y=40.0),
-                       dict(id="c1", kind="minecart", label="矿车出口", x=140.0, y=140.0)])}}))
+                   structureVersionKey="", items=items or DEFAULT_ITEMS)}}))
     path = Path(folder) / "landmarks.json"
     path.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
     return path
@@ -95,6 +103,26 @@ class DisplayLayerTests(LandmarkDataCase):
             out = _with_landmarks(engine, "106001", "-2", layer, reference)
             return np.nonzero(np.any(out["pixels"] != layer["pixels"], axis=2))[0].min()
         self.assertLess(top("custom-gallery"), top("shared-structure"))
+
+
+class MinecartRoomDisplayTests(LandmarkDataCase):
+    layer = DisplayLayerTests.layer
+
+    def test_game_map_b2_b3_minecart_spots_follow_the_minecart_switch_only(self):
+        engine, reference = SimpleNamespace(qt_season="s1"), SimpleNamespace(clean_mask=MASK)
+        for floor in ("-2", "-3"):
+            self.use_table(map_id="106001", floor=floor, items=CART_ROOM_ITEMS)
+            layer = self.layer()
+            def drawn(rooms, carts):
+                ml.set_preferences(ml.LandmarkPreferences(rooms, carts))
+                out = _with_landmarks(engine, "106001", floor, layer, reference)
+                return np.any(out["pixels"] != layer["pixels"], axis=2)
+            carts_only = drawn(False, True)
+            self.assertTrue(carts_only[120:175, 40:160].any(), floor)
+            self.assertFalse(carts_only[:80].any(), floor)
+            np.testing.assert_array_equal(drawn(True, True)[100:], carts_only[100:])
+            self.assertFalse(drawn(True, False)[100:].any(), floor)
+            self.assertFalse(drawn(False, False).any(), floor)
 
 
 class GalleryCase(LandmarkDataCase):
@@ -183,18 +211,28 @@ class EditorTests(GalleryCase):
         # Labels are never saved with the route.
         self.assertNotIn("水晶房", json.dumps(self.service.snapshot["points"], ensure_ascii=False))
 
-    def test_real_qml_switches_hide_and_show_canvas_labels(self):
-        self.bind()
-        import dataclasses
-        from route_scopes import SCOPES
-        s1_view = patch.dict(SCOPES, {"legacy-nightmare": dataclasses.replace(SCOPES["legacy-nightmare"], season_id="s1")})
-        s1_view.start()
-        self.addCleanup(s1_view.stop)
+    def test_snapshot_lists_minecart_rooms_with_captions(self):
         self.call("createGallery", "离线标注示例")
         self.call("selectMap", "synthetic-map")
+        self.use_table(items=CART_ROOM_ITEMS)
+        self.service.library.landmark_binding = lambda map_id, floor: (
+            dict(width=200, height=200, maskSha256=ml.mask_sha256(MASK)) if floor == "1" else None)
         self.call("selectFloor", "1")
-        self.assertEqual(self.service.snapshot["season"], "s1")
-        self.assertEqual(len(self.service.snapshot["landmarks"]), 2)
+        self.assertEqual(self.service.snapshot["landmarks"], [
+            dict(kind="room", label="水晶房", x=60.0, y=40.0),
+            dict(kind="minecart", label="矿车", caption="矿车", x=140.0, y=140.0),
+            dict(kind="minecart", label="矿车中转站", caption="中转站", x=60.0, y=140.0)])
+
+    def s1_view(self):
+        import dataclasses
+        from route_scopes import SCOPES
+        view = patch.dict(SCOPES, {"legacy-nightmare": dataclasses.replace(SCOPES["legacy-nightmare"], season_id="s1")})
+        view.start()
+        self.addCleanup(view.stop)
+        return view
+
+    def open_editor(self):
+        """Real ClientCustomGallery.qml; returns window, engine, warnings, switches, grab, click."""
         engine = QQmlApplicationEngine()
         engine.rootContext().setContextProperty("customGalleryService", self.service)
         engine.rootContext().setContextProperty("settingsService", self.settings)
@@ -207,35 +245,75 @@ ClientCustomGallery { anchors.fill: parent; anchors.margins: 24 }
 }''', QUrl.fromLocalFile(str(HERE / "map-landmarks-harness.qml")))
         self.assertTrue(engine.rootObjects(), warnings)
         window = engine.rootObjects()[0]
+        art = item(window, "customMapImage")
+        until(lambda: art.property("paintedWidth") > 0 and art.width() > 200)
+        QTest.qWait(150)
+        rooms = item(window, "mapLandmarkSwitch_mapLandmarkRooms")
+        carts = item(window, "mapLandmarkSwitch_mapLandmarkMinecarts")
+        rect = art.mapToScene(QPointF(0, 0))
+        crop = (int(rect.x()), int(rect.y()), int(art.width()), int(art.height()))
+        def grab():
+            QTest.qWait(120)
+            return window.grabWindow().copy(*crop)
+        def click(switch, key, value):
+            position = switch.mapToScene(QPointF(switch.width() / 2, switch.height() / 2)).toPoint()
+            QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, position)
+            until(lambda: self.settings.persistedValues[key] is value and not self.settings.busy)
+        return window, engine, warnings, rooms, carts, grab, click
+
+    def close_editor(self, window, engine):
+        window.close()
+        engine.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        APP.processEvents()
+
+    def test_real_qml_minecart_rooms_follow_the_minecart_switch_only(self):
+        self.s1_view()
+        self.call("createGallery", "离线标注示例")
+        self.call("selectMap", "synthetic-map")
+        # Only minecart rooms: the 重点房间 switch must not change the canvas.
+        self.use_table(items=CART_ROOM_ITEMS[1:])
+        self.service.library.landmark_binding = lambda map_id, floor: (
+            dict(width=200, height=200, maskSha256=ml.mask_sha256(MASK)) if floor == "1" else None)
+        self.call("selectFloor", "1")
+        self.assertEqual([i["caption"] for i in self.service.snapshot["landmarks"]], ["矿车", "中转站"])
+        window, engine, warnings, rooms, carts, grab, click = self.open_editor()
         try:
-            art = item(window, "customMapImage")
-            until(lambda: art.property("paintedWidth") > 0 and art.width() > 200)
-            QTest.qWait(150)
-            rooms = item(window, "mapLandmarkSwitch_mapLandmarkRooms")
-            carts = item(window, "mapLandmarkSwitch_mapLandmarkMinecarts")
+            shown = grab()
+            click(rooms, "mapLandmarkRooms", False)
+            self.assertEqual(shown, grab())
+            click(carts, "mapLandmarkMinecarts", False)
+            hidden = grab()
+            self.assertNotEqual(shown, hidden)
+            click(rooms, "mapLandmarkRooms", True)
+            self.assertEqual(hidden, grab())
+            click(carts, "mapLandmarkMinecarts", True)
+            self.assertEqual(shown, grab())
+            self.assertEqual(warnings, [])
+        finally:
+            self.close_editor(window, engine)
+
+    def test_real_qml_switches_hide_and_show_canvas_labels(self):
+        self.bind()
+        s1_view = self.s1_view()
+        self.call("createGallery", "离线标注示例")
+        self.call("selectMap", "synthetic-map")
+        self.call("selectFloor", "1")
+        self.assertEqual(self.service.snapshot["season"], "s1")
+        self.assertEqual(len(self.service.snapshot["landmarks"]), 2)
+        window, engine, warnings, rooms, carts, grab, click = self.open_editor()
+        try:
             self.assertTrue(rooms.property("visible") and carts.property("visible"))
             self.assertTrue(rooms.property("checked") and carts.property("checked"))
-            rect = art.mapToScene(QPointF(0, 0))
-            crop = (int(rect.x()), int(rect.y()), int(art.width()), int(art.height()))
-            def grab():
-                QTest.qWait(120)
-                return window.grabWindow().copy(*crop)
-            def click(switch):
-                position = switch.mapToScene(QPointF(switch.width() / 2, switch.height() / 2)).toPoint()
-                QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, position)
             both = grab()
-            click(rooms)
-            until(lambda: self.settings.persistedValues["mapLandmarkRooms"] is False and not self.settings.busy)
+            click(rooms, "mapLandmarkRooms", False)
             carts_only = grab()
             self.assertNotEqual(both, carts_only)
-            click(carts)
-            until(lambda: self.settings.persistedValues["mapLandmarkMinecarts"] is False and not self.settings.busy)
+            click(carts, "mapLandmarkMinecarts", False)
             none = grab()
             self.assertNotEqual(carts_only, none)
-            click(rooms)
-            until(lambda: self.settings.persistedValues["mapLandmarkRooms"] and not self.settings.busy)
-            click(carts)
-            until(lambda: self.settings.persistedValues["mapLandmarkMinecarts"] and not self.settings.busy)
+            click(rooms, "mapLandmarkRooms", True)
+            click(carts, "mapLandmarkMinecarts", True)
             self.assertEqual(both, grab())
             restored = SettingsService(self.sandbox)
             self.addCleanup(restored.shutdown)
@@ -248,10 +326,7 @@ ClientCustomGallery { anchors.fill: parent; anchors.margins: 24 }
             self.assertFalse(rooms.property("visible"))
             self.assertEqual(warnings, [])
         finally:
-            window.close()
-            engine.deleteLater()
-            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
-            APP.processEvents()
+            self.close_editor(window, engine)
 
 
 class RuntimeTests(unittest.TestCase):

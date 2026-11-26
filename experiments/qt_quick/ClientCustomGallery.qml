@@ -39,6 +39,13 @@ Item {
                 ctx.fillStyle="#263847"; ctx.beginPath(); ctx.arc(cx-r*.6,cy+r*.8,r*.23,0,Math.PI*2); ctx.fill()
                 ctx.beginPath(); ctx.arc(cx+r*.6,cy+r*.8,r*.23,0,Math.PI*2); ctx.fill()
                 ctx.beginPath(); ctx.moveTo(cx-r*1.15,cy+r*1.1); ctx.lineTo(cx+r*1.15,cy+r*1.1); ctx.stroke()
+                if (item.caption) {
+                    // 矿车 evacuation point / 中转站 caption under the icon.
+                    var cw=ctx.measureText(item.caption).width/2+1/scale
+                    var tx=Math.max(cw+1, Math.min(w-cw-1, cx)), ty=Math.max(size, Math.min(h-size, cy+r*1.1+size*.75))
+                    ctx.lineJoin="round"; ctx.strokeStyle="#203b51"; ctx.lineWidth=1.8/scale
+                    ctx.strokeText(item.caption, tx, ty); ctx.fillStyle="#ffffff"; ctx.fillText(item.caption, tx, ty)
+                }
             } else {
                 var lines=item.label.match(/.{1,6}/g) || [item.label], widest=0
                 for (var j=0; j<lines.length; ++j) widest=Math.max(widest, ctx.measureText(lines[j]).width)
