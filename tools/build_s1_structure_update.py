@@ -605,6 +605,11 @@ def build_mode_package(
         "entries": [],
         "coverage": [],
     })
+    base_files["references/native-similarity-groups.json"] = _encode_json({
+        "schemaVersion": 1,
+        "resourceKind": "native-similarity-groups",
+        "groups": [],
+    })
     base_files["s1-private-assets/s1_entrance_coordinate_index.json"] = _encode_json({
         "schema": "s1-common-entrance-coordinate-index-v1",
         "sourceVersion": source_version,
@@ -745,21 +750,29 @@ def verify_package_end_to_end(
         ctx = snapshot.resolve_context("s1", mode)
         assert ctx.base is not None, "Active base not resolved after install"
 
-        # 1. Strict production decode of ALL maps, floors, entry chains, and S1 controls profile
+        # 1. Run the EXACT production build_native_engine admission gate used by client_imported_activation!
+        from client_imported_providers import build_native_engine
+        from client_paths import WORK_ROOT, runtime_paths
         from difficult_entry_identity import DifficultEntryIdentity
         assert ctx.controls is not None, "Active controls not resolved after install"
         ctrl_view = PackageView(resolver.root, ctx.controls.component_ref, assert_current=ctx.assert_current)
+        view = PackageView(resolver.root, ctx.base.component_ref, assert_current=ctx.assert_current)
+        WORK_ROOT.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=WORK_ROOT) as sb_tmp:
+            sb = Path(sb_tmp)
+            (sb / ".qt-lab-owner").write_text("qt-quick-isolated-v1\n", encoding="utf-8")
+            with view.read_scope(), ctrl_view.read_scope():
+                engine = build_native_engine(view, ctrl_view, runtime_paths(sb), season="s1", mode=mode, require_rank=False)
+                assert engine is not None, "build_native_engine returned None"
         with ctrl_view.read_scope():
             controls_profile = S1ControlsProfile(ctrl_view)
             controls_profile.for_context("s1", mode)
             assert controls_profile.detector_id == "s1-signed-column-geometry-v1"
 
-        view = PackageView(resolver.root, ctx.base.component_ref, assert_current=ctx.assert_current)
         old_route_summary = None
         with view.read_scope():
             bundle = decode_original_base(view, season="s1", mode=mode)
             assert len(bundle.pack.maps) > 0
-            # Verify entry index passes the exact DifficultEntryIdentity validator used by live runtime!
             entry_idx = DifficultEntryIdentity(
                 view.path(bundle.interfaces["identityEntries"] + "/entries.json").parent,
                 read_resource=bundle.reader,
@@ -837,7 +850,7 @@ def main():
 
     change_doc = json.loads((args.delivery / "变更清单.json").read_text(encoding="utf-8"))
     source_version = str(change_doc["sourceVersion"])
-    res_version = f"{source_version}-{date.today().strftime('%Y%m%d')}.3"
+    res_version = f"{source_version}-{date.today().strftime('%Y%m%d')}.4"
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     results = []

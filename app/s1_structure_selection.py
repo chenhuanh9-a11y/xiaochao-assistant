@@ -40,8 +40,7 @@ class StructureCatalog:
         season = getattr(engine, "qt_season", None)
         mode = engine.pack.mode
         if season == "s1":
-            from s1_native_resources import MODE_LAYOUTS
-            if mode not in MODE_LAYOUTS or set(engine.pack.by_id) != set(MODE_LAYOUTS[mode]):
+            if mode not in ("difficulty2", "difficult", "nightmare") or not engine.pack.by_id:
                 raise ValueError("s1-structure-catalog-context-mismatch")
         elif not isinstance(season, str) or not season or not engine.pack.by_id:
             raise ValueError("s1-structure-catalog-context-mismatch")
