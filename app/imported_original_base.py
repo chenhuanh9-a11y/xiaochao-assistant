@@ -118,7 +118,7 @@ def require_original_base(view, *, season, mode):
     if (context.get('season'), context.get('mode')) != (season, mode):
         raise NativeBaseUnavailable('original-qt-base-context-mismatch')
     required_fields = {'schema', 'season', 'mode', 'originalManifest', 'runtimeInterfaces'}
-    if not (required_fields <= set(context) <= (required_fields | {'seasonName'})):
+    if not (required_fields <= set(context) <= (required_fields | {'seasonName', 'compatibleBasePackageIds'})):
         raise NativeBaseUnavailable('original-qt-base-context-invalid')
     return reader, context
 

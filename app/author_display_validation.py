@@ -58,7 +58,11 @@ def validate_display_image(data, extension, shape, *, reject, decode_images=True
             check_cancelled()
 
 
-def validate_display_reference(row, expected, *, reject):
-    for field in REFERENCE_FIELDS:
+STRUCTURAL_REFERENCE_FIELDS = ('referenceResource', 'referenceShapeHW', 'coordinateSpace', 'structureVersionKey')
+
+
+def validate_display_reference(row, expected, *, reject, allow_source_version_upgrade=False):
+    fields = STRUCTURAL_REFERENCE_FIELDS if allow_source_version_upgrade else REFERENCE_FIELDS
+    for field in fields:
         if row.get(field) != expected[field]:
             reject('reference-binding-mismatch:' + field)

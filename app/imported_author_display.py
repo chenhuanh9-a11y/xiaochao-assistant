@@ -173,9 +173,17 @@ def _decode(view, base, reference_provider, *, validate_images=True):
             or ('provenance' in document and not isinstance(document['provenance'], dict))):
         _reject('context-invalid')
     validate_display_authority(document, reject=_reject)
+    base_view = base.reader.view
+    base_context = {}
+    try:
+        base_context = base.reader.json(base_view.component['entrypoint'])
+    except (OSError, ValueError, KeyError, TypeError):
+        base_context = {}
+    compatible_ids = tuple(base_context.get('compatibleBasePackageIds') or ())
+    allow_partial_upgrade = bool(compatible_ids)
     alias = document['baseDependency']
     if (not isinstance(alias, str) or set(view.dependencies) != {alias}
-            or not matches_display_base(view, base.component_ref)):
+            or not matches_display_base(view, base.component_ref, compatible_package_ids=compatible_ids)):
         _reject('base-dependency-mismatch')
     rows = document['layers']
     if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_LAYERS:
@@ -183,17 +191,22 @@ def _decode(view, base, reference_provider, *, validate_images=True):
     inventory = view.inventory
     owned = {component['entrypoint']}
     seen, layers, gaps = set(), [], []
-    base_view = base.reader.view
     base_inventory = base_view.inventory
     for row in rows:
         if not isinstance(row, dict) or set(row) != _LAYER_FIELDS:
             _reject('layer-fields-invalid')
         key = (row['mapId'], row['floor'])
-        if (any(not isinstance(value, str) for value in key) or key in seen
-                or key[0] not in base.pack.by_id or key[1] not in base.pack.floors):
+        if any(not isinstance(value, str) for value in key) or key in seen:
+            _reject('duplicate-or-foreign-layer')
+        image = FileRef(view.component_ref, row['displayPath'])
+        if key[0] not in base.pack.by_id or key[1] not in base.pack.floors:
+            if allow_partial_upgrade and image.path in inventory:
+                seen.add(key)
+                owned.add(image.path)
+                gaps.append(AuthorDisplayGap(*key, 'map-not-in-active-base'))
+                continue
             _reject('duplicate-or-foreign-layer')
         seen.add(key)
-        image = FileRef(view.component_ref, row['displayPath'])
         reference_file = FileRef(base.component_ref, row['referenceResource'])
         image_path, reference_path = view.path(image.path), base_view.path(reference_file.path)
         if (image.path not in inventory or reference_file.path not in base_inventory
@@ -214,7 +227,11 @@ def _decode(view, base, reference_provider, *, validate_images=True):
         expected = dict(referenceResource=reference_file.path, referenceShapeHW=list(reference.shape),
             coordinateSpace=metadata.get('canvas', {}).get('coordinateSpace'),
             **{name:metadata.get(name) for name in ('structureVersionKey', 'baseSnapshot', 'sourceVersion')})
-        validate_display_reference(row, expected, reject=_reject)
+        if allow_partial_upgrade and row.get('structureVersionKey') != expected['structureVersionKey']:
+            owned.add(image.path)
+            gaps.append(AuthorDisplayGap(*key, 'structure-version-changed'))
+            continue
+        validate_display_reference(row, expected, reject=_reject, allow_source_version_upgrade=allow_partial_upgrade)
         base.reader(reference_path)
         if validate_images:
             raw = reader(image_path)
@@ -231,6 +248,8 @@ def _decode(view, base, reference_provider, *, validate_images=True):
             tuple(tuple(value for value in line) for line in row['matrixDisplayToReference']), encoding))
     if owned != set(inventory):
         _reject('unlisted-display-file')
+    if allow_partial_upgrade and not layers:
+        _reject('reference-file-mismatch')
     result = ImportedAuthorDisplay(view, base, reader, document, layers, gaps)
     result.assert_current()
     return result

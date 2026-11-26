@@ -27,10 +27,76 @@ for extra in (ROOT / "app", ROOT / "experiments" / "qt_quick", ROOT / "tools"):
     if str(extra) not in sys.path:
         sys.path.insert(0, str(extra))
 
-from export_original_qt_base import CAPABILITY, SCHEMA as BASE_SCHEMA, _generic_controls_payloads
+from export_original_qt_base import CAPABILITY, SCHEMA as BASE_SCHEMA
 
 FLOOR_DIR_TO_GAME = [("B1", "-1", 4), ("B2", "-2", 3), ("B3", "-3", 2), ("B4", "-4", 1)]
 MODE_LABELS = {"difficult": "困难", "nightmare": "噩梦"}
+
+_COMPATIBLE_BASE_IDS = {
+    "difficult": ["benchmark-s1-difficult-coordinate", "s1-difficult-original-qt-base"],
+    "nightmare": ["benchmark-s1-nightmare-coordinate", "s1-nightmare-original-qt-base"],
+}
+
+
+def _s1_controls_payloads(mode: str) -> dict[str, bytes]:
+    """Official S1 signed-column controls profile accepted by S1ControlsProfile."""
+    doc = {
+        "schema": "xingtu-s1-controls-profile-v1",
+        "detectorId": "s1-signed-column-geometry-v1",
+        "contexts": {
+            f"s1:{mode}": {
+                "floors": [
+                    {"floorId": "-1", "observedValue": -1},
+                    {"floorId": "-2", "observedValue": -2},
+                    {"floorId": "-3", "observedValue": -3},
+                    {"floorId": "-4", "observedValue": -4},
+                ],
+                "visualOrder": [-1, -2, -3, -4],
+            }
+        },
+        "expandedSearchRegion": [0.55, 0.04, 0.43499999999999994, 0.89],
+        "fixedSearchRegion": [0.8, 0.12, 0.12, 0.44000000000000006],
+        "mapUi": {
+            "minimumCorrelation": {"close": 0.62, "minus": 0.65, "plus": 0.65},
+            "searchRegions": {
+                "close": [0.92, 0.02, 0.06999999999999995, 0.16],
+                "minus": [0.92, 0.66, 0.06999999999999995, 0.19999999999999996],
+                "plus": [0.92, 0.25, 0.06999999999999995, 0.21000000000000002],
+            },
+            "sizes": [0.024, 0.026, 0.028, 0.03, 0.032, 0.034, 0.036, 0.038],
+        },
+    }
+    return {"profile.json": _encode_json(doc)}
+
+
+def _load_baseline_map_hashes(archive_path: Path | None) -> dict[str, str]:
+    """Extract {mapId: structureContentSha256} from a baseline structure or route archive."""
+    if archive_path is None or not archive_path.is_file():
+        return {}
+    hashes: dict[str, str] = {}
+    with zipfile.ZipFile(archive_path) as zf:
+        names = set(zf.namelist())
+        if "data/base/references/map-pack.json" in names:
+            pack = json.loads(zf.read("data/base/references/map-pack.json").decode("utf-8"))
+            for row in pack.get("maps") or ():
+                mid, sha = row.get("id"), row.get("structureContentSha256")
+                if mid and sha:
+                    hashes[str(mid)] = str(sha)
+            return hashes
+        if "manifest.json" in names:
+            m = json.loads(zf.read("manifest.json").decode("utf-8"))
+            for comp in m.get("components") or ():
+                ep = f"data/{comp['componentId']}/{comp['entrypoint']}"
+                if ep in names:
+                    doc = json.loads(zf.read(ep).decode("utf-8"))
+                    for row in doc.get("layers") or ():
+                        svk = str(row.get("structureVersionKey") or "")
+                        mid = str(row.get("mapId") or "")
+                        if mid and "@" in svk and "/" in svk:
+                            sha = svk.split("@", 1)[1].split("/", 1)[0]
+                            if sha:
+                                hashes[mid] = sha
+    return hashes
 
 
 def _encode_json(obj) -> bytes:
@@ -155,6 +221,8 @@ def build_mode_package(
     glyph_dir: Path,
     output_zip: Path,
     resource_version: str,
+    baseline_hashes: dict[str, str] | None = None,
+    revised_map_ids: set[str] | None = None,
 ) -> dict:
     mode_dir = delivery_root / "maps" / mode
     if not mode_dir.is_dir():
@@ -200,7 +268,9 @@ def build_mode_package(
             hasher.update(mask.tobytes())
             floor_data[gfloor] = (wfloor, mask, geo, ren_bytes)
 
-        struct_sha = hasher.hexdigest()
+        revised = revised_map_ids or set()
+        inherited = (baseline_hashes or {}).get(mid)
+        struct_sha = inherited if (inherited and mid not in revised) else hasher.hexdigest()
         b1_wfloor, b1_mask, b1_geo, _ = floor_data["-1"]
         ex, ey, plane_xz = _extract_entrance_xy(b1_geo, b1_mask)
         rx, ry = int(round(ex)), int(round(ey))
@@ -379,6 +449,7 @@ def build_mode_package(
         "season": "s1",
         "mode": mode,
         "seasonName": "磷光症",
+        "compatibleBasePackageIds": _COMPATIBLE_BASE_IDS.get(mode, []),
         "originalManifest": "native-map-manifest.json",
         "runtimeInterfaces": interfaces,
     }
@@ -485,7 +556,7 @@ def build_mode_package(
     base_files["s1-private-assets/template_manifest.json"] = template_manifest_bytes
     base_files["s1-private-assets/native_glyph_template.png"] = glyph_png
 
-    controls_files = _generic_controls_payloads("s1", mode, ["-1", "-2", "-3", "-4"])
+    controls_files = _s1_controls_payloads(mode)
     payloads = {"base": base_files, "controls": controls_files}
     contexts = [{"season": "s1", "mode": mode}]
     package_id = f"s1-{mode}-original-qt-base"
@@ -553,12 +624,20 @@ def build_mode_package(
     }
 
 
-def verify_package_end_to_end(zip_path: Path, *, mode: str, sample_map_ids: list[str]) -> dict:
+def verify_package_end_to_end(
+    zip_path: Path,
+    *,
+    mode: str,
+    sample_map_ids: list[str],
+    old_route_archive: Path | None = None,
+) -> dict:
+    from imported_author_display import decode_author_display
     from imported_original_base import decode_original_base
     from imported_resource_activation import activate_catalog_locked
     from imported_resource_archive import inspect_archive, save_archive
     from imported_resource_catalog import ResourceResolver
     from imported_resource_packages import PackageView
+    from imported_s1_controls_profile import S1ControlsProfile
     from imported_structure_route_library import ImportedStructureRouteLibrary
     from client_imported_browse import load_imported_browse_context
     from client_providers import SharedReferenceProvider
@@ -603,8 +682,16 @@ def verify_package_end_to_end(zip_path: Path, *, mode: str, sample_map_ids: list
         ctx = snapshot.resolve_context("s1", mode)
         assert ctx.base is not None, "Active base not resolved after install"
 
-        # 1. Strict production decode of ALL maps & floors
+        # 1. Strict production decode of ALL maps, floors, and S1 controls profile
+        assert ctx.controls is not None, "Active controls not resolved after install"
+        ctrl_view = PackageView(resolver.root, ctx.controls.component_ref, assert_current=ctx.assert_current)
+        with ctrl_view.read_scope():
+            controls_profile = S1ControlsProfile(ctrl_view)
+            controls_profile.for_context("s1", mode)
+            assert controls_profile.detector_id == "s1-signed-column-geometry-v1"
+
         view = PackageView(resolver.root, ctx.base.component_ref, assert_current=ctx.assert_current)
+        old_route_summary = None
         with view.read_scope():
             bundle = decode_original_base(view, season="s1", mode=mode)
             assert len(bundle.pack.maps) > 0
@@ -616,6 +703,19 @@ def verify_package_end_to_end(zip_path: Path, *, mode: str, sample_map_ids: list
                 assert ref is not None
                 layer = SharedReferenceProvider._rendered_neutral_display(provider, ref, bundle, bundle.reader)
                 assert layer is not None and layer["displayLabel"] == "默认渲染地图"
+
+            if old_route_archive is not None and old_route_archive.is_file():
+                saved_route = save_archive(old_route_archive, catalog_root)
+                route_ref = next(iter(saved_route.component_refs))
+                route_view = PackageView(resolver.root, route_ref, assert_current=ctx.assert_current)
+                with route_view.read_scope():
+                    decoded_route = decode_author_display(route_view, bundle, bundle.resources.load)
+                    old_route_summary = {
+                        "profileId": decoded_route.profile_id,
+                        "compatibleLayers": len(decoded_route.layers),
+                        "skippedGaps": len(decoded_route.gaps),
+                    }
+                    assert len(decoded_route.layers) > 0, "Expected unchanged maps to remain compatible"
 
         # 2. Map Gallery browse & rendered preview decode
         browse = load_imported_browse_context(resolver, mode, season="s1")
@@ -642,9 +742,11 @@ def verify_package_end_to_end(zip_path: Path, *, mode: str, sample_map_ids: list
             "mode": mode,
             "decodedMaps": len(bundle.pack.maps),
             "decodedLayers": len(bundle.versions),
+            "controlsDetector": "s1-signed-column-geometry-v1",
             "galleryPreviewShape": list(gallery_px.shape),
             "customRouteMaps": len(lib.maps()),
             "sampleAStarPoints": len(segs[0]["points"]),
+            "oldRouteCompat": old_route_summary,
         }
 
 
@@ -653,18 +755,26 @@ def main():
     parser.add_argument("--delivery", type=Path, required=True)
     parser.add_argument("--glyph-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--baseline-difficult", type=Path, default=None)
+    parser.add_argument("--baseline-nightmare", type=Path, default=None)
+    parser.add_argument("--verify-old-nightmare-route", type=Path, default=None)
     parser.add_argument("--modes", nargs="+", default=["difficult", "nightmare"])
     args = parser.parse_args()
 
     change_doc = json.loads((args.delivery / "变更清单.json").read_text(encoding="utf-8"))
     source_version = str(change_doc["sourceVersion"])
-    res_version = f"{source_version}-{date.today().strftime('%Y%m%d')}.1"
+    res_version = f"{source_version}-{date.today().strftime('%Y%m%d')}.2"
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     results = []
     for mode in args.modes:
         label = MODE_LABELS[mode]
         zip_path = args.output_dir / f"星图-磷光症-{label}-结构包-{source_version}.xingtu-map"
+        group_key = "106" if mode == "difficult" else "107"
+        cls = change_doc["mapClassification"][group_key]
+        baseline_src = args.baseline_difficult if mode == "difficult" else args.baseline_nightmare
+        baseline_hashes = _load_baseline_map_hashes(baseline_src)
+        revised_ids = set(cls.get("layoutRevised") or ())
         built = build_mode_package(
             args.delivery,
             mode,
@@ -672,13 +782,14 @@ def main():
             glyph_dir=args.glyph_dir,
             output_zip=zip_path,
             resource_version=res_version,
+            baseline_hashes=baseline_hashes,
+            revised_map_ids=revised_ids,
         )
-        group_key = "106" if mode == "difficult" else "107"
-        cls = change_doc["mapClassification"][group_key]
         samples = (cls.get("added") or [])[:1] + (cls.get("layoutRevised") or [])[:1]
         if not samples:
             samples = [sorted(p.name for p in (args.delivery / "maps" / mode).iterdir() if p.is_dir())[0]]
-        verified = verify_package_end_to_end(zip_path, mode=mode, sample_map_ids=samples)
+        old_route = args.verify_old_nightmare_route if mode == "nightmare" else None
+        verified = verify_package_end_to_end(zip_path, mode=mode, sample_map_ids=samples, old_route_archive=old_route)
         built["verification"] = verified
         results.append(built)
 

@@ -73,7 +73,8 @@ class ImportedBrowseAssets:
         validate_display_affine(row['matrixDisplayToReference'], reject=reject)
         validate_display_reference(row, dict(referenceResource=reference.path.resolve().relative_to(reference.resource_root.resolve()).as_posix(),
             referenceShapeHW=list(reference.shape), coordinateSpace=reference.metadata['canvas']['coordinateSpace'],
-            **{name:reference.metadata.get(name) for name in ('structureVersionKey','baseSnapshot','sourceVersion')}), reject=reject)
+            **{name:reference.metadata.get(name) for name in ('structureVersionKey','baseSnapshot','sourceVersion')}),
+            reject=reject, allow_source_version_upgrade=True)
         path = view.path(row['displayPath'])
         extension = path.suffix.casefold().lstrip('.')
         encoding = 'jpeg' if extension == 'jpg' else extension
@@ -317,8 +318,15 @@ def _browse_declarations(resolver,snapshot,resources,source,check,cancel,stopped
                         or 'provenance' in document and not isinstance(document['provenance'], dict)):
                     reject('header-invalid')
                 validate_display_authority(document, reject=reject)
+                base_context = {}
+                try:
+                    base_context = source.reader.json(base_view.component['entrypoint'])
+                except (OSError, ValueError, KeyError, TypeError):
+                    base_context = {}
+                compatible_ids = tuple(base_context.get('compatibleBasePackageIds') or ())
+                allow_partial_upgrade = bool(compatible_ids)
                 alias = document['baseDependency']
-                if not isinstance(alias, str) or set(view.dependencies) != {alias} or not matches_display_base(view, base_view.component_ref):
+                if not isinstance(alias, str) or set(view.dependencies) != {alias} or not matches_display_base(view, base_view.component_ref, compatible_package_ids=compatible_ids):
                     reject('base-dependency-mismatch')
                 if not isinstance(document['layers'], list) or not 1 <= len(document['layers']) <= MAX_LAYERS:
                     reject('layers-invalid')
@@ -330,16 +338,26 @@ def _browse_declarations(resolver,snapshot,resources,source,check,cancel,stopped
                     if not isinstance(row, dict) or set(row) != _LAYER_FIELDS:
                         reject('layer-fields-invalid')
                     key = (row['mapId'], row['floor'])
-                    if any(not isinstance(value, str) for value in key):
+                    if any(not isinstance(value, str) for value in key) or key in seen:
                         reject('reference-binding-invalid')
                     binding = source.entries.get(key)
-                    if key in seen or binding is None or row['referenceResource'] != binding['resourcePath']:
+                    image = FileRef(view.component_ref, row['displayPath'])
+                    if binding is None or row['referenceResource'] != binding['resourcePath']:
+                        if allow_partial_upgrade and image.path in view.inventory:
+                            seen.add(key)
+                            owned.add(image.path)
+                            continue
                         reject('reference-binding-invalid')
-                    if (not valid_display_shape(row['displayShapeHW']) or not valid_display_shape(row['referenceShapeHW'])
-                            or any(row[name] != binding.get(name) for name in ('structureVersionKey', 'sourceVersion', 'baseSnapshot'))):
+                    if not valid_display_shape(row['displayShapeHW']) or not valid_display_shape(row['referenceShapeHW']):
+                        reject('reference-declaration-invalid')
+                    if allow_partial_upgrade:
+                        if row['structureVersionKey'] != binding.get('structureVersionKey'):
+                            seen.add(key)
+                            owned.add(image.path)
+                            continue
+                    elif any(row[name] != binding.get(name) for name in ('structureVersionKey', 'sourceVersion', 'baseSnapshot')):
                         reject('reference-declaration-invalid')
                     validate_display_affine(row['matrixDisplayToReference'], reject=reject)
-                    image = FileRef(view.component_ref, row['displayPath'])
                     FileRef(base_view.component_ref, row['referenceResource'])
                     path = view.path(image.path)
                     if path.suffix.casefold() not in {'.png', '.jpeg', '.jpg'}:
@@ -355,6 +373,8 @@ def _browse_declarations(resolver,snapshot,resources,source,check,cancel,stopped
                     owned.add(image.path)
                 if owned != set(view.inventory):
                     reject('unlisted-display-file')
+                if allow_partial_upgrade and count == 0:
+                    reject('reference-declaration-invalid')
             if identity.profile_id in declared:
                 conflicts.add(identity.profile_id)
             declared[identity.profile_id] = (view, document, by_map, author_stamps, author_layers, author_rows, first, count)
