@@ -30,6 +30,7 @@ COMMANDS = (
     "prepare_manual_alignment", "fit_manual_frame", "observe_manual_floor",
     "start_round", "end_round", "toggle_round", "capture_now",
     "previous_candidate", "next_candidate", "select_candidate", "confirm_route", "reselect_map", "cycle_floor",
+    "preview_s1_candidate", "lock_s1_candidate", "unlock_s1_candidate",
     "toggle_sheet_visibility", "set_reference_sheet_visible", "move_sheet",
     "finish_reference_sheet_move", "cancel_reference_sheet_move",
     "_start_map_reselection", "_open_recognition_details", "set_floor",

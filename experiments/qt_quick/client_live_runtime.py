@@ -923,6 +923,9 @@ class LiveRuntime:
 
     def _reset_identity(self):
         self._s1_round_map_id = ""
+        self._s1_assisted_preview_map_id = ""
+        self._s1_round_manual_locked = False
+        self._s1_manual_lock_previous_remaining = ()
         self._clear_s1_reference()
         self._s1_candidate_preference = None
         self._s1_candidate_pose_hint = None
@@ -1135,6 +1138,23 @@ class LiveRuntime:
         pool = self._s1_private_pool
         formal_lock = self._s1_round_locked_map()
         universal_pool = self._uses_universal_structure_recognition()
+        assisted_candidates = []
+        if (self._native_s1_final_round_lock and universal_pool and not self._manual_alignment
+                and self._active and not formal_lock and pool is not None
+                and 2 <= len(pool.remaining) <= 3):
+            pack_by_id = getattr(getattr(self._engine, "pack", None), "by_id", {})
+            assisted_candidates = [
+                dict(mapId=mid, name=str(getattr(pack_by_id.get(mid), "name", mid)))
+                for mid in pool.remaining
+            ]
+        assisted_preview_id = (
+            self._s1_assisted_preview_map_id
+            if (self._s1_assisted_preview_map_id and pool is not None
+                and self._s1_assisted_preview_map_id in pool.remaining and not formal_lock)
+            else (provisional_id if (provisional_id and pool is not None
+                                     and provisional_id in pool.remaining and not formal_lock)
+                  else (assisted_candidates[0]["mapId"] if assisted_candidates else ""))
+        )
         return dict(identityPhase="MEMBER_VERIFIED" if formal_lock else "CANDIDATE_DISPLAY" if provisional_id else phase, identitySource=self._identity_source,
             candidateFullImage=bool(provisional_id), candidateDisplayOnly=bool(provisional_id),
             identityLocked=bool(self._durable_map_id or formal_lock), durableMapId=self._durable_map_id or formal_lock,
@@ -1144,6 +1164,9 @@ class LiveRuntime:
             usesCandidatePoolLock=bool(universal_pool and not self._manual_alignment),
             supportsSimilarGroups=bool(not universal_pool),
             s1RemainingCandidateCount=1 if formal_lock else len(pool.remaining) if pool is not None else 0,
+            s1AssistedCandidates=assisted_candidates,
+            s1AssistedPreviewMapId=assisted_preview_id,
+            s1ManualRoundLocked=bool(formal_lock and self._s1_round_manual_locked),
             provisionalMapId=provisional_id or ((native.provisional_member_id or self._map_id) if grouped else ""),
             provisional=not bool(formal_lock) and (bool(provisional_id) or (grouped and not bool(self._durable_map_id))), groupLocked=grouped,
             groupId=native.group_id if grouped else None,
@@ -1323,7 +1346,9 @@ class LiveRuntime:
             if recovery_scan:
                 preferred = prior_source = None
             if private_enabled:
-                preferred = pool.locked_id or (pool.remaining[0] if len(pool.remaining) == 1 else preferred)
+                assisted_pick = (self._s1_assisted_preview_map_id
+                                 if (not pool.locked_id and self._s1_assisted_preview_map_id in pool.remaining) else None)
+                preferred = pool.locked_id or (pool.remaining[0] if len(pool.remaining) == 1 else (assisted_pick or preferred))
                 if preferred not in pool.remaining:
                     preferred = None
             ticket = session.begin_observation(str(floor))
@@ -2996,6 +3021,118 @@ class LiveRuntime:
                 observation["capture_generation"], observation["generation"], observation["frame_id"],
                 observation["cycle_id"], mid)
 
+    def _preview_s1_candidate(self, action, payload, cancelled, *, birth_ticket=None):
+        with self._lock:
+            if not self._active or self._s1_round_locked_map():
+                return self._receipt(action, payload, success=False, reason="identity-locked")
+            pool = self._s1_private_pool
+            if pool is None or not (2 <= len(pool.remaining) <= 3):
+                return self._receipt(action, payload, success=False, reason="assisted-candidate-pool-unavailable")
+            mid = str(payload.get("mapId") or "").strip()
+            if not mid or mid not in pool.remaining:
+                return self._receipt(action, payload, success=False, reason="candidate-not-in-remaining-pool")
+            if birth_ticket is None:
+                birth_ticket = (self._epoch, self._request_lifetime_generation, self._settings_generation)
+            if (self._cancelled(cancelled) or birth_ticket != (
+                    self._epoch, self._request_lifetime_generation, self._settings_generation)):
+                return self._receipt(action, payload, success=False, reason="stale-assisted-preview", stale=True)
+            self._s1_assisted_preview_map_id = mid
+            self._s1_candidate_preference = (pool.scope, mid)
+            if self._gate is not None:
+                self._gate.select(mid)
+            can_render = bool(
+                self._map_open and self._engine is not None
+                and self._last_observation is not None and self._identity_observation_current()
+            )
+            if not can_render:
+                self._notify("s1-assisted-preview-changed", reason="assisted-preview-selected", mapId=mid)
+                return self._receipt(action, payload, success=True, reason="assisted-preview-selected", mapId=mid)
+            observation = dict(self._last_observation)
+            old_token = self._render.get("token", "") if self._render else ""
+            self._clear_s1_reference()
+            self._core.revoke_display(reason="s1-assisted-preview-switch")
+            self._render = self._render_capture_context = None
+            self._provisional_display_map_id = ""
+            epoch, engine = self._epoch, self._engine
+        self._notify("render-revoked", reason="s1-assisted-preview-switch", token=old_token)
+        self._notify("s1-assisted-preview-changed", reason="assisted-preview-selected", mapId=mid)
+        with self._work:
+            return self._solve_observation(action, payload, cancelled, engine, None, epoch,
+                observation["captured"], observation["frame"], observation["floor"], observation["digest"],
+                observation["capture_generation"], observation["generation"], observation["frame_id"],
+                observation["cycle_id"], mid)
+
+    def _lock_s1_candidate(self, action, payload, cancelled, *, birth_ticket=None):
+        with self._lock:
+            if not self._active or self._s1_round_locked_map():
+                return self._receipt(action, payload, success=False, reason="identity-locked")
+            pool = self._s1_private_pool
+            if pool is None or not (2 <= len(pool.remaining) <= 3):
+                return self._receipt(action, payload, success=False, reason="assisted-candidate-pool-unavailable")
+            mid = str(payload.get("mapId") or self._s1_assisted_preview_map_id or self._provisional_display_map_id or "").strip()
+            if not mid or mid not in pool.remaining:
+                mid = pool.remaining[0]
+            self._s1_manual_lock_previous_remaining = tuple(pool.remaining)
+            self._s1_round_map_id = mid
+            self._s1_round_manual_locked = True
+            self._s1_assisted_preview_map_id = ""
+            self._s1_candidate_preference = (pool.scope, mid)
+            pool.remaining = (mid,)
+            pool.locked_id = mid
+            pool.eliminated = set(pool.map_ids) - {mid}
+            pool.revision += 1
+            if self._gate is not None:
+                self._gate.select(mid)
+            pool_snap = pool.snapshot()
+            already_rendered = bool(
+                self._render is not None and self._render.get("mapId") == mid
+                and self._display_current(self._render)
+            )
+            if already_rendered:
+                self._render.update(self._identity_fields())
+                self._notify("private-experimental-locked", reason="manual-assisted-round-lock", **pool_snap)
+                return self._receipt(action, payload, success=True, reason="manual-assisted-round-lock", mapId=mid)
+            can_render = bool(
+                self._map_open and self._engine is not None
+                and self._last_observation is not None and self._identity_observation_current()
+            )
+            if not can_render:
+                self._notify("private-experimental-locked", reason="manual-assisted-round-lock", **pool_snap)
+                return self._receipt(action, payload, success=True, reason="manual-assisted-round-lock", mapId=mid)
+            observation = dict(self._last_observation)
+            epoch, engine = self._epoch, self._engine
+        self._notify("private-experimental-locked", reason="manual-assisted-round-lock", **pool_snap)
+        with self._work:
+            return self._solve_observation(action, payload, cancelled, engine, None, epoch,
+                observation["captured"], observation["frame"], observation["floor"], observation["digest"],
+                observation["capture_generation"], observation["generation"], observation["frame_id"],
+                observation["cycle_id"], mid)
+
+    def _unlock_s1_candidate(self, action, payload, cancelled):
+        with self._lock:
+            if not self._active or not self._s1_round_locked_map() or not self._s1_round_manual_locked:
+                return self._receipt(action, payload, success=False, reason="not-manually-locked")
+            pool = self._s1_private_pool
+            if pool is not None:
+                prev = tuple(m for m in self._s1_manual_lock_previous_remaining if m in pool.map_ids)
+                pool.remaining = prev if len(prev) >= 2 else tuple(pool.map_ids)
+                pool.locked_id = ""
+                pool.eliminated = set(pool.map_ids) - set(pool.remaining)
+                pool.revision += 1
+            self._s1_round_map_id = ""
+            self._s1_round_manual_locked = False
+            self._s1_assisted_preview_map_id = ""
+            self._s1_manual_lock_previous_remaining = ()
+            self._s1_candidate_preference = None
+            old_token = self._render.get("token", "") if self._render else ""
+            self._clear_s1_reference()
+            self._core.revoke_display(reason="s1-manual-lock-reopened")
+            self._render = self._render_capture_context = None
+            self._provisional_display_map_id = ""
+        self._notify("render-revoked", reason="s1-manual-lock-reopened", token=old_token)
+        self._notify("s1-assisted-unlocked", reason="s1-manual-lock-reopened")
+        return self._receipt(action, payload, success=True, reason="s1-manual-lock-reopened")
+
     def _manual_action(self, action, payload, cancelled, *, birth_ticket=None, request_id=None):
         if self._s1_provisional_enabled() and action in ("select_candidate", "previous_candidate", "next_candidate"):
             return self._select_s1_provisional(action, payload, cancelled,
@@ -3388,6 +3525,11 @@ class LiveRuntime:
             metadata = ({key: copy.deepcopy(value) for key, value in self._render.items()
                          if key not in ("pixels",)} if self._render is not None else {})
             identity_fields = self._identity_fields()
+            if (identity_fields.get("s1AssistedCandidates") and not stream_busy
+                    and not self._s1_round_locked_map()):
+                commands += ["preview_s1_candidate", "lock_s1_candidate"]
+            if identity_fields.get("s1ManualRoundLocked") and self._active and not stream_busy:
+                commands.append("unlock_s1_candidate")
             if self._s1_round_locked_map():
                 commands = [cmd for cmd in commands if cmd not in (
                     "reselect_map", "map_reselection", "select_candidate", "previous_candidate",
@@ -4730,6 +4872,12 @@ class LiveRuntime:
                 "set_game_mode", "set_season", "set_route_profile", "set_context",
                 "end_round", "cancel", "stop_round", "reset_round", "bind_capture"):
             return self._receipt(action, payload, success=False, reason="retired-mode")
+        if action == "preview_s1_candidate":
+            return self._preview_s1_candidate(action, payload, cancelled, birth_ticket=birth_ticket)
+        if action == "lock_s1_candidate":
+            return self._lock_s1_candidate(action, payload, cancelled, birth_ticket=birth_ticket)
+        if action == "unlock_s1_candidate":
+            return self._unlock_s1_candidate(action, payload, cancelled)
         if action == "observe_candidate_floor":
             return self._probe_s1_candidate_floor(action, payload, cancelled,
                 expected_epoch=capture_request_epoch, request_id=request_id)

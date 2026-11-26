@@ -39,7 +39,13 @@ MAX_FILE = 16 * 1024 ** 3
 MAX_LINK = 1024 * 1024
 MAX_REG_KEYS = 256
 MAX_REG_VALUES = 4096
-_PROGRAM_EXCEPTIONS = frozenset(('_internal/references/build-fingerprint.txt',))
+_PROGRAM_EXCEPTIONS = frozenset((
+    '_internal/references/build-fingerprint.txt',
+    '_internal/assets/support/wechat.png',
+    '_internal/assets/support/alipay.png',
+    '_internal/assets/brand/xingtu.ico',
+    '_internal/assets/brand/xingtu-round.png',
+))
 _EXCLUDED = ('work', 'assets', 'references', 'recognition', 'seasons',
              '_internal/assets', '_internal/references', '_internal/recognition',
              '_internal/seasons', '_internal/qt-author-base',

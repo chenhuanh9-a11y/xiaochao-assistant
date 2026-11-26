@@ -600,7 +600,11 @@ class QtClient:
         profile = selected_profile(values, mode, season)
         applied = (state.get("mode"), state.get("profileId")) == (mode, profile)
         active = self.custom_display.active_gallery(profile, mode, season) if applied and state.get("season", "s0") == season else ""
-        if self.custom_galleries.snapshot.get("inUse") != active:
+        expected = active
+        if active and hasattr(self.custom_galleries, "splitGalleryId") and hasattr(self.custom_galleries, "scopeId"):
+            scope_id, local_id = self.custom_galleries.splitGalleryId(active)
+            expected = local_id if scope_id == self.custom_galleries.scopeId else ""
+        if self.custom_galleries.snapshot.get("inUse") != expected:
             self.custom_galleries.setActiveGallery(active)
 
     def _custom_gallery_changed(self):

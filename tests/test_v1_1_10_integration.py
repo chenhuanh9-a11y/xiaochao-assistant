@@ -405,5 +405,104 @@ class RoutePlazaRefreshAvailabilityTests(unittest.TestCase):
             service.shutdown()
 
 
+class S1AssistedManualLockTests(unittest.TestCase):
+    def test_preview_lock_and_unlock_flow_for_2_to_3_remaining_candidates(self):
+        from client_live_runtime import LiveRuntime
+        from s1_private_experiment import PrivateRoundPool
+        from threading import RLock, Lock
+
+        rt = LiveRuntime.__new__(LiveRuntime)
+        rt._lock = RLock()
+        rt._work = Lock()
+        rt._active = True
+        rt._map_open = False
+        rt._manual_alignment = False
+        rt._season = "s1"
+        rt._mode = "nightmare"
+        rt._epoch = 1
+        rt._round = 1
+        rt._cycle = 1
+        rt._frame_id = 1
+        rt._frame_generation = 1
+        rt._request_lifetime_generation = 1
+        rt._settings_generation = 1
+        rt._native_s1_round_lock = True
+        rt._native_s1_final_round_lock = True
+        rt._durable_map_id = ""
+        rt._map_id = ""
+        rt._provisional_display_map_id = ""
+        rt._identity_native = None
+        rt._identity_source = "s1-structure-candidates"
+        rt._manual_group_choice = None
+        rt._group_choice_inflight = None
+        rt._group_choice_reason = ""
+        rt._desired_group_member = None
+        rt._group_member_choice_status = ""
+        rt._render = None
+        rt._render_capture_context = None
+        rt._reference_sheet = None
+        rt._reference_capture_context = None
+        rt._last_observation = None
+        rt._gate = None
+        rt._core = SimpleNamespace(revoke_display=lambda **k: None)
+        rt._engine = SimpleNamespace(pack=SimpleNamespace(by_id={
+            "107001": SimpleNamespace(name="107001"),
+            "107002": SimpleNamespace(name="107002"),
+            "107003": SimpleNamespace(name="107003"),
+            "107004": SimpleNamespace(name="107004"),
+        }))
+        rt._s1_round_map_id = ""
+        rt._s1_assisted_preview_map_id = ""
+        rt._s1_round_manual_locked = False
+        rt._s1_manual_lock_previous_remaining = ()
+        rt._s1_candidate_preference = None
+        rt._uses_universal_structure_recognition = lambda: True
+        events = []
+        rt._notify = lambda event, **kw: events.append((event, kw))
+        rt._receipt = lambda action, payload, **kw: dict(action=action, **kw)
+
+        # 4 remaining -> assisted candidates must stay hidden
+        pool = PrivateRoundPool("scope-1", ("107001", "107002", "107003", "107004"), retain_locked_identity=True)
+        rt._s1_private_pool = pool
+        fields = rt._identity_fields()
+        self.assertEqual(fields["s1AssistedCandidates"], [])
+        self.assertFalse(rt._preview_s1_candidate("preview_s1_candidate", {"mapId": "107001"}, None)["success"])
+
+        # Narrow to 2 remaining -> assisted candidates appear
+        pool.remaining = ("107002", "107003")
+        pool.eliminated = {"107001", "107004"}
+        fields = rt._identity_fields()
+        self.assertEqual([row["mapId"] for row in fields["s1AssistedCandidates"]], ["107002", "107003"])
+        self.assertEqual(fields["s1AssistedPreviewMapId"], "107002")
+
+        # Out-of-pool preview is rejected
+        self.assertFalse(rt._preview_s1_candidate("preview_s1_candidate", {"mapId": "107001"}, None)["success"])
+
+        # Preview 107003 -> updates preview WITHOUT locking or clearing pool
+        res = rt._preview_s1_candidate("preview_s1_candidate", {"mapId": "107003"}, None)
+        self.assertTrue(res["success"])
+        self.assertEqual(pool.remaining, ("107002", "107003"))
+        self.assertEqual(rt._identity_fields()["s1AssistedPreviewMapId"], "107003")
+        self.assertFalse(rt._identity_fields()["identityLocked"])
+
+        # Lock 107003 -> locks round, hides assisted candidates, sets s1ManualRoundLocked
+        lock_res = rt._lock_s1_candidate("lock_s1_candidate", {"mapId": "107003"}, None)
+        self.assertTrue(lock_res["success"])
+        locked_fields = rt._identity_fields()
+        self.assertTrue(locked_fields["identityLocked"])
+        self.assertEqual(locked_fields["durableMapId"], "107003")
+        self.assertTrue(locked_fields["s1ManualRoundLocked"])
+        self.assertEqual(locked_fields["s1AssistedCandidates"], [])
+        self.assertEqual(pool.remaining, ("107003",))
+
+        # Unlock -> restores exact 2 remaining candidates
+        unlock_res = rt._unlock_s1_candidate("unlock_s1_candidate", {}, None)
+        self.assertTrue(unlock_res["success"])
+        unlocked_fields = rt._identity_fields()
+        self.assertFalse(unlocked_fields["identityLocked"])
+        self.assertFalse(unlocked_fields["s1ManualRoundLocked"])
+        self.assertEqual([row["mapId"] for row in unlocked_fields["s1AssistedCandidates"]], ["107002", "107003"])
+
+
 if __name__ == "__main__":
     unittest.main()

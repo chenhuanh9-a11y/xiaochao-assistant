@@ -180,6 +180,36 @@ class CompositionTests(unittest.TestCase):
         factories.set_custom_display(None)
         self.assertTrue(all(engine.qt_custom_display is None for engine in engines.values()))
 
+    def test_scoped_s1_custom_gallery_sync_does_not_recurse(self):
+        from client_custom_gallery import CustomGalleryService
+        calls = []
+        self.client.settings.persistedValues = dict(
+            gameSeason="s1",
+            gameMode="nightmare",
+            routeProfileId="custom:season-s1-nightmare~g1",
+            contextRouteProfiles={"s1:nightmare": "custom:season-s1-nightmare~g1"},
+            modeRouteProfiles={},
+        )
+        self.state = dict(season="s1", mode="nightmare", profileId="custom:season-s1-nightmare~g1")
+        active = dict(inUse="")
+        def fake_set_active(gid):
+            calls.append(gid)
+            if len(calls) > 5:
+                raise RecursionError("infinite sync loop")
+            scope_id, local_id = CustomGalleryService.splitGalleryId(gid)
+            active["inUse"] = local_id if gid and scope_id == "season-s1-nightmare" else ""
+            # Simulate Qt changed signal firing synchronously back into _sync_custom_gallery_active
+            self.client._sync_custom_gallery_active()
+        self.client.custom_galleries = SimpleNamespace(
+            snapshot=active,
+            scopeId="season-s1-nightmare",
+            splitGalleryId=CustomGalleryService.splitGalleryId,
+            setActiveGallery=fake_set_active,
+        )
+        self.client._sync_custom_gallery_active()
+        self.assertEqual(calls, ["season-s1-nightmare~g1"])
+        self.assertEqual(active["inUse"], "g1")
+
 
 class StartupFailureTests(unittest.TestCase):
     def test_canonical_reporter_persists_and_notifies(self):

@@ -355,6 +355,61 @@ Window {
                     }
                 }
                 ColumnLayout {
+                    id: s1AssistedLockSection
+                    objectName: "controlS1AssistedLockSection"
+                    readonly property var candidates: panel.snapshot.s1AssistedCandidates || []
+                    readonly property string previewId: String(panel.snapshot.s1AssistedPreviewMapId || "")
+                    readonly property string previewName: {
+                        for (var i = 0; i < candidates.length; ++i) {
+                            if (String(candidates[i].mapId || "") === previewId)
+                                return String(candidates[i].name || candidates[i].mapId || "")
+                        }
+                        return candidates.length > 0 ? String(candidates[0].name || candidates[0].mapId || "") : ""
+                    }
+                    visible: panel.snapshot.s1FormalRoundLock === true
+                             && panel.snapshot.identityLocked !== true
+                             && candidates.length >= 2 && candidates.length <= 3
+                             && !panel.editing
+                    Layout.fillWidth: true; Layout.bottomMargin: visible ? 8 : 0; spacing: 4
+                    Label {
+                        text: "剩余 " + s1AssistedLockSection.candidates.length + " 个候选 · 点击比对后锁定"
+                        color: "#142b4b"; font.family: "Microsoft YaHei UI"; font.pixelSize: 12; font.bold: true
+                        Layout.fillWidth: true
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 4
+                        Repeater {
+                            model: s1AssistedLockSection.candidates
+                            delegate: ControlButton {
+                                required property var modelData
+                                objectName: "controlS1AssistedCandidate_" + modelData.mapId
+                                text: String(modelData.name || modelData.mapId)
+                                selected: String(modelData.mapId) === s1AssistedLockSection.previewId
+                                enabled: panel.available("preview_s1_candidate")
+                                Layout.fillWidth: true; implicitWidth: 1; implicitHeight: 30
+                                hint: "切换预览 " + text + "，不会直接锁死"
+                                onClicked: session.dispatchWithPayload("preview_s1_candidate", {mapId: String(modelData.mapId)})
+                            }
+                        }
+                    }
+                    ControlButton {
+                        objectName: "controlS1AssistedLockButton"
+                        text: s1AssistedLockSection.previewName ? ("锁定 " + s1AssistedLockSection.previewName) : "锁定当前候选"
+                        primary: true; Layout.fillWidth: true; implicitHeight: 32
+                        enabled: panel.available("lock_s1_candidate") && s1AssistedLockSection.previewId !== ""
+                        hint: "确认当前比对无误后，正式锁定本局地图"
+                        onClicked: session.dispatchWithPayload("lock_s1_candidate", {mapId: s1AssistedLockSection.previewId})
+                    }
+                }
+                ControlButton {
+                    objectName: "controlS1AssistedUnlockButton"
+                    visible: panel.snapshot.s1ManualRoundLocked === true && panel.available("unlock_s1_candidate") && !panel.editing
+                    text: "锁错了？重新选候选"
+                    Layout.fillWidth: true; Layout.bottomMargin: visible ? 6 : 0; implicitHeight: 30
+                    hint: "取消刚才的手动锁定，回到剩余候选重新比对"
+                    onClicked: session.dispatch("unlock_s1_candidate")
+                }
+                ColumnLayout {
                     id: modules
                     Layout.fillWidth: true; spacing: 4
                     Repeater {

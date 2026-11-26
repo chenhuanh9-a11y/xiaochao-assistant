@@ -865,7 +865,10 @@ class CustomGalleryService(QObject):
 
     def setActiveGallery(self, gid):
         scope_id, local_id = self.splitGalleryId(gid)
-        self._in_use = local_id if gid and scope_id == self._scope_id else ""
+        target = local_id if gid and scope_id == self._scope_id else ""
+        if target == self._in_use:
+            return
+        self._in_use = target
         self.changed.emit()
 
     @Slot()
