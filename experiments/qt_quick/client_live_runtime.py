@@ -3906,7 +3906,13 @@ class LiveRuntime:
         with self._lock:
             variant_changed = settings.get("zhan10CoffinVariantId", "variant-01") != self._settings.get("zhan10CoffinVariantId", "variant-01")
             numbers_changed = settings.get("routePointNumbers", False) != self._settings.get("routePointNumbers", False)
-            numbers_display_changed = numbers_changed and self._profile.startswith("custom:")
+            from map_landmarks import SETTING_KEYS, LandmarkPreferences, set_preferences
+            landmarks_changed = any((settings.get(key, True) is not False) != (self._settings.get(key, True) is not False)
+                                    for key in SETTING_KEYS)
+            # Display-only S1 room names/minecarts; set before display work is retired.
+            set_preferences(LandmarkPreferences.from_settings(settings))
+            numbers_display_changed = ((numbers_changed and self._profile.startswith("custom:"))
+                                       or (landmarks_changed and self._season == "s1"))
             settings_changed = dict(settings) != self._settings
             solver_changed = self._s1_solver_policy(settings) != self._s1_solver_policy(self._settings)
             self._settings = copy.deepcopy(dict(settings))

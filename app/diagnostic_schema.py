@@ -457,7 +457,8 @@ xscrollcommand y yellowRatio yscrollcommand zeroExplorationDisplayAllowed zeroGe
 
 CODES = frozenset("""
 -1 -2 -3 -4 105001 105002 105003 105004 105005 105006 105007 105008 105009 105010 105011 105012 105013 105014 105015 106001 106002 106003 106004 106005 106007 106008 106009 106010 106011 106012 106013
-106014 106015 107001 107002 107003 107004 107005 107006 107007 107008 107009 107010 107011 107012 107013 107014 107015 B1 B2 B3 B4 Darwin F1 F2 Linux ResourceMigrationError Windows __call__ __enter__
+106014 106015 106016 106017 106018 106019 106020 106021 106022 106023 106024 106025 107001 107002 107003 107004 107005 107006 107007 107008
+107009 107010 107011 107012 107013 107014 107015 107016 107017 107018 107019 107020 B1 B2 B3 B4 Darwin F1 F2 Linux ResourceMigrationError Windows __call__ __enter__
 __exit__ __init__ __post_init__ _activate _activate_contexts_locked _activate_imported_base _activate_imported_displays _activate_locked _activation_refs _admission_owner_state _affine
 _apply_inventory _archive_inventory _assert_directories _assert_observed_manifests_current _assert_owners _assert_retained_source_state _author_pixels _base_row _begin _bind_bundle_live_reader
 _bind_live_readers _binding_for_path _bounded_list _bounded_points _bounds _browse_declarations _build _build_resources _cached _canvas _catalog_failure_code _catalog_proposal _catalog_references

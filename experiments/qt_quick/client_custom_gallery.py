@@ -328,7 +328,7 @@ class CustomGalleryService(QObject):
         state = dict(galleries=galleries, maps=maps, selectedGallery=self._gallery, selectedMap=self._map,
             galleryName=store.name(self._gallery), mapName=self.library.name(self._map),
             drawnCount=len(drawn), mapCount=len(maps),
-            selectedFloor=self._floor, floors=[], points=[], lines=[], markers=[], readonly=bool(self._data_error) or store.readonly(self._gallery),
+            selectedFloor=self._floor, floors=[], points=[], lines=[], markers=[], landmarks=[], readonly=bool(self._data_error) or store.readonly(self._gallery),
             source=store.source(self._gallery), canDelete=not self._data_error and self._gallery != "default",
             imageUrl="", imageWidth=0, imageHeight=0, planError="", available=self.library.available,
             libraryMessage=self.library.error, dataError=self._data_error, canUndo=bool(self._past), canRedo=bool(self._future))
@@ -358,8 +358,21 @@ class CustomGalleryService(QObject):
         markers = [dict(**xy((x, y)), label=label) for x, y, label in marker_groups(points, self._floor, per_floor=True)]
         state.update(floors=[dict(id=f, name=getattr(self.library, "floor_labels", FLOOR_LABELS)[f]) for f in floors], selectedFloor=self._floor,
             imageUrl=QUrl.fromLocalFile(str(asset.image_path)).toString(), imageWidth=int(asset.image_size[0]),
-            imageHeight=int(asset.image_size[1]), points=points, lines=lines, markers=markers)
+            imageHeight=int(asset.image_size[1]), points=points, lines=lines, markers=markers,
+            landmarks=self._landmarks(self._map, self._floor))
         return state
+
+    def _landmarks(self, map_id, floor):
+        """S1 room names/minecarts on the editor art; display only, never saved or exported."""
+        binding = getattr(self.library, "landmark_binding", None)
+        if not callable(binding):
+            return []
+        try:
+            from map_landmarks import editor_items
+            value = binding(map_id, floor)
+            return editor_items(map_id, floor, value) if value else []
+        except (OSError, ValueError, KeyError, TypeError):
+            return []
 
     def _run(self, function, message="", *, galleries_changed=False, on_done=None):
         if self._closed or self._busy or self._pending:

@@ -518,6 +518,23 @@ class ImportedStructureRouteLibrary:
         with Image.open(self.floor(mid, floor).image_path) as img:
             return img.convert("RGBA")
 
+    def landmark_binding(self, mid, floor):
+        """Native canvas and clean-mask digest for S1 map landmarks, or None."""
+        row = self._maps.get(str(mid), {}).get("floors", {}).get(str(floor))
+        if not row or not row.get("mask_cache"):
+            return None
+        key = (str(mid), str(floor), str(row["mask_cache"]))
+        cache = self.__dict__.setdefault("_landmark_bindings", {})
+        if key not in cache:
+            mask = cv2.imread(str(row["mask_cache"]), cv2.IMREAD_GRAYSCALE)
+            if mask is None or (mask.shape[1], mask.shape[0]) != tuple(row["size"]):
+                cache[key] = None
+            else:
+                from map_landmarks import mask_sha256
+                cache[key] = dict(width=int(mask.shape[1]), height=int(mask.shape[0]),
+                                  maskSha256=mask_sha256(mask), toImage=np.eye(3))
+        return cache[key]
+
     def graph(self, mid):
         key = str(mid)
         if key not in self._maps:

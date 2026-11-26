@@ -487,6 +487,26 @@ Item {
                     checked: root.preferences.manualMapLock === true
                     onToggled: settingsService.setValue("manualMapLock", checked)
                 }
+                RowLayout {
+                    // S1 room names / minecarts on the editor and game maps (Android parity).
+                    objectName: "settingsMapLandmarks"
+                    visible: root.draftSeason === "s1"
+                    Layout.fillWidth: true; spacing: 12
+                    Label { text: "地图标注"; color: "#354f75"; font.pixelSize: 13 }
+                    Repeater {
+                        model: [{key: "mapLandmarkRooms", title: "重点房间"}, {key: "mapLandmarkMinecarts", title: "矿车位置"}]
+                        delegate: CheckBox {
+                            required property var modelData
+                            objectName: "setting_" + modelData.key
+                            text: modelData.title
+                            font.family: "Microsoft YaHei UI"; font.pixelSize: 13
+                            enabled: !settingsService.busy
+                            checked: root.preferences[modelData.key] !== false
+                            onToggled: settingsService.setValue(modelData.key, checked)
+                        }
+                    }
+                    Item { Layout.fillWidth: true }
+                }
                 Note {
                     objectName: "settingsMapSelectionExplanation"
                     visible: !root.automaticMapSelection

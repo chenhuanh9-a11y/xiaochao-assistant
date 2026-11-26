@@ -147,6 +147,16 @@ class ScopedRouteLibrary:
             raise RouteError("自定义地图显示矩阵无效")
         return matrix, expected
 
+    def landmark_binding(self, mid, floor):
+        """Android display binding for S1 map landmarks, or None (S0 has none)."""
+        if self.scope.season != "s1":
+            return None
+        try:
+            matrix, expected = self.display_registration(mid, floor)
+        except (RouteError, KeyError, TypeError, ValueError):
+            return None
+        return dict(androidLayerMaskSha256=expected, toImage=np.linalg.inv(matrix))
+
     def validate_reference(self, mid, floor, clean_mask):
         from custom_maps import mask_sha256
         self.graph(mid)
