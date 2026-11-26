@@ -312,7 +312,10 @@ class SharedReferenceProvider:
             except (OSError, ValueError, KeyError, AttributeError):
                 cache = {}
             self._neutral_display_index = cache
-        rel = cache.get((str(reference.map_id), str(reference.floor)))
+        binding = getattr(reference, 'binding', None) or (getattr(reference, 'metadata', None) or {}).get('binding') or {}
+        mid = getattr(reference, 'map_id', None) or binding.get('mapId')
+        fl = getattr(reference, 'floor', None) or binding.get('floor')
+        rel = cache.get((str(mid), str(fl)))
         if not rel:
             return None
         try:
