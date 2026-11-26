@@ -42,13 +42,13 @@ SCOPES = {
     s.id: s for s in (
         RouteScope("legacy-nightmare", "lady-of-misfortune", "nightmare", "灾厄之女 · 噩梦",
                    ("B1", "1", "2"), ("负一楼", "一楼", "二楼"),
-                   "nightmare-route-editor/catalog.json", "nightmare-route-editor/", 27, season_id="s0"),
+                   "nightmare-route-editor/catalog.json", "nightmare-route-editor/", 128, season_id="s0"),
         RouteScope("classic-hard", "lady-of-misfortune", "hard", "灾厄之女 · 困难",
-                   ("1", "2"), ("一楼", "二楼"), "classic-route-editor/catalog.json", season_id="s0"),
+                   ("1", "2"), ("一楼", "二楼"), "classic-route-editor/catalog.json", max_maps=128, season_id="s0"),
         RouteScope("season-s1-hard", "phosphorescence", "hard", "磷光症 · 困难",
-                   ("-1", "-2", "-3"), ("B1", "B2", "B3"), "season-route-editor/catalog.json", max_maps=14, season_id="s1"),
+                   ("-1", "-2", "-3"), ("B1", "B2", "B3"), "season-route-editor/catalog.json", max_maps=128, season_id="s1"),
         RouteScope("season-s1-nightmare", "phosphorescence", "nightmare", "磷光症 · 噩梦",
-                   ("-1", "-2", "-3"), ("B1", "B2", "B3"), "season-route-editor/catalog.json", max_maps=15, season_id="s1"),
+                   ("-1", "-2", "-3"), ("B1", "B2", "B3"), "season-route-editor/catalog.json", max_maps=128, season_id="s1"),
     )
 }
 
@@ -106,7 +106,7 @@ def ensure_season_scope(
             floors=fls,
             floor_labels=fl_labels,
             catalog=f"season-{sid}-route-editor/catalog.json",
-            max_maps=30,
+            max_maps=128,
             season_id=sid,
         )
         SCOPES[scope_id] = scope
@@ -124,7 +124,7 @@ def sync_dynamic_scopes_from_seasons() -> None:
         sid = str(entry.get("id") or "").strip().lower()
         if not sid or sid in ("s0", "s1"):
             continue
-        title = str(entry.get("title") or sid.upper())
+        title = str(entry.get("name") or entry.get("title") or sid.upper())
         for rmode in entry.get("modes") or ("difficult", "nightmare"):
             ensure_season_scope(sid, rmode, season_title=title)
 

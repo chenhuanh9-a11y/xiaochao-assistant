@@ -270,6 +270,20 @@ def _prepare_display_updates(root, snapshot, display_refs, remove_display_refs,
         identity = read_display_identity(new_view)
         if (identity.season, identity.mode) not in allowed_contexts:
             raise catalog.ResourceCatalogError('resource-component-context-mismatch')
+        if previous_ref is None:
+            # Also replace an active display for the same (season, mode, profile_id)
+            # even when the author's updated .xingtu-route uses a new packageId.
+            for existing_ref in list(displays):
+                if (existing_ref.package_id, existing_ref.component_id) in removed_logical:
+                    continue
+                try:
+                    existing_id = read_display_identity(PackageView(root, existing_ref, assert_current=operation_current))
+                except Exception:
+                    continue
+                if (existing_id.season, existing_id.mode, existing_id.profile_id) == (
+                        identity.season, identity.mode, identity.profile_id):
+                    previous_ref = existing_ref
+                    break
         old_view = PackageView(root, previous_ref, assert_current=operation_current) if previous_ref else None
         updates.append((new_view, old_view, previous_ref))
         if previous_ref is None:
@@ -305,8 +319,41 @@ def _snapshot_for_root(resolver, root):
     return snapshot
 
 
+def _cleanup_superseded_base_packages(root, snapshot, document, context_keys):
+    import shutil
+    active_pkgs = set()
+    for row in (document.get('contexts') or {}).values():
+        for ref in (row or {}).values():
+            if isinstance(ref, dict) and ref.get('packageId') and ref.get('resourceVersion'):
+                active_pkgs.add((ref['packageId'], ref['resourceVersion']))
+    for ref in (document.get('displays') or ()):
+        if isinstance(ref, dict) and ref.get('packageId') and ref.get('resourceVersion'):
+            active_pkgs.add((ref['packageId'], ref['resourceVersion']))
+    candidates = set()
+    for context_key in context_keys:
+        prev = (snapshot.contexts.get(context_key) or {}).get('recognitionBase')
+        if prev is not None:
+            pair = (prev.package_id, prev.resource_version)
+            if pair not in active_pkgs:
+                candidates.add(pair)
+    removed = []
+    for pkg_id, version in sorted(candidates):
+        target = root / 'packages' / pkg_id / version
+        try:
+            if target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target)
+                removed.append(f'{pkg_id}/{version}')
+                parent = target.parent
+                if parent.is_dir() and not any(parent.iterdir()):
+                    parent.rmdir()
+        except OSError:
+            pass
+    return removed
+
+
 def _activate_contexts_locked(root, snapshot, paths, resolver, contexts, *, display_refs,
-                              cancelled, remove_display_refs=(), qualifications=None):
+                              cancelled, remove_display_refs=(), qualifications=None,
+                              cleanup_superseded_bases=False):
     proposals = contexts
     def operation_current():
         files._check_cancelled(cancelled)
@@ -340,11 +387,16 @@ def _activate_contexts_locked(root, snapshot, paths, resolver, contexts, *, disp
     result = publication.activate_catalog_locked(root, document, expected_catalog_stamp=expected_stamp,
         validate=validate, cancelled=cancelled)
     validate.committed()
-    return dict(result, contexts=list(context_keys))
+    removed_bases = (
+        _cleanup_superseded_base_packages(root, snapshot, document, context_keys)
+        if cleanup_superseded_bases else []
+    )
+    return dict(result, contexts=list(context_keys), removedSupersededBases=removed_bases)
 
 
 def _activate_locked(root, snapshot, paths, resolver, *, season, mode, display_refs,
-                     cancelled, base_ref=None, controls_ref=None, remove_display_refs=(), qualifications=None):
+                     cancelled, base_ref=None, controls_ref=None, remove_display_refs=(),
+                     qualifications=None, cleanup_superseded_bases=False):
     context_key = f'{season}:{mode}'
     current = snapshot.contexts.get(context_key)
     if base_ref is None and controls_ref is None:
@@ -353,14 +405,16 @@ def _activate_locked(root, snapshot, paths, resolver, *, season, mode, display_r
         base_ref, controls_ref = current['recognitionBase'], current['controls']
     outcome = _activate_contexts_locked(root, snapshot, paths, resolver,
         ((season, mode, base_ref, controls_ref),), display_refs=display_refs,
-        remove_display_refs=remove_display_refs, cancelled=cancelled, qualifications=qualifications)
+        remove_display_refs=remove_display_refs, cancelled=cancelled,
+        qualifications=qualifications, cleanup_superseded_bases=cleanup_superseded_bases)
     outcome.pop('contexts', None)
     outcome['context'] = context_key
     return outcome
 
 
 def activate_contexts(resolver, paths, contexts, *, display_refs=(), remove_display_refs=(),
-                      expected_catalog_stamp=_UNSPECIFIED_CATALOG, cancelled=None, qualifications=None):
+                      expected_catalog_stamp=_UNSPECIFIED_CATALOG, cancelled=None,
+                      qualifications=None, cleanup_superseded_bases=False):
     """Publish all proposed base/control contexts in one catalog transaction.
 
     The caller owns the Session idle lease. Every context is semantically
@@ -377,12 +431,14 @@ def activate_contexts(resolver, paths, contexts, *, display_refs=(), remove_disp
             raise catalog.ResourceCatalogError('resource-catalog-superseded')
         return _activate_contexts_locked(root, snapshot, paths, resolver, contexts,
             display_refs=display_refs, remove_display_refs=remove_display_refs,
-            cancelled=cancelled, qualifications=qualifications)
+            cancelled=cancelled, qualifications=qualifications,
+            cleanup_superseded_bases=cleanup_superseded_bases)
 
 
 def activate_context(resolver, paths, base_ref, controls_ref, *, season='s0', mode='nightmare',
                      display_refs=(), remove_display_refs=(),
-                     expected_catalog_stamp=_UNSPECIFIED_CATALOG, cancelled=None, qualifications=None):
+                     expected_catalog_stamp=_UNSPECIFIED_CATALOG, cancelled=None,
+                     qualifications=None, cleanup_superseded_bases=False):
     """Select B/C and explicitly requested display updates in one transaction.
 
     display_refs is an update subset, not a replacement list. Omitted authors
@@ -405,7 +461,8 @@ def activate_context(resolver, paths, base_ref, controls_ref, *, season='s0', mo
             raise catalog.ResourceCatalogError('resource-catalog-superseded')
         return _activate_locked(root, snapshot, paths, resolver, season=season, mode=mode,
             base_ref=base_ref, controls_ref=controls_ref, display_refs=display_refs,
-            remove_display_refs=remove_display_refs, cancelled=cancelled, qualifications=qualifications)
+            remove_display_refs=remove_display_refs, cancelled=cancelled,
+            qualifications=qualifications, cleanup_superseded_bases=cleanup_superseded_bases)
 
 
 def activate_display(resolver, paths, display_ref, *, cancelled=None, qualifications=None):

@@ -43,6 +43,8 @@ class CustomGalleryDisplay:
 
     def eligibility(self, gallery_id, mode, season="s0"):
         """Prepare a preference request; this does not apply it or mark it active."""
+        from route_scopes import sync_dynamic_scopes_from_seasons
+        sync_dynamic_scopes_from_seasons()
         normalize_season(season)
         if not any((s.season, s.runtime_mode) == (season, mode) for s in SCOPES.values()):
             return dict(allowed=False, reason=f"season-resources-unavailable:{season}",

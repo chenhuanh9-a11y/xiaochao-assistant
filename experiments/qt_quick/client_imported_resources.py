@@ -526,6 +526,7 @@ class ImportedResourceService(QObject):
             (removed if choice.display_ref is None else updates).append(
                 row.old_ref if choice.display_ref is None else choice.display_ref)
         updates, removed = tuple(updates), tuple(removed)
+        cleanup_old = self._automatic_import == 'base'
         def activate(cancelled):
             if hasattr(plan, 'contexts'):
                 from client_imported_activation import activate_contexts
@@ -533,12 +534,14 @@ class ImportedResourceService(QObject):
                 return activate_contexts(self.resolver, self.paths, contexts,
                     display_refs=updates, remove_display_refs=removed,
                     expected_catalog_stamp=plan.catalog_stamp, cancelled=cancelled,
-                    qualifications=self._semantic_qualifications)
+                    qualifications=self._semantic_qualifications,
+                    cleanup_superseded_bases=cleanup_old)
             from client_imported_activation import activate_context
             outcome = activate_context(self.resolver, self.paths, plan.base_ref, plan.controls_ref,
                 season=plan.season, mode=plan.mode, display_refs=updates, remove_display_refs=removed,
                 expected_catalog_stamp=plan.catalog_stamp, cancelled=cancelled,
-                qualifications=self._semantic_qualifications)
+                qualifications=self._semantic_qualifications,
+                cleanup_superseded_bases=cleanup_old)
             return dict(outcome, context=f'{plan.season}:{plan.mode}')
         accepted = self._activate(activate, 'base')
         if accepted:

@@ -199,7 +199,10 @@ def load_imported_browse_context(resolver, mode, *, season='s0', cancelled=lambd
             identity = reader.json(interfaces['identityPack'])
             floors = tuple(map(str,identity.get('floors',('1','2','B1') if (season,mode)==('s0','nightmare') else ())))
             _validate_imported_identity_ids(dict(identity,floors=list(floors)))
-            contract = floor_contract(mode,season=season)
+            from floor_contract import floor_contract, register_floor_contract
+            contract = floor_contract(mode, season=season)
+            if contract is None and season not in ('s0', 's1') and floors:
+                contract = register_floor_contract(season, mode, floors)
             versions = (1, 2) if (season,mode) == ('s0','nightmare') else (1,)
             if (type(identity.get('schemaVersion')) is not int or identity['schemaVersion'] not in versions
                     or identity.get('season',season) != season

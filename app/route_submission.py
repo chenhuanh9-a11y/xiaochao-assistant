@@ -282,8 +282,8 @@ def prepare_maps(library, gallery, *, cancelled=lambda: False):
         maps.append(dict(mapEntryId="route-" + uuid.uuid5(uuid.NAMESPACE_URL, plan["templateId"]).hex,
                          displayName=library.name(map_id)[:48], defaultFloor=plan["points"][0]["floor"],
                          floors=[], routePlan=plan))
-    if not 1 <= len(maps) <= 27:
-        raise AccountError("投稿需要 1–27 张地图的已保存路线")
+    if not 1 <= len(maps) <= 128:
+        raise AccountError("投稿需要至少 1 张地图的已保存路线")
     return maps
 
 

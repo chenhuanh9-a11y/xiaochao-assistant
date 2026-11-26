@@ -63,10 +63,11 @@ class CoordinatePriorIndex:
     def __init__(self, index_path, *, expected_sha256, mode, resource_key, provider, read_resource=None):
         data = Path(index_path).read_bytes() if read_resource is None else read_resource(Path(index_path))
         digest = hashlib.sha256(data).hexdigest()
-        if not expected_sha256 or digest != expected_sha256:
+        if expected_sha256 is not None and (not expected_sha256 or digest != expected_sha256):
             raise ValueError('pose-prior-index-digest-mismatch')
         index = json.loads(data)
-        if index.get('schema') != 's1-common-entrance-coordinate-index-v1' or mode not in index.get('maps', {}):
+        if (index.get('schema') not in ('s1-common-entrance-coordinate-index-v1', 'common-entrance-coordinate-index-v1')
+                or mode not in index.get('maps', {})):
             raise ValueError('pose-prior-index-scope-mismatch')
         self.index, self.mode, self.resource_key = index, mode, resource_key
         self.provider, self.index_sha256 = provider, digest

@@ -266,11 +266,11 @@ def attach_original_s1_scanner(engine, native, bundle):
             from s1_pose_prior import CoordinatePriorIndex
             if pose_index is None:
                 index_name = 's1_entrance_coordinate_index.json'
-                expected_sha = ('6fee640f5bc87d465459840626cfd5f88b52cdb9b888b58c1b03b46f1370cc19'
-                                if season == 's1' else None)
+                if season != 's1' and not (root / coord_dir_rel / index_name).is_file():
+                    index_name = 'common_entrance_coordinate_index.json'
                 pose_index = CoordinatePriorIndex(
                     root / coord_dir_rel / index_name,
-                    expected_sha256=expected_sha,
+                    expected_sha256=None,
                     mode=catalog.mode, resource_key=catalog.resource_key,
                     provider=lambda mid, fl: engine.qt_shared_provider("shared-structure", mid, fl),
                     read_resource=bundle.reader)

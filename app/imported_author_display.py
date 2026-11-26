@@ -208,8 +208,14 @@ def _decode(view, base, reference_provider, *, validate_images=True):
             _reject('duplicate-or-foreign-layer')
         seen.add(key)
         reference_file = FileRef(base.component_ref, row['referenceResource'])
+        if reference_file.path not in base_inventory:
+            if allow_partial_upgrade and image.path in inventory:
+                owned.add(image.path)
+                gaps.append(AuthorDisplayGap(*key, 'reference-resource-changed'))
+                continue
+            _reject('image-declaration-invalid')
         image_path, reference_path = view.path(image.path), base_view.path(reference_file.path)
-        if (image.path not in inventory or reference_file.path not in base_inventory
+        if (image.path not in inventory
                 or not valid_display_shape(row['displayShapeHW'])
                 or not valid_display_shape(row['referenceShapeHW'])):
             _reject('image-declaration-invalid')
