@@ -664,7 +664,7 @@ def main():
     results = []
     for mode in args.modes:
         label = MODE_LABELS[mode]
-        zip_path = args.output_dir / f"星图-磷光症-{label}-结构包-{source_version}.xingtu-base"
+        zip_path = args.output_dir / f"星图-磷光症-{label}-结构包-{source_version}.xingtu-map"
         built = build_mode_package(
             args.delivery,
             mode,
@@ -694,7 +694,7 @@ def main():
         "",
         "【升级说明】",
         "1. 无需重装软件，也无需手动删除旧结构包。",
-        "2. 下载对应模式的 .xingtu-base 结构包，在星图「地图资源 → 导入本地图包」选中导入，即可自动覆盖升级并启用。",
+        "2. 下载对应模式的 .xingtu-map 结构包，在星图「地图资源 → 导入本地图包」选中导入，即可自动覆盖升级并启用。",
         "3. 本次结构包默认自带带门渲染底图，导入后局内贴合、图库预览、自定义画线均默认显示渲染图。",
     ]
     (args.output_dir / "更新说明.txt").write_text("\n".join(note_lines) + "\n", encoding="utf-8")

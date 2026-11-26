@@ -567,12 +567,56 @@ class ImportedStructureRouteLibrary:
             raise RouteError("请选择含有已保存路线的图库")
         return maps
 
+    @staticmethod
+    def _normalize_imported_floor(raw_floor: str) -> str:
+        val = str(raw_floor or "").strip()
+        low = val.lower()
+        if low == "minus-1":
+            return "B1"
+        if low.startswith("b") and low[1:].isdigit():
+            return f"-{low[1:]}"
+        return val
+
+    def _decode_imported_point(self, mid: str, pt: dict, *, default_color: str, grid_step: float) -> dict:
+        if not isinstance(pt, dict):
+            raise RouteError("路线点格式无效")
+        fid = self._normalize_imported_floor(pt.get("floor", ""))
+        entry = self._maps.get(mid, {})
+        floor_info = (entry.get("floors") or {}).get(fid)
+        if floor_info is None:
+            raise RouteError(f"路线点楼层 {fid or '未知'} 不属于当前结构包")
+        w, h = floor_info["size"]
+        if "x" in pt and "y" in pt:
+            x, y = float(pt["x"]), float(pt["y"])
+        elif "cell" in pt:
+            cell = pt["cell"]
+            step = max(1.0, float(grid_step or 2.0))
+            if isinstance(cell, (list, tuple)) and len(cell) == 2:
+                x = min(float(w - 1), float(cell[0]) * step + step * 0.5)
+                y = min(float(h - 1), float(cell[1]) * step + step * 0.5)
+            elif isinstance(cell, int) and cell >= 0:
+                cols = max(1, int(math.ceil(w / step)))
+                x = min(float(w - 1), (cell % cols) * step + step * 0.5)
+                y = min(float(h - 1), (cell // cols) * step + step * 0.5)
+            else:
+                raise RouteError("路线点网格坐标格式不支持")
+        else:
+            raise RouteError("路线点缺少坐标信息")
+        return dict(
+            floor=fid,
+            x=round(x, 2),
+            y=round(y, 2),
+            color=str(pt.get("color") or default_color or DEFAULT_COLOR),
+            start=bool(pt.get("start", pt.get("newStart", False))),
+        )
+
     def import_maps(self, manifest):
         if (manifest.get("routeCatalogId"), manifest.get("scenario"), manifest.get("mode")) != (
                 self.scope.id, self.scope.scenario, self.scope.mode):
             raise RouteError("路线包不属于当前场景或难度")
         maps = {}
         missing_maps = 0
+        dropped_points = 0
         for entry in manifest.get("maps") or ():
             plan = entry.get("routePlan")
             if not isinstance(plan, dict):
@@ -583,17 +627,16 @@ class ImportedStructureRouteLibrary:
                 continue
             if mid in maps:
                 raise RouteError("路线包地图重复")
+            default_color = str(plan.get("lineColor") or DEFAULT_COLOR)
+            grid_step = float(plan.get("gridStep") or plan.get("step") or 2.0)
             pts = []
             for pt in plan.get("points") or ():
-                pts.append(dict(
-                    floor=str(pt["floor"]),
-                    x=float(pt["x"]),
-                    y=float(pt["y"]),
-                    color=str(pt.get("color") or DEFAULT_COLOR),
-                    start=bool(pt.get("start", pt.get("newStart", False))),
-                ))
+                try:
+                    pts.append(self._decode_imported_point(mid, pt, default_color=default_color, grid_step=grid_step))
+                except (RouteError, TypeError, ValueError, KeyError):
+                    dropped_points += 1
             if pts:
                 maps[mid] = dict(points=pts)
         if not maps:
             raise RouteError("路线包中没有有效路线")
-        return maps, dict(maps=len(maps), missingMaps=missing_maps, droppedPoints=0)
+        return maps, dict(maps=len(maps), missingMaps=missing_maps, droppedPoints=dropped_points)

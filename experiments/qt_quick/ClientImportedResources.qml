@@ -67,7 +67,7 @@ Item {
         Label { text: "本地资源"; color: "#142b4b"; font.pixelSize: 18; font.bold: true }
         Label {
             Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#354f75"; font.pixelSize: 14
-            text: "先导入结构包（.xingtu-base），楼层控件会一起启用。再导入作者路线包（.xingtu-route），路线会出现在地图资源里，可以直接预览和选用。"
+            text: "先导入结构包（.xingtu-map），楼层控件会一起启用。再导入作者路线包（.xingtu-route），路线会出现在地图资源里，可以直接预览和选用。"
         }
         Label {
             objectName: "resourceDirectoryLabel"
@@ -195,8 +195,8 @@ Item {
     FileDialog {
         id: archiveDialog; objectName: "resourceArchiveDialog"
         title: "选择星图结构包或作者路线包"
-        nameFilters: ["星图资源包 (*.xingtu-base *.xingtu-route)",
-                      "星图结构包 (*.xingtu-base)", "作者路线包 (*.xingtu-route)"]
+        nameFilters: ["星图资源包 (*.xingtu-map *.xingtu-base *.xingtu-route)",
+                      "星图结构包 (*.xingtu-map *.xingtu-base)", "作者路线包 (*.xingtu-route)"]
         onAccepted: resourceService.importArchive(selectedFile.toString())
         onRejected: panel.importSelectionCancelled()
     }

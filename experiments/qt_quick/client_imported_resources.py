@@ -903,7 +903,7 @@ class ImportedResourceService(QObject):
         self._message = ('软件资源目录已有内容，无法整库迁入；请使用单包导入，已有资源已保留。' if code == 'resource-migration-target-exists' else
                          '迁移未完成，旧资源已保留。请核对源目录、目标空间和占用后重试。' if code.startswith('resource-migration-') else
                          '旧图包格式已停用，请获取新版资源包；已有文件已保留。' if code == 'legacy-format-unsupported' else
-                         '请选择星图结构包（.xingtu-base）或作者路线包（.xingtu-route）。' if code == 'resource-package-extension-unsupported' else
+                         '请选择星图结构包（.xingtu-map / .xingtu-base）或作者路线包（.xingtu-route）。' if code == 'resource-package-extension-unsupported' else
                          '文件后缀与包内类型不一致，请核对结构包和作者路线包。' if code == 'resource-package-extension-mismatch' else
                          '此文件的资源类型不能作为结构包或作者路线包导入。' if code == 'resource-package-kind-unsupported' else
                          '请先导入并启用对应模式的基础结构包，再导入作者图。' if code == 'resource-display-base-context-not-active' else

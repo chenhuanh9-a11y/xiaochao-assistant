@@ -8,8 +8,10 @@ from urllib.parse import urlsplit
 
 
 BASE_SUFFIX = '.xingtu-base'
+BASE_MAP_SUFFIX = '.xingtu-map'
+BASE_SUFFIXES = (BASE_MAP_SUFFIX, BASE_SUFFIX)
 ROUTE_SUFFIX = '.xingtu-route'
-PACKAGE_SUFFIXES = (BASE_SUFFIX, ROUTE_SUFFIX)
+PACKAGE_SUFFIXES = (BASE_MAP_SUFFIX, BASE_SUFFIX, ROUTE_SUFFIX)
 
 
 class PackageTypeError(ValueError):
@@ -59,7 +61,8 @@ def validate_package_filename(path, components, *, allow_legacy_zip=True):
         raise PackageTypeError('resource-package-extension-unsupported')
 
     inferred = infer_package_suffix(components)
-    if suffix != inferred:
+    allowed = BASE_SUFFIXES if inferred == BASE_SUFFIX else (inferred,)
+    if suffix not in allowed:
         raise PackageTypeError('resource-package-extension-mismatch')
     return inferred
 

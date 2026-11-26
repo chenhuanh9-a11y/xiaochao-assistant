@@ -231,6 +231,40 @@ class ImportedStructureRouteLibraryTests(unittest.TestCase):
             self.assertEqual(len(imported["107001"]["points"]), 2)
             self.assertEqual(report["maps"], 1)
 
+            # Android-format cell-index points (e.g. cell, color, floor='b1', kind, roomId) must also import cleanly.
+            android_manifest = {
+                "routeCatalogId": SCOPES["season-s1-nightmare"].id,
+                "scenario": SCOPES["season-s1-nightmare"].scenario,
+                "mode": SCOPES["season-s1-nightmare"].mode,
+                "maps": [
+                    {
+                        "mapEntryId": "107001",
+                        "routePlan": {
+                            "sourceMapId": "107001",
+                            "points": [
+                                {"cell": 65, "color": "#ff3b30", "floor": "b1", "kind": "room", "roomId": "r1"},
+                                {"cell": [12, 10], "color": "#ff3b30", "floor": "b1", "kind": "via", "roomId": None},
+                            ],
+                        },
+                    }
+                ],
+            }
+            android_imported, android_report = lib.import_maps(android_manifest)
+            self.assertIn("107001", android_imported)
+            self.assertEqual(len(android_imported["107001"]["points"]), 2)
+            self.assertEqual(android_imported["107001"]["points"][0]["floor"], "-1")
+            self.assertEqual(android_report["droppedPoints"], 0)
+
+    def test_xingtu_map_and_legacy_base_suffixes_both_accepted(self):
+        from resource_package_types import BASE_SUFFIX, ROUTE_SUFFIX, PackageTypeError, validate_package_filename
+        base_comps = [{"type": "recognition-base"}, {"type": "controls-profile"}]
+        route_comps = [{"type": "display"}]
+        self.assertEqual(validate_package_filename("s1.xingtu-map", base_comps), BASE_SUFFIX)
+        self.assertEqual(validate_package_filename("s1.xingtu-base", base_comps), BASE_SUFFIX)
+        self.assertEqual(validate_package_filename("author.xingtu-route", route_comps), ROUTE_SUFFIX)
+        with self.assertRaises(PackageTypeError):
+            validate_package_filename("author.xingtu-map", route_comps)
+
     def test_walkable_astar_routes_around_wall_obstacle(self):
         from imported_structure_route_library import _WalkableFloor
         with tempfile.TemporaryDirectory() as tmp:
