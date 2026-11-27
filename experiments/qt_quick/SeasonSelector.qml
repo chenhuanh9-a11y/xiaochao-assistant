@@ -13,6 +13,9 @@ Item {
     property string nightmareObjectName: objectName + "Nightmare"
     property string difficultObjectName: objectName + "Difficult"
     signal contextRequested(string season, string mode)
+    readonly property var selectableSeasons: seasons.filter(function(row) {
+        return root.hasAvailableMode(row.id)
+    })
     // Keep confirmed season names readable in the narrow floating controls.
     readonly property real seasonMinimumWidth: {
         var textWidth = Math.max(seasonFontMetrics.advanceWidth("选择赛季"), seasonFontMetrics.advanceWidth("未导入结构包"))
@@ -37,8 +40,8 @@ Item {
     FontMetrics { id: seasonFontMetrics; font: seasonPicker.font }
 
     function seasonIndex(identity) {
-        for (var i = 0; i < seasons.length; i++)
-            if (seasons[i].id === identity) return i
+        for (var i = 0; i < selectableSeasons.length; i++)
+            if (selectableSeasons[i].id === identity) return i
         return -1
     }
     function seasonLabel(identity) {
@@ -110,7 +113,8 @@ Item {
             objectName: root.objectName + "Season"
             Layout.fillWidth: true; Layout.minimumWidth: root.seasonMinimumWidth; Layout.preferredWidth: root.seasonMinimumWidth
             Layout.columnSpan: root.stacked ? root.columns : 1
-            model: root.seasons; textRole: "label"; valueRole: "id"
+            model: root.selectableSeasons; textRole: "label"; valueRole: "id"
+            enabled: count > 0
             currentIndex: root.seasonIndex(root.season)
             displayText: root.seasons.length === 0 ? "未导入结构包" : (currentIndex < 0 ? "选择赛季" : currentText)
             enabled: root.seasons.length > 0
@@ -125,8 +129,8 @@ Item {
                 enabled: root.hasAvailableMode(modelData.id)
             }
             onActivated: function(index) {
-                if (index >= 0 && index < root.seasons.length)
-                    root.requestContext(root.seasons[index].id, root.mode)
+                if (index >= 0 && index < count)
+                    root.requestContext(valueAt(index), root.mode)
                 // Selection is a request. A rejected or asynchronous runtime change
                 // must not leave the combo claiming an unapplied season.
                 currentIndex = Qt.binding(function() { return root.seasonIndex(root.season) })
