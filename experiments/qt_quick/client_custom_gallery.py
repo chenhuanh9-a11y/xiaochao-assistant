@@ -1,6 +1,7 @@
 """Qt adapter for the existing gallery store and road planner; no game owner."""
 from __future__ import annotations
 
+from collections import OrderedDict
 from copy import deepcopy
 import hashlib
 import json
@@ -21,6 +22,8 @@ from scoped_route_library import ScopedRouteLibrary
 from custom_maps import (COLORS, DEFAULT_COLOR, DEFAULT_GALLERY_FILE, FLOORS, FLOOR_LABELS,
                          GALLERY_SCHEMA, MAX_POINTS, CustomMapLibrary, GalleryStore,
                          RouteError, insertion_index, marker_groups)
+from route_length import (UNIT_SHORT_DESCRIPTION, empty_route_length, map_floor_ids,
+                          map_reference_span, summarize_route_length)
 
 
 class _Signals(QObject):
@@ -91,7 +94,11 @@ class CustomGalleryService(QObject):
         self._in_use = ""
         self._editing = False
         self._map_metadata = []
+        self._map_length_cache = OrderedDict()
+        self._map_span_cache = {}
         self._state = dict(galleries=[], maps=[], floors=[], points=[], lines=[], markers=[],
+                           routeLength=empty_route_length(), mapComparisons=[],
+                           routeLengthUnitDescription=UNIT_SHORT_DESCRIPTION,
                            selectedGallery="default", selectedMap="", selectedFloor="1", readonly=True,
                            imageUrl="", imageWidth=0, imageHeight=0, planError="", canUndo=False,
                            canRedo=False, available=False, libraryMessage="正在读取自定义图集")
@@ -211,6 +218,56 @@ class CustomGalleryService(QObject):
                 row["thumbnailError"] = str(error)
             rows.append(row)
         self._map_metadata = rows
+        self._map_length_cache.clear()
+        self._map_span_cache.clear()
+
+    def _map_reference_span(self, map_id, floors=None):
+        key = (id(self.library), str(map_id))
+        if key not in self._map_span_cache:
+            self._map_span_cache[key] = map_reference_span(self.library, str(map_id), floors=floors)
+        return self._map_span_cache[key]
+
+    def _route_length_for_map(self, map_id, points, *, graph=None, segments=None, floors=None, plan_error=""):
+        mid = str(map_id)
+        pts = list(points or ())
+        floor_labels = getattr(self.library, "floor_labels", FLOOR_LABELS)
+        sig = json.dumps(pts, sort_keys=True, separators=(",", ":"))
+        cache_key = (id(self.library), mid, sig)
+        if not plan_error and segments is None and cache_key in self._map_length_cache:
+            self._map_length_cache.move_to_end(cache_key)
+            return self._map_length_cache[cache_key]
+        if len(pts) < 2 and not plan_error and graph is None:
+            floor_list = list(floors or ())
+            ref_span = self._map_reference_span(mid, floors=floor_list) if floor_list else 0.0
+            summary = summarize_route_length(
+                None, (), floor_list, floor_labels, ref_span, points=pts, error=""
+            )
+            self._map_length_cache[cache_key] = summary
+            while len(self._map_length_cache) > 256:
+                self._map_length_cache.popitem(last=False)
+            return summary
+        try:
+            if graph is None:
+                graph = self.library.graph(mid)
+            floor_list = list(floors) if floors else map_floor_ids(self.library, mid, graph=graph)
+            err = str(plan_error or "")
+            planned = segments
+            if planned is None and not err:
+                try:
+                    planned = graph.plan(pts) if len(pts) >= 2 else []
+                except RouteError as error:
+                    planned = []
+                    err = str(error)
+            ref_span = self._map_reference_span(mid, floors=floor_list)
+            summary = summarize_route_length(
+                graph, planned or (), floor_list, floor_labels, ref_span, points=pts, error=err
+            )
+        except (OSError, ValueError, KeyError, TypeError, RouteError) as error:
+            summary = empty_route_length(list(floors or ()), floor_labels, 0.0, error=str(error))
+        self._map_length_cache[cache_key] = summary
+        while len(self._map_length_cache) > 256:
+            self._map_length_cache.popitem(last=False)
+        return summary
 
     def _publish_committed(self):
         galleries = {gid: self._store.export(gid, include_source=True) for gid, _name, _ro in self._store.galleries()}
@@ -322,43 +379,109 @@ class CustomGalleryService(QObject):
         if self._gallery not in [g["id"] for g in galleries]:
             self._gallery = galleries[0]["id"]
         drawn = set(store.drawn_maps(self._gallery))
-        maps = [dict(row, drawn=row["id"] in drawn) for row in self._map_metadata]
-        if self._map not in [row["id"] for row in maps]:
-            self._map = maps[0]["id"] if maps else ""
-        state = dict(galleries=galleries, maps=maps, selectedGallery=self._gallery, selectedMap=self._map,
+        map_ids = [row["id"] for row in self._map_metadata]
+        if self._map not in map_ids:
+            self._map = map_ids[0] if map_ids else ""
+        state = dict(galleries=galleries, maps=[], selectedGallery=self._gallery, selectedMap=self._map,
             galleryName=store.name(self._gallery), mapName=self.library.name(self._map),
-            drawnCount=len(drawn), mapCount=len(maps),
-            selectedFloor=self._floor, floors=[], points=[], lines=[], markers=[], readonly=bool(self._data_error) or store.readonly(self._gallery),
+            drawnCount=len(drawn), mapCount=len(self._map_metadata),
+            selectedFloor=self._floor, floors=[], points=[], lines=[], markers=[],
+            routeLength=empty_route_length(), mapComparisons=[],
+            routeLengthUnitDescription=UNIT_SHORT_DESCRIPTION,
+            readonly=bool(self._data_error) or store.readonly(self._gallery),
             source=store.source(self._gallery), canDelete=not self._data_error and self._gallery != "default",
             imageUrl="", imageWidth=0, imageHeight=0, planError="", available=self.library.available,
             libraryMessage=self.library.error, dataError=self._data_error, canUndo=bool(self._past), canRedo=bool(self._future))
-        if not self._map:
-            return state
-        try:
-            graph = self.library.graph(self._map)
-        except (OSError, ValueError, KeyError, TypeError) as error:
-            state.update(available=False, libraryMessage=f"地图资源无法读取：{error}")
-            return state
-        floors = [f for f in getattr(self.library, "floor_ids", FLOORS) if f in graph.floors]
-        if self._floor not in floors:
-            self._floor = floors[0]
-        asset = self.library.floor(self._map, self._floor)
-        points = store.route(self._gallery, self._map)
-        segments = []
-        try:
-            segments = graph.plan(points)
-        except RouteError as error:
-            state["planError"] = str(error)
-        inverse = asset.to_image
-        def xy(point):
-            x, y, z = inverse @ [point[0], point[1], 1]
-            return dict(x=float(x / z), y=float(y / z))
-        lines = [dict(points=[xy(p) for p in line], color=color)
-                 for line, color in graph.floor_lines(segments, self._floor)]
-        markers = [dict(**xy((x, y)), label=label) for x, y, label in marker_groups(points, self._floor, per_floor=True)]
-        state.update(floors=[dict(id=f, name=getattr(self.library, "floor_labels", FLOOR_LABELS)[f]) for f in floors], selectedFloor=self._floor,
-            imageUrl=QUrl.fromLocalFile(str(asset.image_path)).toString(), imageWidth=int(asset.image_size[0]),
-            imageHeight=int(asset.image_size[1]), points=points, lines=lines, markers=markers)
+
+        current_route_length = None
+        if self._map:
+            try:
+                graph = self.library.graph(self._map)
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                state.update(available=False, libraryMessage=f"地图资源无法读取：{error}")
+            else:
+                floors = [f for f in getattr(self.library, "floor_ids", FLOORS) if f in graph.floors]
+                if self._floor not in floors:
+                    self._floor = floors[0]
+                asset = self.library.floor(self._map, self._floor)
+                points = store.route(self._gallery, self._map)
+                segments = []
+                try:
+                    segments = graph.plan(points)
+                except RouteError as error:
+                    state["planError"] = str(error)
+                inverse = asset.to_image
+                def xy(point):
+                    x, y, z = inverse @ [point[0], point[1], 1]
+                    return dict(x=float(x / z), y=float(y / z))
+                lines = []
+                for segment in segments:
+                    seg_end = segment.get("end", -1)
+                    for line, color in graph.floor_lines([segment], self._floor):
+                        lines.append(dict(points=[xy(p) for p in line], color=color, segmentEnd=seg_end))
+                markers = [dict(**xy((x, y)), label=label) for x, y, label in marker_groups(points, self._floor, per_floor=True)]
+                current_route_length = self._route_length_for_map(
+                    self._map, points, graph=graph, segments=segments, floors=floors, plan_error=state["planError"]
+                )
+                comparisons = []
+                for g in galleries:
+                    gid = g["id"]
+                    if gid == self._gallery:
+                        continue
+                    other_points = store.route(gid, self._map)
+                    if not other_points:
+                        continue
+                    other_len = self._route_length_for_map(self._map, other_points, graph=graph, floors=floors)
+                    comparisons.append(dict(
+                        galleryId=gid,
+                        galleryName=g["name"],
+                        totalUnits=other_len["totalUnits"],
+                        totalText=other_len["totalText"],
+                        compactFloorText=other_len["compactFloorText"],
+                        error=other_len["error"],
+                    ))
+                state.update(
+                    floors=[dict(id=f, name=getattr(self.library, "floor_labels", FLOOR_LABELS)[f]) for f in floors],
+                    selectedFloor=self._floor,
+                    imageUrl=QUrl.fromLocalFile(str(asset.image_path)).toString(),
+                    imageWidth=int(asset.image_size[0]),
+                    imageHeight=int(asset.image_size[1]),
+                    points=points,
+                    lines=lines,
+                    markers=markers,
+                    routeLength=current_route_length,
+                    mapComparisons=comparisons,
+                )
+
+        maps = []
+        for row in self._map_metadata:
+            mid = row["id"]
+            is_drawn = mid in drawn
+            if is_drawn:
+                if mid == self._map and current_route_length is not None:
+                    summary = current_route_length
+                else:
+                    summary = self._route_length_for_map(mid, store.route(self._gallery, mid))
+                maps.append(dict(
+                    row,
+                    drawn=True,
+                    routeLengthUnits=summary["totalUnits"],
+                    routeLengthText=summary["totalText"],
+                    routeLengthError=summary["error"],
+                    routeLengthFloorText=summary["compactFloorText"],
+                    routeLengthTooltip=summary["tooltipText"],
+                ))
+            else:
+                maps.append(dict(
+                    row,
+                    drawn=False,
+                    routeLengthUnits=0.0,
+                    routeLengthText="",
+                    routeLengthError=False,
+                    routeLengthFloorText="",
+                    routeLengthTooltip="",
+                ))
+        state["maps"] = maps
         return state
 
     def _run(self, function, message="", *, galleries_changed=False, on_done=None):

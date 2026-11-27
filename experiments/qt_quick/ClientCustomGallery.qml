@@ -11,7 +11,16 @@ Item {
     readonly property var state: customGalleryService.snapshot
     readonly property bool editing: state.editing || false
     readonly property bool showPointNumbers: settingsService && settingsService.persistedValues.routePointNumbers || false
+    readonly property var routeLength: state.routeLength || ({})
+    readonly property var pointSegments: routeLength.pointSegments || []
+    property int selectedSegmentEnd: -1
+    property string lastSelectionKey: ""
+    readonly property var selectedSegment: (selectedSegmentEnd >= 0
+        && selectedSegmentEnd < pointSegments.length
+        && pointSegments[selectedSegmentEnd]
+        && pointSegments[selectedSegmentEnd].hasSegment) ? pointSegments[selectedSegmentEnd] : null
     onShowPointNumbersChanged: drawing.requestPaint()
+    onSelectedSegmentEndChanged: drawing.requestPaint()
     function selectedIndex(rows, id) {
         for (var i=0; i<rows.length; ++i) if (rows[i].id === id) return i
         return -1
@@ -21,6 +30,45 @@ Item {
         for (var i=0; i<rows.length; ++i) if (rows[i].id === id) return rows[i].name
         return id + "层"
     }
+    function comparisonText(rows) {
+        if (!rows || !rows.length) return ""
+        var parts = []
+        var limit = Math.min(rows.length, 3)
+        for (var i = 0; i < limit; ++i) {
+            var item = rows[i]
+            parts.push(item.galleryName + " " + (item.error ? "待规划" : (item.totalText || "0 格")))
+        }
+        if (rows.length > limit) parts.push("等 " + rows.length + " 个图库")
+        return "同图参考：" + parts.join(" · ")
+    }
+    function segmentBreakdownText(seg) {
+        if (!seg) return ""
+        var title = "已选第 " + seg.fromNumber + "→" + seg.toNumber + " 段：" + (seg.text || "0 格")
+        if (seg.crossFloor) {
+            var fl = seg.floors || []
+            if (fl.length > 0) {
+                var detail = []
+                for (var i = 0; i < fl.length; ++i) detail.push(fl[i].name + " " + fl[i].text)
+                return title + "（" + detail.join(" + ") + "，跨层不计）"
+            }
+            return title + "（跨层跳转不计）"
+        }
+        return title
+    }
+    function syncSegmentSelection() {
+        var key = (root.state.scopeId || "") + "|" + (root.state.selectedGallery || "") + "|" + (root.state.selectedMap || "")
+        if (key !== root.lastSelectionKey) {
+            root.lastSelectionKey = key
+            root.selectedSegmentEnd = -1
+            return
+        }
+        if (root.selectedSegmentEnd >= 0) {
+            var segs = root.pointSegments
+            if (root.selectedSegmentEnd >= segs.length || !segs[root.selectedSegmentEnd] || !segs[root.selectedSegmentEnd].hasSegment) {
+                root.selectedSegmentEnd = -1
+            }
+        }
+    }
     function askName(operation, initial) {
         nameDialog.operation = operation
         nameField.text = initial
@@ -29,7 +77,10 @@ Item {
     }
     Connections {
         target: customGalleryService
-        function onChanged() { drawing.requestPaint() }
+        function onChanged() {
+            root.syncSegmentSelection()
+            drawing.requestPaint()
+        }
         function onConfirmationRequested(title, message) {
             confirmation.title=title; confirmationMessage.text=message; confirmation.open()
         }
@@ -110,7 +161,7 @@ Item {
                 Layout.fillWidth: true; Layout.fillHeight: true
                 color: "white"; radius: 16; border.width: 1; border.color: "#e3e9f3"
                 ColumnLayout {
-                    anchors.fill: parent; anchors.margins: 16; spacing: 10
+                    anchors.fill: parent; anchors.margins: 16; spacing: 8
                     RowLayout {
                         Layout.fillWidth: true
                         Label { text: root.state.galleryName || "图库"; font.pixelSize: 18; font.bold: true; color: "#142b4b"; Layout.fillWidth: true; elide: Text.ElideRight }
@@ -121,13 +172,18 @@ Item {
                         }
                     }
                     Label { text: "已绘制 " + (root.state.drawnCount || 0) + " / " + (root.state.mapCount || 0) + " 张地图" + (root.state.source ? " · 来自路线广场（作者 " + (root.state.source.author || "匿名") + "），只读，复制后即可编辑" : root.state.readonly ? " · 默认图库只读，复制后即可编辑" : " · 选择地图继续编辑"); color: "#526785"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                    Label {
+                        objectName: "customGalleryLengthHint"
+                        text: "长度单位「格」：" + (root.state.routeLengthUnitDescription || "按本图比例估算，仅用于同一张图内比较（跨层不计）")
+                        color: "#6b7f9c"; font.pixelSize: 11; wrapMode: Text.WordWrap; Layout.fillWidth: true
+                    }
                     GridView {
                         id: maps
                         objectName: "customMapGrid"
                         Layout.fillWidth: true; Layout.fillHeight: true
                         clip: true; model: root.state.maps
-                        cellWidth: Math.max(152, Math.floor(width / Math.max(1, Math.floor(width / 152))))
-                        cellHeight: 184; cacheBuffer: 368
+                        cellWidth: Math.max(156, Math.floor(width / Math.max(1, Math.floor(width / 156))))
+                        cellHeight: 198; cacheBuffer: 396
                         ScrollBar.vertical: ScrollBar {}
                         delegate: Button {
                             id: tile
@@ -135,14 +191,36 @@ Item {
                             required property var modelData
                             width: maps.cellWidth - 8; height: maps.cellHeight - 8
                             focusPolicy: Qt.StrongFocus; hoverEnabled: true
-                            Accessible.name: modelData.name + (modelData.drawn ? "，已绘制" : "，未绘制")
+                            ToolTip.visible: hovered && !!modelData.routeLengthTooltip
+                            ToolTip.delay: 300
+                            ToolTip.text: modelData.routeLengthTooltip || ""
+                            Accessible.name: modelData.name + (modelData.drawn ? ("，已绘制，" + (modelData.routeLengthText || "0 格")) : "，未绘制")
                             enabled: !root.state.busy && !root.state.pendingKind
                             background: Rectangle { radius: 8; color: tile.down ? "#dce8ff" : tile.hovered ? "#e7effc" : "#f3f6fc"; border.color: tile.activeFocus ? "#2f66eb" : "#d6e0ef"; border.width: tile.activeFocus ? 2 : 1 }
                             contentItem: Column {
-                                spacing: 4
-                                Image { width: 132; height: 132; anchors.horizontalCenter: parent.horizontalCenter; source: tile.modelData.thumbnailUrl; asynchronous: true; cache: true; fillMode: Image.PreserveAspectFit; sourceSize.width: 264; sourceSize.height: 264 }
+                                spacing: 3
+                                Image { width: 126; height: 126; anchors.horizontalCenter: parent.horizontalCenter; source: tile.modelData.thumbnailUrl; asynchronous: true; cache: true; fillMode: Image.PreserveAspectFit; sourceSize.width: 264; sourceSize.height: 264 }
                                 Text { width: parent.width; text: tile.modelData.name; color: "#142b4b"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; elide: Text.ElideRight }
-                                Text { width: parent.width; text: tile.modelData.thumbnailError ? "资源待检查" : tile.modelData.drawn ? "已绘制" : "未绘制"; color: tile.modelData.drawn ? "#17775a" : "#526785"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter }
+                                Text {
+                                    objectName: "customMapCardLength_" + tile.modelData.id
+                                    width: parent.width
+                                    text: tile.modelData.thumbnailError
+                                          ? "资源待检查"
+                                          : tile.modelData.drawn
+                                            ? (tile.modelData.routeLengthError ? "已绘制 · 路径待调整" : ("已绘制 · " + (tile.modelData.routeLengthText || "0 格")))
+                                            : "未绘制"
+                                    color: tile.modelData.routeLengthError ? "#a34837" : tile.modelData.drawn ? "#17775a" : "#526785"
+                                    font.pixelSize: 11; font.bold: !!tile.modelData.drawn && !tile.modelData.routeLengthError
+                                    horizontalAlignment: Text.AlignHCenter; elide: Text.ElideRight
+                                }
+                                Text {
+                                    objectName: "customMapCardFloors_" + tile.modelData.id
+                                    visible: !!tile.modelData.drawn && !!tile.modelData.routeLengthFloorText
+                                    width: parent.width
+                                    text: tile.modelData.routeLengthFloorText || ""
+                                    color: "#526785"; font.pixelSize: 10
+                                    horizontalAlignment: Text.AlignHCenter; elide: Text.ElideRight
+                                }
                             }
                             onClicked: customGalleryService.selectMap(modelData.id)
                         }
@@ -158,7 +236,7 @@ Item {
                 Layout.fillWidth: true; Layout.fillHeight: true
                 color: "white"; radius: 16; border.width: 1; border.color: "#e3e9f3"
                 ColumnLayout {
-                    anchors.fill: parent; anchors.margins: 12; spacing: 10
+                    anchors.fill: parent; anchors.margins: 12; spacing: 8
                     RowLayout {
                         Layout.fillWidth: true; spacing: 6
                         ComboBox {
@@ -193,6 +271,99 @@ Item {
                             onClicked: customGalleryService.toggleNewStart()
                         }
                     }
+                    Rectangle {
+                        objectName: "customRouteLengthPanel"
+                        Layout.fillWidth: true
+                        implicitHeight: lengthCol.implicitHeight + 12
+                        radius: 10; color: "#f4f8ff"; border.width: 1; border.color: "#dbe6f7"
+                        ColumnLayout {
+                            id: lengthCol
+                            anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.topMargin: 6; anchors.bottomMargin: 6
+                            spacing: 4
+                            Flow {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                Rectangle {
+                                    height: 24; width: totalLbl.implicitWidth + 14; radius: 6
+                                    color: root.routeLength.error ? "#fdecea" : "#183a73"
+                                    Label {
+                                        id: totalLbl
+                                        objectName: "customRouteTotalLength"
+                                        anchors.centerIn: parent
+                                        text: (root.routeLength.hasMultiFloorRoute ? "多层总长 " : "路线总长 ") + (root.routeLength.totalText || "0 格")
+                                        color: root.routeLength.error ? "#a34837" : "white"
+                                        font.pixelSize: 12; font.bold: true
+                                    }
+                                }
+                                Repeater {
+                                    model: root.routeLength.floors || []
+                                    delegate: Rectangle {
+                                        id: floorChip
+                                        required property var modelData
+                                        readonly property bool activeFloor: modelData.id === root.state.selectedFloor
+                                        height: 24; width: floorChipLbl.implicitWidth + 14; radius: 6
+                                        color: activeFloor ? "#dce8ff" : "white"
+                                        border.width: 1; border.color: activeFloor ? "#2f66eb" : "#d6e0ef"
+                                        Label {
+                                            id: floorChipLbl
+                                            objectName: "customFloorLength_" + floorChip.modelData.id
+                                            anchors.centerIn: parent
+                                            text: floorChip.modelData.name + " " + floorChip.modelData.text
+                                            color: floorChip.activeFloor ? "#142b4b" : (floorChip.modelData.hasLength ? "#354f75" : "#6b7f9c")
+                                            font.pixelSize: 11; font.bold: floorChip.activeFloor || !!floorChip.modelData.hasLength
+                                        }
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            cursorShape: Qt.PointingHandCursor
+                                            enabled: !root.state.busy && !root.state.pendingKind && !floorChip.activeFloor
+                                            onClicked: customGalleryService.selectFloor(floorChip.modelData.id)
+                                        }
+                                    }
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: 8
+                                Label {
+                                    objectName: "customRouteLengthHint"
+                                    text: root.routeLength.unitDescription || "按本图比例估算，仅用于同一张图内比较（跨层不计）"
+                                    color: "#5e7494"; font.pixelSize: 11
+                                    Layout.fillWidth: true; elide: Text.ElideRight
+                                }
+                                Label {
+                                    objectName: "customRouteComparisons"
+                                    visible: (root.state.mapComparisons || []).length > 0
+                                    text: root.comparisonText(root.state.mapComparisons)
+                                    color: "#183a73"; font.pixelSize: 11; font.bold: true
+                                    elide: Text.ElideRight
+                                    Layout.maximumWidth: 320
+                                }
+                            }
+                            Rectangle {
+                                objectName: "customSelectedSegmentBar"
+                                visible: root.selectedSegment !== null
+                                Layout.fillWidth: true
+                                implicitHeight: segRow.implicitHeight + 6
+                                radius: 6; color: "#fff8db"; border.width: 1; border.color: "#ebd075"
+                                RowLayout {
+                                    id: segRow
+                                    anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 6; anchors.topMargin: 3; anchors.bottomMargin: 3
+                                    spacing: 6
+                                    Label {
+                                        objectName: "customSelectedSegmentText"
+                                        text: root.segmentBreakdownText(root.selectedSegment)
+                                        color: "#6b4d00"; font.pixelSize: 11; font.bold: true
+                                        Layout.fillWidth: true; elide: Text.ElideRight
+                                    }
+                                    AppButton {
+                                        objectName: "customClearSelectedSegment"
+                                        text: "取消"
+                                        implicitWidth: 44; implicitHeight: 22
+                                        onClicked: root.selectedSegmentEnd = -1
+                                    }
+                                }
+                            }
+                        }
+                    }
             Rectangle {
                 id: mapArea
                 Layout.fillWidth: true; Layout.fillHeight: true
@@ -219,6 +390,20 @@ Item {
                             var ox=(width-art.paintedWidth)/2, oy=(height-art.paintedHeight)/2
                             ctx.translate(ox,oy); ctx.scale(scale,scale)
                             var lines=root.state.lines
+                            if (root.selectedSegmentEnd >= 0) {
+                                ctx.save()
+                                ctx.globalAlpha = 0.85
+                                for (var h=0; h<lines.length; ++h) {
+                                    if (lines[h].segmentEnd !== root.selectedSegmentEnd) continue
+                                    var hpts=lines[h].points; if (!hpts.length) continue
+                                    ctx.beginPath(); ctx.moveTo(hpts[0].x,hpts[0].y)
+                                    for (var hj=1; hj<hpts.length; ++hj) ctx.lineTo(hpts[hj].x,hpts[hj].y)
+                                    ctx.strokeStyle="#ffd54f"
+                                    ctx.lineWidth=11.5/scale
+                                    ctx.lineJoin="round"; ctx.lineCap="round"; ctx.stroke()
+                                }
+                                ctx.restore()
+                            }
                             // Same as custom_maps.draw_route and the Android route: every
                             // dark outline first, then the colours, so crossings keep colour.
                             for (var pass=0; pass<2; ++pass) {
@@ -261,27 +446,69 @@ Item {
                 }
             }
             Rectangle {
-                Layout.preferredWidth: root.width < 1000 ? 200 : 230; Layout.minimumWidth: 190; Layout.maximumWidth: 230
+                Layout.preferredWidth: root.width < 1000 ? 200 : 236; Layout.minimumWidth: 196; Layout.maximumWidth: 236
                 Layout.fillHeight: true; color: "white"; radius: 16; border.width: 1; border.color: "#e3e9f3"
                 ColumnLayout {
                     anchors.fill: parent; anchors.margins: 12; spacing: 8
                     Label { text: "目标顺序"; color: "#183a73"; font.pixelSize: 15; font.bold: true }
-                    Label { text: "点房间选择目标，点走廊添加必经点。"; color: "#526785"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                    Label { text: "点房间选择目标，点走廊添加必经点。点段长可高亮对应路段。"; color: "#526785"; font.pixelSize: 11; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                     ListView {
                         id: points
                         objectName: "customPointList"
                         Layout.fillWidth: true; Layout.fillHeight: true; clip: true
-                        model: root.state.points; spacing: 8
+                        model: root.state.points; spacing: 6
                         ScrollBar.vertical: ScrollBar {}
-                        delegate: ColumnLayout {
+                        delegate: Rectangle {
+                            id: pointCard
                             required property int index
                             required property var modelData
-                            width: points.width; spacing: 4
-                            Label { text: (parent.index+1)+". "+root.floorLabel(parent.modelData.floor)+" "+(parent.modelData.start ? "起点 · " : "")+(parent.modelData.kind === "room" ? "房间" : "必经点"); color: "#354f75"; Layout.fillWidth: true; elide: Text.ElideRight }
-                            RowLayout {
-                                AppButton { text: "上移"; implicitWidth: 48; implicitHeight: 30; enabled: parent.parent.index>0 && !root.state.readonly && !root.state.busy; onClicked: customGalleryService.movePoint(parent.parent.index,-1) }
-                                AppButton { text: "下移"; implicitWidth: 48; implicitHeight: 30; enabled: parent.parent.index<root.state.points.length-1 && !root.state.readonly && !root.state.busy; onClicked: customGalleryService.movePoint(parent.parent.index,1) }
-                                AppButton { text: "移除"; implicitWidth: 48; implicitHeight: 30; enabled: !root.state.readonly && !root.state.busy; onClicked: customGalleryService.removePoint(parent.parent.index) }
+                            readonly property var segInfo: (index >= 0 && index < root.pointSegments.length) ? root.pointSegments[index] : null
+                            readonly property bool selectable: !!(segInfo && segInfo.hasSegment)
+                            readonly property bool isSelected: selectable && root.selectedSegmentEnd === index
+                            width: points.width
+                            implicitHeight: pointCol.implicitHeight + 8
+                            radius: 8
+                            color: isSelected ? "#eef4ff" : "transparent"
+                            border.width: isSelected ? 1 : 0
+                            border.color: "#2f66eb"
+                            ColumnLayout {
+                                id: pointCol
+                                anchors.fill: parent; anchors.margins: 4; spacing: 4
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: 4
+                                    Label {
+                                        text: (pointCard.index+1)+". "+root.floorLabel(pointCard.modelData.floor)+" "+(pointCard.modelData.start ? "起点 · " : "")+(pointCard.modelData.kind === "room" ? "房间" : "必经点")
+                                        color: "#354f75"; font.pixelSize: 12
+                                        Layout.fillWidth: true; elide: Text.ElideRight
+                                    }
+                                    Rectangle {
+                                        objectName: "customPointSegmentBadge_" + pointCard.index
+                                        visible: pointCard.selectable
+                                        height: 20; width: segBadgeLbl.implicitWidth + 10; radius: 5
+                                        color: pointCard.isSelected ? "#2f66eb" : "#e8f0fc"
+                                        Label {
+                                            id: segBadgeLbl
+                                            anchors.centerIn: parent
+                                            text: pointCard.segInfo
+                                                  ? (pointCard.segInfo.crossFloor && pointCard.segInfo.units <= 0
+                                                     ? "跨层"
+                                                     : ("+" + pointCard.segInfo.text))
+                                                  : ""
+                                            color: pointCard.isSelected ? "white" : "#183a73"
+                                            font.pixelSize: 10; font.bold: true
+                                        }
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: root.selectedSegmentEnd = (root.selectedSegmentEnd === pointCard.index ? -1 : pointCard.index)
+                                        }
+                                    }
+                                }
+                                RowLayout {
+                                    AppButton { text: "上移"; implicitWidth: 48; implicitHeight: 28; enabled: pointCard.index>0 && !root.state.readonly && !root.state.busy; onClicked: customGalleryService.movePoint(pointCard.index,-1) }
+                                    AppButton { text: "下移"; implicitWidth: 48; implicitHeight: 28; enabled: pointCard.index<root.state.points.length-1 && !root.state.readonly && !root.state.busy; onClicked: customGalleryService.movePoint(pointCard.index,1) }
+                                    AppButton { text: "移除"; implicitWidth: 48; implicitHeight: 28; enabled: !root.state.readonly && !root.state.busy; onClicked: customGalleryService.removePoint(pointCard.index) }
+                                }
                             }
                         }
                     }
